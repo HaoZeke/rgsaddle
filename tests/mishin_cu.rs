@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use ndarray::{Array1, Array2, ArrayView1};
+use rayon::prelude::*;
 use rgmin::{Control, FireKind, Method, Oracle, Solver};
 use rgsaddle::{
     BOLTZMANN_EV_PER_K, CellMask, DefectSource, ElasticDipole, ElasticMultipole, FieldSolver,
@@ -2263,4 +2264,1629 @@ fn write_point(
         refined: refine_ok && trust == "explicit",
         linear: trust == "linear" || trust == "explicit_reference",
     });
+}
+
+fn eam_eval_fast(
+    positions: ArrayView1<f64>,
+    cell: [[f64; 3]; 3],
+) -> (f64, Array1<f64>, [[f64; 3]; 3]) {
+    if cell[0][1].abs()
+        + cell[0][2].abs()
+        + cell[1][0].abs()
+        + cell[1][2].abs()
+        + cell[2][0].abs()
+        + cell[2][1].abs()
+        > 1.0e-8
+    {
+        return eam_eval(positions, cell);
+    }
+    let n = positions.len() / 3;
+    let lengths = [cell[0][0].abs(), cell[1][1].abs(), cell[2][2].abs()];
+    let nimg = ((RC / lengths.into_iter().fold(f64::MAX, f64::min)).ceil() as i32).max(1);
+    let nside = lengths.map(|length| ((length / RC).floor() as i32).max(1));
+    let bins_n = (nside[0] * nside[1] * nside[2]) as usize;
+    let mut bins = vec![Vec::new(); bins_n];
+    let inv = invert(cell);
+    let mut frac = vec![[0.0; 3]; n];
+    for i in 0..n {
+        let r = [positions[3 * i], positions[3 * i + 1], positions[3 * i + 2]];
+        frac[i] = [
+            r[0] * inv[0][0] + r[1] * inv[1][0] + r[2] * inv[2][0],
+            r[0] * inv[0][1] + r[1] * inv[1][1] + r[2] * inv[2][1],
+            r[0] * inv[0][2] + r[1] * inv[1][2] + r[2] * inv[2][2],
+        ];
+        bins[frac_bin(frac[i], nside)].push(i);
+    }
+    let cutoff2 = RC * RC;
+    let mut pairs = Vec::new();
+    for i in 0..n {
+        for sx in -nimg..=nimg {
+            for sy in -nimg..=nimg {
+                for sz in -nimg..=nimg {
+                    let target = [
+                        (frac[i][0] - sx as f64).rem_euclid(1.0),
+                        (frac[i][1] - sy as f64).rem_euclid(1.0),
+                        (frac[i][2] - sz as f64).rem_euclid(1.0),
+                    ];
+                    let origin = frac_bin_ijk(target, nside);
+                    let mut slots = Vec::with_capacity(8);
+                    for dx in -1..=1 {
+                        for dy in -1..=1 {
+                            for dz in -1..=1 {
+                                let ix = (origin[0] + dx).rem_euclid(nside[0]);
+                                let iy = (origin[1] + dy).rem_euclid(nside[1]);
+                                let iz = (origin[2] + dz).rem_euclid(nside[2]);
+                                let slot = ((ix * nside[1] + iy) * nside[2] + iz) as usize;
+                                if !slots.contains(&slot) {
+                                    slots.push(slot);
+                                }
+                            }
+                        }
+                    }
+                    for slot in slots {
+                        for &j in &bins[slot] {
+                            if j < i || (j == i && !positive_image(sx, sy, sz)) {
+                                continue;
+                            }
+                            let shift = [
+                                sx as f64 * cell[0][0],
+                                sy as f64 * cell[1][1],
+                                sz as f64 * cell[2][2],
+                            ];
+                            let d = [
+                                positions[3 * j] + shift[0] - positions[3 * i],
+                                positions[3 * j + 1] + shift[1] - positions[3 * i + 1],
+                                positions[3 * j + 2] + shift[2] - positions[3 * i + 2],
+                            ];
+                            let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+                            if r2 > 1e-16 && r2 < cutoff2 {
+                                pairs.push(Pair {
+                                    i,
+                                    j,
+                                    d,
+                                    r: r2.sqrt(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    accumulate_eam(n, positions.len(), &pairs, det(cell).abs())
+}
+
+fn frac_bin(s: [f64; 3], nside: [i32; 3]) -> usize {
+    let ijk = frac_bin_ijk(s, nside);
+    ((ijk[0] * nside[1] + ijk[1]) * nside[2] + ijk[2]) as usize
+}
+
+fn frac_bin_ijk(s: [f64; 3], nside: [i32; 3]) -> [i32; 3] {
+    [0, 1, 2].map(|c| {
+        let scaled = s[c].rem_euclid(1.0) * nside[c] as f64;
+        let mut bin = scaled.floor() as i32;
+        if bin >= nside[c] {
+            bin = nside[c] - 1;
+        }
+        if bin < 0 {
+            bin = 0;
+        }
+        bin
+    })
+}
+
+fn accumulate_eam(
+    n: usize,
+    n_coord: usize,
+    pairs: &[Pair],
+    volume: f64,
+) -> (f64, Array1<f64>, [[f64; 3]; 3]) {
+    let mut rho = vec![0.0; n];
+    for bond in pairs {
+        let weight = density(bond.r).0;
+        rho[bond.i] += weight;
+        if bond.i != bond.j {
+            rho[bond.j] += weight;
+        } else {
+            rho[bond.i] += weight;
+        }
+    }
+    let mut energy = 0.0;
+    let mut fp = vec![0.0; n];
+    for i in 0..n {
+        let (value, slope) = embed(rho[i]);
+        energy += value;
+        fp[i] = slope;
+    }
+    let mut gradient = Array1::zeros(n_coord);
+    let mut virial = [[0.0; 3]; 3];
+    for bond in pairs {
+        let (v, dv) = pair(bond.r);
+        let (_, drho) = density(bond.r);
+        let inv_r = 1.0 / bond.r;
+        if bond.i != bond.j {
+            energy += v;
+            let deriv = dv + (fp[bond.i] + fp[bond.j]) * drho;
+            for c in 0..3 {
+                let force = deriv * bond.d[c] * inv_r;
+                gradient[3 * bond.i + c] -= force;
+                gradient[3 * bond.j + c] += force;
+            }
+            for (a, virial_row) in virial.iter_mut().enumerate() {
+                for (b, slot) in virial_row.iter_mut().enumerate() {
+                    *slot += deriv * bond.d[a] * bond.d[b] * inv_r;
+                }
+            }
+        } else {
+            energy += v;
+            let deriv = dv + 2.0 * fp[bond.i] * drho;
+            for (a, virial_row) in virial.iter_mut().enumerate() {
+                for (b, slot) in virial_row.iter_mut().enumerate() {
+                    *slot += deriv * bond.d[a] * bond.d[b] * inv_r;
+                }
+            }
+        }
+    }
+    let mut stress = [[0.0; 3]; 3];
+    for (a, virial_row) in virial.iter().enumerate() {
+        for (b, virial_ab) in virial_row.iter().enumerate() {
+            stress[a][b] = virial_ab / volume;
+        }
+    }
+    (energy, gradient, stress)
+}
+
+#[test]
+fn fast_mishin_matches_the_direct_pair_sum() {
+    let (perfect, cell) = fcc(3, 3.615);
+    let (energy, gradient, stress) = eam_eval(perfect.view(), cell);
+    let (fast_e, fast_g, fast_s) = eam_eval_fast(perfect.view(), cell);
+    assert!((energy - fast_e).abs() < 1e-8, "{energy} {fast_e}");
+    for (left, right) in gradient.iter().zip(fast_g.iter()) {
+        assert!((left - right).abs() < 1e-7, "{left} {right}");
+    }
+    for a in 0..3 {
+        for b in 0..3 {
+            assert!((stress[a][b] - fast_s[a][b]).abs() < 1e-8);
+        }
+    }
+    let defect = dumbbell(&perfect, [1.0, 0.0, 0.0], 2.05);
+    let (energy, gradient, stress) = eam_eval(defect.view(), cell);
+    let (fast_e, fast_g, fast_s) = eam_eval_fast(defect.view(), cell);
+    assert!((energy - fast_e).abs() < 1e-6, "{energy} {fast_e}");
+    for (left, right) in gradient.iter().zip(fast_g.iter()) {
+        assert!((left - right).abs() < 1e-6, "{left} {right}");
+    }
+    for a in 0..3 {
+        for b in 0..3 {
+            assert!((stress[a][b] - fast_s[a][b]).abs() < 1e-6);
+        }
+    }
+}
+
+struct FastCopper {
+    calls: AtomicUsize,
+}
+
+impl FastCopper {
+    fn new() -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn evaluate(
+        &self,
+        positions: ArrayView1<f64>,
+        cell: [[f64; 3]; 3],
+    ) -> (f64, Array1<f64>, [[f64; 3]; 3]) {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        eam_eval_fast(positions, cell)
+    }
+}
+
+struct FastHeld<'a> {
+    copper: &'a FastCopper,
+    cell: [[f64; 3]; 3],
+}
+
+impl PointSurface for FastHeld<'_> {
+    fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+        let (energy, gradient, _) = self.copper.evaluate(x, self.cell);
+        Ok((energy, gradient))
+    }
+
+    fn eval_in_cell(
+        &self,
+        x: ArrayView1<f64>,
+        cell: &[f64; 9],
+    ) -> Result<(f64, Array1<f64>), SaddleError> {
+        let (energy, gradient, _) = self.copper.evaluate(x, unflat(cell));
+        Ok((energy, gradient))
+    }
+
+    fn cauchy_stress(
+        &self,
+        x: ArrayView1<f64>,
+        cell: &[f64; 9],
+    ) -> Result<Option<[f64; 9]>, SaddleError> {
+        let (_, _, stress) = self.copper.evaluate(x, unflat(cell));
+        Ok(Some(flat(stress)))
+    }
+
+    fn excluded_modes(&self, x: ArrayView1<f64>) -> Result<Array2<f64>, SaddleError> {
+        let n = x.len() / 3;
+        let mut modes = Array2::zeros((3, x.len()));
+        for atom in 0..n {
+            for c in 0..3 {
+                modes[(c, 3 * atom + c)] = 1.0;
+            }
+        }
+        Ok(modes)
+    }
+}
+
+fn relax_fast(
+    copper: &FastCopper,
+    positions: &mut Array1<f64>,
+    cell: [[f64; 3]; 3],
+    tol: f64,
+    max_steps: usize,
+) {
+    let mut solver = Solver::new(
+        Method::fire(FireKind::V2),
+        Control::default()
+            .with_maxiter(usize::MAX)
+            .with_gtol(0.0)
+            .with_istep(0.08),
+        positions.len(),
+    );
+    solver.set_atom_maxmove(0.08);
+    for _ in 0..max_steps {
+        let oracle = Oracle::unbounded(positions.len(), |x: ArrayView1<f64>| {
+            let (energy, gradient, _) = copper.evaluate(x, cell);
+            (energy, gradient)
+        });
+        solver.step(&oracle, positions).expect("relax");
+        let (_, gradient, _) = copper.evaluate(positions.view(), cell);
+        if max_abs(&gradient) < tol {
+            break;
+        }
+    }
+}
+
+fn shell_table(a: f64, repeats: usize) -> Vec<(f64, [f64; 3], usize)> {
+    let max_r = 10.8_f64.min(repeats as f64 * a * 0.48);
+    let limit = ((2.0 * max_r / a).ceil() as i32) + 1;
+    let mut raw = Vec::new();
+    for i in -limit..=limit {
+        for j in -limit..=limit {
+            for k in -limit..=limit {
+                if (i + j + k) % 2 != 0 || (i == 0 && j == 0 && k == 0) {
+                    continue;
+                }
+                let cart = [i as f64 * 0.5 * a, j as f64 * 0.5 * a, k as f64 * 0.5 * a];
+                let r = (cart[0] * cart[0] + cart[1] * cart[1] + cart[2] * cart[2]).sqrt();
+                if r < 0.5 * a || r > max_r {
+                    continue;
+                }
+                raw.push((r, cart));
+            }
+        }
+    }
+    raw.sort_by(|left, right| left.0.partial_cmp(&right.0).unwrap());
+    let mut found: Vec<(f64, [f64; 3], usize)> = Vec::new();
+    for (radius, cart) in raw {
+        if let Some(last) = found.last_mut()
+            && (radius - last.0).abs() < 1.0e-3
+        {
+            last.2 += 1;
+            continue;
+        }
+        found.push((radius, cart, 1));
+    }
+    found
+}
+
+fn nearest(points: &[[f64; 3]], target: [f64; 3], skip: Option<usize>) -> usize {
+    let mut best = 0usize;
+    let mut best_r = f64::MAX;
+    for (index, point) in points.iter().enumerate() {
+        if skip == Some(index) {
+            continue;
+        }
+        let d = [
+            point[0] - target[0],
+            point[1] - target[1],
+            point[2] - target[2],
+        ];
+        let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+        if r2 < best_r {
+            best_r = r2;
+            best = index;
+        }
+    }
+    best
+}
+
+struct BuiltPair {
+    positions: Array1<f64>,
+    vacancy: [f64; 3],
+    dumbbell: [usize; 2],
+}
+
+fn build_pair(repeats: usize, a: f64, shell: [f64; 3], vacancy: bool) -> BuiltPair {
+    let (flat, cell) = fcc(repeats, a);
+    let mut points = Vec::new();
+    for atom in 0..flat.len() / 3 {
+        points.push([flat[3 * atom], flat[3 * atom + 1], flat[3 * atom + 2]]);
+    }
+    let center = [cell[0][0] * 0.5, cell[1][1] * 0.5, cell[2][2] * 0.5];
+    let vac = nearest(&points, center, None);
+    let sia_guess = [
+        points[vac][0] + shell[0],
+        points[vac][1] + shell[1],
+        points[vac][2] + shell[2],
+    ];
+    let sia = nearest(&points, sia_guess, Some(vac));
+    let vac_pos = points[vac];
+    let sia_pos = points[sia];
+    let mut keep = Vec::new();
+    for (index, point) in points.iter().enumerate() {
+        if index == sia || (vacancy && index == vac) {
+            continue;
+        }
+        keep.push(*point);
+    }
+    let offset = 1.025;
+    keep.push([sia_pos[0] - offset, sia_pos[1], sia_pos[2]]);
+    keep.push([sia_pos[0] + offset, sia_pos[1], sia_pos[2]]);
+    let n = keep.len();
+    let mut values = Vec::with_capacity(n * 3);
+    for point in keep {
+        values.extend(point);
+    }
+    BuiltPair {
+        positions: Array1::from(values),
+        vacancy: vac_pos,
+        dumbbell: [n - 2, n - 1],
+    }
+}
+
+fn centroid(positions: &Array1<f64>, atoms: [usize; 2]) -> [f64; 3] {
+    let mut c = [0.0; 3];
+    for atom in atoms {
+        for k in 0..3 {
+            c[k] += positions[3 * atom + k];
+        }
+    }
+    [c[0] * 0.5, c[1] * 0.5, c[2] * 0.5]
+}
+
+fn dist(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+}
+fn env_csv(key: &str, default: &str) -> Vec<String> {
+    std::env::var(key)
+        .unwrap_or_else(|_| default.to_string())
+        .split(',')
+        .filter(|item| !item.is_empty())
+        .map(|item| item.trim().to_string())
+        .collect()
+}
+
+fn env_usize(key: &str, default: usize) -> usize {
+    std::env::var(key)
+        .ok()
+        .and_then(|text| text.parse().ok())
+        .unwrap_or(default)
+}
+
+struct SplitRng {
+    state: u64,
+}
+
+impl SplitRng {
+    fn new(seed: u64) -> Self {
+        Self { state: seed | 1 }
+    }
+
+    fn u64(&mut self) -> u64 {
+        self.state ^= self.state << 13;
+        self.state ^= self.state >> 7;
+        self.state ^= self.state << 17;
+        self.state
+    }
+
+    fn normal(&mut self) -> f64 {
+        let u1 = ((self.u64() >> 11) as f64 * (1.0 / ((1u64 << 53) as f64))).max(1.0e-16);
+        let u2 = (self.u64() >> 11) as f64 * (1.0 / ((1u64 << 53) as f64));
+        (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos()
+    }
+}
+
+fn zero_mean(values: &mut Array1<f64>) {
+    let n = values.len() / 3;
+    if n == 0 {
+        return;
+    }
+    let mut mean = [0.0; 3];
+    for atom in 0..n {
+        for c in 0..3 {
+            mean[c] += values[3 * atom + c];
+        }
+    }
+    for atom in 0..n {
+        for c in 0..3 {
+            values[3 * atom + c] -= mean[c] / n as f64;
+        }
+    }
+}
+
+fn mic_distance(a: [f64; 3], b: [f64; 3], cell: [[f64; 3]; 3]) -> f64 {
+    let mut acc = 0.0;
+    for c in 0..3 {
+        let length = cell[c][c];
+        let mut delta = a[c] - b[c];
+        delta -= length * (delta / length).round();
+        acc += delta * delta;
+    }
+    acc.sqrt()
+}
+
+fn point_of(positions: &Array1<f64>, atom: usize) -> [f64; 3] {
+    [
+        positions[3 * atom],
+        positions[3 * atom + 1],
+        positions[3 * atom + 2],
+    ]
+}
+
+fn hausdorff(left: &Array1<f64>, right: &Array1<f64>, cell: [[f64; 3]; 3]) -> f64 {
+    directed_gap(left, right, cell).max(directed_gap(right, left, cell))
+}
+
+fn directed_gap(left: &Array1<f64>, right: &Array1<f64>, cell: [[f64; 3]; 3]) -> f64 {
+    let n = left.len() / 3;
+    let m = right.len() / 3;
+    let mut worst = 0.0_f64;
+    for i in 0..n {
+        let p = point_of(left, i);
+        let mut best = f64::MAX;
+        for j in 0..m {
+            best = best.min(mic_distance(p, point_of(right, j), cell));
+        }
+        worst = worst.max(best);
+    }
+    worst
+}
+
+#[allow(clippy::needless_range_loop)]
+fn axis_of(positions: &Array1<f64>, dumbbell: [usize; 2]) -> [f64; 3] {
+    let mut vector = [0.0; 3];
+    for c in 0..3 {
+        vector[c] = positions[3 * dumbbell[1] + c] - positions[3 * dumbbell[0] + c];
+    }
+    let norm = (vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]).sqrt();
+    if norm > 0.0 {
+        for c in 0..3 {
+            vector[c] /= norm;
+        }
+    }
+    vector
+}
+
+fn axis_dot(left: [f64; 3], right: [f64; 3]) -> f64 {
+    (left[0] * right[0] + left[1] * right[1] + left[2] * right[2]).abs()
+}
+
+fn miller(cart: [f64; 3], a: f64) -> (i32, i32, i32) {
+    let scale = 2.0 / a;
+    (
+        (cart[0] * scale).round() as i32,
+        (cart[1] * scale).round() as i32,
+        (cart[2] * scale).round() as i32,
+    )
+}
+
+fn cart_of(key: (i32, i32, i32), a: f64) -> [f64; 3] {
+    [
+        key.0 as f64 * 0.5 * a,
+        key.1 as f64 * 0.5 * a,
+        key.2 as f64 * 0.5 * a,
+    ]
+}
+
+/// Zero-pressure lattice parameter of the Mishin crystal.
+///
+/// Langevin dynamics plus a Berendsen barostat. The stress this EAM
+/// returns is tension-positive, so a compressed cell (negative trace)
+/// is expanded. The average is the second half of the run.
+fn npt_lattice(copper: &FastCopper, temperature: f64) -> f64 {
+    let repeats = 6usize;
+    let (mut positions, mut cell) = fcc(repeats, 3.615);
+    let thermal = rgsaddle::BOLTZMANN_EV_PER_K * temperature;
+    let omega = rgsaddle::angular_scale_rad_s();
+    let dt = 2.0e-15 * omega;
+    let gamma = 1.0e12 / omega;
+    let mass = 63.546;
+    let mut rng = SplitRng::new((temperature as u64).wrapping_mul(17).wrapping_add(11));
+    let mut velocity = Array1::zeros(positions.len());
+    let sigma = (thermal / mass).sqrt();
+    for value in velocity.iter_mut() {
+        *value = rng.normal() * sigma;
+    }
+    zero_mean(&mut velocity);
+    let beta = 1.0 / 0.87;
+    let tau = 0.5e-12 * omega;
+    let steps = 4000usize;
+    let mut sum = 0.0;
+    let mut count = 0.0;
+    for step in 0..steps {
+        let (_, gradient, _) = copper.evaluate(positions.view(), cell);
+        velocity = &velocity + &(&gradient * (-0.5 * dt / mass));
+        positions = &positions + &(&velocity * (0.5 * dt));
+        let damp = (-gamma * dt).exp();
+        let noise = (thermal / mass * (1.0 - damp * damp)).sqrt();
+        for value in velocity.iter_mut() {
+            *value = damp * *value + noise * rng.normal();
+        }
+        zero_mean(&mut velocity);
+        positions = &positions + &(&velocity * (0.5 * dt));
+        let (_, gradient, stress) = copper.evaluate(positions.view(), cell);
+        velocity = &velocity + &(&gradient * (-0.5 * dt / mass));
+        let hydro = (stress[0][0] + stress[1][1] + stress[2][2]) / 3.0;
+        let mu = (1.0 - beta * dt / tau * hydro).clamp(0.995, 1.005);
+        let scale = mu.cbrt();
+        positions *= scale;
+        cell[0][0] *= scale;
+        cell[1][1] *= scale;
+        cell[2][2] *= scale;
+        if step + 1 == steps / 2 || step + 1 == steps {
+            eprintln!(
+                "npt {temperature} K step {} a {:.5} stress {:.4e}",
+                step + 1,
+                cell[0][0] / repeats as f64,
+                hydro
+            );
+        }
+        if step >= steps / 2 {
+            sum += cell[0][0] / repeats as f64;
+            count += 1.0;
+        }
+    }
+    sum / count
+}
+
+#[derive(Clone)]
+struct Escape {
+    product: Array1<f64>,
+    barrier: f64,
+    direction: String,
+    axis_dot: f64,
+}
+
+fn enumerate_escapes(
+    copper: &FastCopper,
+    reactant: &Array1<f64>,
+    cell: [[f64; 3]; 3],
+    fixed: [f64; 3],
+    dumbbell: [usize; 2],
+    tries: usize,
+    seed: u64,
+) -> Vec<Escape> {
+    let held = FastHeld { copper, cell };
+    let before = rgsaddle::pair_separation(reactant.view(), cell, fixed, &dumbbell).unwrap_or(0.0);
+    let axis = axis_of(reactant, dumbbell);
+    let found: Vec<Option<Escape>> = (0..tries)
+        .into_par_iter()
+        .map(|trial| {
+            let mut rng = SplitRng::new(seed.wrapping_add(trial as u64).wrapping_mul(0x9E37));
+            let mut kick = Array1::zeros(reactant.len());
+            for atom in dumbbell {
+                for c in 0..3 {
+                    kick[3 * atom + c] = rng.normal() * 0.2;
+                }
+            }
+            zero_mean(&mut kick);
+            let norm = kick.dot(&kick).sqrt();
+            if norm < 1.0e-6 {
+                return None;
+            }
+            let mode = &kick / norm;
+            let seed_pos = reactant + &kick;
+            let search = MinModeConfig {
+                force_tol: 0.04,
+                max_move: 0.1,
+                dr: 1.0e-3,
+                max_rotations: 8,
+                ..MinModeConfig::default()
+            };
+            let dimer_config = SolidDimerConfig::frozen(search)
+                .with_index_check(IndexCheck::first_order().with_step(1.0e-3).with_escapes(1));
+            let mut dimer = SolidDimer::new(dimer_config, seed_pos, cell, mode).ok()?;
+            let report = dimer.run(&held, 80).ok()?;
+            if report.status != MinModeStatus::Converged
+                || report.rejected
+                || report.negative_modes != Some(1)
+            {
+                eprintln!(
+                    "trial {trial} status {:?} force {:.3} steps {} negative {:?} rejected {}",
+                    report.status,
+                    report.max_force,
+                    report.iteration,
+                    report.negative_modes,
+                    report.rejected
+                );
+                let _ = std::io::stderr().flush();
+                return None;
+            }
+            let saddle = dimer.positions().to_owned();
+            let mode = dimer.mode().to_owned();
+            let length = mode.dot(&mode).sqrt();
+            if length < 1.0e-8 {
+                return None;
+            }
+            let mut peak = 0.0_f64;
+            let n_mode = mode.len() / 3;
+            for atom in 0..n_mode {
+                let mut acc = 0.0;
+                for c in 0..3 {
+                    acc += mode[3 * atom + c] * mode[3 * atom + c];
+                }
+                peak = peak.max(acc.sqrt());
+            }
+            if peak < 1.0e-8 {
+                return None;
+            }
+            let step = &mode * (0.5 / peak);
+            let mut plus = &saddle + &step;
+            let mut minus = &saddle - &step;
+            relax_fast(copper, &mut plus, cell, 1.5e-3, 70);
+            relax_fast(copper, &mut minus, cell, 1.5e-3, 70);
+            let gap_plus = hausdorff(&plus, reactant, cell);
+            let gap_minus = hausdorff(&minus, reactant, cell);
+            let (reactant_energy, _) = held.eval(reactant.view()).ok()?;
+            let (energy_plus, _) = held.eval(plus.view()).ok()?;
+            let (energy_minus, _) = held.eval(minus.view()).ok()?;
+            let (product, back, back_energy, product_energy) = if gap_plus < gap_minus {
+                (minus, gap_plus, energy_plus, energy_minus)
+            } else {
+                (plus, gap_minus, energy_minus, energy_plus)
+            };
+            let turned = axis_dot(axis, axis_of(&product, dumbbell));
+            let other = hausdorff(&product, reactant, cell);
+            let (saddle_now, _) = held
+                .eval(saddle.view())
+                .unwrap_or((f64::NAN, Array1::zeros(0)));
+            eprintln!(
+                "trial {trial} back {back:.3} dE {:.3} product {other:.3} dE {:.3} saddle {:.3}",
+                back_energy - reactant_energy,
+                product_energy - reactant_energy,
+                saddle_now - reactant_energy
+            );
+            let _ = std::io::stderr().flush();
+            if back > 1.6
+                || (back_energy - reactant_energy).abs() > 0.08
+                || product_energy < reactant_energy - 1.0
+                || other < 0.45
+            {
+                return None;
+            }
+            let after = rgsaddle::pair_separation(product.view(), cell, fixed, &dumbbell).ok()?;
+            let direction = rgsaddle::classify_separation(before, after, 0.08).ok()?;
+            let (saddle_energy, _) = held.eval(saddle.view()).ok()?;
+            if !saddle_energy.is_finite() || !reactant_energy.is_finite() {
+                return None;
+            }
+            Some(Escape {
+                product,
+                barrier: saddle_energy - reactant_energy,
+                direction: direction.as_str().to_string(),
+                axis_dot: turned,
+            })
+        })
+        .collect();
+    let mut ranked: Vec<Escape> = found.into_iter().flatten().collect();
+    ranked.sort_by(|left, right| left.barrier.partial_cmp(&right.barrier).unwrap());
+    let mut kept = Vec::new();
+    for direction in ["toward", "away", "tangential"] {
+        let mut taken = 0usize;
+        for escape in &ranked {
+            if escape.direction != direction {
+                continue;
+            }
+            if kept
+                .iter()
+                .any(|prior: &Escape| hausdorff(&prior.product, &escape.product, cell) < 0.4)
+            {
+                continue;
+            }
+            kept.push(escape.clone());
+            taken += 1;
+            if taken == 1 {
+                break;
+            }
+        }
+    }
+    kept
+}
+
+struct ShellRow {
+    repeats: usize,
+    temperature: f64,
+    radius: f64,
+    count: usize,
+    recombined: bool,
+    gap: f64,
+    separation: f64,
+    key: (i32, i32, i32),
+}
+
+struct Prepared {
+    key: (i32, i32, i32),
+    radius: f64,
+    escapes: Vec<Escape>,
+}
+
+struct RateJob {
+    repeats: usize,
+    temperature: f64,
+    a: f64,
+    key: (i32, i32, i32),
+    radius: f64,
+    escapes: Vec<Escape>,
+    a_ref: f64,
+}
+
+fn occupied(positions: &Array1<f64>, site: [f64; 3], cell: [[f64; 3]; 3]) -> bool {
+    let n = positions.len() / 3;
+    (0..n).any(|atom| mic_distance(point_of(positions, atom), site, cell) < 0.8)
+}
+
+#[allow(clippy::type_complexity)]
+fn relax_pair(
+    copper: &FastCopper,
+    repeats: usize,
+    a: f64,
+    shell: [f64; 3],
+    vacancy: bool,
+) -> (
+    Array1<f64>,
+    [f64; 3],
+    [usize; 2],
+    [[f64; 3]; 3],
+    f64,
+    f64,
+    bool,
+) {
+    let length = repeats as f64 * a;
+    let cell = [[length, 0.0, 0.0], [0.0, length, 0.0], [0.0, 0.0, length]];
+    let built = build_pair(repeats, a, shell, vacancy);
+    let mut positions = built.positions;
+    relax_fast(copper, &mut positions, cell, 1.0e-3, 60);
+    let gap = dist(
+        point_of(&positions, built.dumbbell[0]),
+        point_of(&positions, built.dumbbell[1]),
+    );
+    let separation = dist(centroid(&positions, built.dumbbell), built.vacancy);
+    let recombined = vacancy
+        && (occupied(&positions, built.vacancy, cell)
+            || !(1.2..2.5).contains(&gap)
+            || separation < 1.6);
+    (
+        positions,
+        built.vacancy,
+        built.dumbbell,
+        cell,
+        gap,
+        separation,
+        recombined,
+    )
+}
+
+fn scale_positions(positions: &Array1<f64>, factor: f64) -> Array1<f64> {
+    positions.mapv(|value| value * factor)
+}
+
+fn local_atoms(positions: &Array1<f64>, center: [f64; 3], cell: [[f64; 3]; 3]) -> Vec<usize> {
+    (0..positions.len() / 3)
+        .filter(|atom| mic_distance(point_of(positions, *atom), center, cell) < 4.8)
+        .collect()
+}
+
+/// Table 1 of Mwungeli, Liu and Demkowicz, Phys. Rev. Materials 9, 023601
+/// (2025), read from the accepted manuscript. Volumes are Ω, α-method
+/// then β-bar method. The manuscript prose says 5312 and 6924 atoms
+/// where this table says 5324 and 6912; 4 n³ is 5324 and 6912.
+fn table_i(temperature: f64) -> &'static str {
+    match temperature as i32 {
+        300 => "8788 atoms: 254±21 and 286±28",
+        400 => "8788 atoms: 212±12 and 210±20",
+        500 => {
+            "4000: 309±18 and 287±34; 5324: 169±17 and 180±20; 6912: 188±11 and 191±19; 8788: 185±23 and 161±15; 16384: 202±13 and 206±22"
+        }
+        600 => {
+            "4000: 218±13 and 238±22; 5324: 170±8 and 177±15; 6912: 198±10 and 203±20; 8788: 186±14 and 191±18; 16384: 183±9 and 194±18"
+        }
+        700 => "8788 atoms: 203±10 and 210±21",
+        _ => "this temperature is not in Table 1",
+    }
+}
+
+fn cu_config(
+    temperatures: &[f64],
+    samples: usize,
+    target: f64,
+    bulk: [[f64; 3]; 3],
+    harmonic: Vec<usize>,
+    seed: u64,
+) -> rgsaddle::DefectPairConfig {
+    let search = MinModeConfig {
+        force_tol: 2.0e-2,
+        max_move: 0.1,
+        dr: 1.0e-3,
+        max_rotations: 8,
+        ..MinModeConfig::default()
+    };
+    rgsaddle::DefectPairConfig {
+        dimer: SolidDimerConfig::frozen(search)
+            .with_index_check(IndexCheck::first_order().with_step(1.0e-3).with_escapes(1)),
+        band: rgsaddle::BandConfig {
+            force_tol: 0.01,
+            max_move: 0.06,
+            time_step: 0.08,
+            method: Method::fire(FireKind::V2),
+            spring: rgsaddle::SpringKind::Uniform { k: 1.0 },
+            climbing: Some(rgsaddle::CiConfig::always()),
+            min_mode: None,
+            autoneb: None,
+            zoom: None,
+            quickmin: false,
+            ..rgsaddle::BandConfig::default()
+        },
+        images: 9,
+        max_dimer_steps: 100,
+        max_band_steps: 120,
+        max_relax_steps: 50,
+        relax_tol: 1.0e-3,
+        relax_step: 0.08,
+        max_move: 0.08,
+        seed_fraction: 0.45,
+        push: 0.3,
+        connect_rmsd: 1.5,
+        direction_tol: 0.08,
+        pafi: rgsaddle::PafiConfig {
+            thermalize: 40,
+            stride: 16,
+            samples,
+            blocks: 6,
+            time_step: 0.01,
+            mobility: 0.2,
+            seed,
+            fix_com: true,
+            retain: 4,
+            target_error: Some(target),
+            max_rounds: 4,
+            ..rgsaddle::PafiConfig::default()
+        },
+        shooting: rgsaddle::ShootingConfig {
+            friction: 2.0,
+            time_step: 0.03,
+            steps: 80,
+            record_every: 20,
+            shots: 32,
+            blocks: 4,
+            seed: seed.wrapping_add(9),
+            plateau_record: 2,
+            mass: 63.546,
+            ..rgsaddle::ShootingConfig::default()
+        },
+        temperatures: temperatures.to_vec(),
+        boltzmann: rgsaddle::BOLTZMANN_EV_PER_K,
+        mass: 63.546,
+        angular_scale: rgsaddle::angular_scale_rad_s(),
+        harmonic_step: 1.0e-3,
+        harmonic_atoms: Some(harmonic),
+        planes: 11,
+        zero_t_tol: 0.02,
+        bulk_stress: bulk,
+        ..rgsaddle::DefectPairConfig::default()
+    }
+}
+
+struct Campaign {
+    catalogue: rgsaddle::RateCatalogue,
+    shells: Vec<ShellRow>,
+    lattice: Vec<(f64, f64)>,
+    notes: Vec<String>,
+}
+
+fn write_campaign(campaign: &Campaign) {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benchmarks");
+    let mut csv = File::create(root.join("defect_pair_cu.csv")).expect("csv");
+    writeln!(
+        csv,
+        "shell,direction,hop,temperature_K,cell_repeats,n_atoms,separation_before_A,separation_after_A,outcome,connected,index1,band_converged,band_force_eV_per_A,dE0_eV,zero_T_eV,dF_eV,dF_error_eV,dF_harmonic_eV,nu_Hz,vineyard_Hz,kappa,kappa_error,harmonic_rate_Hz,rate_Hz,pafi_samples,pafi_evaluations"
+    )
+    .unwrap();
+    for entry in &campaign.catalogue.entries {
+        writeln!(
+            csv,
+            "{},{},{},{},{},{},{:.6},{:.6},{},{},{},{},{:.6e},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            entry.shell,
+            entry.direction.as_str(),
+            entry.hop,
+            entry.temperature,
+            entry.cell_repeats,
+            entry.n_atoms,
+            entry.separation_before,
+            entry.separation_after,
+            entry.outcome.as_str(),
+            entry.connected as u8,
+            entry.index1 as u8,
+            entry.band_converged as u8,
+            entry.band_force,
+            num_or(&Some(entry.d_e0)),
+            num_or(&entry.zero_t),
+            num_or(&entry.d_f),
+            num_or(&entry.d_f_error),
+            num_or(&entry.d_f_harmonic),
+            num_or(&entry.nu),
+            num_or(&entry.vineyard),
+            num_or(&entry.kappa),
+            num_or(&entry.kappa_error),
+            num_or(&entry.harmonic_rate),
+            num_or(&entry.rate),
+            entry.pafi_samples,
+            entry.pafi_evaluations,
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        root.join("defect_pair_cu.json"),
+        campaign.catalogue.to_json(),
+    )
+    .unwrap();
+    let mut shells = File::create(root.join("defect_pair_shells.csv")).expect("shells");
+    writeln!(
+        shells,
+        "cell_repeats,temperature_K,radius_A,sites,recombined,gap_A,separation_A,miller"
+    )
+    .unwrap();
+    for row in &campaign.shells {
+        writeln!(
+            shells,
+            "{},{},{:.4},{},{},{:.4},{:.4},{} {} {}",
+            row.repeats,
+            row.temperature,
+            row.radius,
+            row.count,
+            row.recombined as u8,
+            row.gap,
+            row.separation,
+            row.key.0,
+            row.key.1,
+            row.key.2
+        )
+        .unwrap();
+    }
+    let mut lattice = File::create(root.join("defect_pair_lattice.csv")).expect("lattice");
+    writeln!(lattice, "temperature_K,a_A,npt_repeats").unwrap();
+    for (temperature, a) in &campaign.lattice {
+        writeln!(lattice, "{temperature},{a:.6},6").unwrap();
+    }
+    std::fs::write(
+        root.join("defect_pair_cu_notes.txt"),
+        campaign.notes.join("\n"),
+    )
+    .unwrap();
+}
+
+fn rate_or_harmonic(entry: &rgsaddle::RateEntry) -> Option<f64> {
+    if let Some(rate) = entry.rate.filter(|value| value.is_finite() && *value > 0.0) {
+        return Some(rate);
+    }
+    let barrier = entry.d_f?;
+    let prefactor = entry.nu.or(entry.vineyard)?;
+    let thermal = entry.temperature * rgsaddle::BOLTZMANN_EV_PER_K;
+    if !(thermal.is_finite() && thermal > 0.0 && prefactor.is_finite() && prefactor > 0.0) {
+        return entry
+            .harmonic_rate
+            .filter(|value| value.is_finite() && *value > 0.0);
+    }
+    let kappa = entry
+        .kappa
+        .filter(|value| (0.0..=1.0).contains(value) && entry.kappa_error.unwrap_or(1.0) < 0.5)
+        .unwrap_or(1.0);
+    let exponent = -barrier / thermal;
+    if exponent < -700.0 {
+        return Some(0.0);
+    }
+    Some(kappa * prefactor * exponent.exp())
+}
+
+fn viv_lines(campaign: &Campaign) -> Vec<String> {
+    let mut lines = vec![
+        "Table 1 of Mwungeli, Liu and Demkowicz, Phys. Rev. Materials 9, 023601 (2025), from the accepted manuscript. α then β-bar, in Ω.".to_string(),
+    ];
+    for temperature in [300.0, 400.0, 500.0, 600.0, 700.0] {
+        lines.push(format!("  {temperature:.0} K {}", table_i(temperature)));
+    }
+    lines.push(
+        "V_iv estimate: spontaneous sites, plus each stable shell's site count times k_toward / (k_toward + k_away + k_tangential). A second column weights each toward event by (sites / n_toward) * k / k_mig, with k_mig the isolated-dumbbell translation rate.".to_string(),
+    );
+    let mut sizes: Vec<u32> = campaign
+        .catalogue
+        .entries
+        .iter()
+        .map(|entry| entry.cell_repeats)
+        .collect();
+    sizes.sort_unstable();
+    sizes.dedup();
+    let mut temps: Vec<i64> = campaign
+        .catalogue
+        .entries
+        .iter()
+        .map(|entry| entry.temperature.round() as i64)
+        .collect();
+    temps.sort_unstable();
+    temps.dedup();
+    let mut viv = String::from(
+        "cell_repeats,temperature_K,spontaneous_sites,capture_volume_Omega,rate_volume_Omega,k_mig_Hz,table_1\n",
+    );
+    for repeats in sizes {
+        for temperature in &temps {
+            let shells: Vec<&ShellRow> = campaign
+                .shells
+                .iter()
+                .filter(|row| {
+                    row.repeats == repeats as usize
+                        && row.temperature.round() as i64 == *temperature
+                })
+                .collect();
+            if shells.is_empty() {
+                continue;
+            }
+            let spontaneous: f64 = shells
+                .iter()
+                .filter(|row| row.recombined)
+                .map(|row| row.count as f64)
+                .sum();
+            let entries: Vec<&rgsaddle::RateEntry> = campaign
+                .catalogue
+                .entries
+                .iter()
+                .filter(|entry| {
+                    entry.cell_repeats == repeats
+                        && entry.temperature.round() as i64 == *temperature
+                        && entry.shell != "isolated"
+                })
+                .collect();
+            let isolated: Vec<&rgsaddle::RateEntry> = campaign
+                .catalogue
+                .entries
+                .iter()
+                .filter(|entry| {
+                    entry.cell_repeats == repeats
+                        && entry.temperature.round() as i64 == *temperature
+                        && entry.shell == "isolated"
+                        && entry.hop.starts_with("translate")
+                })
+                .collect();
+            let k_mig = {
+                let values: Vec<f64> = isolated
+                    .iter()
+                    .filter_map(|entry| rate_or_harmonic(entry))
+                    .collect();
+                if values.is_empty() {
+                    None
+                } else {
+                    Some(values.iter().sum::<f64>() / values.len() as f64)
+                }
+            };
+            let mut capture = spontaneous;
+            let mut weighted = spontaneous;
+            let mut shells_used = 0usize;
+            let radii: Vec<String> = entries.iter().map(|entry| entry.shell.clone()).collect();
+            let mut unique = radii.clone();
+            unique.sort();
+            unique.dedup();
+            for shell in unique {
+                let group: Vec<&&rgsaddle::RateEntry> = entries
+                    .iter()
+                    .filter(|entry| entry.shell == shell)
+                    .collect();
+                let sum_dir = |name: &str| -> f64 {
+                    group
+                        .iter()
+                        .filter(|entry| entry.direction.as_str() == name)
+                        .filter_map(|entry| rate_or_harmonic(entry))
+                        .sum()
+                };
+                let toward = sum_dir("toward");
+                let away = sum_dir("away");
+                let tangential = sum_dir("tangential");
+                let denom = toward + away + tangential;
+                let count = shells
+                    .iter()
+                    .find(|row| format!("{:.3}", row.radius) == shell)
+                    .map(|row| row.count as f64)
+                    .unwrap_or(0.0);
+                if denom > 0.0 && count > 0.0 {
+                    capture += count * toward / denom;
+                    shells_used += 1;
+                }
+                let n_toward = group
+                    .iter()
+                    .filter(|entry| {
+                        entry.direction.as_str() == "toward" && rate_or_harmonic(entry).is_some()
+                    })
+                    .count();
+                if let Some(k_mig) = k_mig
+                    && n_toward > 0
+                    && count > 0.0
+                {
+                    for entry in group
+                        .iter()
+                        .filter(|entry| entry.direction.as_str() == "toward")
+                    {
+                        if let Some(rate) = rate_or_harmonic(entry) {
+                            weighted += count / n_toward as f64 * rate / k_mig;
+                        }
+                    }
+                }
+            }
+            let line = format!(
+                "{repeats},{temperature},{spontaneous:.1},{capture:.1},{weighted:.1},{},{} (shells with rates {shells_used})",
+                k_mig
+                    .map(|value| format!("{value:.6e}"))
+                    .unwrap_or_default(),
+                table_i(*temperature as f64)
+            );
+            lines.push(line.clone());
+            viv.push_str(&line);
+            viv.push('\n');
+        }
+    }
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benchmarks");
+    std::fs::write(root.join("defect_pair_viv.csv"), viv).unwrap();
+    lines
+}
+
+fn asymmetry_lines(entries: &[rgsaddle::RateEntry]) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut keys: Vec<(u32, String, i64)> = entries
+        .iter()
+        .filter(|entry| entry.shell != "isolated")
+        .map(|entry| {
+            (
+                entry.cell_repeats,
+                entry.shell.clone(),
+                entry.temperature.round() as i64,
+            )
+        })
+        .collect();
+    keys.sort();
+    keys.dedup();
+    let mut resolved = 0usize;
+    let mut compared = 0usize;
+    for (repeats, shell, temperature) in keys {
+        let mean = |direction: &str| -> Option<(f64, f64, f64)> {
+            let rows: Vec<&rgsaddle::RateEntry> = entries
+                .iter()
+                .filter(|entry| {
+                    entry.cell_repeats == repeats
+                        && entry.shell == shell
+                        && entry.temperature.round() as i64 == temperature
+                        && entry.direction.as_str() == direction
+                        && entry.d_f.is_some()
+                })
+                .collect();
+            if rows.is_empty() {
+                return None;
+            }
+            let barrier =
+                rows.iter().filter_map(|entry| entry.d_f).sum::<f64>() / rows.len() as f64;
+            let error = rows
+                .iter()
+                .filter_map(|entry| entry.d_f_error)
+                .map(|value| value * value)
+                .sum::<f64>()
+                .sqrt()
+                / rows.len() as f64;
+            let static_barrier =
+                rows.iter().map(|entry| entry.d_e0).sum::<f64>() / rows.len() as f64;
+            Some((barrier, error, static_barrier))
+        };
+        let (Some((toward, toward_err, toward_e)), Some((away, away_err, away_e))) =
+            (mean("toward"), mean("away"))
+        else {
+            continue;
+        };
+        compared += 1;
+        let difference = toward - away;
+        let error = (toward_err * toward_err + away_err * away_err).sqrt();
+        let significant = difference.abs() > 2.0 * error && difference.abs() > 0.005;
+        if significant {
+            resolved += 1;
+        }
+        lines.push(format!(
+            "repeats {repeats} shell {shell} A T {temperature} K toward-away dF {difference:.4} ± {error:.4} eV (dE0 {toward_e:.4} vs {away_e:.4})"
+        ));
+    }
+    if compared == 0 {
+        lines.push(
+            "No shell has a converged PAFI barrier in both the toward and the away direction, so the asymmetry is not measured."
+                .into(),
+        );
+    } else if resolved == 0 {
+        lines.push(format!(
+            "The toward/away free-energy difference is not resolved in any of the {compared} shells that have both barriers. The asymmetry is not there at the 5 meV error bar."
+        ));
+    } else {
+        lines.push(format!(
+            "A toward/away free-energy difference larger than twice its error, and larger than 5 meV, appears in {resolved} of {compared} shells."
+        ));
+    }
+    let mut isolated: Vec<(u32, i64, f64, f64)> = Vec::new();
+    for entry in entries
+        .iter()
+        .filter(|entry| entry.shell == "isolated" && entry.d_f.is_some())
+    {
+        isolated.push((
+            entry.cell_repeats,
+            entry.temperature.round() as i64,
+            entry.d_e0,
+            entry.d_f.unwrap_or(0.0),
+        ));
+    }
+    if isolated.is_empty() {
+        lines.push("The isolated dumbbell produced no PAFI barrier.".into());
+    }
+    lines
+}
+
+#[test]
+#[ignore = "release Mishin Cu defect-pair catalogue; writes benchmarks/defect_pair_cu.csv"]
+fn defect_pair_cu_catalogue() {
+    let started = Instant::now();
+    let explicit = std::env::var("RGSADDLE_REPEATS").ok();
+    let mut sizes: Vec<usize> = if explicit.is_some() {
+        env_csv("RGSADDLE_REPEATS", "8,10")
+            .iter()
+            .map(|item| item.parse().expect("repeats"))
+            .collect()
+    } else {
+        vec![8, 10]
+    };
+    let temperatures: Vec<f64> = env_csv("RGSADDLE_TEMPS", "300,400,500,600,700")
+        .iter()
+        .map(|item| item.parse().expect("temperature"))
+        .collect();
+    let max_shells = env_usize("RGSADDLE_MAX_SHELLS", 0);
+    let tries = env_usize("RGSADDLE_TRIES", 8);
+    let samples = env_usize("RGSADDLE_SAMPLES", 32);
+    let target = env_usize("RGSADDLE_TARGET_MEV", 5) as f64 * 1.0e-3;
+    let copper = FastCopper::new();
+    let mut lattice = Vec::new();
+    for temperature in &temperatures {
+        let a = npt_lattice(&copper, *temperature);
+        eprintln!("a({temperature} K) = {a:.5} A");
+        let _ = std::io::stderr().flush();
+        assert!(
+            (3.50..3.85).contains(&a),
+            "NPT lattice parameter {a} at {temperature} K is not a copper lattice"
+        );
+        lattice.push((*temperature, a));
+    }
+    let reference = lattice
+        .iter()
+        .min_by(|left, right| {
+            (left.0 - 500.0)
+                .abs()
+                .partial_cmp(&(right.0 - 500.0).abs())
+                .unwrap()
+        })
+        .copied()
+        .unwrap();
+    let mut campaign = Campaign {
+        catalogue: rgsaddle::RateCatalogue {
+            entries: Vec::new(),
+        },
+        shells: Vec::new(),
+        lattice: lattice.clone(),
+        notes: vec![format!(
+            "NPT a(T) on a 6x6x6 cell, Berendsen zero pressure, second half of 8 ps. Reference lattice for hop discovery is {:.5} A at {} K. Band force tolerance 0.01 eV/A, FIRE, climbing armed only after a plain relaxation. Finite-T PAFI runs only when the zero-temperature integral matches dE0 within 0.02 eV. Target sampling error {target:.4} eV.",
+            reference.1, reference.0
+        )],
+    };
+    let rate_sizes = sizes.clone();
+    let mut jobs: Vec<RateJob> = Vec::new();
+    if explicit.is_none() {
+        sizes.extend([12, 14]);
+    }
+    for &repeats in &sizes {
+        let rate_this =
+            rate_sizes.contains(&repeats) && std::env::var("RGSADDLE_SCAN_ONLY").is_err();
+        let shell_cap = if !rate_this {
+            0
+        } else if max_shells > 0 {
+            max_shells
+        } else if repeats >= 10 {
+            1
+        } else {
+            2
+        };
+        campaign.notes.push(format!(
+            "repeats {repeats}: recombination scan{}, hop search {}",
+            if rate_this { " and rates" } else { " only" },
+            if shell_cap == 0 && !rate_this {
+                "skipped".to_string()
+            } else if shell_cap == 0 {
+                "every stable shell".to_string()
+            } else {
+                format!("first {shell_cap} stable shells")
+            }
+        ));
+        let mut prepared: Vec<Prepared> = Vec::new();
+        if rate_this {
+            let shells = shell_table(reference.1, repeats);
+            let mut stable = 0usize;
+            for (radius, vector, _count) in shells {
+                let (positions, vacancy, dumbbell, cell, _gap, _separation, recombined) =
+                    relax_pair(&copper, repeats, reference.1, vector, true);
+                if recombined {
+                    continue;
+                }
+                if shell_cap != 0 && stable >= shell_cap {
+                    break;
+                }
+                stable += 1;
+                let escapes = enumerate_escapes(
+                    &copper,
+                    &positions,
+                    cell,
+                    vacancy,
+                    dumbbell,
+                    tries,
+                    (repeats as u64) * 1000 + stable as u64,
+                );
+                eprintln!(
+                    "discovered repeats {repeats} shell {radius:.3} A escapes {} in {:.0}s",
+                    escapes.len(),
+                    started.elapsed().as_secs_f64()
+                );
+                let _ = std::io::stderr().flush();
+                for escape in &escapes {
+                    eprintln!(
+                        "  {} barrier {:.4} eV axis {:.2}",
+                        escape.direction, escape.barrier, escape.axis_dot
+                    );
+                }
+                prepared.push(Prepared {
+                    key: miller(vector, reference.1),
+                    radius,
+                    escapes,
+                });
+            }
+            if repeats == 8 || rate_sizes.len() == 1 {
+                let isolated = build_pair(repeats, reference.1, [reference.1, 0.0, 0.0], false);
+                let mut positions = isolated.positions;
+                let length = repeats as f64 * reference.1;
+                let cell = [[length, 0.0, 0.0], [0.0, length, 0.0], [0.0, 0.0, length]];
+                relax_fast(&copper, &mut positions, cell, 1.0e-3, 60);
+                let center = centroid(&positions, isolated.dumbbell);
+                let spectator = [center[0] + 6.0, center[1], center[2]];
+                let escapes = enumerate_escapes(
+                    &copper,
+                    &positions,
+                    cell,
+                    spectator,
+                    isolated.dumbbell,
+                    tries,
+                    9_000 + repeats as u64,
+                );
+                eprintln!(
+                    "isolated repeats {repeats} escapes {} in {:.0}s",
+                    escapes.len(),
+                    started.elapsed().as_secs_f64()
+                );
+                prepared.push(Prepared {
+                    key: (0, 0, 0),
+                    radius: 0.0,
+                    escapes,
+                });
+            }
+        }
+        for &(temperature, a) in &lattice {
+            let shells = shell_table(a, repeats);
+            for (radius, vector, count) in &shells {
+                let (_positions, _vacancy, _dumbbell, _cell, gap, separation, recombined) =
+                    relax_pair(&copper, repeats, a, *vector, true);
+                let row = ShellRow {
+                    repeats,
+                    temperature,
+                    radius: *radius,
+                    count: *count,
+                    recombined,
+                    gap,
+                    separation,
+                    key: miller(*vector, a),
+                };
+                if recombined {
+                    campaign.notes.push(format!(
+                        "repeats {repeats} T {temperature} shell {radius:.3} A recombined, {count} sites, gap {gap:.3} separation {separation:.3}"
+                    ));
+                }
+                campaign.shells.push(row);
+            }
+            if !rate_this {
+                continue;
+            }
+            for item in &prepared {
+                if item.escapes.is_empty() {
+                    continue;
+                }
+                if item.radius == 0.0 && ![300, 500, 700].contains(&(temperature as i32)) {
+                    continue;
+                }
+                let shell_recombines = item.radius != 0.0
+                    && campaign.shells.iter().any(|row| {
+                        row.repeats == repeats
+                            && (row.temperature - temperature).abs() < 1.0
+                            && row.key == item.key
+                            && row.recombined
+                    });
+                if shell_recombines {
+                    continue;
+                }
+                jobs.push(RateJob {
+                    repeats,
+                    temperature,
+                    a,
+                    key: item.key,
+                    radius: item.radius,
+                    escapes: item.escapes.clone(),
+                    a_ref: reference.1,
+                });
+            }
+        }
+        write_campaign(&campaign);
+    }
+    eprintln!("{} rate jobs after discovery", jobs.len());
+    let _ = std::io::stderr().flush();
+    let store = Mutex::new(Vec::new());
+    jobs.par_iter().for_each(|job| {
+        let outcome = run_rate_job(&copper, job, samples, target);
+        match outcome {
+            Ok(entries) => {
+                for entry in &entries {
+                    eprintln!(
+                        "  repeats {} {} {} {} outcome {} band {:.4} dE0 {:.4} zeroT {} dF {} err {} calls {}",
+                        job.repeats,
+                        entry.shell,
+                        entry.hop,
+                        entry.direction.as_str(),
+                        entry.outcome.as_str(),
+                        entry.band_force,
+                        entry.d_e0,
+                        num_or(&entry.zero_t),
+                        num_or(&entry.d_f),
+                        num_or(&entry.d_f_error),
+                        entry.pafi_evaluations
+                    );
+                }
+                let _ = std::io::stderr().flush();
+                store.lock().expect("rates").extend(entries);
+            }
+            Err(error) => eprintln!("rate job failed: {error}"),
+        }
+    });
+    campaign
+        .catalogue
+        .entries
+        .extend(store.into_inner().expect("rates"));
+    campaign
+        .notes
+        .extend(asymmetry_lines(&campaign.catalogue.entries));
+    campaign.notes.extend(viv_lines(&campaign));
+    let evaluations: usize = campaign
+        .catalogue
+        .entries
+        .iter()
+        .map(|entry| entry.pafi_evaluations)
+        .sum();
+    campaign.notes.push(format!(
+        "PAFI force evaluations {evaluations}. Wall time {:.1} min. Sizes requested for rates: {}. Sizes scanned: {}.",
+        started.elapsed().as_secs_f64() / 60.0,
+        rate_sizes.iter().map(|value| value.to_string()).collect::<Vec<_>>().join(","),
+        sizes.iter().map(|value| value.to_string()).collect::<Vec<_>>().join(",")
+    ));
+    write_campaign(&campaign);
+    eprintln!("{}", campaign.notes.join("\n"));
+}
+
+fn run_rate_job(
+    copper: &FastCopper,
+    job: &RateJob,
+    samples: usize,
+    target: f64,
+) -> Result<Vec<rgsaddle::RateEntry>, String> {
+    let factor = job.a / job.a_ref;
+    let vector = if job.radius == 0.0 {
+        [job.a, 0.0, 0.0]
+    } else {
+        cart_of(job.key, job.a)
+    };
+    let vacancy_flag = job.radius != 0.0;
+    let (positions, vacancy, dumbbell, cell, _gap, _separation, recombined) =
+        relax_pair(copper, job.repeats, job.a, vector, vacancy_flag);
+    if recombined {
+        return Ok(Vec::new());
+    }
+    let fixed = if vacancy_flag {
+        vacancy
+    } else {
+        let center = centroid(&positions, dumbbell);
+        [center[0] + 6.0, center[1], center[2]]
+    };
+    let mut hops = Vec::new();
+    for (index, escape) in job.escapes.iter().enumerate() {
+        let kind = if escape.axis_dot < 0.6 {
+            "rotate"
+        } else {
+            "translate"
+        };
+        hops.push(rgsaddle::HopTemplate {
+            name: format!("{kind}-{}-{index}", escape.direction),
+            product: scale_positions(&escape.product, factor),
+        });
+    }
+    let (perfect, _) = fcc(job.repeats, job.a);
+    let (_, _, bulk) = copper.evaluate(perfect.view(), cell);
+    let harmonic = local_atoms(&positions, centroid(&positions, dumbbell), cell);
+    let shell = if vacancy_flag {
+        format!(
+            "{:.3}",
+            (vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]).sqrt()
+        )
+    } else {
+        "isolated".to_string()
+    };
+    eprintln!(
+        "rates repeats {} shell {shell} T {} hops {}",
+        job.repeats,
+        job.temperature,
+        hops.len()
+    );
+    let _ = std::io::stderr().flush();
+    let setup = rgsaddle::PairSetup {
+        positions,
+        cell,
+        fixed,
+        mobile: vec![dumbbell[0], dumbbell[1]],
+        shell,
+        cell_repeats: job.repeats as u32,
+        hops,
+    };
+    let config = cu_config(
+        &[job.temperature],
+        samples,
+        target,
+        bulk,
+        harmonic,
+        17 + job.repeats as u64 + job.temperature as u64,
+    );
+    rgsaddle::defect_pair_rates(&FastHeld { copper, cell }, &setup, &config)
+        .map(|found| found.entries)
+        .map_err(|error| error.to_string())
+}
+
+fn num_or(value: &Option<f64>) -> String {
+    match value {
+        Some(value) if value.is_finite() => format!("{value:.8e}"),
+        _ => String::new(),
+    }
 }
