@@ -59,6 +59,7 @@ pub mod projection;
 pub mod solid_dimer;
 pub mod solid_state;
 pub mod spring;
+pub mod ssneb;
 pub mod stencil;
 pub mod tangent;
 
@@ -105,6 +106,7 @@ pub use solid_dimer::{
     finite_difference_cauchy_stress, virial,
 };
 pub use spring::SpringKind;
+pub use ssneb::{SolidImage, SolidNeb, joint_coordinate};
 pub use stencil::{
     BAND_PRESET_SEAM, BandBuilder, Chain, Climb, EvalPool, Mesh, MeshEvent, PointBuilder, Preset,
     Role, Stencil, StencilReport, StencilStatus,

@@ -1,0 +1,43 @@
+#+TITLE: Solid-state NEB
+#+OPTIONS: toc:nil num:nil
+
+=SolidNeb= is a climbing-image nudged elastic band on the coordinate already used by =SolidDimer=. Sheppard, Xiao, Chemelewski, Johnson, and Henkelman, J. Chem. Phys. 136, 074103 (2012), doi:10.1063/1.3684549, put the strain next to the atoms and spring the band in that joint vector. The chart is the solid-state dimer of Xiao, Sheppard, Rogal, and Henkelman, J. Chem. Phys. 140, 174104 (2014), doi:10.1063/1.4873437:
+
+\[ h = h_0 (I + \varepsilon), \quad r = r_0 (I + \varepsilon), \quad J = V^{1/3} N^{1/6}. \]
+
+=J= is fixed from =h_0=. The free strains are the lower triangle, stored as =J ε=. The enthalpy is =E + V_0 σ_ext : ε=, the same sign as =JointChart=: a positive diagonal entry of =σ_ext= pushes the cell inward. The tangent, the spring and the climbing image are the ordinary band's, applied to the joint vector. The improved tangent reads the enthalpy. A surface supplies the Cauchy stress; =None= is finite-differenced.
+
+=SolidNeb::frozen= is a =BandSession=. The same configuration and the same surface produce the same positions, including the climbing image. =SolidNeb::joint= refuses the atomic min-mode refinement, the zoom, the exponential metric, AutoNEB and =BandConfig::solid=. Those belong to the absolute-cell block, whose enthalpy is hydrostatic. =joint_coordinate= maps a Cartesian geometry onto the chart. =SolidDimer::set_generalized= moves a search that was built on =h_0= onto a point of that same chart, so a dimer started at a climbing image keeps the enthalpy the band climbed.
+
+No C field was added.
+
+** The shear-coupled double well
+
+=tests/ssneb.rs= uses =(u^2 - 1)^2 + 6 (γ - 0.2 u)^2= plus penalties that vanish on the path. The minima have energy 0. The saddle =u = 0=, =γ = 0= has energy 1, so the barrier is 1. The variable-cell climbing image converges to that barrier. The frozen cell on the plain double well matches the ordinary CI-NEB at every step.
+
+** Copper under shear
+
+The check against =benchmarks/solid_dimer_cu.csv= is =tests/ssneb_validate_cu.rs=, release, =--ignored=. The system is the same 109-atom Mishin EAM1 cell. The <100> reactant and the shear-aligned <110> are relaxed at the imposed shear. A variable-cell product is then relaxed on the enthalpy =E + V0 σ_ext : ε= with =σ_ext= equal to minus the stress of the <100> minimum, and at 5% the opposite <110> is treated the same way. Eleven images start linear in the joint coordinate. The spring constant is 1. Climbing starts on the first evaluation. The largest force component is driven to 5e-4. The geometry comparison uses the published dimer after a further convergence to 2e-4 when that run moved. The Hessian is a central difference of the generalized gradient with step 1e-5. A negative mode is an eigenvalue below -1e-4. The distance removes the mean minimum-image atomic displacement and takes the larger of that maximum and the maximum cell-matrix element. Raw rows are =benchmarks/ssneb_validate_cu.csv=.
+
+| shear | cell | product | E dimer | E CI | H dimer | H CI | geometry (Å) | n_neg | result |
+| 0 | fixed | aligned | 0.47418236 | 0.47420776 | 0.47418236 | 0.47420776 | 0.002624 | 2 | fail |
+| 0 | variable | aligned | 0.33255632 | 0.33256222 | 0.34699977 | 0.34701664 | 0.000313 | 1 | pass |
+| 0.02 | fixed | aligned | 0.24355918 | 0.24356221 | 0.24355918 | 0.24356221 | 0.006644 | 1 | pass |
+| 0.02 | variable | aligned | 0.31317707 | 0.31313601 | 0.16276460 | 0.16277097 | 0.001306 | 1 | pass |
+| 0.03 | fixed | aligned | 0.14826653 | 0.14829576 | 0.14826653 | 0.14829576 | 0.000691 | 1 | fail |
+| 0.03 | variable | aligned | 0.28594795 | 0.28597114 | 0.08808225 | 0.08811325 | 0.000993 | 1 | pass |
+| 0.04 | fixed | aligned | 0.06781470 | 0.06784900 | 0.06781470 | 0.06784900 | 0.001163 | 1 | pass |
+| 0.04 | variable | aligned | 0.23671968 | 0.24325993 | 0.02682486 | 0.02728727 | 0.064061 | 1 | fail |
+| 0.05 | fixed | aligned | 0.00851482 | 0.00774963 | 0.00851482 | 0.00774963 | 0.110697 | 1 | fail |
+| 0.05 | variable | aligned | 0.27994428 | 69.40842902 | 0.91520417 | 129.51686918 | 20.419607 | 80 | resolution |
+| 0.05 | variable | opposite | 0.27994428 | 293.10519184 | 0.91520417 | 359.42770067 | 21.624353 | 89 | fail |
+
+Five of the ten published rows pass. A dimer started at each passing climbing image does not move.
+
+At zero shear the fixed-cell band stops at the 800-step limit with a largest force of 0.009468, above the 5e-4 target. Its climbing image matches the energy to 2.5e-5 eV and the geometry to 0.002624 Å, and the dimer stays. The joint Hessian has two negative eigenvalues, -0.98787712 and -0.01541131. The dimer saddle has the same index: its lowest finite-difference eigenvalue is -0.98351873, next to the published curvature -0.98314908. The row fails because the band is not converged and the saddle is index 2. At 3% fixed the band also stops at 800 steps, at 0.001267; the energy matches to 2.9e-5 eV and the geometry to 0.000691 Å on an index-1 point, so only the force target fails.
+
+At 4% variable the enthalpy agrees to 4.6e-4 eV and both Hessians have one negative mode, but the energy differs by 6.5e-3 eV and the atoms by 0.064 Å. The published curvature is -0.03394638. A largest force of 2e-3 does not pin that mode to 0.01 Å. The same holds at 5% fixed, where the energy agrees to 7.7e-4 eV, the index is 1, and the atoms differ by 0.111 Å on a curvature of -0.04358753.
+
+At 5% variable the shear-aligned <110>, relaxed on the enthalpy, lies 0.00809061 eV below the tilted <100>. The opposite orientation relaxed on the same enthalpy stops 23.4° from <100> and 21.6° from <110>, 0.00062033 eV below the reactant. Neither 5% variable band stays on its path. The L-BFGS band climbs from its first step, holds a largest force between 1e-3 and 6e-3 for about 150 steps, and then runs away: at 800 steps the climbing images are 69.4 eV and 293.1 eV above the minimum with 80 and 89 negative modes. Halving the band step cap to 0.04 Å does not keep the aligned band bounded. On rgmin 0.5.2 the same two bands stayed bounded and found no positive barrier, but on rgmin 0.6.0 these rows carry no barrier. The published point, enthalpy 0.91520417 eV and final shear 0.02433702, has one negative eigenvalue, -1.26237009, next to the published curvature -1.26549589.
+
+The 4% variable band passes through 0.02130358 eV with a true force of 0.0106823, and its climbing image is at 0.02728727 eV. That 0.021 eV point is on the slope.
