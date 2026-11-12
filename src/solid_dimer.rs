@@ -662,6 +662,42 @@ impl SolidDimer {
         Ok(report)
     }
 
+    /// Move to a generalized coordinate on the chart this search was
+    /// built with.
+    ///
+    /// A frozen cell takes Cartesian positions. A free cell takes the
+    /// joint vector of [`JointChart`]: non-affine positions, then the
+    /// free strains as `J ε`, the same length as [`Self::generalized`].
+    /// The reference cell, the external stress and `J` stay as they
+    /// were at construction, so a later [`Self::step`] is still the
+    /// enthalpy of that chart. Passing the current cell back into
+    /// [`Self::new`] would start a different chart.
+    pub fn set_generalized(&mut self, q: Array1<f64>) -> Result<(), SaddleError> {
+        if let Some(chart) = &self.chart {
+            let (r, h) = chart.geometry(q.view())?;
+            self.inner.set_position(q, None)?;
+            self.positions = r;
+            self.cell = h;
+            self.volume = m3_det(h).abs();
+        } else {
+            self.inner.set_position(q.clone(), None)?;
+            self.positions = q;
+        }
+        self.stress = None;
+        self.energy = None;
+        *self
+            .snapshot
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = Snapshot::default();
+        Ok(())
+    }
+
+    /// Replace the mode seed. The length is the generalized coordinate,
+    /// and the direction is normalised.
+    pub fn set_mode(&mut self, mode: Array1<f64>) -> Result<(), SaddleError> {
+        self.inner.set_mode(mode)
+    }
+
     /// Cauchy stress at the current geometry.
     ///
     /// Uses [`PointSurface::cauchy_stress`] when the surface supplies
@@ -820,13 +856,16 @@ fn lower_triangular(cell: &M3) -> bool {
 }
 
 fn fold_lower(mut stress: M3) -> M3 {
-    for i in 0..3 {
-        for j in (i + 1)..3 {
-            if stress[j][i] == 0.0 {
-                stress[j][i] = stress[i][j];
-            }
-            stress[i][j] = 0.0;
+    let upper = [
+        (0, 1, stress[0][1]),
+        (0, 2, stress[0][2]),
+        (1, 2, stress[1][2]),
+    ];
+    for (i, j, value) in upper {
+        if stress[j][i] == 0.0 {
+            stress[j][i] = value;
         }
+        stress[i][j] = 0.0;
     }
     stress
 }
