@@ -15,6 +15,8 @@ The coordinate those steppers see is the solid-state dimer of Xiao, Sheppard, Ro
 
 No C field was added. A host that already drives =MinModeSession= keeps that path for a frozen cell and constructs =SolidDimer= when the cell is free.
 
+=with_index_check= counts the lowest eigenvalues of the projected Hessian when the force tolerance is met. The count is a Lanczos run with full reorthogonalisation. A chain that closes is restarted from a direction orthogonal to it, so a repeated eigenvalue is not dropped. Directions from =excluded_modes= are removed from each Hessian action, and a rigid translation is not a negative mode. =IndexCheck::first_order= asks for eight eigenvalues, treats a value below -1e-4 as negative, and uses a central step of 1e-4. One negative eigenvalue accepts the point. More than one is left by a walk along the softest of them, on the downhill side, until that direction's Rayleigh quotient is no longer below -1e-4. The lowest mode stays the seed. Six walks are allowed. The report then sets =rejected= and the barrier is not that point. =with_flat= keeps a negative curvature λ running until the largest force component is at most =flat * |λ|=, and still at most the search tolerance. The copper rows use =flat = 0.005=, so the harmonic residual along the mode is about 0.005 Å.
+
 ** A barrier that moves with the cell
 
 =tests/solid_dimer_barrier.rs= couples a double well to the shear. The model is =(u^2 - 1)^2 + 6 (γ - 0.2 u)^2= plus penalties that are zero on the path. At the saddle =u = 0= and =γ = 0=, so the energy is exactly 1. Both minima sit at energy 0, and the barrier is exactly 1. The variable-cell dimer takes 88 generalized evaluations and stops at energy 1. The solid-state band on the same surface takes 92 rows and its climbing image is at energy 1. Freezing the cell at zero shear leaves the one-dimensional barrier at 0.7744, and that dimer takes 42 evaluations. An imposed shear of 0.1 moves the frozen barrier off 0.7744 by the amount of the one-dimensional scan.
@@ -25,16 +27,22 @@ Zhang, Wheatley, Chen, Qian, and Demkowicz, Phys. Rev. Materials 6, 053605 (2022
 
 The defect is the split interstitial on one lattice site of a 3×3×3 cell (109 atoms). That site is vacant and the extra atom makes the dumbbell. Each search starts at the <100> minimum relaxed at that shear. The lowest mode is two-sided, so the start is moved 0.02 Å toward the relaxed <110> orientation; the energy of that nudge is under 0.001 eV. The fixed cell holds the shear. The variable cell frees every lower-triangular strain and sets the external stress to minus the stress of the minimum, so the start is a stationary point of the enthalpy. The barrier is the saddle energy minus the minimum. For the variable cell the enthalpy barrier is that difference of =E + V0 σ_ext : ε=. A switch means the converged saddle is the shear-aligned <110> dumbbell. The translation is FIRE 2.0 with a 0.004 Å cap. With a 0.008 Å cap on rgmin 0.6.0 the 5% fixed-cell search steps past the switch, 7.8 meV above the minimum, and converges on an index-1 saddle 0.097 eV up that is not the switch; at 0.016 Å the 3% search does the same. Release build. The rows are =benchmarks/solid_dimer_cu.csv=.
 
-| shear | cell | calls | barrier (eV) | enthalpy barrier (eV) | curvature | stress xy (eV/Å³) | switch |
-| 0 | fixed | 747 | 0.4741823644375245 | 0.4741823644375245 | -0.983149077916416 | -0.010076978814758655 | yes |
-| 0 | variable | 750 | 0.3325563220896015 | 0.34699977280132543 | -0.5634899563305226 | 0.0000015198808959816406 | yes |
-| 0.02 | fixed | 626 | 0.2435591768643235 | 0.2435591768643235 | -0.5644461277584383 | 0.00013453587267594707 | yes |
-| 0.02 | variable | 718 | 0.31317707473402834 | 0.1627645988206723 | -0.27452908096496687 | 0.008142642849608833 | yes |
-| 0.03 | fixed | 641 | 0.14826653278004187 | 0.14826653278004187 | -0.37598952585616235 | 0.005230195351745246 | yes |
-| 0.03 | variable | 723 | 0.28594794593357165 | 0.08808224536903708 | -0.14443873316219946 | 0.012136973354416335 | yes |
-| 0.04 | fixed | 610 | 0.06781469741883939 | 0.06781469741883939 | -0.19816635156430318 | 0.010332884981875437 | yes |
-| 0.04 | variable | 880 | 0.23671968438503654 | 0.02682486349345936 | -0.03394638818408644 | 0.01601397365014208 | yes |
-| 0.05 | fixed | 2246 | 0.008514819358595105 | 0.008514819358595105 | -0.04358753188500378 | 0.015465830470584 | yes |
-| 0.05 | variable | 1969 | 0.27994428498419666 | 0.915204174269661 | -1.2654958878256306 | 0.01889643140735728 | no |
+| shear | cell | calls | barrier (eV) | enthalpy barrier (eV) | curvature | stress xy (eV/Å³) | negative modes | switch |
+| 0 | fixed | 1312 | 0.4739235467877734 | 0.4739235467877734 | -0.9863045984704982 | -0.010076163578291737 | 1 | yes |
+| 0 | variable | 878 | 0.3325563220896015 | 0.34699977280132543 | -0.5634899563305226 | 0.0000015198808959816406 | 1 | yes |
+| 0.02 | fixed | 755 | 0.2435591768643235 | 0.2435591768643235 | -0.5644461277584383 | 0.00013453587267594707 | 1 | yes |
+| 0.02 | variable | 866 | 0.3131783749465171 | 0.16276477339710027 | -0.27493549906212245 | 0.008142637455281598 | 1 | yes |
+| 0.03 | fixed | 770 | 0.14826653278004187 | 0.14826653278004187 | -0.37598952585616235 | 0.005230195351745246 | 1 | yes |
+| 0.03 | variable | 951 | 0.2860263275509851 | 0.08810584601127402 | -0.14467210116058507 | 0.012136942333384129 | 1 | yes |
+| 0.04 | fixed | 825 | 0.06783686584924453 | 0.06783686584924453 | -0.1990315137071294 | 0.010332199909988161 | 1 | yes |
+| 0.04 | variable | 2415 | 0.24337830990828024 | 0.027289608036198842 | -0.025430118271517362 | 0.015995295254747875 | 1 | yes |
+| 0.05 | fixed | 4380 | 0.007773344190411535 | 0.007773344190411535 | -0.03426646813427729 | 0.015468755947596193 | 1 | yes |
+| 0.05 | variable | 2097 | 0.27994428498419666 | 0.915204174269661 | -1.2654958878256306 | 0.01889643140735728 | 1 | no |
 
-The fixed barrier falls from 0.4741823644375245 eV at zero shear to 0.008514819358595105 eV at 5%. On this 109-atom cell the collapse sits near 5%, later than the 3–4% of the larger cell in that paper. At 5% the variable-cell search leaves the soft side and converges on the opposite <110> saddle. Its final shear is 0.02433702057348015.
+The fixed barrier falls from 0.4739235467877734 eV at zero shear to 0.007773344190411535 eV at 5%. On this 109-atom cell the collapse sits near 5%, later than the 3–4% of the larger cell in that paper.
+
+At zero shear the fixed cell stops at 0.4739235467877734 eV with one negative projected eigenvalue. Its second eigenvalue is +4.0558e-4 at a finite-difference step of 1e-4, and steps 1e-3, 1e-4, 1e-5 and 1e-6 give +4.0522e-4, +4.0558e-4, +4.0558e-4 and +4.0558e-4. The overlap of that mode with a uniform translation is below 1.2e-14, so it is not a rigid mode and not a step artefact. The call count is 1312, of which 512 are index-check evaluations. The unchecked row of the previous commit, 0.4741823644375245 eV, stopped at the 2e-3 force without this test.
+
+At 4% variable the curvature is -0.025430118271517362. The largest force component first falls under 2e-3 at call 880 and the flat tolerance continues to call 2415, where the largest component is 1.235e-4. At 5% fixed the curvature is -0.03426646813427729. The 2e-3 force is first met at call 2247 and the run continues to call 4380, where the largest component is 1.650e-4.
+
+At 5% variable the reactant, with the external stress equal to minus its own stress, has no negative projected eigenvalue. The lowest is +0.018114765351867675, so the reactant is a minimum. The search stops on an index-1 saddle of the opposite <110>, enthalpy barrier 0.915204174269661 eV, final shear 0.02433702057348015, 2097 calls.
