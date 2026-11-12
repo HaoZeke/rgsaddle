@@ -45,15 +45,18 @@
 
 pub mod autoneb;
 pub mod band;
+pub mod bennett;
 #[cfg(feature = "capi")]
 pub mod capi;
 pub mod connect;
+pub mod defect_pair;
 pub mod error;
 pub mod idpp;
 pub mod indexk;
 pub mod minmode;
 pub mod nichols;
 pub mod ocineb;
+pub mod pafi;
 pub mod prfo;
 pub mod projection;
 pub mod solid_dimer;
@@ -80,7 +83,12 @@ pub use band::{
     BandConfig, BandEvaluation, BandReport, BandSession, BandStatus, BandSurface, Cell, CiConfig,
     ExpBandPrecon, MinModeRefine, SolidState, ZoomConfig, climbing_image,
 };
+pub use bennett::{ShootingConfig, Transmission, bennett_chandler};
 pub use connect::{ConnectConfig, ConnectProfile, ConnectReport, connect};
+pub use defect_pair::{
+    CellMode, DefectPairConfig, DirectionClass, HopOutcome, HopTemplate, PairSetup, RateCatalogue,
+    RateEntry, attempt_frequency, classify_separation, defect_pair_rates, pair_separation,
+};
 pub use elastic::{
     ElasticMultipole, LocalField, Octupole, Quadrupole, StrainGradient, quadrupole_energy,
 };
@@ -103,6 +111,10 @@ pub use ocineb::{
     MIN_ALIGNMENT, OcinebConfig, OcinebPhase, OcinebReport, OcinebSession, OcinebStatus,
     backoff_threshold, initial_threshold, mode_alignment, should_trigger, success_threshold,
     walk_helped,
+};
+pub use pafi::{
+    ArcPath, FreeEnergyProfile, HyperplaneAverage, PafiConfig, PathFrame, PathGeometry,
+    average_hyperplane, integrate_profile, pafi_profile, zero_temperature_barrier,
 };
 pub use prfo::{PrfoKind, partitioned_rfo_eigen, restricted_prfo_displacement};
 pub use projection::ProjectionKind;
