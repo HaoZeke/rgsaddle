@@ -85,6 +85,7 @@ pub use elastic::{
     ElasticMultipole, LocalField, Octupole, Quadrupole, StrainGradient, quadrupole_energy,
 };
 pub use error::SaddleError;
+pub use field::{DefectSource, DirectSolver, FieldSolver, FmmSolver, Kelvin};
 pub use idpp::{IdppConfig, SidppConfig, idpp_path, linear_path, sidpp_path};
 pub use indexk::{
     BlockEigenKind, HessianProduct, IndexKConfig, IndexKReport, IndexKSession, WithHessian,
@@ -128,6 +129,7 @@ pub mod cell_log;
 pub mod constraints;
 pub mod eigensolve;
 pub mod elastic;
+pub mod field;
 pub mod force;
 pub mod force_match;
 pub mod geom;
