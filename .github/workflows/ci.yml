@@ -67,6 +67,7 @@ jobs:
           cargo run --release --example minmode_calls
           cargo run --release --example step_controls
           cargo run --release --example akmc_strain
+          cargo run --release --example elastic_field_bench -- 2000
           python3 -m pip install -e . --no-build-isolation
           python3 examples/usage.py
           python3 examples/step_controls.py
