@@ -86,11 +86,12 @@ pub use band::{
 pub use bennett::{ShootingConfig, Transmission, bennett_chandler};
 pub use connect::{ConnectConfig, ConnectProfile, ConnectReport, connect};
 pub use defect_pair::{
-    BasinSaddle, CellMode, DefectPairConfig, DimerSeed, DirectionClass, HopOutcome, HopTemplate,
-    PairSetup, RateCatalogue, RateEntry, RecombinationVolume, SPONTANEOUS_BARRIER_EV, SiteOutcome,
-    VolumePlacement, VolumeSite, attempt_frequency, capture_is_spontaneous,
-    capture_is_spontaneous_within, classify_separation, defect_pair_rates, descend_limited,
-    kinetic_recombination_volume, pair_separation, seeded_saddles, segment_band,
+    BasinSaddle, CellMode, DefectPairConfig, DimerSeed, DirectionClass, FREE_CRYSTAL,
+    FreeMigration, HopOutcome, HopTemplate, PairSetup, RateCatalogue, RateEntry,
+    RecombinationVolume, SPONTANEOUS_BARRIER_EV, SiteOutcome, VolumePlacement, VolumeSite,
+    attempt_frequency, capture_is_spontaneous, capture_is_spontaneous_within, classify_separation,
+    defect_pair_rates, descend_limited, embed_free_migration, kinetic_recombination_volume,
+    pair_separation, product_tangent, seeded_saddles, segment_band, spherical_return_probability,
 };
 pub use elastic::{
     ElasticMultipole, LocalField, Octupole, Quadrupole, StrainGradient, quadrupole_energy,
