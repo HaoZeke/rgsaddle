@@ -91,7 +91,8 @@ pub use defect_pair::{
     RecombinationVolume, SPONTANEOUS_BARRIER_EV, SiteOutcome, VolumePlacement, VolumeSite,
     attempt_frequency, capture_is_spontaneous, capture_is_spontaneous_within, classify_separation,
     defect_pair_rates, descend_limited, embed_free_migration, kinetic_recombination_volume,
-    pair_separation, product_tangent, seeded_saddles, segment_band, spherical_return_probability,
+    mean_absorption_time, pair_separation, product_tangent, seeded_saddles, segment_band,
+    shell_pair_factor, spherical_return_probability,
 };
 pub use elastic::{
     ElasticMultipole, LocalField, Octupole, Quadrupole, StrainGradient, quadrupole_energy,

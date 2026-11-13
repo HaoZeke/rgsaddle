@@ -116,6 +116,26 @@ pub fn classify_separation(
     }
 }
 
+/// Factor on one direction of a shell pair after a saddle shift.
+///
+/// `source_factor` is the Boltzmann factor of the away barrier measured on
+/// the shell the hop leaves. An away hop uses that factor. The reverse,
+/// toward hop uses the destination's factor, which is this shell's factor
+/// when the pair is viewed from the other end. A tangential hop is not that
+/// barrier. The two directions of one pair then carry the same factor, and
+/// `n_i k_ij = n_j k_ji` survives when the geometric weights already balance.
+pub fn shell_pair_factor(
+    class: DirectionClass,
+    source_factor: f64,
+    destination_factor: f64,
+) -> f64 {
+    match class {
+        DirectionClass::Away => source_factor,
+        DirectionClass::Toward => destination_factor,
+        DirectionClass::Tangential => 1.0,
+    }
+}
+
 /// Minimum-image separation between `fixed` and the centroid of `mobile`.
 pub fn pair_separation(
     positions: ArrayView1<f64>,
@@ -1613,6 +1633,85 @@ pub fn product_tangent(path: &crate::pafi::ArcPath, arc: f64) -> Result<Array1<f
         tangent.mapv_inplace(|value| -value);
     }
     unit(&tangent)
+}
+
+/// Mean time to absorption on the same rate graph as [`kinetic_recombination_volume`].
+///
+/// Spontaneous shells and every non-transient destination (`"recombined"`,
+/// `"escaped"`, anything that is not another site's id) are absorbing, with
+/// time 0. The returned time is the multiplicity-weighted mean over every
+/// input site, spontaneous ones included. Rates are in Hz when the time is
+/// in seconds. This is the mean-time input of a recombination volume: for a
+/// cell of `n_atoms` and a migration frequency `nu`, `n_atoms / (mean_time * nu)`.
+pub fn mean_absorption_time(sites: &[VolumeSite]) -> Result<f64, SaddleError> {
+    let mut transient: Vec<&VolumeSite> = Vec::new();
+    let mut weight = 0.0;
+    for site in sites {
+        if !(site.count.is_finite() && site.count >= 0.0) {
+            return Err(SaddleError::Invalid(
+                "site multiplicity must be finite and non-negative".into(),
+            ));
+        }
+        weight += site.count;
+        if site.outcome != SiteOutcome::Spontaneous {
+            transient.push(site);
+        }
+    }
+    if weight <= 0.0 {
+        return Err(SaddleError::Invalid("the cell has no sites".into()));
+    }
+    let n = transient.len();
+    let mut times = vec![0.0; sites.len()];
+    if n > 0 {
+        let index: std::collections::HashMap<&str, usize> = transient
+            .iter()
+            .enumerate()
+            .map(|(i, site)| (site.id.as_str(), i))
+            .collect();
+        let mut matrix = vec![vec![0.0; n]; n];
+        let rhs = vec![1.0; n];
+        for (i, site) in transient.iter().enumerate() {
+            let mut total = 0.0;
+            for (_, rate) in &site.rates {
+                if !(rate.is_finite() && *rate >= 0.0) {
+                    return Err(SaddleError::Invalid(
+                        "a hop rate must be finite and non-negative".into(),
+                    ));
+                }
+                total += *rate;
+            }
+            if total <= 0.0 {
+                return Err(SaddleError::Invalid(format!(
+                    "site {} has no outgoing rate",
+                    site.id
+                )));
+            }
+            matrix[i][i] = total;
+            for (destination, rate) in &site.rates {
+                if let Some(&j) = index.get(destination.as_str()) {
+                    matrix[i][j] -= *rate;
+                }
+            }
+            let _ = rhs[i];
+        }
+        let solved = solve_linear(matrix, rhs)?;
+        for (site, time) in transient.iter().zip(&solved) {
+            if !(time.is_finite() && *time >= 0.0) {
+                return Err(SaddleError::Invalid(format!(
+                    "mean time for {} is not finite and non-negative",
+                    site.id
+                )));
+            }
+            if let Some(slot) = sites.iter().position(|item| item.id == site.id) {
+                times[slot] = *time;
+            }
+        }
+    }
+    let mut accum = 0.0;
+    for (site, time) in sites.iter().zip(&times) {
+        accum += site.count * *time;
+    }
+    Ok(accum / weight)
 }
 
 /// Embed `sites` in free migration.
