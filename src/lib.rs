@@ -87,8 +87,10 @@ pub use bennett::{ShootingConfig, Transmission, bennett_chandler};
 pub use connect::{ConnectConfig, ConnectProfile, ConnectReport, connect};
 pub use defect_pair::{
     BasinSaddle, CellMode, DefectPairConfig, DimerSeed, DirectionClass, HopOutcome, HopTemplate,
-    PairSetup, RateCatalogue, RateEntry, attempt_frequency, classify_separation, defect_pair_rates,
-    descend_limited, pair_separation, seeded_saddles, segment_band,
+    PairSetup, RateCatalogue, RateEntry, RecombinationVolume, SPONTANEOUS_BARRIER_EV, SiteOutcome,
+    VolumePlacement, VolumeSite, attempt_frequency, capture_is_spontaneous, classify_separation,
+    defect_pair_rates, descend_limited, kinetic_recombination_volume, pair_separation,
+    seeded_saddles, segment_band,
 };
 pub use elastic::{
     ElasticMultipole, LocalField, Octupole, Quadrupole, StrainGradient, quadrupole_energy,
