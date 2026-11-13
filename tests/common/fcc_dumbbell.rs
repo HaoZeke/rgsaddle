@@ -40,3 +40,35 @@ fn dumbbell_translation_axis(axis: [f64; 3], hop: [f64; 3]) -> Option<[f64; 3]> 
     out[which] = 1.0;
     Some(out)
 }
+
+/// Diffusivity of a `<100>` dumbbell on an FCC lattice.
+///
+/// `translation_rate` is the rate of one of the eight neighbor channels.
+/// Each of those hops moves the center by `lattice / sqrt(2)` and turns the
+/// axis by a right angle. The eight vectors from any axis sum to zero and
+/// are centrosymmetric, so the turn does not correlate successive jumps and
+/// `rotation_rate` (one `<110>` saddle; two of them reach each other axis)
+/// does not change the long-time diffusivity. With `λ² = lattice² / 2`,
+/// `D = (1/6) * 8 * translation_rate * λ² = (2/3) * translation_rate * lattice²`.
+fn dumbbell_diffusivity(
+    lattice: f64,
+    translation_rate: f64,
+    rotation_rate: f64,
+) -> Result<f64, rgsaddle::SaddleError> {
+    if !(lattice.is_finite() && lattice > 0.0) {
+        return Err(rgsaddle::SaddleError::Invalid(
+            "the lattice parameter must be finite and positive".into(),
+        ));
+    }
+    if !(translation_rate.is_finite()
+        && translation_rate >= 0.0
+        && rotation_rate.is_finite()
+        && rotation_rate >= 0.0)
+    {
+        return Err(rgsaddle::SaddleError::Invalid(
+            "translation and rotation rates must be finite and non-negative".into(),
+        ));
+    }
+    let _ = rotation_rate;
+    Ok((2.0 / 3.0) * translation_rate * lattice * lattice)
+}

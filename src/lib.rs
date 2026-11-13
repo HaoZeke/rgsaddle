@@ -90,9 +90,10 @@ pub use defect_pair::{
     FreeMigration, HopOutcome, HopTemplate, PairSetup, RateCatalogue, RateEntry,
     RecombinationVolume, SPONTANEOUS_BARRIER_EV, SiteOutcome, VolumePlacement, VolumeSite,
     attempt_frequency, capture_is_spontaneous, capture_is_spontaneous_within, classify_separation,
-    defect_pair_rates, descend_limited, embed_free_migration, kinetic_recombination_volume,
-    mean_absorption_time, pair_separation, product_tangent, seeded_saddles, segment_band,
-    shell_pair_factor, spherical_return_probability,
+    defect_pair_rates, descend_limited, effective_capture_radius, embed_free_migration,
+    kinetic_recombination_volume, mean_absorption_time, pair_separation, product_tangent,
+    seeded_saddles, segment_band, shell_pair_factor, smoluchowski_rate,
+    spherical_return_probability, volume_from_frequency,
 };
 pub use elastic::{
     ElasticMultipole, LocalField, Octupole, Quadrupole, StrainGradient, quadrupole_energy,
