@@ -9578,6 +9578,7 @@ fn assemble_run12() {
             rotated,
             drifted,
             _,
+            _,
         ) = channel_volumes(
             &shells,
             &spontaneous,
@@ -10019,7 +10020,7 @@ fn channel_volumes(
     return_sites: usize,
     cutoff: f64,
     size_barriers: bool,
-) -> (f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64) {
+) -> (f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64) {
     let kept: Vec<_> = shells
         .iter()
         .filter(|(radius, _, _)| *radius <= cutoff)
@@ -10396,6 +10397,21 @@ fn channel_volumes(
         / samples.len() as f64)
         .sqrt();
     let weight = embedded.iter().map(|site| site.count).sum::<f64>();
+    let layer_probability = rgsaddle::kinetic_recombination_volume(&embedded, omega)
+        .ok()
+        .and_then(|volume| {
+            let layers: Vec<_> = volume
+                .placements
+                .iter()
+                .filter(|site| site.id.starts_with("free-"))
+                .collect();
+            if layers.is_empty() {
+                None
+            } else {
+                Some(layers.iter().map(|site| site.probability).sum::<f64>() / layers.len() as f64)
+            }
+        })
+        .unwrap_or(f64::NAN);
     (
         rotated,
         sigma,
@@ -10408,6 +10424,7 @@ fn channel_volumes(
         rotated,
         drifted,
         tau_capture,
+        layer_probability,
     )
 }
 
@@ -10519,29 +10536,42 @@ fn assemble_run13() {
             let max_r = shells.last().map(|(radius, _, _)| *radius).unwrap_or(0.0);
             let jump = a / 2.0_f64.sqrt();
             let return_sites = return_layer_count(a, &shells, max_r);
-            let (total, sigma, spont_sites, kinetic_sites, _, _, _, _, _, _, tau_capture) =
-                channel_volumes(
-                    &shells,
-                    &spontaneous,
-                    &rates,
-                    temperature,
-                    k_mig,
-                    a,
-                    omega,
-                    max_r,
-                    jump,
-                    return_sites,
-                    cutoff + 0.05,
-                    true,
-                );
-            let delta = previous.map(|prior: f64| total - prior).unwrap_or(f64::NAN);
-            let diffusivity = match temperature as i32 {
+            let (
+                total,
+                sigma,
+                spont_sites,
+                _kinetic_sites,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                tau_capture,
+                layer_probability,
+            ) = channel_volumes(
+                &shells,
+                &spontaneous,
+                &rates,
+                temperature,
+                k_mig,
+                a,
+                omega,
+                max_r,
+                jump,
+                return_sites,
+                cutoff + 0.05,
+                true,
+            );
+            let (k_rot, _) = rotation_channel(&rates, temperature);
+            let d_graph = dumbbell_diffusivity(a, k_mig, k_rot).unwrap_or(f64::NAN);
+            let d_table = match temperature as i32 {
                 300 => 0.143e12,
                 500 => 0.526e12,
                 700 => 0.910e12,
                 _ => f64::NAN,
             };
-            let nu = (2.0 / 3.0) * diffusivity / (a * a);
+            let nu = (2.0 / 3.0) * d_graph / (a * a);
             let n_atoms = 4.0 * (13usize * 13 * 13) as f64;
             let tau_cell = cell_averaged_time(13, a, k_mig, max_r, tau_capture);
             let mean_volume =
@@ -10550,15 +10580,28 @@ fn assemble_run13() {
                 } else {
                     f64::NAN
                 };
-            writeln!(out, "{temperature},mean-time,{mean_volume:.4},,{spont_sites:.4},,{table},cutoff {cutoff:.1}; tau {tau_cell:.6e} s; nu=(2/3)*D/a^2; D from Table 1").unwrap();
+            let distance = max_r + jump;
+            let r_eff = if layer_probability.is_finite() {
+                layer_probability * distance
+            } else {
+                f64::NAN
+            };
+            let capture_rate = rgsaddle::smoluchowski_rate(d_graph, r_eff).unwrap_or(f64::NAN);
+            let sphere_volume =
+                rgsaddle::volume_from_frequency(capture_rate, nu).unwrap_or(f64::NAN);
+            let sphere = sphere_volume / omega;
+            let delta = previous
+                .map(|prior: f64| sphere - prior)
+                .unwrap_or(f64::NAN);
+            writeln!(out, "{temperature},smoluchowski,{sphere:.4},,{spont_sites:.4},{r_eff:.4},{table},cutoff {cutoff:.1}; return {return_sites}; D_graph {d_ps:.6} A2/ps; D_table {d_tab:.6}; delta {delta:.4}", d_ps = d_graph / 1.0e12, d_tab = d_table / 1.0e12).unwrap();
+            writeln!(out, "{temperature},mean-time,{mean_volume:.4},,{spont_sites:.4},,{table},cutoff {cutoff:.1}; tau {tau_cell:.6e} s; nu=(2/3)*D_graph/a^2").unwrap();
+            writeln!(out, "{temperature},site-sum,{total:.4},{sigma:.4},{spont_sites:.4},,{table},cutoff {cutoff:.1}; this sum grows with the shell count").unwrap();
             eprintln!(
-                "run14 {temperature} K cutoff {cutoff:.1} mean-time {mean_volume:.2} tau {tau_cell:.3e}"
+                "run14 {temperature} K R {cutoff:.1} sphere {sphere:.2} (d {delta:.2}) R_eff {r_eff:.3} mean {mean_volume:.2} site-sum {total:.2} D {d_ps:.4}/{d_tab:.4}",
+                d_ps = d_graph / 1.0e12,
+                d_tab = d_table / 1.0e12
             );
-            writeln!(out, "{temperature},{cutoff:.1},{total:.4},{sigma:.4},{spont_sites:.4},{kinetic_sites:.4},{table},return {return_sites}; delta {delta:.4}; eight translation channels").unwrap();
-            eprintln!(
-                "run13 {temperature} K cutoff {cutoff:.1} V {total:.2} ± {sigma:.2} spont {spont_sites:.1} return {return_sites} delta {delta:.2}"
-            );
-            previous = Some(total);
+            previous = Some(sphere);
         }
     }
 }
