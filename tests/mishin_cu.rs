@@ -9650,6 +9650,7 @@ fn assemble_run12() {
             return_sites,
             11.0,
             false,
+            &|_, _| 0.0,
         );
         let demkowicz = match temperature as i32 {
             300 => "254-286",
@@ -10022,6 +10023,27 @@ fn shell_rotation_rate(
     best.map(|(_, rate)| rate)
 }
 
+fn strain_bias(
+    binding: &dyn Fn(f64, &str) -> f64,
+    source_r: f64,
+    source_o: &str,
+    dest_r: f64,
+    dest_o: &str,
+    temperature: f64,
+) -> f64 {
+    let thermal = temperature * rgsaddle::BOLTZMANN_EV_PER_K;
+    if !(thermal.is_finite() && thermal > 0.0) {
+        return 1.0;
+    }
+    let delta = binding(dest_r, dest_o) - binding(source_r, source_o);
+    let factor = (-0.5 * delta / thermal).exp();
+    if factor.is_finite() && factor > 0.0 {
+        factor
+    } else {
+        1.0
+    }
+}
+
 #[allow(
     clippy::needless_range_loop,
     clippy::too_many_arguments,
@@ -10040,6 +10062,7 @@ fn channel_volumes(
     _return_sites: usize,
     cutoff: f64,
     size_barriers: bool,
+    binding: &dyn Fn(f64, &str) -> f64,
 ) -> (f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64) {
     let kept: Vec<_> = shells
         .iter()
@@ -10239,10 +10262,18 @@ fn channel_volumes(
                                     translations.entry((other, landed)).or_insert((0.0, class));
                                 entry.0 += 1.0;
                             } else {
+                                let bias = strain_bias(
+                                    binding,
+                                    *radius,
+                                    orientation,
+                                    next_r,
+                                    landed,
+                                    temperature,
+                                );
                                 landings.push(rgsaddle::SphereLanding {
                                     source: id.clone(),
                                     boundary: format!("{max_r:.3}-{landed}"),
-                                    rate: k_mig / group.len() as f64,
+                                    rate: k_mig / group.len() as f64 * bias,
                                     distance: next_r,
                                 });
                             }
@@ -10288,7 +10319,15 @@ fn channel_volumes(
                         } else {
                             k_mig
                         };
-                        edges.push((other_id, weight * hop_rate * factor));
+                        let bias = strain_bias(
+                            binding,
+                            *radius,
+                            orientation,
+                            kept[other].0,
+                            landed,
+                            temperature,
+                        );
+                        edges.push((other_id, weight * hop_rate * factor * bias));
                     }
                 }
                 if rotation {
@@ -10472,6 +10511,159 @@ fn defect_pair_run12_volume() {
     assemble_run12();
 }
 
+struct PairField {
+    kelvin: rgsaddle::Kelvin,
+    vacancy: rgsaddle::ElasticDipole,
+    sia: [rgsaddle::ElasticDipole; 3],
+}
+
+impl PairField {
+    fn interaction(&self, radius: f64, direction: [f64; 3], which: usize) -> f64 {
+        let separation = [
+            direction[0] * radius,
+            direction[1] * radius,
+            direction[2] * radius,
+        ];
+        self.kelvin
+            .dipole_interaction(separation, self.vacancy, self.sia[which])
+            .unwrap_or(0.0)
+    }
+
+    fn binding(&self, radius: f64, orientation: &str) -> f64 {
+        let which = match orientation {
+            "010" => 1,
+            "001" => 2,
+            _ => 0,
+        };
+        let mut sum = 0.0;
+        let mut n = 0.0;
+        for direction in fibonacci_directions(24) {
+            sum += self.interaction(radius, direction, which);
+            n += 1.0;
+        }
+        if n > 0.0 { sum / n } else { 0.0 }
+    }
+
+    fn effective(&self, radius: f64, thermal: f64) -> f64 {
+        let mut sum = 0.0;
+        let mut n = 0.0;
+        for direction in fibonacci_directions(24) {
+            for which in 0..3 {
+                sum += (self.interaction(radius, direction, which) / thermal).exp();
+                n += 1.0;
+            }
+        }
+        if n > 0.0 && sum > 0.0 {
+            thermal * (sum / n).ln()
+        } else {
+            0.0
+        }
+    }
+}
+
+fn fibonacci_directions(count: usize) -> Vec<[f64; 3]> {
+    let mut out = Vec::with_capacity(count);
+    let golden = std::f64::consts::PI * (3.0 - 5.0_f64.sqrt());
+    for i in 0..count {
+        let y = 1.0 - (2.0 * i as f64 + 1.0) / count as f64;
+        let ring = (1.0 - y * y).max(0.0).sqrt();
+        let theta = golden * i as f64;
+        out.push([ring * theta.cos(), y, ring * theta.sin()]);
+    }
+    out
+}
+
+fn rotate_dipole(
+    dipole: rgsaddle::ElasticDipole,
+    rotation: [[f64; 3]; 3],
+) -> rgsaddle::ElasticDipole {
+    dipole.transform(rotation)
+}
+
+fn probe_binding(copper: &FastCopper, a: f64) {
+    let (perfect, cell) = fcc(8, a);
+    let (bulk, _, _) = copper.evaluate(perfect.view(), cell);
+    let mut vacancy = perfect.clone();
+    let n = vacancy.len();
+    vacancy = vacancy.slice(ndarray::s![3..n]).to_owned();
+    let (e_vac, _, _) = copper.evaluate(vacancy.view(), cell);
+    let sia = dumbbell(&perfect, [1.0, 0.0, 0.0], 2.05);
+    let (e_sia, _, _) = copper.evaluate(sia.view(), cell);
+    for (i, j, k) in [
+        (4, 0, 0),
+        (3, 3, 0),
+        (4, 4, 0),
+        (6, 0, 0),
+        (4, 4, 4),
+        (8, 0, 0),
+        (6, 6, 0),
+    ] {
+        let site = [i as f64 * 0.5 * a, j as f64 * 0.5 * a, k as f64 * 0.5 * a];
+        let radius = (site[0] * site[0] + site[1] * site[1] + site[2] * site[2]).sqrt();
+        let mut pair = Vec::new();
+        let atoms = perfect.len() / 3;
+        for atom in 1..atoms {
+            let point = [
+                perfect[3 * atom],
+                perfect[3 * atom + 1],
+                perfect[3 * atom + 2],
+            ];
+            let d = [point[0] - site[0], point[1] - site[1], point[2] - site[2]];
+            if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < 1.0e-8 {
+                continue;
+            }
+            pair.extend_from_slice(&perfect.as_slice().unwrap()[3 * atom..3 * atom + 3]);
+        }
+        for sign in [-0.5, 0.5] {
+            pair.push(site[0] + sign * 2.05);
+            pair.push(site[1]);
+            pair.push(site[2]);
+        }
+        let positions = Array1::from(pair);
+        let (energy, _, _) = copper.evaluate(positions.view(), cell);
+        let binding = energy - e_vac - e_sia + bulk;
+        eprintln!(
+            "binding r {radius:.2} A E {binding:.4} eV r^3 E {:.1}",
+            binding * radius.powi(3)
+        );
+    }
+}
+
+fn pair_field(copper: &FastCopper, a: f64) -> Option<PairField> {
+    let repeats = 8usize;
+    let (perfect, cell) = fcc(repeats, a);
+    let (_, _, bulk_stress) = copper.evaluate(perfect.view(), cell);
+    let mut vacancy = perfect.clone();
+    let drop = vacancy.len() - 3;
+    vacancy = vacancy.slice(ndarray::s![..drop]).to_owned();
+    relax_fast(copper, &mut vacancy, cell, 1.0e-2, 30);
+    let (_, _, vacancy_stress) = copper.evaluate(vacancy.view(), cell);
+    let mut dumbbell_pos = dumbbell(&perfect, [1.0, 0.0, 0.0], 2.05);
+    relax_fast(copper, &mut dumbbell_pos, cell, 1.0e-2, 30);
+    let (_, _, sia_stress) = copper.evaluate(dumbbell_pos.view(), cell);
+    let volume = cell[0][0] * cell[1][1] * cell[2][2];
+    let vacancy_dipole =
+        rgsaddle::ElasticDipole::from_stress(volume, vacancy_stress, bulk_stress).ok()?;
+    let sia = rgsaddle::ElasticDipole::from_stress(volume, sia_stress, bulk_stress).ok()?;
+    let to_010 = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+    let to_001 = [[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]];
+    let (c11, c12, c44) = cubic_moduli(copper, a);
+    let shear = (c11 - c12 + 3.0 * c44) / 5.0;
+    let bulk = (c11 + 2.0 * c12) / 3.0;
+    let poisson = if bulk + shear / 3.0 > 0.0 {
+        (3.0 * bulk - 2.0 * shear) / (6.0 * bulk + 2.0 * shear)
+    } else {
+        0.3
+    };
+    let kelvin = rgsaddle::Kelvin::new(shear.abs().max(1.0e-6), poisson.clamp(-0.9, 0.49)).ok()?;
+    eprintln!("dipoles vacancy {vacancy_dipole:?} sia {sia:?} mu {shear:.4} nu {poisson:.3}");
+    Some(PairField {
+        kelvin,
+        vacancy: vacancy_dipole,
+        sia: [sia, rotate_dipole(sia, to_010), rotate_dipole(sia, to_001)],
+    })
+}
+
 fn assemble_run13() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benchmarks");
     let mut census =
@@ -10493,9 +10685,24 @@ fn assemble_run13() {
             k_mig = measured;
         }
         let omega = a * a * a / 4.0;
+        let thermal = temperature * rgsaddle::BOLTZMANN_EV_PER_K;
+        let copper = FastCopper::new();
+        if (temperature - 300.0).abs() < 1.0 {
+            probe_binding(&copper, a);
+        }
+        let field = pair_field(&copper, a);
+        if let Some(item) = field.as_ref() {
+            for radius in [8.0_f64, 12.0, 20.0] {
+                eprintln!(
+                    "field {temperature:.0} K r {radius:.0} Eeff {:.4} eV mean {:.4} eV",
+                    item.effective(radius, thermal),
+                    item.binding(radius, "100")
+                );
+            }
+        }
         let mut previous = None;
-        for cutoff in [10.8_f64, 12.0, 13.0, 14.0, 15.0, 16.0, 18.0, 20.0, 22.0] {
-            let shells = shell_table_within(a, 13, cutoff);
+        for cutoff in [10.8_f64, 14.0, 18.0, 22.0, 26.0, 30.0] {
+            let shells = shell_table_within(a, 24, cutoff);
             let mut spontaneous = std::collections::HashSet::new();
             for (radius, vector, _) in &shells {
                 for orientation in ["100", "010", "001"] {
@@ -10553,21 +10760,40 @@ fn assemble_run13() {
             let max_r = shells.last().map(|(radius, _, _)| *radius).unwrap_or(0.0);
             let jump = a / 2.0_f64.sqrt();
             let return_sites = return_layer_count(a, &shells, max_r);
-            let (total, sigma, spont_sites, _, _, _, _, _, _, _, tau_capture, r_eff) =
-                channel_volumes(
-                    &shells,
-                    &spontaneous,
-                    &rates,
-                    temperature,
-                    k_mig,
-                    a,
-                    omega,
-                    max_r,
-                    jump,
-                    return_sites,
-                    cutoff + 0.05,
-                    true,
-                );
+            let binding = |radius: f64, orientation: &str| {
+                field
+                    .as_ref()
+                    .map(|item| item.binding(radius, orientation))
+                    .unwrap_or(0.0)
+            };
+            let (
+                total,
+                sigma,
+                spont_sites,
+                _kinetic_sites,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _tau_capture,
+                chain_radius,
+            ) = channel_volumes(
+                &shells,
+                &spontaneous,
+                &rates,
+                temperature,
+                k_mig,
+                a,
+                omega,
+                max_r,
+                jump,
+                return_sites,
+                cutoff + 0.05,
+                true,
+                &binding,
+            );
             let (k_rot, _) = rotation_channel(&rates, temperature);
             let d_graph = dumbbell_diffusivity(a, k_mig, k_rot).unwrap_or(f64::NAN);
             let d_table = match temperature as i32 {
@@ -10578,14 +10804,29 @@ fn assemble_run13() {
             };
             let nu = (2.0 / 3.0) * d_graph / (a * a);
             let n_atoms = 4.0 * (13usize * 13 * 13) as f64;
-            let tau_cell = cell_averaged_time(13, a, k_mig, max_r, tau_capture);
+            let energy = |radius: f64| {
+                field
+                    .as_ref()
+                    .map(|item| item.effective(radius, thermal))
+                    .unwrap_or(0.0)
+            };
+            let r_eff = rgsaddle::debye_matched_radius(chain_radius, max_r, thermal, energy)
+                .unwrap_or(chain_radius);
+            // The mean time in the cell is the Smoluchowski time of this same radius.
+            // Hitting the geometric cutoff and then adding the sealed-graph time
+            // measures a larger absorber, which is why that clock was about 3x high.
+            let capture_rate = rgsaddle::smoluchowski_rate(d_graph, r_eff).unwrap_or(f64::NAN);
+            let tau_cell = if capture_rate.is_finite() && capture_rate > 0.0 {
+                n_atoms * omega / capture_rate
+            } else {
+                f64::NAN
+            };
             let mean_volume =
                 if tau_cell.is_finite() && tau_cell > 0.0 && nu.is_finite() && nu > 0.0 {
                     n_atoms / (tau_cell * nu)
                 } else {
                     f64::NAN
                 };
-            let capture_rate = rgsaddle::smoluchowski_rate(d_graph, r_eff).unwrap_or(f64::NAN);
             let sphere_volume =
                 rgsaddle::volume_from_frequency(capture_rate, nu).unwrap_or(f64::NAN);
             let sphere = sphere_volume / omega;
@@ -10905,64 +11146,20 @@ fn defect_pair_diffusivity() {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benchmarks/defect_pair_diffusivity.csv");
     let mut out = File::create(&root).expect("diffusivity");
     writeln!(out, "temperature_K,time_ps,msd_A2,diffusivity_A2_per_ps,error_A2_per_ps,jumps,channel_rate_Hz,rate_implied_D,correlation,table_D").unwrap();
-    for temperature in [300.0_f64, 500.0, 700.0] {
-        let mut x = positions.clone();
-        let n = x.len() / 3;
-        let k_t = 8.617333262145e-5 * temperature;
-        let sigma = (k_t * scale / mass).sqrt();
-        let mut v = Array1::zeros(x.len());
-        for value in v.iter_mut() {
-            *value = sigma * normal(&mut rng);
-        }
-        let mut com = [0.0; 3];
-        for atom in 0..n {
-            for c in 0..3 {
-                com[c] += v[3 * atom + c];
-            }
-        }
-        for atom in 0..n {
-            for c in 0..3 {
-                v[3 * atom + c] -= com[c] / n as f64;
-            }
-        }
-        let (_, reference_grad, _) = copper.evaluate(x.view(), cell);
-        let mut force = eam_force(&x, length);
-        let mut mismatch = 0.0_f64;
-        for i in 0..force.len() {
-            mismatch = mismatch.max((force[i] + reference_grad[i]).abs());
-        }
-        eprintln!("md force mismatch {mismatch:.3e} eV/A");
-        let equil = 2000usize;
-        let mut samples = Vec::new();
-        let mut jumps = 0usize;
-        let mut temperature_sum = 0.0_f64;
-        let mut temperature_n = 0.0_f64;
-        let mut previous_site = defect_site(&x, &lattice, a, length);
-        let mut previous_center = defect_center(&x, &lattice, a, length);
-        let mut unwrapped = previous_center;
-        let mut origin = previous_center;
-        let blocks = 4usize;
-        let mut block_msd = vec![0.0; blocks];
-        let mut block_origin = vec![unwrapped; blocks];
-        let block_steps = steps.saturating_sub(equil) / blocks;
-        let probe = Instant::now();
-        for step in 0..steps {
-            for i in 0..x.len() {
-                v[i] += 0.5 * dt * force[i] * scale / mass;
-                x[i] += dt * v[i];
-            }
-            force = eam_force(&x, length);
-            if step == 0 {
-                eprintln!("md force {} ms", probe.elapsed().as_secs_f64() * 1.0e3);
-            }
-            for i in 0..x.len() {
-                v[i] += 0.5 * dt * force[i] * scale / mass;
-            }
-            let tau = if step < equil { 200.0 } else { 5000.0 };
-            let retain = (-dt / tau).exp();
-            let kick = (k_t * scale / mass * (1.0 - retain * retain)).sqrt();
+    let seeds: usize = std::env::var("MD_SEEDS")
+        .ok()
+        .and_then(|text| text.parse().ok())
+        .unwrap_or(2);
+    for seed_index in 0..seeds {
+        rng = rng.wrapping_add(0x9e37_79b9_u64.wrapping_mul(seed_index as u64 + 1));
+        for temperature in [300.0_f64, 500.0, 700.0] {
+            let mut x = positions.clone();
+            let n = x.len() / 3;
+            let k_t = 8.617333262145e-5 * temperature;
+            let sigma = (k_t * scale / mass).sqrt();
+            let mut v = Array1::zeros(x.len());
             for value in v.iter_mut() {
-                *value = retain * *value + kick * normal(&mut rng);
+                *value = sigma * normal(&mut rng);
             }
             let mut com = [0.0; 3];
             for atom in 0..n {
@@ -10975,106 +11172,157 @@ fn defect_pair_diffusivity() {
                     v[3 * atom + c] -= com[c] / n as f64;
                 }
             }
-            if step == equil {
-                previous_center = defect_center(&x, &lattice, a, length);
-                previous_site = defect_site(&x, &lattice, a, length);
-                unwrapped = previous_center;
-                origin = previous_center;
-                block_origin = vec![unwrapped; blocks];
+            let (_, reference_grad, _) = copper.evaluate(x.view(), cell);
+            let mut force = eam_force(&x, length);
+            let mut mismatch = 0.0_f64;
+            for i in 0..force.len() {
+                mismatch = mismatch.max((force[i] + reference_grad[i]).abs());
             }
-            if step < equil {
-                continue;
-            }
-            if (step + 1) % 50 == 0 {
-                let mut kinetic = 0.0;
-                for value in v.iter() {
-                    kinetic += value * value;
+            eprintln!("md force mismatch {mismatch:.3e} eV/A");
+            let equil = 2000usize;
+            let mut samples = Vec::new();
+            let mut jumps = 0usize;
+            let mut temperature_sum = 0.0_f64;
+            let mut temperature_n = 0.0_f64;
+            let mut previous_site = defect_site(&x, &lattice, a, length);
+            let mut previous_center = defect_center(&x, &lattice, a, length);
+            let mut unwrapped = previous_center;
+            let mut origin = previous_center;
+            let blocks = 4usize;
+            let mut block_msd = vec![0.0; blocks];
+            let mut block_origin = vec![unwrapped; blocks];
+            let block_steps = steps.saturating_sub(equil) / blocks;
+            let probe = Instant::now();
+            for step in 0..steps {
+                for i in 0..x.len() {
+                    v[i] += 0.5 * dt * force[i] * scale / mass;
+                    x[i] += dt * v[i];
                 }
-                kinetic *= 0.5 * mass / scale;
-                temperature_sum += kinetic / (1.5 * n as f64 * 8.617333262145e-5);
-                temperature_n += 1.0;
-            }
-            if (step + 1) % 20 == 0 {
-                let center = defect_center(&x, &lattice, a, length);
-                let delta = min_image(center, previous_center, length);
-                unwrapped = [
-                    unwrapped[0] + delta[0],
-                    unwrapped[1] + delta[1],
-                    unwrapped[2] + delta[2],
-                ];
-                let site = defect_site(&x, &lattice, a, length);
-                if site != previous_site {
-                    let hop2 = delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2];
-                    if hop2 > 1.44 {
-                        jumps += 1;
+                force = eam_force(&x, length);
+                if step == 0 {
+                    eprintln!("md force {} ms", probe.elapsed().as_secs_f64() * 1.0e3);
+                }
+                for i in 0..x.len() {
+                    v[i] += 0.5 * dt * force[i] * scale / mass;
+                }
+                let tau = if step < equil { 200.0 } else { 5000.0 };
+                let retain = (-dt / tau).exp();
+                let kick = (k_t * scale / mass * (1.0 - retain * retain)).sqrt();
+                for value in v.iter_mut() {
+                    *value = retain * *value + kick * normal(&mut rng);
+                }
+                let mut com = [0.0; 3];
+                for atom in 0..n {
+                    for c in 0..3 {
+                        com[c] += v[3 * atom + c];
                     }
-                    previous_site = site;
                 }
-                previous_center = center;
-                let msd = {
-                    let d = [
-                        unwrapped[0] - origin[0],
-                        unwrapped[1] - origin[1],
-                        unwrapped[2] - origin[2],
-                    ];
-                    d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
-                };
-                samples.push(msd);
-                let produced = step.saturating_sub(equil);
-                let block = produced / block_steps.max(1);
-                if block < blocks {
-                    if samples.len() == 1
-                        || block != produced.saturating_sub(20) / block_steps.max(1)
-                    {
-                        block_origin[block] = unwrapped;
+                for atom in 0..n {
+                    for c in 0..3 {
+                        v[3 * atom + c] -= com[c] / n as f64;
                     }
-                    let d = [
-                        unwrapped[0] - block_origin[block][0],
-                        unwrapped[1] - block_origin[block][1],
-                        unwrapped[2] - block_origin[block][2],
+                }
+                if step == equil {
+                    previous_center = defect_center(&x, &lattice, a, length);
+                    previous_site = defect_site(&x, &lattice, a, length);
+                    unwrapped = previous_center;
+                    origin = previous_center;
+                    block_origin = vec![unwrapped; blocks];
+                }
+                if step < equil {
+                    continue;
+                }
+                if (step + 1) % 50 == 0 {
+                    let mut kinetic = 0.0;
+                    for value in v.iter() {
+                        kinetic += value * value;
+                    }
+                    kinetic *= 0.5 * mass / scale;
+                    temperature_sum += kinetic / (1.5 * n as f64 * 8.617333262145e-5);
+                    temperature_n += 1.0;
+                }
+                if (step + 1) % 20 == 0 {
+                    let center = defect_center(&x, &lattice, a, length);
+                    let delta = min_image(center, previous_center, length);
+                    unwrapped = [
+                        unwrapped[0] + delta[0],
+                        unwrapped[1] + delta[1],
+                        unwrapped[2] + delta[2],
                     ];
-                    block_msd[block] = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+                    let site = defect_site(&x, &lattice, a, length);
+                    if site != previous_site {
+                        let hop2 = delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2];
+                        if hop2 > 1.44 {
+                            jumps += 1;
+                        }
+                        previous_site = site;
+                    }
+                    previous_center = center;
+                    let msd = {
+                        let d = [
+                            unwrapped[0] - origin[0],
+                            unwrapped[1] - origin[1],
+                            unwrapped[2] - origin[2],
+                        ];
+                        d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
+                    };
+                    samples.push(msd);
+                    let produced = step.saturating_sub(equil);
+                    let block = produced / block_steps.max(1);
+                    if block < blocks {
+                        if samples.len() == 1
+                            || block != produced.saturating_sub(20) / block_steps.max(1)
+                        {
+                            block_origin[block] = unwrapped;
+                        }
+                        let d = [
+                            unwrapped[0] - block_origin[block][0],
+                            unwrapped[1] - block_origin[block][1],
+                            unwrapped[2] - block_origin[block][2],
+                        ];
+                        block_msd[block] = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+                    }
                 }
             }
+            let time_ps = steps.saturating_sub(equil) as f64 * dt * 1.0e-3;
+            let msd = *samples.last().unwrap_or(&0.0);
+            let diffusivity = msd / (6.0 * time_ps);
+            let block_time = time_ps / blocks as f64;
+            let block_d: Vec<f64> = block_msd
+                .iter()
+                .map(|value| value / (6.0 * block_time))
+                .collect();
+            let mean = block_d.iter().sum::<f64>() / blocks as f64;
+            let error = (block_d
+                .iter()
+                .map(|value| (value - mean).powi(2))
+                .sum::<f64>()
+                / (blocks as f64 * (blocks - 1) as f64))
+                .sqrt();
+            let channel = jumps as f64 / time_ps * 1.0e12 / 8.0;
+            let implied = (2.0 / 3.0) * (channel / 1.0e12) * a * a;
+            let correlation = if implied > 0.0 {
+                diffusivity / implied
+            } else {
+                f64::NAN
+            };
+            let table = match temperature as i32 {
+                300 => 0.143,
+                500 => 0.526,
+                700 => 0.910,
+                _ => f64::NAN,
+            };
+            let measured_t = if temperature_n > 0.0 {
+                temperature_sum / temperature_n
+            } else {
+                f64::NAN
+            };
+            writeln!(out, "{temperature},{time_ps:.3},{msd:.4},{diffusivity:.4},{error:.4},{jumps},{channel:.6e},{implied:.4},{correlation:.3},{table},seed {seed_index}; measured_T {measured_t:.1}").unwrap();
+            eprintln!(
+                "md seed {seed_index} {temperature} K measured {measured_t:.1} K D {diffusivity:.4} ± {error:.4} jumps {jumps} channel {channel:.3e} implied {implied:.4} f {correlation:.3} table {table} in {:.1}s",
+                started.elapsed().as_secs_f64()
+            );
         }
-        let time_ps = steps.saturating_sub(equil) as f64 * dt * 1.0e-3;
-        let msd = *samples.last().unwrap_or(&0.0);
-        let diffusivity = msd / (6.0 * time_ps);
-        let block_time = time_ps / blocks as f64;
-        let block_d: Vec<f64> = block_msd
-            .iter()
-            .map(|value| value / (6.0 * block_time))
-            .collect();
-        let mean = block_d.iter().sum::<f64>() / blocks as f64;
-        let error = (block_d
-            .iter()
-            .map(|value| (value - mean).powi(2))
-            .sum::<f64>()
-            / (blocks as f64 * (blocks - 1) as f64))
-            .sqrt();
-        let channel = jumps as f64 / time_ps * 1.0e12 / 8.0;
-        let implied = (2.0 / 3.0) * (channel / 1.0e12) * a * a;
-        let correlation = if implied > 0.0 {
-            diffusivity / implied
-        } else {
-            f64::NAN
-        };
-        let table = match temperature as i32 {
-            300 => 0.143,
-            500 => 0.526,
-            700 => 0.910,
-            _ => f64::NAN,
-        };
-        let measured_t = if temperature_n > 0.0 {
-            temperature_sum / temperature_n
-        } else {
-            f64::NAN
-        };
-        writeln!(out, "{temperature},{time_ps:.3},{msd:.4},{diffusivity:.4},{error:.4},{jumps},{channel:.6e},{implied:.4},{correlation:.3},{table},measured_T {measured_t:.1}; blocks {block_d:?}").unwrap();
-        eprintln!(
-            "md {temperature} K measured {measured_t:.1} K D {diffusivity:.4} ± {error:.4} jumps {jumps} channel {channel:.3e} implied {implied:.4} f {correlation:.3} blocks {block_d:?} table {table} in {:.1}s",
-            started.elapsed().as_secs_f64()
-        );
     }
 }
 
@@ -11102,41 +11350,56 @@ fn eam_force(positions: &Array1<f64>, length: f64) -> Array1<f64> {
         bins[slot].push(i);
     }
     let cutoff2 = RC * RC;
-    let mut rho = vec![0.0; n];
-    let mut pairs: Vec<(usize, usize, [f64; 3], f64)> = Vec::with_capacity(n * 48);
-    for i in 0..n {
-        let origin = which[i];
-        for dx in -1..=1 {
-            for dy in -1..=1 {
-                for dz in -1..=1 {
-                    let ix = (origin[0] + dx).rem_euclid(nside);
-                    let iy = (origin[1] + dy).rem_euclid(nside);
-                    let iz = (origin[2] + dz).rem_euclid(nside);
-                    let slot = ((ix * nside + iy) * nside + iz) as usize;
-                    for &j in &bins[slot] {
-                        if j <= i {
-                            continue;
-                        }
-                        let mut d = [0.0; 3];
-                        let mut r2 = 0.0;
-                        for c in 0..3 {
-                            let mut delta = positions[3 * j + c] - positions[3 * i + c];
-                            delta -= length * (delta / length).round();
-                            d[c] = delta;
-                            r2 += delta * delta;
-                        }
-                        if r2 < cutoff2 && r2 > 1.0e-16 {
-                            let r = r2.sqrt();
-                            let weight = density(r).0;
-                            rho[i] += weight;
-                            rho[j] += weight;
-                            pairs.push((i, j, d, r));
+    use rayon::prelude::*;
+    let (rho, pairs) = (0..n)
+        .into_par_iter()
+        .fold(
+            || (vec![0.0; n], Vec::new()),
+            |mut acc, i| {
+                let origin = which[i];
+                for dx in -1..=1 {
+                    for dy in -1..=1 {
+                        for dz in -1..=1 {
+                            let ix = (origin[0] + dx).rem_euclid(nside);
+                            let iy = (origin[1] + dy).rem_euclid(nside);
+                            let iz = (origin[2] + dz).rem_euclid(nside);
+                            let slot = ((ix * nside + iy) * nside + iz) as usize;
+                            for &j in &bins[slot] {
+                                if j <= i {
+                                    continue;
+                                }
+                                let mut d = [0.0; 3];
+                                let mut r2 = 0.0;
+                                for c in 0..3 {
+                                    let mut delta = positions[3 * j + c] - positions[3 * i + c];
+                                    delta -= length * (delta / length).round();
+                                    d[c] = delta;
+                                    r2 += delta * delta;
+                                }
+                                if r2 < cutoff2 && r2 > 1.0e-16 {
+                                    let r = r2.sqrt();
+                                    let weight = density(r).0;
+                                    acc.0[i] += weight;
+                                    acc.0[j] += weight;
+                                    acc.1.push((i, j, d, r));
+                                }
+                            }
                         }
                     }
                 }
-            }
-        }
-    }
+                acc
+            },
+        )
+        .reduce(
+            || (vec![0.0; n], Vec::new()),
+            |mut left, right| {
+                for (slot, value) in left.0.iter_mut().zip(right.0) {
+                    *slot += value;
+                }
+                left.1.extend(right.1);
+                left
+            },
+        );
     let mut fp = vec![0.0; n];
     for i in 0..n {
         fp[i] = embed(rho[i]).1;
