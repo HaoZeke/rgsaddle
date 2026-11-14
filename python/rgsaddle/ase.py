@@ -308,7 +308,7 @@ class _NebView:
 
     def gradient_norm(self, gradient: Float64) -> float:
         forces = np.asarray(gradient, dtype=np.float64).reshape(-1, 3)
-        return float(np.linalg.norm(forces, axis=1).max())
+        return float(np.max(np.linalg.norm(forces, axis=1)))
 
     def converged(self, gradient: Float64, fmax: float) -> bool:
         return self.gradient_norm(gradient) < fmax
@@ -431,8 +431,9 @@ class NEB:
         natoms = len(self.images[0])
         array = np.asarray(positions, dtype=np.float64).reshape((-1, 3))
         expect = (len(self.images) - 2) * natoms
-        if array.shape[0] != expect:
-            raise ValueError(f"positions: expected {expect} atoms, got {array.shape[0]}")
+        count = len(array)
+        if count != expect:
+            raise ValueError(f"positions: expected {expect} atoms, got {count}")
         for index, image in enumerate(self.images[1:-1]):
             image.set_positions(array[index * natoms : (index + 1) * natoms], apply_constraint=False)
 
