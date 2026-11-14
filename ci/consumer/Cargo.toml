@@ -1,0 +1,18 @@
+# A dependent that takes rgsaddle from this checkout and pins the crates
+# rgsaddle builds on by full rev. ci/check_dependency_pins.py fails when
+# its graph holds a second copy of any of them, and the CI test job
+# checks that lib.rs compiles.
+[package]
+name = "rgsaddle-consumer"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+rgsaddle = { path = "../.." }
+linkcell = { version = "=0.3.5", git = "https://github.com/d-SEAMS/linkcell", rev = "49f94dd2d2ff1e0d854cebc8a664599abe569156", default-features = false }
+rgmin = { version = "=0.5.2", git = "https://github.com/OmniPotentRPC/rgmin", rev = "6b5b222a2c9b4a70a92de9a46c3a41e3c2b00d16" }
+# Tag v3.6.0. Shares eindir-core and dlpk with rgmin and rgsaddle.
+rgpot-core = { version = "=3.6.0", git = "https://github.com/OmniPotentRPC/rgpot", rev = "20c58fe5a2859cd0a79a3e06d64d567f96d0ccbe" }

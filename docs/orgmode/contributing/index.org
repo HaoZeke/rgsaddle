@@ -34,6 +34,17 @@ The workflow overrides that command and does not pass ~--ignore-global-asm~.
 Build the Python package with scikit-build-core (=pip install .=) and run ~tests/python~ against the installed package.
 The algebra and interval checks live in ~validation~ and ~tests/symbolic~; the Lean libraries live in ~formal~.
 
+A git dependency names a full 40-character ~rev~, never a ~tag~ or ~branch~, with the exact version of the crate at that commit, such as ~version = "=0.5.2"~.
+Cargo keys a git source by its reference, so a dependent that pins the same commit another way locks a second copy.
+~ci/consumer~ is such a dependent: it takes this checkout by path and pins linkcell, rgmin and rgpot-core by rev.
+Bump its revs together with ~Cargo.toml~.
+The CI test job runs the check and compiles the consumer:
+
+#+begin_src sh
+python3 ci/check_dependency_pins.py
+cargo check --manifest-path ci/consumer/Cargo.toml --target-dir target
+#+end_src
+
 * Documentation
 Narrative pages are the Org sources under ~docs/orgmode~.
 ~docs/export.el~ writes a reStructuredText file under ~docs/source~ for each of them.
