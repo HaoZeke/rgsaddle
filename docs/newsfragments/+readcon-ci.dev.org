@@ -1,0 +1,3 @@
+The ~readcon~ CI job is a matrix over ~--features readcon~ and ~--features readcon,readcon-db~.
+Each row builds, tests, runs clippy on all targets with ~-D warnings~ and denies missing public docs, all with ~--locked~.
+Pushes to ~develop~ now run the CI workflow.

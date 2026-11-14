@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - develop
       - "feat/**"
       - "fix/**"
       - "ci/**"
@@ -81,14 +82,22 @@ jobs:
 
   readcon:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features: ["readcon", "readcon,readcon-db"]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      # src/io.rs only compiles with these features, so the test job's
+      # missing_docs check never sees its public items.
+      - name: Build
+        run: cargo build --locked --features ${{ matrix.features }} --verbose
       - name: Test
-        run: cargo test --features readcon --verbose
+        run: cargo test --locked --features ${{ matrix.features }} --verbose
       - name: Clippy
-        run: cargo clippy --features readcon -- -D warnings
-      - name: Test with the corpus
-        run: cargo test --features readcon-db --verbose
-      - name: Clippy with the corpus
-        run: cargo clippy --features readcon-db -- -D warnings
+        run: cargo clippy --locked --all-targets --features ${{ matrix.features }} -- -D warnings
+      - name: Public items are documented
+        run: cargo rustdoc --locked --features ${{ matrix.features }} -- -D missing_docs
