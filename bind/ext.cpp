@@ -1202,6 +1202,11 @@ NB_MODULE(_core, m) {
       nb::arg("gradients").noconvert(), nb::arg("k") = 0.1, nb::arg("climb") = false,
       nb::arg("projection") = "neb", nb::arg("tangent") = "improved",
       nb::arg("remove_translation") = false, nb::arg("force_tol") = 1e-3,
+      nb::sig("def project_band(positions: numpy.typing.NDArray[numpy.float64], energies: "
+              "numpy.typing.NDArray[numpy.float64], gradients: numpy.typing.NDArray[numpy.float64], "
+              "k: float = 0.1, climb: bool = False, projection: str = 'neb', tangent: str = 'improved', "
+              "remove_translation: bool = False, force_tol: float = 0.001) -> "
+              "tuple[numpy.typing.NDArray[numpy.float64], int]"),
       "Project an evaluated band. Returns (forces, ci_index). forces is flat, "
       "one row per image including zero endpoints, in the ASE force convention. "
       "climb selects the interior image by the endpoint-slope rule on this call; "
@@ -1245,7 +1250,11 @@ NB_MODULE(_core, m) {
               return rgsaddle_minmode_estimate(self.handle, surface, user, out);
             });
           },
-          nb::arg("surface"), "Refresh the lowest mode. surface(x) is one image shaped (1, 3N).")
+          nb::arg("surface"),
+          nb::sig("def estimate(self, surface: collections.abc.Callable[..., "
+                  "tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]]) "
+                  "-> SessionReport"),
+          "Refresh the lowest mode. surface(x) is one image shaped (1, 3N).")
       .def(
           "step",
           [](PyMinMode &self, nb::callable fn) {
@@ -1253,7 +1262,11 @@ NB_MODULE(_core, m) {
               return rgsaddle_minmode_step(self.handle, surface, user, out);
             });
           },
-          nb::arg("surface"), "Estimate the mode, invert the force, and take one translation.")
+          nb::arg("surface"),
+          nb::sig("def step(self, surface: collections.abc.Callable[..., "
+                  "tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]]) "
+                  "-> SessionReport"),
+          "Estimate the mode, invert the force, and take one translation.")
       .def(
           "set_position", &minmode_set_position, nb::arg("x").noconvert(), nb::arg("gradient") = nb::none(),
           "Move to a new point. gradient, when given, skips the next centre evaluation.")
@@ -1297,7 +1310,11 @@ NB_MODULE(_core, m) {
               return rgsaddle_sella_saddle_step(self.handle, surface, user, out);
             });
           },
-          nb::arg("surface"), "One partitioned-RFO trust step. surface(x) is one image shaped (1, 3N).")
+          nb::arg("surface"),
+          nb::sig("def step(self, surface: collections.abc.Callable[..., "
+                  "tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]]) "
+                  "-> SessionReport"),
+          "One partitioned-RFO trust step. surface(x) is one image shaped (1, 3N).")
       .def(
           "position",
           [](const PySella &self) {

@@ -131,79 +131,83 @@ def connect(surface: Callable[..., tuple[numpy.typing.NDArray[numpy.float64], nu
     """
 
 class SessionReport:
-    status: int
-    max_force: float
-    curvature: float
-    iteration: int
-    evaluations: int
-    ci_index: int
-    rotations: int
+    @property
+    def status(self) -> int:
+        """0 while running, 1 when converged."""
+
+    @property
+    def max_force(self) -> float:
+        """Largest force component, or NaN for an estimate."""
+
+    @property
+    def curvature(self) -> float:
+        """Curvature along the mode. 0 for a band projection."""
+
+    @property
+    def iteration(self) -> int:
+        """Steps taken."""
+
+    @property
+    def evaluations(self) -> int:
+        """Surface evaluations in this call."""
+
+    @property
+    def ci_index(self) -> int:
+        """Climbing image, or -1."""
+
+    @property
+    def rotations(self) -> int:
+        """Dimer rotations or Lanczos actions."""
+
+def project_band(positions: numpy.typing.NDArray[numpy.float64], energies: numpy.typing.NDArray[numpy.float64], gradients: numpy.typing.NDArray[numpy.float64], k: float = 0.1, climb: bool = False, projection: str = 'neb', tangent: str = 'improved', remove_translation: bool = False, force_tol: float = 0.001) -> tuple[numpy.typing.NDArray[numpy.float64], int]:
+    """
+    Project an evaluated band. Returns (forces, ci_index). forces is flat, one row per image including zero endpoints, in the ASE force convention. climb selects the interior image by the endpoint-slope rule on this call; a higher endpoint that slopes into the band does not climb. Units are the caller's. k is energy per length squared.
+    """
 
 def halve_raised_energy(previous: float, trial: float, step: float) -> tuple[bool, float]:
     """
-    Compare a trial energy with the energy before the step. A trial more than 1e-4 above previous halves step.
+    Compare a trial energy with the energy before the step. Returns (raised, new_step). A trial more than 1e-4 above previous halves step. No surface is evaluated.
     """
 
-def trust_update(
-    radius: float,
-    predicted: float,
-    actual: float,
-    step_norm: float,
-    sigma_inc: float,
-    sigma_dec: float,
-    rho_inc: float,
-    rho_dec: float,
-    delta_min: float,
-) -> float:
+def trust_update(radius: float, predicted: float, actual: float, step_norm: float, sigma_inc: float, sigma_dec: float, rho_inc: float, rho_dec: float, delta_min: float) -> float:
     """
-    Trust radius from a predicted energy change and the change that occurred. A prediction below 1e-14 in absolute value returns radius.
-    """
-
-def project_band(
-    positions: NDArray[numpy.float64],
-    energies: NDArray[numpy.float64],
-    gradients: NDArray[numpy.float64],
-    k: float = 0.1,
-    climb: bool = False,
-    projection: str = "neb",
-    tangent: str = "improved",
-    remove_translation: bool = False,
-    force_tol: float = 0.001,
-) -> tuple[NDArray[numpy.float64], int]:
-    """
-    Project an evaluated band. forces is flat, one row per image, endpoints zero. ci_index is -1 when no image climbs.
+    Trust radius from a predicted energy change and the change that occurred. actual is the trial energy minus the energy before the step. A prediction below 1e-14 in absolute value returns radius. The remaining arguments are the Sella schedule. No surface is evaluated.
     """
 
 class MinMode:
-    def __init__(
-        self,
-        x: NDArray[numpy.float64],
-        mode: NDArray[numpy.float64],
-        kind: str = "dimer",
-        dr: float = 0.001,
-        force_tol: float = 0.001,
-        max_move: float = 0.2,
-        rotation_tol: float = 0.0001,
-        max_rotations: int = 20,
-        krylov_dim: int = 12,
-    ) -> None: ...
-    def estimate(self, surface: Callable[..., tuple[NDArray[numpy.float64], NDArray[numpy.float64]]]) -> SessionReport: ...
-    def step(self, surface: Callable[..., tuple[NDArray[numpy.float64], NDArray[numpy.float64]]]) -> SessionReport: ...
-    def set_position(self, x: NDArray[numpy.float64], gradient: object | None = None) -> None: ...
-    def position(self) -> NDArray[numpy.float64]: ...
-    def mode(self) -> NDArray[numpy.float64]: ...
+    def __init__(self, x: Annotated[NDArray[numpy.float64], dict(shape=(None,), order='C', device='cpu', writable=False)], mode: Annotated[NDArray[numpy.float64], dict(shape=(None,), order='C', device='cpu', writable=False)], kind: str = 'dimer', dr: float = 0.001, force_tol: float = 0.001, max_move: float = 0.2, rotation_tol: float = 0.0001, max_rotations: int = 20, krylov_dim: int = 12) -> None:
+        """Dimer or Lanczos minimum-mode session. Lengths are the caller's."""
+
+    def estimate(self, surface: Callable[..., tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]]) -> SessionReport:
+        """Refresh the lowest mode. surface(x) is one image shaped (1, 3N)."""
+
+    def step(self, surface: Callable[..., tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]]) -> SessionReport:
+        """Estimate the mode, invert the force, and take one translation."""
+
+    def set_position(self, x: Annotated[NDArray[numpy.float64], dict(shape=(None,), order='C', device='cpu', writable=False)], gradient: object | None = None) -> None:
+        """
+        Move to a new point. gradient, when given, skips the next centre evaluation.
+        """
+
+    def position(self) -> NDArray[numpy.float64]:
+        """Copy of the current position."""
+
+    def mode(self) -> NDArray[numpy.float64]:
+        """Copy of the current mode."""
 
 class SellaSaddle:
-    def __init__(
-        self,
-        x: NDArray[numpy.float64],
-        masses: NDArray[numpy.float64],
-        order: int = 1,
-        delta: float = 0.1,
-        force_tol: float = 0.001,
-    ) -> None: ...
-    def step(self, surface: Callable[..., tuple[NDArray[numpy.float64], NDArray[numpy.float64]]]) -> SessionReport: ...
-    def position(self) -> NDArray[numpy.float64]: ...
+    def __init__(self, x: Annotated[NDArray[numpy.float64], dict(shape=(None,), order='C', device='cpu', writable=False)], masses: Annotated[NDArray[numpy.float64], dict(shape=(None,), order='C', device='cpu', writable=False)], order: int = 1, delta: float = 0.1, force_tol: float = 0.001) -> None:
+        """
+        Order-1 Sella saddle search. masses has one entry per atom, in the caller's mass unit. delta is the initial trust radius per free coordinate.
+        """
+
+    def step(self, surface: Callable[..., tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]]) -> SessionReport:
+        """
+        One partitioned-RFO trust step. surface(x) is one image shaped (1, 3N).
+        """
+
+    def position(self) -> NDArray[numpy.float64]:
+        """Copy of the current Cartesian position."""
 
 def raise_status(code: int) -> bool:
     """
