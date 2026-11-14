@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
+import pytest
+
+# RGSADDLE_REQUIRE_ASE=1 turns the skip into a collection error.
+if os.environ.get("RGSADDLE_REQUIRE_ASE") != "1":
+    pytest.importorskip("ase")
 from ase import Atoms
 from ase.calculators.calculator import Calculator
 from ase.mep import NEB as AseNeb

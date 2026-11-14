@@ -34,6 +34,9 @@ jobs:
       iterations: "20"
       rust-crate-dir: .
 
+  # The TSan image installs the package with --no-deps and does not read
+  # `extras`, so ASE is absent and the ASE test modules skip there. The
+  # ase job below runs them with RGSADDLE_REQUIRE_ASE=1.
   tsan:
     uses: OmniPotentRPC/rgpot/.github/workflows/py-tsan.yml@10a4dce7a9dc52dbbf043033ac7b9715c812e191
     with:
@@ -44,6 +47,24 @@ jobs:
       rust-crate-dir: .
       rust-toolchain: nightly-2026-01-20
       tsan-cmake-args: -DRGSADDLE_TSAN=ON
+
+  ase:
+    name: ASE drop-in tests (ASE 3.29.0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the package with the test extra
+        run: python -m pip install '.[test]'
+      - name: Pytest with ASE required
+        env:
+          RGSADDLE_REQUIRE_ASE: "1"
+        run: |
+          python -c "import ase; assert ase.__version__ == '3.29.0', ase.__version__"
+          python -m pytest tests/python -ra --timeout=180 -o faulthandler_timeout=120
 
   typing:
     uses: OmniPotentRPC/rgpot/.github/workflows/py-typing.yml@10a4dce7a9dc52dbbf043033ac7b9715c812e191

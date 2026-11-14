@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -10,7 +11,9 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pytest
 
-ase = pytest.importorskip("ase")
+# RGSADDLE_REQUIRE_ASE=1 turns the skip into a collection error.
+if os.environ.get("RGSADDLE_REQUIRE_ASE") != "1":
+    pytest.importorskip("ase")
 from ase import Atoms
 from ase.calculators.calculator import Calculator, all_changes
 from ase.constraints import FixAtoms
