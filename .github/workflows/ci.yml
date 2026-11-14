@@ -6,6 +6,7 @@ on:
       - main
       - develop
       - "feat/**"
+      - "release/**"
       - "fix/**"
       - "ci/**"
       - "verify/**"
