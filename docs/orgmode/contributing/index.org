@@ -34,6 +34,23 @@ The workflow overrides that command and does not pass ~--ignore-global-asm~.
 Build the Python package with scikit-build-core (=pip install .=) and run ~tests/python~ against the installed package.
 The algebra and interval checks live in ~validation~ and ~tests/symbolic~; the Lean libraries live in ~formal~.
 
+* Python stub
+~python/rgsaddle/_core.pyi~ is the output of nanobind's stubgen on the installed extension.
+Do not edit it by hand.
+The typing job of the Python binding workflow regenerates it with nanobind 3.1.0 and fails on any difference.
+The extension renders its own signatures, so ~build-system.requires~ in ~pyproject.toml~ pins the same nanobind.
+Give a binding that takes a callable or returns a tuple an ~nb::sig~, as ~connect~ does; a bare ~Callable~ or ~tuple~ fails ~mypy --strict~.
+After a change to ~bind/ext.cpp~, rebuild against the pinned nanobind and regenerate the stub:
+
+#+begin_src sh
+python -m pip install 'nanobind==3.1.0' 'scikit-build-core>=1.1'
+python -m pip install --no-build-isolation .
+python scripts/regen_stub.py
+#+end_src
+
+~python scripts/regen_stub.py --check~ prints the difference and exits nonzero, as the typing job does.
+The script reads the pin from ~pyproject.toml~ and refuses another nanobind.
+
 * Documentation
 Narrative pages are the Org sources under ~docs/orgmode~.
 ~docs/export.el~ writes a reStructuredText file under ~docs/source~ for each of them.

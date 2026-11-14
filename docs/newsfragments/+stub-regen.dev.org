@@ -1,0 +1,2 @@
+~python/rgsaddle/_core.pyi~ is the nanobind 3.1.0 stubgen output, and the build pins nanobind 3.1.0.
+~scripts/regen_stub.py~ regenerates the stub, and ~--check~ diffs it as the typing job does.
