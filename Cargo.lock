@@ -1105,7 +1105,7 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 [[package]]
 name = "linkcell"
 version = "0.3.5"
-source = "git+https://github.com/d-SEAMS/linkcell?tag=v0.3.5#49f94dd2d2ff1e0d854cebc8a664599abe569156"
+source = "git+https://github.com/d-SEAMS/linkcell?rev=49f94dd2d2ff1e0d854cebc8a664599abe569156#49f94dd2d2ff1e0d854cebc8a664599abe569156"
 dependencies = [
  "minimage",
 ]
@@ -1764,8 +1764,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "rgmin"
 version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f5fec1e2ba0832a2209321e8cf69332455d80bc9fed88038c2de0232ef1f30b"
+source = "git+https://github.com/OmniPotentRPC/rgmin?rev=6b5b222a2c9b4a70a92de9a46c3a41e3c2b00d16#6b5b222a2c9b4a70a92de9a46c3a41e3c2b00d16"
 dependencies = [
  "cbindgen",
  "dlpk",

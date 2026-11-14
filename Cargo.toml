@@ -40,17 +40,21 @@ dlpk = { version = "0.1.5", features = ["ndarray"] }
 # ConFrameWriter::new is RoundTrip and canonical stays off.
 readcon-core = { version = "=0.17.1", optional = true }
 readcon-db = { version = "0.2", optional = true }
-# crates.io 0.5.2. Control::default leaves ftol_rel and noise_floor
-# unset, the 0.5.1 behaviour the sessions rely on.
-rgmin = "0.5.2"
+# Control::default leaves ftol_rel and noise_floor unset, the 0.5.1
+# behaviour the sessions rely on.
+# Git dependencies name a full 40-hex rev, never a tag or branch: cargo
+# keys a git source by its reference, so a dependent that pins the same
+# commit by rev would otherwise lock a second copy. The exact version is
+# the crate at that rev, and crates.io packaged that release from it.
+rgmin = { version = "=0.5.2", git = "https://github.com/OmniPotentRPC/rgmin", rev = "6b5b222a2c9b4a70a92de9a46c3a41e3c2b00d16" }
 eindir-core = { version = "0.6.0", features = ["capi"] }
 ndarray = "0.17"
 faer = { version = "0.24.4", optional = true, default-features = false, features = ["std", "linalg"] }
 rayon = "1.12"
 thiserror = "2"
-# Tag v0.3.5 is commit 49f94dd2. Its own minimage requirement is the
-# caret ^0.1.2, so the exact pin below is what holds 0.1.2.
-linkcell = { version = "0.3.5", git = "https://github.com/d-SEAMS/linkcell", tag = "v0.3.5", default-features = false }
+# The rev is tag v0.3.5. Its own minimage requirement is the caret
+# ^0.1.2, so the exact pin below is what holds 0.1.2.
+linkcell = { version = "=0.3.5", git = "https://github.com/d-SEAMS/linkcell", rev = "49f94dd2d2ff1e0d854cebc8a664599abe569156", default-features = false }
 # Matches the Cell that linkcell v0.3.5 re-exports; 0.1.3's displacement fix lands in a separate change.
 minimage = "=0.1.2"
 proptest = { version = "1.6", optional = true }
