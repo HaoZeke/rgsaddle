@@ -1,0 +1,5 @@
+The ~readcon~ and ~readcon-db~ features compile again.
+Every field of ~MolecularFrame~, ~ConSpecies~ and ~ConImage~ has its length, atom order, unit and ownership documented, as the crate's ~deny(missing_docs)~ requires.
+~ConImage::forces~ is documented as forces, the ~fx fy fz~ columns of readcon-core's forces section, in place of the gradient its struct note named.
+The writer copies the slice unchanged, so a host holding the gradient negates it first.
+The writer labels each frame angstrom, eV and amu, and the reader returns values in the frame's own units without converting them.

@@ -22,12 +22,29 @@ use crate::error::SaddleError;
 use crate::mic::Cell;
 
 /// One CON frame as a 3N Cartesian, per-atom masses, and a linkcell box.
+///
+/// Values keep the frame's own units. No conversion is applied.
 pub struct MolecularFrame {
-    /// Cartesian coordinates, 3N, in the host's length unit.
+    /// Cartesian coordinates, length 3N, row-major `[x0, y0, z0, x1, ...]`.
+    ///
+    /// The unit is the frame's `units.length`, which is angstrom when
+    /// the key is absent. Atoms are in host order when column 5 is a
+    /// permutation of `0..N`, and otherwise in readcon-core's
+    /// type-grouped file order. The array is owned, one copy of the
+    /// frame's float64 positions.
     pub positions: Array1<f64>,
-    /// One mass per atom, in the host's mass unit.
+    /// One mass per atom, length N, in the atom order of `positions`.
+    ///
+    /// The unit is the frame's `units.mass`, which is amu when the key is
+    /// absent. A frame without N float64 masses gives 1 for every atom.
     pub masses: Array1<f64>,
-    /// Periodic cell, when the frame has one.
+    /// The periodic cell, or `None` when the frame has no `lattice_vectors`
+    /// matrix and all three box lengths are zero.
+    ///
+    /// An exact `lattice_vectors` matrix in the metadata wins over the
+    /// box lengths and angles. The lattice rows are in the frame's length
+    /// unit and the origin is zero. The `pbc` flags are not read, so a
+    /// cell is periodic along all three vectors.
     pub cell: Option<Cell>,
 }
 
@@ -35,27 +52,60 @@ pub struct MolecularFrame {
 ///
 /// `symbols` is one entry per atom, in the same order as the coordinate
 /// triples. A missing vector is an error. This crate does not invent an element.
+///
+/// Every field is borrowed for the call. The writer copies what it needs
+/// into the frame it builds.
 pub struct ConSpecies<'a> {
-    /// One entry per atom, in the same order as the coordinate triples.
+    /// Chemical symbol of each atom, length N, in coordinate order.
+    ///
+    /// Its length sets the atom count of every image. An empty symbol is
+    /// an error. readcon-core groups the atoms by symbol in the file, and
+    /// column 5 keeps the index into this slice, so a read restores the order.
     pub symbols: &'a [&'a str],
-    /// One mass per atom.
+    /// Mass of each atom in amu, length N, in the order of `symbols`.
+    ///
+    /// The writer labels the frame `units.mass = "amu"` and does not
+    /// convert. Values must be finite. A CON file stores one mass per
+    /// component, so two atoms with one symbol must have the same mass.
     pub masses: &'a [f64],
-    /// Periodic cell shared by the geometry. `None` writes no cell.
+    /// The periodic cell in angstrom, or `None` for a nonperiodic frame.
+    ///
+    /// `Some` writes the box lengths and angles and the exact lattice rows
+    /// as `lattice_vectors`. The rows must be finite and span a nonsingular
+    /// cell. `None` writes a zero box.
     pub cell: Option<&'a Cell>,
 }
 
 /// One geometry or one band image.
 ///
-/// `forces` is the flat 3N gradient. `None` omits the forces section.
-/// `neb_bead` set here wins. On [`write_band`], `None` uses the file index.
+/// The writer labels every frame with readcon-core's default units,
+/// `{"energy": "eV", "length": "angstrom", "mass": "amu"}`, and does not
+/// convert. The slices are borrowed for the call and copied into the frame.
 pub struct ConImage<'a> {
-    /// Flat 3N Cartesian coordinates.
+    /// Cartesian coordinates in angstrom, length 3N, row-major
+    /// `[x0, y0, z0, x1, ...]` in the order of [`ConSpecies::symbols`].
+    ///
+    /// Values must be finite.
     pub positions: &'a [f64],
-    /// Potential energy. `None` omits it.
+    /// Total energy of the geometry in eV, written as the frame's
+    /// `energy` metadata, or `None` to leave the key out.
+    ///
+    /// It must be finite.
     pub energy: Option<f64>,
-    /// Flat 3N gradient. `None` omits the forces section.
+    /// Forces, length 3N, row-major `[fx0, fy0, fz0, fx1, ...]` in the
+    /// order of `positions`, or `None` to leave out the forces section.
+    ///
+    /// The values are written as they are into readcon-core's forces
+    /// section, whose columns are `fx fy fz`. A host that holds the
+    /// surface gradient negates it first. The frame declares no force
+    /// unit; eV per angstrom is the one its energy and length labels
+    /// imply. Values must be finite.
     pub forces: Option<&'a [f64]>,
-    /// Bead index. On [`write_band`], `None` uses the file index.
+    /// NEB image index, written as the frame's `neb_bead` metadata.
+    ///
+    /// A value set here wins. With `None`, [`write_band`] and `store_band`
+    /// write the image's index in the band, and [`write_restart`] leaves
+    /// the key out.
     pub neb_bead: Option<u64>,
 }
 
