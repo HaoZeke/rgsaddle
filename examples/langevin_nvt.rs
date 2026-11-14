@@ -923,10 +923,11 @@ pub fn place_vacancy_dumbbell(
     }
     let center = [cell[0][0] * 0.5, cell[1][1] * 0.5, cell[2][2] * 0.5];
     let vacancy = nearest(&points, center, None);
+    let lengths = [cell[0][0], cell[1][1], cell[2][2]];
     let sia_guess = [
-        points[vacancy][0] + shell[0],
-        points[vacancy][1] + shell[1],
-        points[vacancy][2] + shell[2],
+        (points[vacancy][0] + shell[0]).rem_euclid(lengths[0]),
+        (points[vacancy][1] + shell[1]).rem_euclid(lengths[1]),
+        (points[vacancy][2] + shell[2]).rem_euclid(lengths[2]),
     ];
     let sia = nearest(&points, sia_guess, Some(vacancy));
     let sia_pos = points[sia];
@@ -1016,6 +1017,7 @@ struct RunSpec {
     gamma_per_ps: f64,
     r_max_500: f64,
     repeats: usize,
+    random_vacancy: bool,
 }
 
 fn env_f64(key: &str, default: f64) -> f64 {
@@ -1047,10 +1049,62 @@ fn run_spec() -> RunSpec {
         gamma_per_ps: env_f64("MD_GAMMA_PER_PS", 1.0),
         r_max_500: env_f64("MD_RMAX", 10.8),
         repeats: env_u64("MD_REPEATS", 13) as usize,
+        random_vacancy: env::var("MD_RANDOM").ok().as_deref() == Some("1"),
     }
 }
 
+fn lattice_points(repeats: usize, a: f64) -> (Vec<[f64; 3]>, [[f64; 3]; 3]) {
+    let (flat, cell) = fcc(repeats, a);
+    let mut points = Vec::with_capacity(flat.len() / 3);
+    for atom in 0..flat.len() / 3 {
+        points.push([flat[3 * atom], flat[3 * atom + 1], flat[3 * atom + 2]]);
+    }
+    (points, cell)
+}
+
+fn random_jobs(spec: &RunSpec) -> Vec<Job> {
+    let mut jobs = Vec::new();
+    for &temperature in &spec.temps {
+        let lattice = measured_lattice(temperature);
+        let (points, cell) = lattice_points(spec.repeats, lattice);
+        let lengths = [cell[0][0], cell[1][1], cell[2][2]];
+        let center = [lengths[0] * 0.5, lengths[1] * 0.5, lengths[2] * 0.5];
+        let vacancy = nearest(&points, center, None);
+        for seed_index in 0..spec.seeds {
+            let seed = mix_seed(&[temperature.to_bits(), seed_index, 0x5A10_5EED]);
+            let mut rng = SplitRng::new(seed);
+            let mut host = vacancy;
+            while host == vacancy {
+                host = (rng.u64() as usize) % points.len();
+            }
+            let mut shell = [0.0; 3];
+            for axis in 0..3 {
+                let mut delta = points[host][axis] - points[vacancy][axis];
+                delta -= lengths[axis] * (delta / lengths[axis]).round();
+                shell[axis] = delta;
+            }
+            let radius = (shell[0] * shell[0] + shell[1] * shell[1] + shell[2] * shell[2]).sqrt();
+            let (label, axis) = ORIENTATIONS[(rng.u64() as usize) % ORIENTATIONS.len()];
+            jobs.push(Job {
+                temperature,
+                lattice,
+                shell_r: radius,
+                shell,
+                shell_sites: 1,
+                orientation: label,
+                axis,
+                seed_index,
+                seed,
+            });
+        }
+    }
+    jobs
+}
+
 fn jobs_for(spec: &RunSpec) -> Vec<Job> {
+    if spec.random_vacancy {
+        return random_jobs(spec);
+    }
     let mut jobs = Vec::new();
     let a500 = measured_lattice(500.0);
     for &temperature in &spec.temps {
@@ -1110,14 +1164,11 @@ fn note_path(csv: &std::path::Path) -> PathBuf {
 
 const HEADER: &str = "temperature_K,lattice_A,repeats,n_atoms,shell_A,shell_x,shell_y,shell_z,orientation,shell_sites,seed,dt_fs,gamma_per_ps,window_ps,captured,time_ps,steps,initial_non12,final_non12";
 
-fn row_key(temperature: f64, shell: f64, orientation: &str, seed: u64, window: f64) -> String {
-    format!("{temperature:.0},{shell:.6},{orientation},{seed},{window:.4}")
-}
-
-fn existing_keys(path: &std::path::Path, window: f64) -> BTreeMap<String, ()> {
-    let mut keys = BTreeMap::new();
+fn settled_keys(path: &std::path::Path, target_window: f64) -> BTreeMap<String, ()> {
+    let mut captured = BTreeMap::new();
+    let mut reached = BTreeMap::new();
     let Ok(file) = File::open(path) else {
-        return keys;
+        return captured;
     };
     for line in BufReader::new(file).lines().map_while(Result::ok) {
         let fields: Vec<&str> = line.split(',').collect();
@@ -1136,12 +1187,25 @@ fn existing_keys(path: &std::path::Path, window: f64) -> BTreeMap<String, ()> {
         let Ok(stored_window) = fields[13].parse::<f64>() else {
             continue;
         };
-        if (stored_window - window).abs() > 1.0e-6 {
+        let Ok(did_capture) = fields[14].parse::<u8>() else {
             continue;
+        };
+        let key = format!("{temperature:.0},{shell:.6},{},{seed}", fields[8]);
+        if did_capture == 1 {
+            captured.insert(key, ());
+        } else {
+            let far = reached.get(&key).copied().unwrap_or(0.0);
+            if stored_window > far {
+                reached.insert(key, stored_window);
+            }
         }
-        keys.insert(row_key(temperature, shell, fields[8], seed, window), ());
     }
-    keys
+    for (key, window) in reached {
+        if window + 1.0e-6 >= target_window {
+            captured.insert(key, ());
+        }
+    }
+    captured
 }
 
 fn run_job(potential: &mut MishinCu, spec: &RunSpec, job: &Job) -> (usize, TrajectoryOutcome) {
@@ -1217,11 +1281,8 @@ fn first_method_report(csv: &std::path::Path) -> String {
         captured: bool,
         time_ps: f64,
     }
-    let Ok(file) = File::open(csv) else {
-        return String::new();
-    };
     let mut trials = Vec::new();
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
+    for line in deduped_lines(csv) {
         let fields: Vec<&str> = line.split(',').collect();
         if fields.len() < 19 {
             continue;
@@ -1273,14 +1334,15 @@ fn first_method_report(csv: &std::path::Path) -> String {
         temperatures.insert(trial.temperature.to_bits(), trial.temperature);
     }
     let marks = [
-        0.25_f64, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 150.0, 200.0, 300.0,
+        0.25_f64, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 150.0, 200.0, 300.0, 600.0, 900.0,
+        1200.0, 1500.0,
     ];
     for temperature in temperatures.values() {
         let members: Vec<&Trial> = trials
             .iter()
             .filter(|trial| trial.temperature == *temperature)
             .collect();
-        let window = members[0].window;
+        let window = members.iter().map(|trial| trial.window).fold(0.0, f64::max);
         let lattice = members[0].lattice;
         let repeats = members[0].repeats;
         text.push_str(&format!("### {temperature:.0} K\n\n"));
@@ -1321,13 +1383,14 @@ fn first_method_report(csv: &std::path::Path) -> String {
                 .fold(0.0, f64::max);
             text.push_str(&format!(" {last:.2} |\n"));
         }
-        text.push_str("\n| time (ps) | V_shell/Ω |\n|---:|---:|\n");
+        text.push_str("\n| time (ps) | V_shell/Ω | binomial σ |\n|---:|---:|---:|\n");
         let mut shells: BTreeMap<u64, Vec<&Trial>> = BTreeMap::new();
         for trial in &members {
             shells.entry(trial.shell.to_bits()).or_default().push(trial);
         }
-        for mark in marks.iter().filter(|mark| **mark <= window + 1.0e-9) {
+        let volume_at = |mark: f64| -> (f64, f64) {
             let mut volume = 0.0;
+            let mut variance = 0.0;
             for group in shells.values() {
                 let mut orients: BTreeMap<&str, Vec<&Trial>> = BTreeMap::new();
                 for trial in group {
@@ -1342,12 +1405,35 @@ fn first_method_report(csv: &std::path::Path) -> String {
                 for orient in orients.values() {
                     let hit = orient
                         .iter()
-                        .filter(|item| item.captured && item.time_ps <= *mark)
+                        .filter(|item| item.captured && item.time_ps <= mark)
                         .count();
-                    volume += orient[0].sites / 3.0 * hit as f64 / orient.len() as f64;
+                    let share = orient[0].sites / 3.0;
+                    let probability = hit as f64 / orient.len() as f64;
+                    volume += share * probability;
+                    variance +=
+                        share * share * probability * (1.0 - probability) / orient.len() as f64;
                 }
             }
-            text.push_str(&format!("| {mark:.2} | {volume:.2} |\n"));
+            (volume, variance.sqrt())
+        };
+        for mark in marks.iter().filter(|mark| **mark <= window + 1.0e-9) {
+            let (volume, sigma) = volume_at(*mark);
+            text.push_str(&format!("| {mark:.2} | {volume:.2} | {sigma:.2} |\n"));
+        }
+        text.push('\n');
+        for later in [600.0_f64, 900.0, 1200.0, 1500.0] {
+            if later > window + 1.0e-9 {
+                continue;
+            }
+            let (now, sigma) = volume_at(later);
+            let (before, _) = volume_at(later - 300.0);
+            let rise = now - before;
+            let settled = rise < sigma;
+            text.push_str(&format!(
+                "From {:.0} to {later:.0} ps the shell sum rose {rise:.2} Ω. The standard error at {later:.0} ps is {sigma:.2} Ω. {verdict}.\n",
+                later - 300.0,
+                verdict = if settled { "That rise is inside one standard error" } else { "That rise is larger than one standard error" }
+            ));
         }
         text.push('\n');
         let diffusivity = table_diffusivity(*temperature);
@@ -1381,7 +1467,7 @@ fn first_method_report(csv: &std::path::Path) -> String {
             let survival = (1.0 - captured_sites / total_sites).max(1.0e-12);
             fit_times.push((*mark, survival.ln()));
         }
-        text.push_str("The first method of Mwungeli, Liu, and Demkowicz fits ln(n(t)/N) against time through the origin. The slope is -k/V_model, with V_model the 13³ cell volume. n(t)/N here counts every lattice site: a simulated shell contributes its capture fraction, and a site outside 10.8 Å is counted as not yet recombined. The recombination volume is k a² / (α D_i) with α = 2/3, divided by Ω = a³/4.\n\n");
+        text.push_str("A shell-restricted survival fit uses the same through-origin slope as section 2 of Mwungeli, Liu, and Demkowicz. The slope is -k/V_model, with V_model the 13³ cell volume. n(t)/N here counts every lattice site: a simulated shell contributes its capture fraction, and a site outside 10.8 Å is counted as not yet recombined, so this volume lies below the whole-cell ensemble. The recombination volume is k a² / (α D_i) with α = 2/3, divided by Ω = a³/4.\n\n");
         if fit_times.is_empty() {
             continue;
         }
@@ -1436,10 +1522,198 @@ fn table_diffusivity(temperature: f64) -> Option<(f64, f64)> {
     }
 }
 
-fn summarize(csv: &std::path::Path) -> String {
-    let file = File::open(csv).expect("csv");
-    let mut groups: BTreeMap<(u64, u64, String, u64), Group> = BTreeMap::new();
+fn random_survival_note(csv: &std::path::Path) -> String {
+    let mut trials = Vec::new();
+    let mut temperature = 0.0;
+    let mut lattice = 0.0;
+    let mut repeats = 13.0;
+    let mut window = 0.0_f64;
+    for line in deduped_lines(csv) {
+        let fields: Vec<&str> = line.split(',').collect();
+        if fields.len() < 16 {
+            continue;
+        }
+        let Ok(temp) = fields[0].parse::<f64>() else {
+            continue;
+        };
+        let Ok(a) = fields[1].parse::<f64>() else {
+            continue;
+        };
+        let Ok(rep) = fields[2].parse::<f64>() else {
+            continue;
+        };
+        let Ok(span) = fields[13].parse::<f64>() else {
+            continue;
+        };
+        let Ok(captured) = fields[14].parse::<u8>() else {
+            continue;
+        };
+        let Ok(time_ps) = fields[15].parse::<f64>() else {
+            continue;
+        };
+        temperature = temp;
+        lattice = a;
+        repeats = rep;
+        window = window.max(span);
+        trials.push((captured == 1, time_ps));
+    }
+    let mut text = String::new();
+    text.push_str("# Random-vacancy survival, Mishin Cu\n\n");
+    text.push_str("The vacancy is the lattice site nearest the cell center. The <100> dumbbell host is drawn uniformly from the other sites of the 13³ cell, and the dumbbell axis uniformly from the three orientations. Under periodic boundaries the separation is uniform over the cell, which is the ensemble in section 2 of Mwungeli, Liu, and Demkowicz, Phys. Rev. Materials 9, 023601 (2025). The fit is ln(n(t)/N) = -(k/V_model) t through the origin, sampled every 25 ps. V_iv/Ω = 4k / (α a D_i) with α = 2/3, Ω = a³/4, and D_i from Table 1 of that paper (quoted from Ref. [12]). The quoted error is the standard deviation over 400 bootstrap resamples of the trajectories and does not include the Table 1 uncertainty on D_i.\n\n");
+    if trials.is_empty() {
+        text.push_str("No trajectories.\n");
+        return text;
+    }
+    let caps = [300.0_f64, 600.0, 900.0, 1200.0, 1500.0];
+    text.push_str(
+        "| t_max (ps) | captured | N | V_iv/Ω | bootstrap σ |\n|---:|---:|---:|---:|---:|\n",
+    );
+    let mut rows: Vec<(f64, f64, f64)> = Vec::new();
+    for cap in caps.iter().copied().filter(|cap| *cap <= window + 1.0e-6) {
+        let (volume, sigma) = bootstrap_volume(&trials, cap, lattice, repeats, temperature);
+        text.push_str(&format!(
+            "| {cap:.0} | {} | {} | {volume:.2} | {sigma:.2} |\n",
+            trials
+                .iter()
+                .filter(|(hit, time)| *hit && *time <= cap)
+                .count(),
+            trials.len()
+        ));
+        rows.push((cap, volume, sigma));
+    }
+    if let Some((cap, volume, sigma)) = rows.last().copied() {
+        text.push_str(&format!(
+            "\nAt the longest window, {cap:.0} ps, V_iv = {volume:.2} ± {sigma:.2} Ω.\n"
+        ));
+        if let Some((d_i, d_sigma)) = table_diffusivity(temperature) {
+            if d_i > 0.0 {
+                text.push_str(&format!(
+                    "Table 1 gives D_i = {d_i:.3} ± {d_sigma:.3} Å²/ps. That relative uncertainty scales this volume by {:.2} Ω.\n",
+                    volume.abs() * d_sigma / d_i
+                ));
+            }
+        }
+        if let Some((k_mean, k_sigma, mean_time, mean_sigma)) = table_volume(temperature) {
+            text.push_str(&format!(
+                "Table 1 at this temperature, 8788 atoms, is {k_mean:.0} ± {k_sigma:.0} Ω (k-method) and {mean_time:.0} ± {mean_sigma:.0} Ω (mean-time method). The longest-window volume minus the k-method value is {:.2} Ω.\n",
+                volume - k_mean
+            ));
+        }
+        text.push('\n');
+    }
+    text.push_str("Table 1, 8788 atoms, k-method then mean-time method: 300 K 254 ± 21 and 286 ± 28; 500 K 185 ± 23 and 161 ± 15; 700 K 203 ± 10 and 210 ± 21.\n");
+    text
+}
+
+fn table_volume(temperature: f64) -> Option<(f64, f64, f64, f64)> {
+    // k-method, its uncertainty, mean-time method, its uncertainty. Table 1, 8788 atoms.
+    match temperature as i32 {
+        300 => Some((254.0, 21.0, 286.0, 28.0)),
+        500 => Some((185.0, 23.0, 161.0, 15.0)),
+        700 => Some((203.0, 10.0, 210.0, 21.0)),
+        _ => None,
+    }
+}
+
+fn bootstrap_volume(
+    trials: &[(bool, f64)],
+    t_max: f64,
+    lattice: f64,
+    repeats: f64,
+    temperature: f64,
+) -> (f64, f64) {
+    let Some((d_i, _)) = table_diffusivity(temperature) else {
+        return (f64::NAN, f64::NAN);
+    };
+    let point = |sample: &[(bool, f64)]| survival_volume(sample, t_max, lattice, repeats, d_i);
+    let center = point(trials);
+    let mut rng = SplitRng::new(0xB007);
+    let mut values = Vec::with_capacity(400);
+    for _ in 0..400 {
+        let mut sample = Vec::with_capacity(trials.len());
+        for _ in 0..trials.len() {
+            let index = (rng.u64() as usize) % trials.len();
+            sample.push(trials[index]);
+        }
+        values.push(point(&sample));
+    }
+    let mean = values.iter().copied().sum::<f64>() / values.len() as f64;
+    let variance = values
+        .iter()
+        .map(|value| {
+            let miss = value - mean;
+            miss * miss
+        })
+        .sum::<f64>()
+        / values.len() as f64;
+    (center, variance.sqrt())
+}
+
+fn survival_volume(
+    trials: &[(bool, f64)],
+    t_max: f64,
+    lattice: f64,
+    repeats: f64,
+    d_i: f64,
+) -> f64 {
+    let mut times = Vec::new();
+    let step = 25.0_f64;
+    let mut time = step;
+    while time <= t_max + 1.0e-9 {
+        let alive = trials
+            .iter()
+            .filter(|(hit, when)| !(*hit && *when <= time))
+            .count();
+        let survival = (alive as f64 / trials.len() as f64).max(1.0e-12);
+        times.push((time, survival.ln()));
+        time += step;
+    }
+    if times.is_empty() {
+        return f64::NAN;
+    }
+    let denominator: f64 = times.iter().map(|(time, _)| time * time).sum();
+    let slope = times.iter().map(|(time, log_s)| time * log_s).sum::<f64>() / denominator;
+    let model = (repeats * lattice).powi(3);
+    let rate = -slope * model;
+    let volume = rate * lattice * lattice / (DUMBBELL_ALPHA * d_i);
+    volume / (lattice.powi(3) / 4.0)
+}
+
+fn deduped_lines(csv: &std::path::Path) -> Vec<String> {
+    let mut best: BTreeMap<String, (f64, String)> = BTreeMap::new();
+    let Ok(file) = File::open(csv) else {
+        return Vec::new();
+    };
     for line in BufReader::new(file).lines().map_while(Result::ok) {
+        let fields: Vec<&str> = line.split(',').collect();
+        if fields.len() < 16 {
+            continue;
+        }
+        let Ok(window) = fields[13].parse::<f64>() else {
+            continue;
+        };
+        let key = format!("{},{},{},{}", fields[0], fields[4], fields[8], fields[10]);
+        if best
+            .get(&key)
+            .map(|(kept, _)| window >= *kept)
+            .unwrap_or(true)
+        {
+            best.insert(key, (window, line));
+        }
+    }
+    best.into_values().map(|(_, line)| line).collect()
+}
+
+fn summarize(csv: &std::path::Path) -> String {
+    if csv
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.contains("random"))
+    {
+        return random_survival_note(csv);
+    }
+    let mut groups: BTreeMap<(u64, u64, String), Group> = BTreeMap::new();
+    for line in deduped_lines(csv) {
         let fields: Vec<&str> = line.split(',').collect();
         if fields.len() < 19 {
             continue;
@@ -1463,7 +1737,6 @@ fn summarize(csv: &std::path::Path) -> String {
             temperature.to_bits(),
             shell.to_bits(),
             fields[8].to_string(),
-            window.to_bits(),
         );
         let group = groups.entry(key).or_insert_with(|| Group {
             temperature,
@@ -1476,17 +1749,20 @@ fn summarize(csv: &std::path::Path) -> String {
         });
         group.captured += captured;
         group.trials += 1.0;
+        if window > group.window {
+            group.window = window;
+        }
     }
-    let mut by_temp: BTreeMap<(u64, u64), Vec<&Group>> = BTreeMap::new();
+    let mut by_temp: BTreeMap<u64, Vec<&Group>> = BTreeMap::new();
     for group in groups.values() {
         by_temp
-            .entry((group.temperature.to_bits(), group.window.to_bits()))
+            .entry(group.temperature.to_bits())
             .or_default()
             .push(group);
     }
     let mut text = String::new();
     text.push_str("# Direct-MD vacancy-SIA volume, Mishin Cu\n\n");
-    text.push_str("Independent NVT trajectories of one vacancy and one <100> dumbbell on the Mishin EAM1 evaluated by `tests/mishin_cu.rs`. The driver is `examples/langevin_nvt.rs`. The cell is 13×13×13 conventional cells (8788 atoms) at the branch's NPT lattice constant. Capture is the paper's 12-fold test: coordination cutoff 3.1 Å, sampled every 0.25 ps (Mwungeli, Liu, and Demkowicz, Phys. Rev. Materials 9, 023601 (2025)). The shell sum counts recombined sites, with each orientation owning one third of its shell. The survival-curve volume defined in section 2 of that paper is computed from the same trajectories.\n\n");
+    text.push_str("Independent NVT trajectories of one vacancy and one <100> dumbbell on the Mishin EAM1 evaluated by `tests/mishin_cu.rs`. The driver is `examples/langevin_nvt.rs`. The cell is 13×13×13 conventional cells (8788 atoms) at the branch's NPT lattice constant. Capture is the paper's 12-fold test: coordination cutoff 3.1 Å, sampled every 0.25 ps (Mwungeli, Liu, and Demkowicz, Phys. Rev. Materials 9, 023601 (2025)). The shell sum counts recombined sites, with each orientation owning one third of its shell. The whole-cell survival curve is a separate run whose output name contains `random`.\n\n");
     text.push_str("The clock starts at the ideal dumbbell (offset 1.025 Å) with Maxwellian velocities. There is no separate NPH equilibration. The thermostat is the Langevin velocity Verlet in `npt_lattice`, without the barostat. Friction and timestep are the columns `gamma_per_ps` and `dt_fs`.\n\n");
     text.push_str("A 3 ps control at 500 K, 2 fs, and gamma = 1/ps, sampled every 0.25 ps, fixes what a zero in the 12-fold count means. The perfect 13³ crystal started at 0 atoms off 12-fold coordination and then fluctuated: minimum 0, mean 6.2, maximum 14, with 4 of 12 samples exactly 0. The nearest shell, a <100> dumbbell, started at 13 and fell into that same cloud (minimum 0, mean 5.7, maximum 16, 2 of 12 samples exactly 0). The outermost shell inside 10.8 Å started at 20 and stayed separated (minimum 22, mean 32.0, maximum 47, 0 of 12 samples exactly 0). Capture in the table is the first sample whose off-12 count is 0.\n\n");
     text.push_str("Binomial standard error of a capture probability is sqrt(p (1-p) / N). The volume error adds the orientation contributions in quadrature. A shell whose trajectories all agree has a binomial error of zero.\n\n");
@@ -1494,9 +1770,9 @@ fn summarize(csv: &std::path::Path) -> String {
         text.push_str("No trajectory rows were found.\n");
         return text;
     }
-    for ((_, _), members) in &by_temp {
+    for (_, members) in &by_temp {
         let temperature = members[0].temperature;
-        let window = members[0].window;
+        let window = members.iter().map(|group| group.window).fold(0.0, f64::max);
         text.push_str(&format!("## {temperature:.0} K, window {window:.2} ps\n\n"));
         text.push_str("| shell (Å) | orientation | sites | captured | N | p | binomial σ |\n");
         text.push_str("|---:|:---:|---:|---:|---:|---:|---:|\n");
@@ -1917,16 +2193,13 @@ fn main() {
         let mut header = File::create(&path).expect("csv");
         writeln!(header, "{HEADER}").unwrap();
     }
-    let done = existing_keys(&path, spec.window_ps);
+    let done = settled_keys(&path, spec.window_ps);
     let pending: Vec<&Job> = jobs
         .iter()
         .filter(|job| {
-            !done.contains_key(&row_key(
-                job.temperature,
-                job.shell_r,
-                job.orientation,
-                job.seed_index,
-                spec.window_ps,
+            !done.contains_key(&format!(
+                "{:.0},{:.6},{},{}",
+                job.temperature, job.shell_r, job.orientation, job.seed_index
             ))
         })
         .collect();
@@ -2072,6 +2345,47 @@ mod tests {
             worst = worst.max((energy + kinetic - 0.5).abs());
         }
         assert!(worst < 1.0e-4, "{worst}");
+    }
+
+    #[test]
+    fn random_separations_cover_the_cell_past_the_shell_cutoff() {
+        let spec = RunSpec {
+            temps: vec![500.0],
+            seeds: 192,
+            window_ps: 1500.0,
+            dt_fs: 10.0,
+            gamma_per_ps: 0.1,
+            r_max_500: 10.8,
+            repeats: 13,
+            random_vacancy: true,
+        };
+        let jobs = random_jobs(&spec);
+        assert_eq!(jobs.len(), 192);
+        let far = jobs.iter().filter(|job| job.shell_r > 10.8).count();
+        assert!(far > 100, "{far}");
+        let lattice = measured_lattice(500.0);
+        let half_diagonal = 0.5 * 13.0 * lattice * 3.0_f64.sqrt();
+        let max_r = jobs.iter().map(|job| job.shell_r).fold(0.0, f64::max);
+        assert!(max_r > 20.0 && max_r <= half_diagonal + 1.0e-6, "{max_r}");
+    }
+
+    #[test]
+    fn survival_volume_recovers_an_exponential_rate() {
+        let lattice = 3.638666;
+        let repeats = 13.0;
+        let d_i = 0.526;
+        let lambda = 5.0e-4;
+        let n = 400usize;
+        let mut trials = Vec::with_capacity(n);
+        for index in 0..n {
+            let alive = 1.0 - (index as f64 + 0.5) / n as f64;
+            trials.push((true, -alive.ln() / lambda));
+        }
+        let volume = survival_volume(&trials, 1500.0, lattice, repeats, d_i);
+        let model = (repeats * lattice).powi(3);
+        let expected = 4.0 * (lambda * model) / (DUMBBELL_ALPHA * lattice * d_i);
+        let miss = (volume - expected).abs() / expected;
+        assert!(miss < 0.03, "{volume} {expected} {miss}");
     }
 
     #[test]
