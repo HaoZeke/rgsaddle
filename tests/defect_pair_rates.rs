@@ -1009,6 +1009,8 @@ fn the_capture_likelihood_recovers_the_radius_of_simulated_walkers() {
                 &records,
             )
             .unwrap()[0]
+                .iter()
+                .sum::<f64>()
         })
         .collect();
     let best = (0..radii.len())
