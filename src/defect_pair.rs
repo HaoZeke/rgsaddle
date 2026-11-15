@@ -50,6 +50,7 @@ use crate::eigensolve::exact_eigh;
 use crate::error::SaddleError;
 use crate::minmode::{MinModeStatus, PointSurface};
 use crate::pafi::{self, ArcPath, FreeEnergyProfile, HyperplaneAverage, PafiConfig};
+use crate::relax::{RelaxConfig, max_atom_force, relax_to_tolerance};
 use crate::solid_dimer::{
     CellMask, JointChart, SolidDimer, SolidDimerConfig, finite_difference_cauchy_stress,
 };
@@ -802,14 +803,12 @@ pub struct DefectPairConfig {
     pub max_dimer_steps: usize,
     /// Most band steps per phase.
     pub max_band_steps: usize,
-    /// Most FIRE steps per minimization.
-    pub max_relax_steps: usize,
-    /// Largest gradient component that ends a minimization.
-    pub relax_tol: f64,
-    /// Initial FIRE time step of a minimization.
-    pub relax_step: f64,
-    /// Largest atomic step of a minimization.
-    pub max_move: f64,
+    /// Every minimization: the reactant, the products and the pushes off
+    /// a saddle. It runs to `relax.force_tol` on the largest per-atom force
+    /// and reaching `relax.max_steps` is an error. The pushes decide which
+    /// minima a saddle connects, so the default follows the steepest-descent
+    /// flow with [`Method::Ode12r`].
+    pub relax: RelaxConfig,
     /// Dimer start, this fraction of the way from reactant to product.
     pub seed_fraction: f64,
     /// Largest atomic displacement of the push off each side of the saddle.
@@ -862,10 +861,9 @@ impl Default for DefectPairConfig {
             images: 7,
             max_dimer_steps: 80,
             max_band_steps: 80,
-            max_relax_steps: 80,
-            relax_tol: 1.0e-3,
-            relax_step: 0.1,
-            max_move: 0.08,
+            relax: RelaxConfig::default()
+                .with_method(Method::Ode12r)
+                .with_max_atom_move(0.08),
             seed_fraction: 0.35,
             push: 0.15,
             connect_rmsd: 0.3,
@@ -1872,54 +1870,62 @@ fn one_seed<S: PointSurface>(
     })
 }
 
-/// Minimize until the force tolerance or until the energy is at or below `floor`.
-pub fn descend_limited<S: PointSurface>(
+/// Follow `config.relax` from `positions` until the energy is at or below
+/// `floor` or the largest per-atom force is below `config.relax.force_tol`.
+///
+/// The floor ends a descent from a saddle well before a deep minimum, so a
+/// band can end there instead of across the whole drop. Reaching
+/// `config.relax.max_steps` first, or a non-finite energy, is an error.
+pub fn descend_to_floor<S: PointSurface>(
     surface: &S,
     mut positions: Array1<f64>,
     cell: M3,
     config: &DefectPairConfig,
     floor: f64,
 ) -> Result<(Array1<f64>, f64), SaddleError> {
+    let relax = &config.relax;
+    relax.check()?;
+    let flat = m3_to_row9(cell);
+    let (mut energy, gradient) = surface.eval_in_cell(positions.view(), &flat)?;
+    if !energy.is_finite() {
+        return Err(SaddleError::NonFinite("descent start energy"));
+    }
+    if energy <= floor || max_atom_force(gradient.view()) < relax.force_tol {
+        return Ok((positions, energy));
+    }
     let mut solver = rgmin::Solver::new(
-        rgmin::Method::fire(rgmin::FireKind::V2),
+        relax.method.clone(),
         rgmin::Control::default()
             .with_maxiter(usize::MAX)
             .with_gtol(0.0)
-            .with_istep(config.relax_step),
+            .with_istep(relax.initial_step),
         positions.len(),
     );
-    solver.set_atom_maxmove(config.max_move);
-    let flat = m3_to_row9(cell);
-    let mut energy = surface.eval_in_cell(positions.view(), &flat)?.0;
-    let mut kept = positions.clone();
-    let mut kept_energy = energy;
-    for _ in 0..config.max_relax_steps {
-        if energy <= floor {
-            break;
-        }
-        let oracle = rgmin::Oracle::unbounded(positions.len(), |x: ArrayView1<f64>| {
-            surface
-                .eval_in_cell(x, &flat)
-                .unwrap_or_else(|_| (f64::NAN, Array1::zeros(x.len())))
-        });
+    solver.set_atom_maxmove(relax.max_atom_move);
+    let oracle = rgmin::Oracle::unbounded(positions.len(), |x: ArrayView1<f64>| {
+        surface
+            .eval_in_cell(x, &flat)
+            .unwrap_or_else(|_| (f64::NAN, Array1::from_elem(x.len(), f64::NAN)))
+    });
+    let mut largest = f64::INFINITY;
+    for _ in 0..relax.max_steps {
         solver
             .step(&oracle, &mut positions)
             .map_err(|error| SaddleError::Solver(error.to_string()))?;
         let (next, gradient) = surface.eval_in_cell(positions.view(), &flat)?;
-        // One FIRE step can fall through a collision. Keep the last sane point.
-        if !next.is_finite() || next < kept_energy - 2.0 {
-            positions = kept;
-            energy = kept_energy;
-            break;
+        if !next.is_finite() {
+            return Err(SaddleError::NonFinite("descent energy"));
         }
-        kept = positions.clone();
-        kept_energy = next;
         energy = next;
-        if max_abs(&gradient) < config.relax_tol {
-            break;
+        largest = max_atom_force(gradient.view());
+        if energy <= floor || largest < relax.force_tol {
+            return Ok((positions, energy));
         }
     }
-    Ok((positions, energy))
+    Err(SaddleError::Solver(format!(
+        "descent not converged: energy {energy:.6} above the floor {floor:.6} and largest atom force {largest:.3e} not below {:.1e} after {} steps",
+        relax.force_tol, relax.max_steps
+    )))
 }
 
 /// How a placement enters the recombination volume.
@@ -2628,39 +2634,15 @@ fn directed_gap(left: &Array1<f64>, right: &Array1<f64>, cell: M3) -> Result<f64
 
 fn relax<S: PointSurface>(
     surface: &S,
-    mut positions: Array1<f64>,
+    positions: Array1<f64>,
     cell: M3,
     config: &DefectPairConfig,
 ) -> Result<(Array1<f64>, f64), SaddleError> {
     if config.cell_mode == CellMode::Variable {
         return relax_joint(surface, positions, cell, config);
     }
-    let mut solver = rgmin::Solver::new(
-        rgmin::Method::fire(rgmin::FireKind::V2),
-        rgmin::Control::default()
-            .with_maxiter(usize::MAX)
-            .with_gtol(0.0)
-            .with_istep(config.relax_step),
-        positions.len(),
-    );
-    solver.set_atom_maxmove(config.max_move);
-    let flat = m3_to_row9(cell);
-    for _ in 0..config.max_relax_steps {
-        let oracle = rgmin::Oracle::unbounded(positions.len(), |x: ArrayView1<f64>| {
-            surface
-                .eval_in_cell(x, &flat)
-                .unwrap_or_else(|_| (f64::NAN, Array1::zeros(x.len())))
-        });
-        solver
-            .step(&oracle, &mut positions)
-            .map_err(|error| SaddleError::Solver(error.to_string()))?;
-        let (_, gradient) = surface.eval_in_cell(positions.view(), &flat)?;
-        if max_abs(&gradient) < config.relax_tol {
-            break;
-        }
-    }
-    let (energy, _) = surface.eval_in_cell(positions.view(), &flat)?;
-    Ok((positions, energy))
+    let done = relax_to_tolerance(surface, positions, cell, &config.relax)?;
+    Ok((done.positions, done.energy))
 }
 
 fn relax_joint<S: PointSurface>(
@@ -2673,31 +2655,34 @@ fn relax_joint<S: PointSurface>(
     let chart = JointChart::new(cell, n_atoms, CellMask::all(), config.external_stress, 1.0)?;
     let mut q = Array1::zeros(chart.dimension());
     q.slice_mut(s![..positions.len()]).assign(&positions);
+    let relax = &config.relax;
     let mut solver = rgmin::Solver::new(
-        rgmin::Method::fire(rgmin::FireKind::V2),
+        relax.method.clone(),
         rgmin::Control::default()
-            .with_maxiter(usize::MAX)
-            .with_gtol(0.0)
-            .with_istep(config.relax_step),
+            .with_maxiter(relax.max_steps)
+            .with_gtol(relax.force_tol)
+            .with_stop_norm(rgmin::StopNorm::MaxAtom)
+            .with_istep(relax.initial_step),
         q.len(),
     );
-    solver.set_atom_maxmove(config.max_move);
-    for _ in 0..config.max_relax_steps {
-        let oracle = rgmin::Oracle::unbounded(q.len(), |q: ArrayView1<f64>| {
-            match joint_gradient(surface, &chart, q) {
-                Ok(pair) => pair,
-                Err(_) => (f64::NAN, Array1::zeros(q.len())),
-            }
-        });
-        solver
-            .step(&oracle, &mut q)
-            .map_err(|error| SaddleError::Solver(error.to_string()))?;
-        let (_, gradient) = joint_gradient(surface, &chart, q.view())?;
-        if max_abs(&gradient) < config.relax_tol {
-            break;
+    solver.set_atom_maxmove(relax.max_atom_move);
+    let oracle = rgmin::Oracle::unbounded(q.len(), |q: ArrayView1<f64>| {
+        match joint_gradient(surface, &chart, q) {
+            Ok(pair) => pair,
+            Err(_) => (f64::NAN, Array1::zeros(q.len())),
         }
+    });
+    let report = solver
+        .run(&oracle, &mut q)
+        .map_err(|error| SaddleError::Solver(error.to_string()))?;
+    let (energy, gradient) = joint_gradient(surface, &chart, q.view())?;
+    let largest = max_atom_force(gradient.view());
+    if !(energy.is_finite() && largest < relax.force_tol) {
+        return Err(SaddleError::Solver(format!(
+            "joint relaxation not converged: largest generalized force {largest:.3e} is not below {:.1e} after {} of {} steps ({:?})",
+            relax.force_tol, report.steps, relax.max_steps, report.status
+        )));
     }
-    let (energy, _) = joint_gradient(surface, &chart, q.view())?;
     let (positions, _) = chart.geometry(q.view())?;
     Ok((positions, energy))
 }
@@ -3008,6 +2993,7 @@ fn check_config(config: &DefectPairConfig) -> Result<(), SaddleError> {
             "the push and the connectivity tolerance must be positive".into(),
         ));
     }
+    config.relax.check()?;
     if !(config.zero_t_tol.is_finite() && config.zero_t_tol > 0.0) {
         return Err(SaddleError::Invalid(
             "the zero-temperature tolerance must be positive".into(),
@@ -3128,10 +3114,6 @@ fn unit(v: &Array1<f64>) -> Result<Array1<f64>, SaddleError> {
         return Err(SaddleError::Invalid("a path tangent vanishes".into()));
     }
     Ok(v / scale)
-}
-
-fn max_abs(gradient: &Array1<f64>) -> f64 {
-    gradient.iter().map(|v| v.abs()).fold(0.0, f64::max)
 }
 
 fn unflat(cell: &[f64; 9]) -> M3 {

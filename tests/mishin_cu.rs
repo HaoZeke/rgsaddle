@@ -19,7 +19,7 @@ use std::time::Instant;
 
 use ndarray::{Array1, Array2, ArrayView1};
 use rayon::prelude::*;
-use rgmin::{Control, FireKind, Method, Oracle, Solver};
+use rgmin::{FireKind, Method};
 use rgsaddle::{
     BOLTZMANN_EV_PER_K, CellMask, DefectSource, ElasticDipole, ElasticMultipole, FieldSolver,
     FmmSolver, IndexCheck, Kelvin, LINEAR_FOLD_EV, MinModeConfig, MinModeStatus, PointSurface,
@@ -440,33 +440,25 @@ fn dumbbell(perfect: &Array1<f64>, direction: [f64; 3], separation: f64) -> Arra
     Array1::from(values)
 }
 
-fn relax(
+/// FIRE to `tol` eV/Å on the largest atom force under a 0.06 Å cap, on
+/// the direct pair sum. Returns the steps taken.
+fn relax_direct(
     copper: &Copper,
     positions: &mut Array1<f64>,
     cell: [[f64; 3]; 3],
     tol: f64,
-    max_steps: usize,
 ) -> usize {
-    let mut solver = Solver::new(
-        Method::fire(FireKind::V2),
-        Control::default().with_maxiter(usize::MAX).with_gtol(0.0),
-        positions.len(),
-    );
-    solver.set_atom_maxmove(0.06);
-    let mut done = 0;
-    for _ in 0..max_steps {
-        let oracle = Oracle::unbounded(positions.len(), |x: ArrayView1<f64>| {
-            let (energy, gradient, _) = copper.evaluate(x, cell);
-            (energy, gradient)
-        });
-        solver.step(&oracle, positions).expect("relax");
-        done += 1;
-        let (_, gradient, _) = copper.evaluate(positions.view(), cell);
-        if max_abs(&gradient) < tol {
-            break;
-        }
-    }
-    done
+    let done = rgsaddle::relax_to_tolerance(
+        &Held { copper, cell },
+        positions.clone(),
+        cell,
+        &rgsaddle::RelaxConfig::default()
+            .with_force_tol(tol)
+            .with_max_atom_move(0.06),
+    )
+    .expect("direct-sum relaxation");
+    *positions = done.positions;
+    done.steps
 }
 
 fn max_abs(gradient: &Array1<f64>) -> f64 {
@@ -1031,12 +1023,12 @@ fn dumbbell_searches_start_at_the_sheared_minimum() {
         let (sheared, cell) = apply_shear(&along_100, cube, gamma);
         let (sheared_110, _) = apply_shear(&along_110, cube, gamma);
         let mut other = sheared_110;
-        let other_steps = relax(&copper, &mut other, cell, 1e-3, 200);
+        let other_steps = relax_direct(&copper, &mut other, cell, 1e-3);
         let (e_other, g_other, _) = copper.evaluate(other.view(), cell);
         let (_, _, dir_other) = closest_pair(&other, cell);
         let (other_100, other_110, _, other_sep) = axis_report(dir_other);
         let mut minimum = sheared;
-        let relax_steps = relax(&copper, &mut minimum, cell, 1e-3, 200);
+        let relax_steps = relax_direct(&copper, &mut minimum, cell, 1e-3);
         let (e_min, g_min, sigma_min) = copper.evaluate(minimum.view(), cell);
         let g = max_abs(&g_min);
         let (_, _, dir) = closest_pair(&minimum, cell);
@@ -1443,11 +1435,11 @@ fn explicit_barrier(
     let (placed_110, _) = deform(&spun_110, cube, eps);
     let mut other = placed_110;
     let before_110 = copper.calls();
-    relax(copper, &mut other, cell, 1e-3, 200);
+    relax_direct(copper, &mut other, cell, 1e-3);
     let relax_110_calls = copper.calls() - before_110;
     let mut minimum = placed_100;
     let before_min = copper.calls();
-    relax(copper, &mut minimum, cell, 1e-3, 200);
+    relax_direct(copper, &mut minimum, cell, 1e-3);
     let relax_min_calls = copper.calls() - before_min;
     let (e_min, g_min, sigma_min) = copper.evaluate(minimum.view(), cell);
     let min_gradient = g_min.clone();
@@ -1565,7 +1557,7 @@ fn strain_response_head_to_head() {
 
     let before_bulk = copper.calls();
     let mut bulk = perfect.clone();
-    relax(&copper, &mut bulk, cube, 1e-3, 200);
+    relax_direct(&copper, &mut bulk, cube, 1e-3);
     let (_, _, sigma_bulk) = copper.evaluate(bulk.view(), cube);
     let bulk_calls = copper.calls() - before_bulk;
 
@@ -2531,33 +2523,38 @@ impl PointSurface for FastHeld<'_> {
     }
 }
 
-fn relax_fast(
+/// FIRE to `tol` eV/Å on the largest atom force, for a start that is
+/// already in the basin it should end in.
+fn settle(
     copper: &FastCopper,
-    positions: &mut Array1<f64>,
+    positions: Array1<f64>,
     cell: [[f64; 3]; 3],
     tol: f64,
-    max_steps: usize,
-) {
-    let mut solver = Solver::new(
-        Method::fire(FireKind::V2),
-        Control::default()
-            .with_maxiter(usize::MAX)
-            .with_gtol(0.0)
-            .with_istep(0.08),
-        positions.len(),
-    );
-    solver.set_atom_maxmove(0.08);
-    for _ in 0..max_steps {
-        let oracle = Oracle::unbounded(positions.len(), |x: ArrayView1<f64>| {
-            let (energy, gradient, _) = copper.evaluate(x, cell);
-            (energy, gradient)
-        });
-        solver.step(&oracle, positions).expect("relax");
-        let (_, gradient, _) = copper.evaluate(positions.view(), cell);
-        if max_abs(&gradient) < tol {
-            break;
-        }
-    }
+) -> Result<Array1<f64>, SaddleError> {
+    rgsaddle::relax_to_tolerance(
+        &FastHeld { copper, cell },
+        positions,
+        cell,
+        &pair_fire().with_force_tol(tol),
+    )
+    .map(|done| done.positions)
+}
+
+/// The steepest-descent flow to `tol` eV/Å, for a start whose basin is the
+/// result: a push off a saddle or a placed pair.
+fn descend(
+    copper: &FastCopper,
+    positions: Array1<f64>,
+    cell: [[f64; 3]; 3],
+    tol: f64,
+) -> Result<Array1<f64>, SaddleError> {
+    rgsaddle::relax_to_tolerance(
+        &FastHeld { copper, cell },
+        positions,
+        cell,
+        &pair_relax().with_force_tol(tol),
+    )
+    .map(|done| done.positions)
 }
 
 fn shell_table(a: f64, repeats: usize) -> Vec<(f64, [f64; 3], usize)> {
@@ -3011,10 +3008,10 @@ fn enumerate_escapes(
                 return None;
             }
             let step = &mode * (0.5 / peak);
-            let mut plus = &saddle + &step;
-            let mut minus = &saddle - &step;
-            relax_fast(copper, &mut plus, cell, 1.5e-3, 70);
-            relax_fast(copper, &mut minus, cell, 1.5e-3, 70);
+            let plus = &saddle + &step;
+            let minus = &saddle - &step;
+            let plus = descend(copper, plus, cell, 1.5e-3).ok()?;
+            let minus = descend(copper, minus, cell, 1.5e-3).ok()?;
             let gap_plus = hausdorff(&plus, reactant, cell);
             let gap_minus = hausdorff(&minus, reactant, cell);
             let (reactant_energy, _) = held.eval(reactant.view()).ok()?;
@@ -3175,11 +3172,6 @@ struct RateJob {
     a_ref: f64,
 }
 
-fn occupied(positions: &Array1<f64>, site: [f64; 3], cell: [[f64; 3]; 3]) -> bool {
-    let n = positions.len() / 3;
-    (0..n).any(|atom| mic_distance(point_of(positions, atom), site, cell) < 0.8)
-}
-
 /// FIRE 2.0 to the default 1e-3 eV/Å largest atom force, with the 0.08 Å
 /// per-atom cap and time step the pair searches use.
 fn pair_fire() -> rgsaddle::RelaxConfig {
@@ -3235,9 +3227,22 @@ fn relax_pair(
     vacancy: bool,
     relax: &rgsaddle::RelaxConfig,
 ) -> Result<PairState, SaddleError> {
+    relax_oriented(copper, repeats, a, shell, [1.0, 0.0, 0.0], vacancy, relax)
+}
+
+/// [`relax_pair`] with the dumbbell along `axis`.
+fn relax_oriented(
+    copper: &FastCopper,
+    repeats: usize,
+    a: f64,
+    shell: [f64; 3],
+    axis: [f64; 3],
+    vacancy: bool,
+    relax: &rgsaddle::RelaxConfig,
+) -> Result<PairState, SaddleError> {
     let length = repeats as f64 * a;
     let cell = [[length, 0.0, 0.0], [0.0, length, 0.0], [0.0, 0.0, length]];
-    let built = build_pair(repeats, a, shell, vacancy);
+    let built = build_oriented(repeats, a, shell, axis, vacancy);
     let done =
         rgsaddle::relax_to_tolerance(&FastHeld { copper, cell }, built.positions, cell, relax)?;
     let positions = done.positions;
@@ -3261,6 +3266,42 @@ fn relax_pair(
         vacancies: occupancy.vacancy_count(),
         interstitials: occupancy.interstitial_count(),
     })
+}
+
+/// Whether a relaxed vacancy–interstitial cell has recombined: every site of
+/// the perfect lattice the cell holds is singly occupied. The lattice is
+/// the 4 n³ fcc crystal with this atom count, mapped onto `cell`.
+fn recombined_in(positions: &Array1<f64>, cell: [[f64; 3]; 3]) -> bool {
+    let atoms = positions.len() / 3;
+    let repeats = (atoms as f64 / 4.0).cbrt().round() as usize;
+    assert_eq!(4 * repeats.pow(3), atoms, "not a 4 n^3 fcc cell");
+    let (cubic, _) = fcc(repeats, 1.0);
+    let mut sites = Array1::zeros(cubic.len());
+    for site in 0..atoms {
+        for c in 0..3 {
+            sites[3 * site + c] = (0..3)
+                .map(|k| cubic[3 * site + k] / repeats as f64 * cell[k][c])
+                .sum::<f64>();
+        }
+    }
+    rgsaddle::site_occupancy(sites.view(), positions.view(), cell)
+        .expect("site occupancy")
+        .is_perfect()
+}
+
+/// A placement followed down the flow, for a campaign that cannot go on
+/// without its state; a relaxation that does not converge stops the run.
+fn placed(
+    copper: &FastCopper,
+    repeats: usize,
+    a: f64,
+    shell: [f64; 3],
+    axis: [f64; 3],
+    vacancy: bool,
+) -> PairState {
+    relax_oriented(copper, repeats, a, shell, axis, vacancy, &pair_relax()).unwrap_or_else(
+        |error| panic!("placement {shell:?} axis {axis:?} on {repeats}^3 at a = {a}: {error}"),
+    )
 }
 
 fn scale_positions(positions: &Array1<f64>, factor: f64) -> Array1<f64> {
@@ -3326,10 +3367,7 @@ fn cu_config(
         images: 9,
         max_dimer_steps: 100,
         max_band_steps: 120,
-        max_relax_steps: 50,
-        relax_tol: 1.0e-3,
-        relax_step: 0.08,
-        max_move: 0.08,
+        relax: pair_relax(),
         seed_fraction: 0.45,
         push: 0.3,
         connect_rmsd: 1.5,
@@ -4485,10 +4523,10 @@ fn search_seed(
         return None;
     }
     let step = &unstable * (0.45 / peak);
-    let mut plus = &saddle + &step;
-    let mut minus = &saddle - &step;
-    relax_fast(copper, &mut plus, cell, 1.5e-3, 50);
-    relax_fast(copper, &mut minus, cell, 1.5e-3, 50);
+    let plus = &saddle + &step;
+    let minus = &saddle - &step;
+    let plus = descend(copper, plus, cell, 1.5e-3).ok()?;
+    let minus = descend(copper, minus, cell, 1.5e-3).ok()?;
     let gap_plus = hausdorff(&plus, reactant, cell);
     let gap_minus = hausdorff(&minus, reactant, cell);
     let (reactant_energy, _) = held.eval(reactant.view()).ok()?;
@@ -4523,7 +4561,7 @@ fn find_mechanisms(copper: &FastCopper, repeats: usize, a: f64) -> Vec<Mechanism
     let length = repeats as f64 * a;
     let cell = [[length, 0.0, 0.0], [0.0, length, 0.0], [0.0, 0.0, length]];
     let mut reactant = built.positions;
-    relax_fast(copper, &mut reactant, cell, 1.0e-3, 60);
+    reactant = settle(copper, reactant, cell, 1.0e-3).expect("reactant relaxation");
     let center = centroid(&reactant, built.dumbbell);
     let mut kicks = Vec::new();
     let mut perp = Array1::zeros(reactant.len());
@@ -4818,8 +4856,16 @@ fn defect_pair_science() {
                 continue;
             }
             seen_orientation.push(mark);
-            let (mut positions, vacancy, dumbbell, cell, gap, separation, recombined) =
-                relax_pair_axis(&copper, repeats, a500, *vector, axis, true);
+            let PairState {
+                mut positions,
+                vacancy,
+                dumbbell,
+                cell,
+                gap,
+                separation,
+                recombined,
+                ..
+            } = placed(&copper, repeats, a500, *vector, axis, true);
             if recombined {
                 recombined_notes.push(format!(
                     "500 K repeats {repeats} shell {radius:.3} orientation {} recombined sites {count} gap {gap:.3} separation {separation:.3}",
@@ -4987,8 +5033,12 @@ fn orientation_scan(copper: &FastCopper) -> Vec<String> {
     let rows: Vec<String> = tasks
         .par_iter()
         .filter_map(|(repeats, temperature, a, radius, vector, count, axis)| {
-            let (_positions, _vacancy, _dumbbell, _cell, gap, separation, recombined) =
-                relax_pair_axis(copper, *repeats, *a, *vector, *axis, true);
+            let PairState {
+        gap,
+        separation,
+        recombined,
+        ..
+    } = placed(copper, *repeats, *a, *vector, *axis, true);
             if !recombined {
                 return None;
             }
@@ -5005,48 +5055,6 @@ fn orientation_scan(copper: &FastCopper) -> Vec<String> {
         writeln!(file, "{row}").unwrap();
     }
     rows
-}
-
-#[allow(clippy::type_complexity)]
-fn relax_pair_axis(
-    copper: &FastCopper,
-    repeats: usize,
-    a: f64,
-    shell: [f64; 3],
-    axis: [f64; 3],
-    vacancy: bool,
-) -> (
-    Array1<f64>,
-    [f64; 3],
-    [usize; 2],
-    [[f64; 3]; 3],
-    f64,
-    f64,
-    bool,
-) {
-    let length = repeats as f64 * a;
-    let cell = [[length, 0.0, 0.0], [0.0, length, 0.0], [0.0, 0.0, length]];
-    let built = build_oriented(repeats, a, shell, axis, vacancy);
-    let mut positions = built.positions;
-    relax_fast(copper, &mut positions, cell, 1.0e-3, 60);
-    let gap = dist(
-        point_of(&positions, built.dumbbell[0]),
-        point_of(&positions, built.dumbbell[1]),
-    );
-    let separation = dist(centroid(&positions, built.dumbbell), built.vacancy);
-    let recombined = vacancy
-        && (occupied(&positions, built.vacancy, cell)
-            || !(1.2..2.5).contains(&gap)
-            || separation < 1.6);
-    (
-        positions,
-        built.vacancy,
-        built.dumbbell,
-        cell,
-        gap,
-        separation,
-        recombined,
-    )
 }
 
 fn wrap_delta(from: [f64; 3], to: [f64; 3], length: f64) -> [f64; 3] {
@@ -5213,8 +5221,14 @@ fn capture_one(
         .find(|(value, _, _)| (*value - radius).abs() < 0.03)
         .map(|(_, vector, _)| vector)
         .ok_or_else(|| format!("no shell at {radius}"))?;
-    let (reactant, vacancy, dumbbell, cell, _gap, _separation, recombined) =
-        relax_pair_axis(copper, repeats, a, vector, axis, true);
+    let PairState {
+        positions: reactant,
+        vacancy,
+        dumbbell,
+        cell,
+        recombined,
+        ..
+    } = placed(copper, repeats, a, vector, axis, true);
     if recombined {
         return Err("reactant recombined".into());
     }
@@ -5235,7 +5249,7 @@ fn capture_one(
             continue;
         }
         let mut product = hop.product.clone();
-        relax_fast(copper, &mut product, cell, 1.0e-3, 40);
+        product = settle(copper, product, cell, 1.0e-3).expect("product relaxation");
         let (product_energy, _) = held
             .eval(product.view())
             .map_err(|error| error.to_string())?;
@@ -5375,8 +5389,13 @@ fn pafi_stored(text: &str, shell: &str, orientation: &str, hop: &str, temperatur
 }
 
 fn rotation_job(copper: &FastCopper, repeats: usize, a: f64) -> SciJob {
-    let (positions, vacancy, dumbbell, cell, _, _, _) =
-        relax_pair_axis(copper, repeats, a, [a, 0.0, 0.0], [1.0, 0.0, 0.0], false);
+    let PairState {
+        positions,
+        vacancy,
+        dumbbell,
+        cell,
+        ..
+    } = placed(copper, repeats, a, [a, 0.0, 0.0], [1.0, 0.0, 0.0], false);
     let center = centroid(&positions, dumbbell);
     let half = dist(point_of(&positions, dumbbell[0]), center).max(0.9);
     let mut product = positions.clone();
@@ -5509,7 +5528,13 @@ fn defect_pair_capture() {
             .filter(|item| item.kind == "translate")
             .cloned()
             .collect();
-        let (positions, vacancy, dumbbell, cell, _, _, _) = relax_pair_axis(
+        let PairState {
+            positions,
+            vacancy,
+            dumbbell,
+            cell,
+            ..
+        } = placed(
             &copper,
             repeats,
             a500,
@@ -5549,8 +5574,14 @@ fn defect_pair_capture() {
                 continue;
             };
             let axis = axis_from_label(orientation);
-            let (positions, vacancy, dumbbell, cell, _, _, recombined) =
-                relax_pair_axis(&copper, repeats, a500, vector, axis, true);
+            let PairState {
+                positions,
+                vacancy,
+                dumbbell,
+                cell,
+                recombined,
+                ..
+            } = placed(&copper, repeats, a500, vector, axis, true);
             if recombined {
                 continue;
             }
@@ -5761,13 +5792,19 @@ fn neb_capture(
         .find(|(value, _, _)| (*value - radius).abs() < 0.03)
         .map(|(_, vector, _)| vector)
         .ok_or_else(|| format!("no shell near {radius}"))?;
-    let (reactant, vacancy, dumbbell, cell, _, _, recombined) =
-        relax_pair_axis(copper, repeats, a, vector, axis, true);
+    let PairState {
+        positions: reactant,
+        vacancy,
+        dumbbell,
+        cell,
+        recombined,
+        ..
+    } = placed(copper, repeats, a, vector, axis, true);
     if recombined {
         return Err("reactant recombined on relaxation".into());
     }
     let mut product = crystal_image(&reactant, repeats, a);
-    relax_fast(copper, &mut product, cell, 1.0e-3, 25);
+    product = settle(copper, product, cell, 1.0e-3).expect("product relaxation");
     let held = FastHeld { copper, cell };
     let (reactant_energy, _) = held
         .eval(reactant.view())
@@ -6009,8 +6046,13 @@ fn defect_pair_finish() {
             .map(|(_, vector, _)| vector)
             .unwrap();
         let axis = axis_from_label(orientation);
-        let (positions, vacancy, dumbbell, cell, _, _, _) =
-            relax_pair_axis(&copper, repeats, a500, vector, axis, true);
+        let PairState {
+            positions,
+            vacancy,
+            dumbbell,
+            cell,
+            ..
+        } = placed(&copper, repeats, a500, vector, axis, true);
         let center = centroid(&positions, dumbbell);
         let mobile = [dumbbell[0], dumbbell[1]];
         let before =
@@ -6210,39 +6252,11 @@ fn offset_len(offset: &[f64; 3]) -> f64 {
         .max(1.0e-8)
 }
 
-fn reaches_recombination(
-    _reactant: &Array1<f64>,
-    reactant_energy: f64,
-    vacancy: [f64; 3],
-    cell: [[f64; 3]; 3],
-    basin: &Array1<f64>,
-    basin_energy: f64,
-) -> bool {
-    let drop = reactant_energy - basin_energy;
-    if drop > 1.5 {
-        return true;
-    }
-    let gap_gone = !basin_is_dumbbell(basin, vacancy, cell);
-    drop > 0.4 && gap_gone && occupied(basin, vacancy, cell)
-}
-
-fn basin_is_dumbbell(positions: &Array1<f64>, vacancy: [f64; 3], cell: [[f64; 3]; 3]) -> bool {
-    let n = positions.len() / 3;
-    let mut close = 0usize;
-    for atom in 0..n {
-        if mic_distance(point_of(positions, atom), vacancy, cell) < 2.2 {
-            close += 1;
-        }
-    }
-    close == 0
-}
-
 fn survey_config(bulk: [[f64; 3]; 3]) -> rgsaddle::DefectPairConfig {
     let mut config = cu_config(&[500.0], 8, 0.01, bulk, Vec::new(), 7);
     config.finite_temperature = false;
     config.max_dimer_steps = 40;
-    config.max_relax_steps = 70;
-    config.relax_tol = 2.0e-3;
+    config.relax = pair_relax().with_force_tol(2.0e-3);
     config.push = 0.35;
     config.dimer = {
         let search = MinModeConfig {
@@ -6322,7 +6336,16 @@ fn defect_pair_local_capture() {
             );
             continue;
         };
-        let (reactant, vacancy, dumbbell, cell, gap, separation, recombined) = relax_pair_axis(
+        let PairState {
+            positions: reactant,
+            vacancy,
+            dumbbell,
+            cell,
+            gap,
+            separation,
+            recombined,
+            ..
+        } = placed(
             &copper,
             repeats,
             a500,
@@ -6357,22 +6380,8 @@ fn defect_pair_local_capture() {
                 || (saddle.plus_energy - reactant_energy).abs() < 0.2;
             let minus_back = hausdorff(&saddle.minus, &reactant, cell) < 1.0
                 || (saddle.minus_energy - reactant_energy).abs() < 0.2;
-            let plus_re = reaches_recombination(
-                &reactant,
-                reactant_energy,
-                vacancy,
-                cell,
-                &saddle.plus,
-                saddle.plus_energy,
-            );
-            let minus_re = reaches_recombination(
-                &reactant,
-                reactant_energy,
-                vacancy,
-                cell,
-                &saddle.minus,
-                saddle.minus_energy,
-            );
+            let plus_re = recombined_in(&saddle.plus, cell);
+            let minus_re = recombined_in(&saddle.minus, cell);
             if (plus_back && minus_re) || (minus_back && plus_re) {
                 kept.push(saddle);
             }
@@ -6445,7 +6454,7 @@ fn defect_pair_local_capture() {
         }
         let floor = best.saddle_energy - 0.6;
         let (downhill, down_energy) =
-            rgsaddle::descend_limited(&held, start, cell, &config, floor).expect("descend");
+            rgsaddle::descend_to_floor(&held, start, cell, &config, floor).expect("descend");
         let mut band_config = config.clone();
         band_config.band.force_tol = 2.0e-3;
         band_config.max_band_steps = 320;
@@ -6593,8 +6602,13 @@ fn defect_pair_local_capture() {
         let a300 = measured_lattice(300.0);
         let factor = a300 / a500;
         let vector = [vector[0] * factor, vector[1] * factor, vector[2] * factor];
-        let (positions, vacancy, dumbbell, cell300, _, _, _) =
-            relax_pair_axis(&copper, repeats, a300, vector, axis_from_label("010"), true);
+        let PairState {
+            positions,
+            vacancy,
+            dumbbell,
+            cell: cell300,
+            ..
+        } = placed(&copper, repeats, a300, vector, axis_from_label("010"), true);
         let center = centroid(&positions, dumbbell);
         let mobile = [dumbbell[0], dumbbell[1]];
         let before =
@@ -6634,60 +6648,12 @@ fn defect_pair_local_capture() {
     );
 }
 
-fn quench_bound(
-    copper: &FastCopper,
-    mut positions: Array1<f64>,
-    cell: [[f64; 3]; 3],
-    vacancy: [f64; 3],
-    dumbbell: [usize; 2],
-) -> (Array1<f64>, f64, bool) {
-    relax_fast(copper, &mut positions, cell, 2.0e-4, 120);
-    let held = FastHeld { copper, cell };
-    let (mut best_energy, _) = held
+/// The energy of a converged basin.
+fn basin_energy(copper: &FastCopper, positions: &Array1<f64>, cell: [[f64; 3]; 3]) -> f64 {
+    FastHeld { copper, cell }
         .eval(positions.view())
-        .unwrap_or((f64::INFINITY, Array1::zeros(1)));
-    let mut best = positions.clone();
-    let mut best_bound = !pair_recombined(&positions, vacancy, cell, dumbbell);
-    let center = centroid(&positions, dumbbell);
-    let length = cell[0][0];
-    let to_vac = unit3(wrap_delta(center, vacancy, length));
-    for (scale, direction) in [
-        (0.15, to_vac),
-        (-0.15, to_vac),
-        (0.2, [to_vac[1], to_vac[2], to_vac[0]]),
-    ] {
-        let mut trial = positions.clone();
-        for atom in dumbbell {
-            for c in 0..3 {
-                trial[3 * atom + c] += scale * direction[c];
-            }
-        }
-        relax_fast(copper, &mut trial, cell, 2.0e-4, 80);
-        let bound = !pair_recombined(&trial, vacancy, cell, dumbbell);
-        let (energy, _) = held
-            .eval(trial.view())
-            .unwrap_or((f64::INFINITY, Array1::zeros(1)));
-        if bound && energy < best_energy {
-            best_energy = energy;
-            best = trial;
-            best_bound = true;
-        }
-    }
-    (best, best_energy, best_bound)
-}
-
-fn pair_recombined(
-    positions: &Array1<f64>,
-    vacancy: [f64; 3],
-    cell: [[f64; 3]; 3],
-    dumbbell: [usize; 2],
-) -> bool {
-    let gap = dist(
-        point_of(positions, dumbbell[0]),
-        point_of(positions, dumbbell[1]),
-    );
-    let separation = dist(centroid(positions, dumbbell), vacancy);
-    occupied(positions, vacancy, cell) || !(1.2..2.5).contains(&gap) || separation < 1.6
+        .expect("basin energy")
+        .0
 }
 
 #[test]
@@ -6748,7 +6714,14 @@ fn defect_pair_viv() {
             .find(|(value, _, _)| (*value - radius).abs() < 0.05)
             .map(|(_, vector, _)| vector);
         let Some(vector) = vector else { continue };
-        let (positions, vacancy, dumbbell, cell, _, _, recombined) = relax_pair_axis(
+        let PairState {
+            positions,
+            vacancy,
+            dumbbell,
+            cell,
+            recombined,
+            ..
+        } = placed(
             &copper,
             repeats,
             a,
@@ -6764,16 +6737,8 @@ fn defect_pair_viv() {
             append_checkpoint(&checkpoint, &line);
             continue;
         }
-        let (reactant, reactant_energy, bound) =
-            quench_bound(&copper, positions, cell, vacancy, dumbbell);
-        if !bound {
-            let line = format!(
-                "ref,{radius:.3},{orientation},capture,toward,{temperature},0.000000,,,,,spontaneous,0,quench recombines; counted in V_iv"
-            );
-            eprintln!("{line}");
-            append_checkpoint(&checkpoint, &line);
-            continue;
-        }
+        let reactant = positions;
+        let reactant_energy = basin_energy(&copper, &reactant, cell);
         let held = FastHeld {
             copper: &copper,
             cell,
@@ -6806,22 +6771,8 @@ fn defect_pair_viv() {
             .filter(|saddle| {
                 let plus_back = hausdorff(&saddle.plus, &reactant, cell) < 1.0;
                 let minus_back = hausdorff(&saddle.minus, &reactant, cell) < 1.0;
-                let plus_re = reaches_recombination(
-                    &reactant,
-                    reactant_energy,
-                    vacancy,
-                    cell,
-                    &saddle.plus,
-                    saddle.plus_energy,
-                );
-                let minus_re = reaches_recombination(
-                    &reactant,
-                    reactant_energy,
-                    vacancy,
-                    cell,
-                    &saddle.minus,
-                    saddle.minus_energy,
-                );
+                let plus_re = recombined_in(&saddle.plus, cell);
+                let minus_re = recombined_in(&saddle.minus, cell);
                 (plus_back && minus_re) || (minus_back && plus_re)
             })
             .collect();
@@ -6889,14 +6840,14 @@ fn defect_pair_viv() {
                 step *= 0.5;
             }
         }
-        let (downhill, down_energy) = rgsaddle::descend_limited(
+        let (downhill, down_energy) = rgsaddle::descend_to_floor(
             &held,
             start.clone(),
             cell,
             &config,
             best.saddle_energy - 0.6,
         )
-        .unwrap_or((start, reactant_energy));
+        .expect("descent from the saddle to the floor");
         let mut band_config = config.clone();
         band_config.band.force_tol = 2.0e-3;
         band_config.band.time_step = 0.04;
@@ -7042,11 +6993,17 @@ fn defect_pair_run9() {
         .find(|(value, _, _)| (*value - 4.456).abs() < 0.05)
         .map(|(_, v, _)| v)
         .expect("4.456");
-    let (positions, vacancy, dumbbell, cell, _, _, _) =
-        relax_pair_axis(&copper, repeats, a500, vector, axis_from_label("100"), true);
-    let (reactant, reactant_energy, bound) =
-        quench_bound(&copper, positions, cell, vacancy, dumbbell);
-    if bound {
+    let PairState {
+        positions,
+        vacancy,
+        dumbbell,
+        cell,
+        recombined,
+        ..
+    } = placed(&copper, repeats, a500, vector, axis_from_label("100"), true);
+    let reactant = positions;
+    let reactant_energy = basin_energy(&copper, &reactant, cell);
+    if !recombined {
         let held = FastHeld {
             copper: &copper,
             cell,
@@ -7059,22 +7016,8 @@ fn defect_pair_run9() {
             .filter(|saddle| {
                 let plus_back = hausdorff(&saddle.plus, &reactant, cell) < 1.0;
                 let minus_back = hausdorff(&saddle.minus, &reactant, cell) < 1.0;
-                let plus_re = reaches_recombination(
-                    &reactant,
-                    reactant_energy,
-                    vacancy,
-                    cell,
-                    &saddle.plus,
-                    saddle.plus_energy,
-                );
-                let minus_re = reaches_recombination(
-                    &reactant,
-                    reactant_energy,
-                    vacancy,
-                    cell,
-                    &saddle.minus,
-                    saddle.minus_energy,
-                );
+                let plus_re = recombined_in(&saddle.plus, cell);
+                let minus_re = recombined_in(&saddle.minus, cell);
                 (plus_back && minus_re) || (minus_back && plus_re)
             })
             .collect();
@@ -7108,8 +7051,8 @@ fn defect_pair_run9() {
                 best.saddle.clone()
             };
             let (downhill, _) =
-                rgsaddle::descend_limited(&held, start, cell, &config, best.saddle_energy - 0.4)
-                    .unwrap_or((best.saddle.clone(), reactant_energy));
+                rgsaddle::descend_to_floor(&held, start, cell, &config, best.saddle_energy - 0.4)
+                    .expect("descent from the saddle to the floor");
             let mut band_config = config.clone();
             band_config.band.force_tol = 2.0e-3;
             band_config.band.time_step = 0.03;
@@ -7326,7 +7269,14 @@ fn survey_shell(
     else {
         return;
     };
-    let (positions, vacancy, dumbbell, cell, _, _, recombined) = relax_pair_axis(
+    let PairState {
+        positions,
+        vacancy,
+        dumbbell,
+        cell,
+        recombined,
+        ..
+    } = placed(
         copper,
         repeats,
         a,
@@ -7342,16 +7292,8 @@ fn survey_shell(
         append_checkpoint(checkpoint, &line);
         return;
     }
-    let (reactant, reactant_energy, bound) =
-        quench_bound(copper, positions, cell, vacancy, dumbbell);
-    if !bound {
-        let line = format!(
-            "ref,{radius:.3},{orientation},capture,toward,{temperature},0.000000,,,,,spontaneous,0,quench recombines; counted in V_iv"
-        );
-        eprintln!("{line}");
-        append_checkpoint(checkpoint, &line);
-        return;
-    }
+    let reactant = positions;
+    let reactant_energy = basin_energy(copper, &reactant, cell);
     let held = FastHeld { copper, cell };
     let seeds = local_seeds(
         &reactant,
@@ -7375,22 +7317,8 @@ fn survey_shell(
         .filter(|saddle| {
             let plus_back = hausdorff(&saddle.plus, &reactant, cell) < 1.0;
             let minus_back = hausdorff(&saddle.minus, &reactant, cell) < 1.0;
-            let plus_re = reaches_recombination(
-                &reactant,
-                reactant_energy,
-                vacancy,
-                cell,
-                &saddle.plus,
-                saddle.plus_energy,
-            );
-            let minus_re = reaches_recombination(
-                &reactant,
-                reactant_energy,
-                vacancy,
-                cell,
-                &saddle.minus,
-                saddle.minus_energy,
-            );
+            let plus_re = recombined_in(&saddle.plus, cell);
+            let minus_re = recombined_in(&saddle.minus, cell);
             (plus_back && minus_re) || (minus_back && plus_re)
         })
         .collect();
@@ -7469,14 +7397,14 @@ fn survey_shell(
             step *= 0.5;
         }
     }
-    let (downhill, down_energy) = rgsaddle::descend_limited(
+    let (downhill, down_energy) = rgsaddle::descend_to_floor(
         &held,
         start.clone(),
         cell,
         &config,
         best.saddle_energy - 0.6,
     )
-    .unwrap_or((start, reactant_energy));
+    .expect("descent from the saddle to the floor");
     let mut band_config = config.clone();
     band_config.band.force_tol = 2.0e-3;
     band_config.band.time_step = 0.04;
@@ -7984,7 +7912,7 @@ fn defect_pair_tight() {
         let job = rotation_job(&copper, repeats, a);
         let dumbbell = [job.mobile[0], job.mobile[1]];
         let mut reactant = job.positions.clone();
-        relax_fast(&copper, &mut reactant, job.cell, 2.0e-4, 100);
+        reactant = settle(&copper, reactant, job.cell, 2.0e-4).expect("reactant relaxation");
         let held = FastHeld {
             copper: &copper,
             cell: job.cell,
@@ -8085,7 +8013,7 @@ fn defect_pair_tight() {
         let job = rotation_job(&copper, repeats, a);
         let dumbbell = [job.mobile[0], job.mobile[1]];
         let mut reactant = job.positions.clone();
-        relax_fast(&copper, &mut reactant, job.cell, 2.0e-4, 100);
+        reactant = settle(&copper, reactant, job.cell, 2.0e-4).expect("reactant relaxation");
         let held = FastHeld {
             copper: &copper,
             cell: job.cell,
@@ -8156,7 +8084,14 @@ fn defect_pair_tight() {
             else {
                 continue;
             };
-            let (positions, vacancy, dumbbell, cell, _, _, recombined) = relax_pair_axis(
+            let PairState {
+                positions,
+                vacancy,
+                dumbbell,
+                cell,
+                recombined,
+                ..
+            } = placed(
                 &copper,
                 repeats,
                 a,
@@ -8173,17 +8108,8 @@ fn defect_pair_tight() {
                 );
                 continue;
             }
-            let (reactant, reactant_energy, bound) =
-                quench_bound(&copper, positions, cell, vacancy, dumbbell);
-            if !bound {
-                write_tight(
-                    &checkpoint,
-                    &format!(
-                        "capture,{radius:.3},{orientation},capture,{temperature},0.000000,0,{TIGHT_FORCE_EV_PER_A:.6e},false,spontaneous,quench recombines"
-                    ),
-                );
-                continue;
-            }
+            let reactant = positions;
+            let reactant_energy = basin_energy(&copper, &reactant, cell);
             let held = FastHeld {
                 copper: &copper,
                 cell,
@@ -8199,22 +8125,8 @@ fn defect_pair_tight() {
                 .filter(|saddle| {
                     let plus_back = hausdorff(&saddle.plus, &reactant, cell) < 1.0;
                     let minus_back = hausdorff(&saddle.minus, &reactant, cell) < 1.0;
-                    let plus_re = reaches_recombination(
-                        &reactant,
-                        reactant_energy,
-                        vacancy,
-                        cell,
-                        &saddle.plus,
-                        saddle.plus_energy,
-                    );
-                    let minus_re = reaches_recombination(
-                        &reactant,
-                        reactant_energy,
-                        vacancy,
-                        cell,
-                        &saddle.minus,
-                        saddle.minus_energy,
-                    );
+                    let plus_re = recombined_in(&saddle.plus, cell);
+                    let minus_re = recombined_in(&saddle.minus, cell);
                     (plus_back && minus_re) || (minus_back && plus_re)
                 })
                 .collect();
@@ -8285,7 +8197,14 @@ fn defect_pair_tight() {
         else {
             continue;
         };
-        let (positions, vacancy, dumbbell, cell, _, _, recombined) = relax_pair_axis(
+        let PairState {
+            positions,
+            vacancy,
+            dumbbell,
+            cell,
+            recombined,
+            ..
+        } = placed(
             &copper,
             repeats,
             a500,
@@ -8302,17 +8221,8 @@ fn defect_pair_tight() {
             );
             continue;
         }
-        let (reactant, reactant_energy, bound) =
-            quench_bound(&copper, positions, cell, vacancy, dumbbell);
-        if !bound {
-            write_tight(
-                &checkpoint,
-                &format!(
-                    "channel,{radius:.3},{orientation},none,500,,,,,false,spontaneous,quench recombines"
-                ),
-            );
-            continue;
-        }
+        let reactant = positions;
+        let reactant_energy = basin_energy(&copper, &reactant, cell);
         let center = centroid(&reactant, dumbbell);
         let axis = axis_of(&reactant, dumbbell);
         let hops = mapped_hops(&reactant, cell, center, axis, &mechanisms);
@@ -8439,7 +8349,14 @@ fn defect_pair_rotate_channels() {
         else {
             continue;
         };
-        let (positions, vacancy, dumbbell, cell, _, _, recombined) = relax_pair_axis(
+        let PairState {
+            positions,
+            vacancy,
+            dumbbell,
+            cell,
+            recombined,
+            ..
+        } = placed(
             &copper,
             repeats,
             a,
@@ -8456,17 +8373,8 @@ fn defect_pair_rotate_channels() {
             );
             continue;
         }
-        let (reactant, reactant_energy, bound) =
-            quench_bound(&copper, positions, cell, vacancy, dumbbell);
-        if !bound {
-            write_tight(
-                &checkpoint,
-                &format!(
-                    "channel,{radius:.3},{orientation},rotate,500,,,,,false,spontaneous,quench recombines"
-                ),
-            );
-            continue;
-        }
+        let reactant = positions;
+        let reactant_energy = basin_energy(&copper, &reactant, cell);
         let (hint, mode) = rotation_hint(&reactant, dumbbell);
         let Some(hit) = tight_dimer(&copper, cell, hint, mode) else {
             continue;
@@ -8563,7 +8471,7 @@ fn defect_pair_translation() {
         let job = rotation_job(&copper, repeats, a);
         let dumbbell = [job.mobile[0], job.mobile[1]];
         let mut reactant = job.positions.clone();
-        relax_fast(&copper, &mut reactant, job.cell, 2.0e-4, 100);
+        reactant = settle(&copper, reactant, job.cell, 2.0e-4).expect("reactant relaxation");
         let held = FastHeld {
             copper: &copper,
             cell: job.cell,
@@ -8801,7 +8709,7 @@ fn defect_pair_run11() {
             let job = rotation_job(&copper, repeats, a700);
             let dumbbell = [job.mobile[0], job.mobile[1]];
             let mut reactant = job.positions.clone();
-            relax_fast(&copper, &mut reactant, job.cell, 2.0e-4, 100);
+            reactant = settle(&copper, reactant, job.cell, 2.0e-4).expect("reactant relaxation");
             let held = FastHeld {
                 copper: &copper,
                 cell: job.cell,
@@ -8823,7 +8731,7 @@ fn defect_pair_run11() {
                 && let Some(hit) = tight_dimer(&copper, job.cell, hint, mode)
             {
                 let mut product = hop.product;
-                relax_fast(&copper, &mut product, job.cell, 2.0e-4, 80);
+                product = settle(&copper, product, job.cell, 2.0e-4).expect("product relaxation");
                 record_pafi(
                     &copper,
                     &checkpoint,
@@ -8878,7 +8786,14 @@ fn defect_pair_run11() {
         else {
             continue;
         };
-        let (positions, vacancy, dumbbell, cell, _, _, recombined) = relax_pair_axis(
+        let PairState {
+            positions,
+            vacancy,
+            dumbbell,
+            cell,
+            recombined,
+            ..
+        } = placed(
             &copper,
             repeats,
             a,
@@ -8895,17 +8810,8 @@ fn defect_pair_run11() {
             );
             continue;
         }
-        let (reactant, reactant_energy, bound) =
-            quench_bound(&copper, positions, cell, vacancy, dumbbell);
-        if !bound {
-            write_tight(
-                &checkpoint,
-                &format!(
-                    "capture,{radius:.3},{orientation},capture,toward,{temperature},0.000000,,,,,spontaneous,0,quench recombines"
-                ),
-            );
-            continue;
-        }
+        let reactant = positions;
+        let reactant_energy = basin_energy(&copper, &reactant, cell);
         let held = FastHeld {
             copper: &copper,
             cell,
@@ -8928,22 +8834,8 @@ fn defect_pair_run11() {
             .filter(|saddle| {
                 let plus_back = hausdorff(&saddle.plus, &reactant, cell) < 1.0;
                 let minus_back = hausdorff(&saddle.minus, &reactant, cell) < 1.0;
-                let plus_re = reaches_recombination(
-                    &reactant,
-                    reactant_energy,
-                    vacancy,
-                    cell,
-                    &saddle.plus,
-                    saddle.plus_energy,
-                );
-                let minus_re = reaches_recombination(
-                    &reactant,
-                    reactant_energy,
-                    vacancy,
-                    cell,
-                    &saddle.minus,
-                    saddle.minus_energy,
-                );
+                let plus_re = recombined_in(&saddle.plus, cell);
+                let minus_re = recombined_in(&saddle.minus, cell);
                 (plus_back && minus_re) || (minus_back && plus_re)
             })
             .collect();
@@ -8989,8 +8881,8 @@ fn defect_pair_run11() {
         };
         let config = survey_config(bulk);
         let (downhill, down_energy) =
-            rgsaddle::descend_limited(&held, start, cell, &config, hit.energy - 0.6)
-                .unwrap_or((hit.positions.clone(), reactant_energy));
+            rgsaddle::descend_to_floor(&held, start, cell, &config, hit.energy - 0.6)
+                .expect("descent from the saddle to the floor");
         if down_energy > reactant_energy - 0.2 {
             write_tight(
                 &checkpoint,
@@ -9219,8 +9111,14 @@ fn strain_shells(copper: &FastCopper, checkpoint: &Mutex<File>, repeats: usize, 
         let Ok(strain) = green.strain_from_dipole(vector, dipole) else {
             continue;
         };
-        let (positions, vacancy_at, dumbbell, pair_cell, _, _, recombined) =
-            relax_pair_axis(copper, repeats, a, vector, axis_from_label("100"), true);
+        let PairState {
+            positions,
+            vacancy: vacancy_at,
+            dumbbell,
+            cell: pair_cell,
+            recombined,
+            ..
+        } = placed(copper, repeats, a, vector, axis_from_label("100"), true);
         if recombined {
             write_tight(
                 checkpoint,
@@ -9230,17 +9128,8 @@ fn strain_shells(copper: &FastCopper, checkpoint: &Mutex<File>, repeats: usize, 
             );
             continue;
         }
-        let (reactant, reactant_energy, bound) =
-            quench_bound(copper, positions, pair_cell, vacancy_at, dumbbell);
-        if !bound {
-            write_tight(
-                checkpoint,
-                &format!(
-                    "strain,{radius:.3},100,translate,away,{temperature},0.000000,,,,,spontaneous,0,quench recombines"
-                ),
-            );
-            continue;
-        }
+        let reactant = positions;
+        let reactant_energy = basin_energy(copper, &reactant, pair_cell);
         let kick = strain_kick(strain, axis_of(&reactant, dumbbell));
         let mut seed = reactant.clone();
         let mut mode = Array1::zeros(reactant.len());
@@ -9698,7 +9587,12 @@ fn classify_shell(
     vector: [f64; 3],
     orientation: &str,
 ) -> (bool, f64, f64) {
-    let (positions, vacancy, dumbbell, cell, gap, separation, recombined) = relax_pair_axis(
+    let PairState {
+        gap,
+        separation,
+        recombined,
+        ..
+    } = placed(
         copper,
         repeats,
         a,
@@ -9706,11 +9600,7 @@ fn classify_shell(
         axis_from_label(orientation),
         true,
     );
-    if recombined {
-        return (true, gap, separation);
-    }
-    let (_, _, bound) = quench_bound(copper, positions, cell, vacancy, dumbbell);
-    (!bound, gap, separation)
+    (recombined, gap, separation)
 }
 
 #[test]
@@ -9769,17 +9659,20 @@ fn defect_pair_run12() {
                     if checkpoint_has(&prior, &key) {
                         continue;
                     }
-                    let (positions, vacancy, dumbbell, cell, gap, separation, recombined) =
-                        relax_pair_axis(
-                            &copper,
-                            repeats,
-                            a,
-                            vector,
-                            axis_from_label(orientation),
-                            true,
-                        );
-                    let spontaneous =
-                        recombined || pair_recombined(&positions, vacancy, cell, dumbbell);
+                    let PairState {
+                        gap,
+                        separation,
+                        recombined,
+                        ..
+                    } = placed(
+                        &copper,
+                        repeats,
+                        a,
+                        vector,
+                        axis_from_label(orientation),
+                        true,
+                    );
+                    let spontaneous = recombined;
                     let outcome = if spontaneous { "spontaneous" } else { "bound" };
                     write_tight(
                         &checkpoint,
@@ -9856,7 +9749,13 @@ fn rotation_channels_300(copper: &FastCopper, checkpoint: &Mutex<File>, started:
             ) {
                 continue;
             }
-            let (positions, vacancy, dumbbell, cell, _, _, recombined) = relax_pair_axis(
+            let PairState {
+                positions,
+                dumbbell,
+                cell,
+                recombined,
+                ..
+            } = placed(
                 copper,
                 repeats,
                 a,
@@ -9873,17 +9772,8 @@ fn rotation_channels_300(copper: &FastCopper, checkpoint: &Mutex<File>, started:
                 );
                 continue;
             }
-            let (reactant, reactant_energy, bound) =
-                quench_bound(copper, positions, cell, vacancy, dumbbell);
-            if !bound {
-                write_tight(
-                    checkpoint,
-                    &format!(
-                        "rotation,{repeats},{temperature},{a:.3},{radius:.3},{orientation},spontaneous,,,,,quench recombines"
-                    ),
-                );
-                continue;
-            }
+            let reactant = positions;
+            let reactant_energy = basin_energy(copper, &reactant, cell);
             eprintln!(
                 "rotation {radius:.3} {orientation} at {:.0}s",
                 started.elapsed().as_secs_f64()
@@ -11313,7 +11203,13 @@ fn transplanted_rotation(
     translation: f64,
 ) {
     let repeats = 8usize;
-    let (positions, vacancy, dumbbell, cell, _, _, recombined) = relax_pair_axis(
+    let PairState {
+        positions,
+        dumbbell,
+        cell,
+        recombined,
+        ..
+    } = placed(
         copper,
         repeats,
         a,
@@ -11330,17 +11226,8 @@ fn transplanted_rotation(
         );
         return;
     }
-    let (reactant, reactant_energy, bound) =
-        quench_bound(copper, positions, cell, vacancy, dumbbell);
-    if !bound {
-        write_tight(
-            checkpoint,
-            &format!(
-                "switch,8,{temperature},{a:.3},{radius:.3},{orientation},spontaneous,,,,,quench recombines"
-            ),
-        );
-        return;
-    }
+    let reactant = positions;
+    let reactant_energy = basin_energy(copper, &reactant, cell);
     let iso_center = centroid(isolated, isolated_dumbbell);
     let pair_center = centroid(&reactant, dumbbell);
     let mut hint = reactant.clone();
@@ -11378,7 +11265,7 @@ fn transplanted_rotation(
         for i in 0..product.len() {
             product[i] += 0.35 * hit.mode[i] / norm;
         }
-        relax_fast(copper, &mut product, cell, 2.0e-4, 80);
+        product = descend(copper, product, cell, 2.0e-4).expect("push off the saddle relaxation");
         record_pafi(
             copper,
             checkpoint,
@@ -11415,7 +11302,7 @@ fn defect_pair_run13() {
         let job_iso = rotation_job(&copper, 8, a);
         let dumbbell = [job_iso.mobile[0], job_iso.mobile[1]];
         let mut reactant = job_iso.positions.clone();
-        relax_fast(&copper, &mut reactant, job_iso.cell, 2.0e-4, 100);
+        reactant = settle(&copper, reactant, job_iso.cell, 2.0e-4).expect("reactant relaxation");
         let (hint, mode) = rotation_hint(&reactant, dumbbell);
         if let Some(hit) = tight_dimer(&copper, job_iso.cell, hint, mode) {
             for (radius, vector, _) in shell_table(a, 8) {
@@ -11462,10 +11349,13 @@ fn defect_pair_run13() {
                 if checkpoint_has(&prior, &key) {
                     continue;
                 }
-                let (positions, vacancy, dumbbell, cell, gap, separation, recombined) =
-                    relax_pair_axis(&copper, 13, a, vector, axis_from_label(orientation), true);
-                let spontaneous =
-                    recombined || pair_recombined(&positions, vacancy, cell, dumbbell);
+                let PairState {
+                    gap,
+                    separation,
+                    recombined,
+                    ..
+                } = placed(&copper, 13, a, vector, axis_from_label(orientation), true);
+                let spontaneous = recombined;
                 let outcome = if spontaneous { "spontaneous" } else { "bound" };
                 write_tight(
                     &checkpoint,
@@ -11511,7 +11401,7 @@ fn run14_rotation_pafi_700(copper: &FastCopper) {
     let job = rotation_job(copper, repeats, a);
     let dumbbell = [job.mobile[0], job.mobile[1]];
     let mut reactant = job.positions.clone();
-    relax_fast(copper, &mut reactant, job.cell, 2.0e-4, 100);
+    reactant = settle(copper, reactant, job.cell, 2.0e-4).expect("reactant relaxation");
     let held = FastHeld {
         copper,
         cell: job.cell,
@@ -11541,7 +11431,7 @@ fn run14_rotation_pafi_700(copper: &FastCopper) {
     for i in 0..product.len() {
         product[i] += 0.35 * hit.mode[i] / norm;
     }
-    relax_fast(copper, &mut product, job.cell, 2.0e-4, 80);
+    product = descend(copper, product, job.cell, 2.0e-4).expect("push off the saddle relaxation");
     record_pafi(
         copper,
         &checkpoint,
@@ -11571,7 +11461,7 @@ fn defect_pair_diffusivity() {
     let length = repeats as f64 * a;
     let copper = FastCopper::new();
     let mut positions = dumbbell(&perfect, [1.0, 0.0, 0.0], 2.05);
-    relax_fast(&copper, &mut positions, cell, 1.0e-2, 40);
+    positions = settle(&copper, positions, cell, 1.0e-2).expect("positions relaxation");
     let lattice = perfect.clone();
     let steps: usize = std::env::var("MD_STEPS")
         .ok()
