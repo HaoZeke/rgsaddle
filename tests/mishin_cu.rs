@@ -12953,3 +12953,705 @@ fn direct_md_diffusivity_summary() {
         );
     }
 }
+
+/// Largest squared relative vector, in units of a/2, of the flow census:
+/// the region whose hops the near-shell campaign computes.
+const EXPLICIT_NORM2: i64 = 34;
+
+/// fcc lattice vectors in units of a/2 out to `reach` per component.
+fn fcc_offsets(reach: i32) -> Vec<rgsaddle::Vec3i> {
+    let mut out = Vec::new();
+    for x in -reach..=reach {
+        for y in -reach..=reach {
+            for z in -reach..=reach {
+                if (x + y + z).rem_euclid(2) == 0 {
+                    out.push([x, y, z]);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The `<100>` dumbbell next to a vacancy: eight translations that turn
+/// the axis into the hop's perpendicular part, and two `<110>` rotation
+/// saddles to each other axis, closed under the cubic group.
+fn dumbbell_moves(group: &[rgsaddle::Mat3i]) -> Vec<rgsaddle::PairMove> {
+    let seed = [
+        rgsaddle::PairMove::new("translate", [1, 1, 0], [1, 0, 0], [0, 1, 0], [0, 0, 0]),
+        rgsaddle::PairMove::new("rotate", [0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]),
+    ];
+    rgsaddle::PairMove::orbit(&seed, group)
+}
+
+fn dumbbell_network(max_norm2: i64) -> (Vec<rgsaddle::Mat3i>, rgsaddle::PairNetwork) {
+    let group = rgsaddle::cubic_group();
+    let reach = (max_norm2 as f64).sqrt().ceil() as i32 + 2;
+    let network = rgsaddle::PairNetwork::build(
+        &group,
+        &[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+        &dumbbell_moves(&group),
+        fcc_offsets(reach),
+        max_norm2,
+    )
+    .expect("dumbbell network");
+    (group, network)
+}
+
+fn config_label(config: rgsaddle::PairConfig) -> String {
+    let [x, y, z] = config.offset;
+    let [i, j, k] = config.orientation;
+    format!("{x}_{y}_{z}:{i}{j}{k}")
+}
+
+fn hop_label(hop: &rgsaddle::PairHop) -> String {
+    let [i, j, k] = hop.via;
+    format!(
+        "{}>{}@{i}{j}{k}",
+        config_label(hop.from),
+        config_label(hop.to)
+    )
+}
+
+/// Census orbit of a state: the `(|i|, max(|j|,|k|), min(|j|,|k|))`
+/// representative of its member with the dumbbell along x.
+fn state_miller(config: rgsaddle::PairConfig, group: &[rgsaddle::Mat3i]) -> String {
+    let member = group
+        .iter()
+        .map(|g| config.transformed(g))
+        .find(|image| image.orientation == [1, 0, 0])
+        .expect("every orbit holds an x dumbbell");
+    let [i, j, k] = member.offset;
+    let (high, low) = (j.abs().max(k.abs()), j.abs().min(k.abs()));
+    format!("{} {high} {low}", i.abs())
+}
+
+/// Census orbits that recombine on the flow at `temperature`, by
+/// representative.
+fn census_spontaneous(text: &str, temperature: f64) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let mut seen = 0usize;
+    for line in text.lines().skip(1) {
+        let fields: Vec<&str> = line.split(',').collect();
+        if fields.len() < 9
+            || fields[0] != "13"
+            || fields[1].parse::<f64>().ok() != Some(temperature)
+        {
+            continue;
+        }
+        assert_eq!(fields[8], "1", "census row not converged: {line}");
+        seen += 1;
+        if fields[4] == "1" {
+            out.insert(fields[7].to_string());
+        }
+    }
+    assert!(seen > 0, "no 13^3 census rows at {temperature} K");
+    out
+}
+
+/// The relaxed basin of a vacancy–dumbbell cell, relative to the vacancy:
+/// `recombined`, a [`config_label`], or `other:` with the defect counts.
+/// Without a vacancy the reference is the site nearest `reference`.
+fn pair_basin(
+    positions: &Array1<f64>,
+    cell: [[f64; 3]; 3],
+    repeats: usize,
+    a: f64,
+    reference: [f64; 3],
+) -> String {
+    let (sites, _) = fcc(repeats, a);
+    let occupancy =
+        rgsaddle::site_occupancy(sites.view(), positions.view(), cell).expect("site occupancy");
+    if occupancy.is_perfect() {
+        return "recombined".into();
+    }
+    let vacancies = occupancy.vacancies();
+    let crowded = occupancy.crowded();
+    if vacancies.len() > 1 || crowded.len() != 1 || occupancy.counts[crowded[0]] != 2 {
+        return format!(
+            "other:v{}i{}",
+            occupancy.vacancy_count(),
+            occupancy.interstitial_count()
+        );
+    }
+    let site = |index: usize| point_of(&sites, index);
+    let origin = match vacancies.first() {
+        Some(index) => *index,
+        None => (0..sites.len() / 3)
+            .min_by(|l, r| {
+                mic_distance(site(*l), reference, cell).total_cmp(&mic_distance(
+                    site(*r),
+                    reference,
+                    cell,
+                ))
+            })
+            .expect("sites"),
+    };
+    let mic = |from: [f64; 3], to: [f64; 3]| -> [f64; 3] {
+        std::array::from_fn(|c| {
+            let length = cell[c][c];
+            let delta = to[c] - from[c];
+            delta - length * (delta / length).round()
+        })
+    };
+    let offset = mic(site(origin), site(crowded[0]));
+    let atoms: Vec<usize> = (0..positions.len() / 3)
+        .filter(|atom| occupancy.site_of[*atom] == crowded[0])
+        .collect();
+    let bond = mic(point_of(positions, atoms[0]), point_of(positions, atoms[1]));
+    let axis = (0..3)
+        .max_by(|l, r| bond[*l].abs().total_cmp(&bond[*r].abs()))
+        .expect("axis");
+    let mut orientation = [0; 3];
+    orientation[axis] = 1;
+    let moved = if vacancies.is_empty() || mic_distance(site(origin), reference, cell) < 0.3 {
+        ""
+    } else {
+        "moved:"
+    };
+    format!(
+        "{moved}{}",
+        config_label(rgsaddle::PairConfig::new(
+            std::array::from_fn(|c| (offset[c] * 2.0 / a).round() as i32),
+            orientation,
+        ))
+    )
+}
+
+/// A dumbbell state of the near-shell campaign on the flow.
+struct NetworkState {
+    positions: Array1<f64>,
+    dumbbell: [usize; 2],
+    vacancy: [f64; 3],
+    cell: [[f64; 3]; 3],
+    energy: f64,
+    basin: String,
+}
+
+fn network_state(
+    copper: &FastCopper,
+    repeats: usize,
+    a: f64,
+    config: rgsaddle::PairConfig,
+    vacancy: bool,
+) -> (NetworkState, usize, f64) {
+    let shell = config.offset.map(|c| 0.5 * a * c as f64);
+    let axis = config.orientation.map(f64::from);
+    let pair = placed(copper, repeats, a, shell, axis, vacancy);
+    let energy = basin_energy(copper, &pair.positions, pair.cell);
+    let basin = pair_basin(&pair.positions, pair.cell, repeats, a, pair.vacancy);
+    (
+        NetworkState {
+            positions: pair.positions,
+            dumbbell: pair.dumbbell,
+            vacancy: pair.vacancy,
+            cell: pair.cell,
+            energy,
+            basin,
+        },
+        pair.steps,
+        pair.max_force,
+    )
+}
+
+/// Dimer seed and mode for one move of the dumbbell in `state`, which sits
+/// at `source` from the vacancy: the moving atoms halfway to the product of
+/// the move, and the product minus the reactant as the mode.
+fn hop_guess(
+    state: &NetworkState,
+    a: f64,
+    source: rgsaddle::PairConfig,
+    target: rgsaddle::PairConfig,
+    rotation: bool,
+    via: rgsaddle::Vec3i,
+) -> (Array1<f64>, Array1<f64>) {
+    let positions = &state.positions;
+    let cell = state.cell;
+    let lattice = |offset: rgsaddle::Vec3i| -> [f64; 3] {
+        std::array::from_fn(|c| state.vacancy[c] + 0.5 * a * offset[c] as f64)
+    };
+    let site = lattice(source.offset);
+    let mic = |point: [f64; 3]| -> [f64; 3] {
+        std::array::from_fn(|c| {
+            let length = cell[c][c];
+            let delta = point[c] - site[c];
+            delta - length * (delta / length).round()
+        })
+    };
+    let e = source.orientation.map(f64::from);
+    let along = |atom: usize| -> f64 {
+        let delta = mic(point_of(positions, atom));
+        delta[0] * e[0] + delta[1] * e[1] + delta[2] * e[2]
+    };
+    let half = 0.5
+        * dist(
+            point_of(positions, state.dumbbell[0]),
+            point_of(positions, state.dumbbell[1]),
+        );
+    let mut product: Vec<(usize, [f64; 3])> = Vec::new();
+    let mut hint: Vec<(usize, [f64; 3])> = Vec::new();
+    if rotation {
+        let e2 = target.orientation.map(f64::from);
+        let v = via.map(f64::from);
+        let sigma = (v[0] * e[0] + v[1] * e[1] + v[2] * e[2]).signum()
+            * (v[0] * e2[0] + v[1] * e2[1] + v[2] * e2[2]).signum();
+        let [first, second] = state.dumbbell;
+        let sign = along(first).signum();
+        let start: [f64; 3] = std::array::from_fn(|c| sign * e[c]);
+        let end: [f64; 3] = std::array::from_fn(|c| sign * sigma * e2[c]);
+        let middle = unit3(std::array::from_fn(|c| start[c] + end[c]));
+        for (atom, s) in [(first, 1.0), (second, -1.0)] {
+            product.push((atom, std::array::from_fn(|c| site[c] + s * half * end[c])));
+            hint.push((
+                atom,
+                std::array::from_fn(|c| site[c] + s * half * middle[c]),
+            ));
+        }
+    } else {
+        let d: rgsaddle::Vec3i = std::array::from_fn(|c| target.offset[c] - source.offset[c]);
+        let parallel = d[0] * source.orientation[0]
+            + d[1] * source.orientation[1]
+            + d[2] * source.orientation[2];
+        let perpendicular: [f64; 3] =
+            std::array::from_fn(|c| (d[c] - parallel * source.orientation[c]) as f64);
+        let p = unit3(perpendicular);
+        let (leading, staying) = if along(state.dumbbell[0]) * parallel as f64 > 0.0 {
+            (state.dumbbell[0], state.dumbbell[1])
+        } else {
+            (state.dumbbell[1], state.dumbbell[0])
+        };
+        let landing = lattice(target.offset);
+        product.push((staying, site));
+        if target.offset == [0, 0, 0] {
+            product.push((leading, landing));
+        } else {
+            let host =
+                (0..positions.len() / 3)
+                    .filter(|atom| *atom != leading && *atom != staying)
+                    .min_by(|l, r| {
+                        mic_distance(point_of(positions, *l), landing, cell)
+                            .total_cmp(&mic_distance(point_of(positions, *r), landing, cell))
+                    })
+                    .expect("host atom");
+            product.push((leading, std::array::from_fn(|c| landing[c] - half * p[c])));
+            product.push((host, std::array::from_fn(|c| landing[c] + half * p[c])));
+        }
+    }
+    let mut seed = positions.clone();
+    let mut mode = Array1::zeros(positions.len());
+    for (atom, place) in &product {
+        let from = point_of(positions, *atom);
+        for c in 0..3 {
+            let length = cell[c][c];
+            let mut delta = place[c] - from[c];
+            delta -= length * (delta / length).round();
+            mode[3 * atom + c] = delta;
+            seed[3 * atom + c] = from[c] + 0.5 * delta;
+        }
+    }
+    for (atom, place) in &hint {
+        for c in 0..3 {
+            seed[3 * atom + c] = place[c];
+        }
+    }
+    (seed, mode)
+}
+
+/// One saddle of the near-shell campaign. The product of [`hop_guess`] is
+/// followed down the flow, and a climbing band of five moving images joins
+/// the two relaxed ends. The dimer starts from each local band maximum in
+/// turn from the reactant side, along the band tangent, and last from the
+/// [`hop_guess`] seed along its mode. Each saddle is pushed 0.1 Å (largest
+/// atom) each way along the dimer mode and followed down the flow to
+/// 1e-3 eV/Å; the two basins are labelled by [`pair_basin`]. The first
+/// saddle whose basins are `want` is kept, else the first one found, else
+/// none. The band's highest image is kept either way.
+struct NetworkSaddle {
+    energy: f64,
+    force: f64,
+    index1: bool,
+    product: String,
+    band_force: f64,
+    band_top: f64,
+    basins: [String; 2],
+    attempt: usize,
+}
+
+fn network_saddle(
+    copper: &FastCopper,
+    state: &NetworkState,
+    repeats: usize,
+    a: f64,
+    hint: (Array1<f64>, Array1<f64>),
+    want: &[String; 2],
+) -> Result<NetworkSaddle, String> {
+    let cell = state.cell;
+    let product = descend(copper, &state.positions + &hint.1, cell, 1.0e-3)
+        .map_err(|error| format!("product flow: {error}"))?;
+    let product_basin = pair_basin(&product, cell, repeats, a, state.vacancy);
+    let wrapped = rgsaddle::mic::Cell::from_ase(cell).map_err(|error| error.to_string())?;
+    let guess = rgsaddle::linear_path(state.positions.view(), product.view(), 7, Some(&wrapped))
+        .map_err(|error| error.to_string())?;
+    let (band, band_force) =
+        drive_phase(copper, cell, guess, true, Method::fire(FireKind::V2), 200)?;
+    let held = FastHeld { copper, cell };
+    let energies: Vec<f64> = band
+        .rows()
+        .into_iter()
+        .map(|row| held.eval(row).map(|(energy, _)| energy))
+        .collect::<Result<_, _>>()
+        .map_err(|error| error.to_string())?;
+    let band_top = energies[1..band.nrows() - 1]
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let mut seeds: Vec<(Array1<f64>, Array1<f64>)> = (1..band.nrows() - 1)
+        .filter(|i| energies[*i] > energies[i - 1] && energies[*i] >= energies[i + 1])
+        .map(|i| {
+            (
+                band.row(i).to_owned(),
+                &band.row(i + 1).to_owned() - &band.row(i - 1).to_owned(),
+            )
+        })
+        .collect();
+    seeds.push(hint);
+    let tries = seeds.len();
+    let mut want = want.clone();
+    want.sort();
+    let mut first: Option<NetworkSaddle> = None;
+    for (attempt, (seed, mode)) in seeds.into_iter().enumerate() {
+        let Some(hit) = tight_dimer(copper, cell, seed, mode) else {
+            continue;
+        };
+        let largest = (0..hit.mode.len() / 3)
+            .map(|atom| {
+                (0..3)
+                    .map(|c| hit.mode[3 * atom + c].powi(2))
+                    .sum::<f64>()
+                    .sqrt()
+            })
+            .fold(0.0_f64, f64::max);
+        if largest <= 0.0 {
+            continue;
+        }
+        let push = &hit.mode * (0.1 / largest);
+        let basins = [1.0, -1.0].map(|sign| {
+            descend(copper, &hit.positions + &(&push * sign), cell, 1.0e-3)
+                .map(|basin| pair_basin(&basin, cell, repeats, a, state.vacancy))
+                .unwrap_or_else(|error| format!("unconverged:{error}"))
+        });
+        let mut ends = basins.clone();
+        ends.sort();
+        let found = NetworkSaddle {
+            energy: hit.energy,
+            force: hit.force,
+            index1: hit.index1,
+            product: product_basin.clone(),
+            band_force,
+            band_top,
+            basins,
+            attempt,
+        };
+        if ends == want {
+            return Ok(found);
+        }
+        first.get_or_insert(found);
+    }
+    Ok(first.unwrap_or(NetworkSaddle {
+        energy: f64::NAN,
+        force: f64::NAN,
+        index1: false,
+        product: product_basin,
+        band_force,
+        band_top,
+        basins: ["none".into(), "none".into()],
+        attempt: tries,
+    }))
+}
+
+/// Six decimals, blank when not finite.
+fn fixed6(value: f64) -> String {
+    if value.is_finite() {
+        format!("{value:.6}")
+    } else {
+        String::new()
+    }
+}
+
+const NETWORK_HEADER: &str = "temperature_K,lattice_A,kind,mechanism,hop,source,target,outcome,dE0_eV,energy_eV,max_force_eV_per_A,index1,forward_basin,backward_basin,product_basin,band_force_eV_per_A,band_top_eV,steps_or_seed,seconds";
+
+/// Rows of `defect_pair_network.csv` already written, by temperature, kind
+/// and hop or source.
+fn network_done(text: &str) -> std::collections::HashSet<(i64, String, String)> {
+    text.lines()
+        .skip(1)
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split(',').collect();
+            let temperature = fields.first()?.parse::<f64>().ok()?.round() as i64;
+            let kind = fields.get(2)?.to_string();
+            let key = if kind == "state" {
+                fields.get(5)?
+            } else {
+                fields.get(4)?
+            };
+            Some((temperature, kind, key.to_string()))
+        })
+        .collect()
+}
+
+/// The isolated dumbbell in the same cell, for the reference barriers: the
+/// dumbbell at (2,0,0) a/2 along x, its translation to (3,1,0) along y and
+/// its rotation to y through the (1,1,0) saddle.
+fn isolated_network_moves() -> [(&'static str, rgsaddle::PairConfig, rgsaddle::Vec3i); 2] {
+    [
+        (
+            "translate",
+            rgsaddle::PairConfig::new([3, 1, 0], [0, 1, 0]),
+            [0, 0, 0],
+        ),
+        (
+            "rotate",
+            rgsaddle::PairConfig::new([2, 0, 0], [0, 1, 0]),
+            [1, 1, 0],
+        ),
+    ]
+}
+
+#[test]
+#[ignore = "near-shell saddles of every symmetry-distinct hop in the 8788-atom cell on the Table 1 lattices"]
+fn defect_pair_network() {
+    let started = Instant::now();
+    let repeats = 13usize;
+    let temperatures: Vec<f64> = env_csv("RGSADDLE_TEMPS", "300,500,700")
+        .iter()
+        .map(|item| item.parse().expect("temperature"))
+        .collect();
+    let limit: usize = env_csv("RGSADDLE_HOP_LIMIT", "100000")[0]
+        .parse()
+        .expect("hop limit");
+    let copper = FastCopper::new();
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benchmarks");
+    let path = root.join("defect_pair_network.csv");
+    if !path.exists() {
+        std::fs::write(&path, format!("{NETWORK_HEADER}\n")).expect("network");
+    }
+    let done = network_done(&std::fs::read_to_string(&path).expect("network"));
+    let census = std::fs::read_to_string(root.join("defect_pair_census.csv")).expect("census");
+    let (group, network) = dumbbell_network(EXPLICIT_NORM2);
+    let checkpoint = Mutex::new(File::options().append(true).open(&path).expect("append"));
+    let write = |line: String| {
+        eprintln!(
+            "network {line} at {:.1} min",
+            started.elapsed().as_secs_f64() / 60.0
+        );
+        append_checkpoint(&checkpoint, &line);
+    };
+    let isolated_source = rgsaddle::PairConfig::new([2, 0, 0], [1, 0, 0]);
+    let mut placements = Vec::new();
+    for &temperature in &temperatures {
+        let spontaneous = census_spontaneous(&census, temperature);
+        placements.push((temperature, None));
+        for (index, state) in network.states.iter().enumerate() {
+            if !spontaneous.contains(&state_miller(state.config, &group)) {
+                placements.push((temperature, Some(index)));
+            }
+        }
+    }
+    eprintln!(
+        "network: {} states, {} hop classes; {} placements on {} threads",
+        network.states.len(),
+        network.hops.len(),
+        placements.len(),
+        rayon::current_num_threads()
+    );
+    let relaxed: Vec<((f64, Option<usize>), NetworkState)> = placements
+        .par_iter()
+        .map(|&(temperature, index)| {
+            let clock = Instant::now();
+            let a = demkowicz_lattice(temperature);
+            let config = index.map_or(isolated_source, |i| network.states[i].config);
+            let (state, steps, force) = network_state(&copper, repeats, a, config, index.is_some());
+            let source = index.map_or("isolated".to_string(), |i| network.id(i));
+            if !done.contains(&(temperature as i64, "state".into(), source.clone())) {
+                write(format!(
+                    "{temperature},{a:.3},state,,,{source},{},{},,{:.6},{force:.3e},,{},,,,,{steps},{:.1}",
+                    config_label(config),
+                    if state.basin == config_label(config) {
+                        "bound"
+                    } else {
+                        "left"
+                    },
+                    state.energy,
+                    state.basin,
+                    clock.elapsed().as_secs_f64()
+                ));
+            }
+            ((temperature, index), state)
+        })
+        .collect();
+    let lookup = |temperature: f64, index: Option<usize>| -> &NetworkState {
+        &relaxed
+            .iter()
+            .find(|(key, _)| key.0 == temperature && key.1 == index)
+            .expect("relaxed state")
+            .1
+    };
+    struct HopJob {
+        temperature: f64,
+        source: Option<usize>,
+        hop: Option<usize>,
+        kind: String,
+        from: rgsaddle::PairConfig,
+        to: rgsaddle::PairConfig,
+        via: rgsaddle::Vec3i,
+        expect: String,
+        target: String,
+    }
+    let mut jobs: Vec<HopJob> = Vec::new();
+    for &temperature in &temperatures {
+        for (kind, to, via) in isolated_network_moves() {
+            if !done.contains(&(temperature as i64, "isolated".into(), kind.into())) {
+                jobs.push(HopJob {
+                    temperature,
+                    source: None,
+                    hop: None,
+                    kind: kind.into(),
+                    from: isolated_source,
+                    to,
+                    via,
+                    expect: config_label(to),
+                    target: config_label(to),
+                });
+            }
+        }
+        let spontaneous = census_spontaneous(&census, temperature);
+        let is_spontaneous =
+            |i: usize| spontaneous.contains(&state_miller(network.states[i].config, &group));
+        let mut claimed = std::collections::HashSet::new();
+        for (index, state) in network.states.iter().enumerate() {
+            if is_spontaneous(index) {
+                continue;
+            }
+            for edge in &state.edges {
+                let (expect, target) = match edge.target {
+                    rgsaddle::PairTarget::Outside => continue,
+                    rgsaddle::PairTarget::Contact => ("recombined".to_string(), "contact".into()),
+                    rgsaddle::PairTarget::State(j) if is_spontaneous(j) => {
+                        ("recombined".to_string(), network.id(j))
+                    }
+                    rgsaddle::PairTarget::State(j) => (config_label(edge.config), network.id(j)),
+                };
+                if !claimed.insert(edge.hop) {
+                    continue;
+                }
+                let hop = &network.hops[edge.hop];
+                if done.contains(&(temperature as i64, "hop".into(), hop_label(hop))) {
+                    continue;
+                }
+                jobs.push(HopJob {
+                    temperature,
+                    source: Some(index),
+                    hop: Some(edge.hop),
+                    kind: hop.kind.clone(),
+                    from: state.config,
+                    to: edge.config,
+                    via: edge.via,
+                    expect,
+                    target,
+                });
+            }
+        }
+    }
+    jobs.truncate(limit);
+    eprintln!("network: {} saddle searches", jobs.len());
+    jobs.par_iter().for_each(|job| {
+        let clock = Instant::now();
+        let a = demkowicz_lattice(job.temperature);
+        let state = lookup(job.temperature, job.source);
+        let rotation = job.kind == "rotate";
+        let source_label = config_label(job.from);
+        let found = network_saddle(
+            &copper,
+            state,
+            repeats,
+            a,
+            hop_guess(state, a, job.from, job.to, rotation, job.via),
+            &[source_label.clone(), job.expect.clone()],
+        );
+        let (outcome, columns) = match &found {
+            Err(error) => ("no_saddle", format!(",,,,,,{},,,", error.replace(',', ";"))),
+            Ok(saddle) => {
+                let mut ends = saddle.basins.clone();
+                ends.sort();
+                let mut want = [source_label.clone(), job.expect.clone()];
+                want.sort();
+                let outcome = if ends == want && state.basin == source_label {
+                    "connected"
+                } else {
+                    "misconnected"
+                };
+                (
+                    outcome,
+                    format!(
+                        "{},{},{},{},{},{},{},{:.3e},{:.6},{}",
+                        fixed6(saddle.energy - state.energy),
+                        fixed6(saddle.energy),
+                        if saddle.force.is_finite() {
+                            format!("{:.3e}", saddle.force)
+                        } else {
+                            String::new()
+                        },
+                        saddle.index1,
+                        saddle.basins[0],
+                        saddle.basins[1],
+                        saddle.product,
+                        saddle.band_force,
+                        saddle.band_top,
+                        saddle.attempt
+                    ),
+                )
+            }
+        };
+        let (kind, hop, source) = match job.hop {
+            Some(h) => (
+                "hop",
+                hop_label(&network.hops[h]),
+                network.id(job.source.expect("source")),
+            ),
+            None => ("isolated", job.kind.clone(), "isolated".to_string()),
+        };
+        write(format!(
+            "{},{a:.3},{kind},{},{hop},{source},{},{outcome},{columns},{:.1}",
+            job.temperature,
+            job.kind,
+            job.target,
+            clock.elapsed().as_secs_f64()
+        ));
+    });
+    eprintln!(
+        "network wall {:.1} min",
+        started.elapsed().as_secs_f64() / 60.0
+    );
+}
+
+#[test]
+fn dumbbell_network_matches_census_orbits() {
+    let group = rgsaddle::cubic_group();
+    let (_, network) = dumbbell_network(EXPLICIT_NORM2);
+    let a = 3.631;
+    let mut orbits: Vec<(String, usize)> = network
+        .states
+        .iter()
+        .map(|state| (state_miller(state.config, &group), state.multiplicity / 3))
+        .collect();
+    orbits.sort();
+    let mut census: Vec<(String, usize)> = axis_orbits(a, 13)
+        .into_iter()
+        .map(|(_, vector, sites)| {
+            let (i, j, k) = miller(vector, a);
+            (format!("{i} {j} {k}"), sites)
+        })
+        .collect();
+    census.sort();
+    assert_eq!(orbits, census);
+}
