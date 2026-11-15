@@ -5501,8 +5501,12 @@ fn run_dense_job(
 }
 
 fn finish_line(kind: &str, entry: &rgsaddle::RateEntry) -> String {
+    let kappa = match num_or(&entry.kappa) {
+        value if value.is_empty() => "no kappa".to_string(),
+        value => format!("kappa {value}"),
+    };
     format!(
-        "{kind},{},{},{},{},{},{:.6},{},{},{},{},{},{},{:.5},kappa {}",
+        "{kind},{},{},{},{},{},{:.6},{},{},{},{},{},{},{:.5},{kappa}",
         entry.shell,
         entry.orientation,
         entry.hop,
@@ -5516,7 +5520,6 @@ fn finish_line(kind: &str, entry: &rgsaddle::RateEntry) -> String {
         num_or(&entry.rate),
         entry.outcome.as_str(),
         entry.band_force,
-        num_or(&entry.kappa)
     )
 }
 
