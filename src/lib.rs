@@ -58,6 +58,7 @@ pub mod nichols;
 pub mod occupancy;
 pub mod ocineb;
 pub mod pafi;
+pub mod pair_network;
 pub mod prfo;
 pub mod projection;
 pub mod relax;
@@ -89,13 +90,13 @@ pub use bennett::{ShootingConfig, Transmission, bennett_chandler};
 pub use connect::{ConnectConfig, ConnectProfile, ConnectReport, connect};
 pub use defect_pair::{
     BasinSaddle, CaptureRecord, CellMode, DefectPairConfig, DimerSeed, DirectionClass,
-    FREE_CRYSTAL, FreeMigration, HopOutcome, HopTemplate, PairSetup, PeriodicSinkRate,
-    PeriodicSinkSurvival, RateCatalogue, RateEntry, RecombinationVolume, SPONTANEOUS_BARRIER_EV,
-    SiteOutcome, SphereLanding, VolumePlacement, VolumeSite, attempt_frequency,
-    capture_is_spontaneous, capture_is_spontaneous_within, classify_separation,
+    FREE_CRYSTAL, FreeMigration, HopOutcome, HopTemplate, MatchedCapture, OuterHop, PairSetup,
+    PeriodicSinkRate, PeriodicSinkSurvival, RateCatalogue, RateEntry, RecombinationVolume,
+    SPONTANEOUS_BARRIER_EV, SiteOutcome, SphereLanding, VolumePlacement, VolumeSite,
+    attempt_frequency, capture_is_spontaneous, capture_is_spontaneous_within, classify_separation,
     debye_hit_probability, debye_matched_radius, debye_radius, debye_resistance, defect_pair_rates,
     descend_to_floor, effective_capture_radius, embed_free_migration, embed_sphere_return,
-    kinetic_recombination_volume, mean_absorption_time, pair_separation,
+    kinetic_recombination_volume, matched_capture_radius, mean_absorption_time, pair_separation,
     periodic_capture_log_likelihood, periodic_sink_rate, periodic_sink_survival, product_tangent,
     seeded_saddles, segment_band, shell_pair_factor, smoluchowski_rate, sphere_hit_probability,
     spherical_return_probability, volume_from_frequency,
@@ -127,6 +128,10 @@ pub use ocineb::{
 pub use pafi::{
     ArcPath, FreeEnergyProfile, HyperplaneAverage, PafiConfig, PathFrame, PathGeometry,
     average_hyperplane, integrate_profile, pafi_profile, zero_temperature_barrier,
+};
+pub use pair_network::{
+    Mat3i, PairConfig, PairEdge, PairExit, PairHop, PairMove, PairNetwork, PairStateClass,
+    PairTarget, Vec3i, cubic_group,
 };
 pub use prfo::{PrfoKind, partitioned_rfo_eigen, restricted_prfo_displacement};
 pub use projection::ProjectionKind;

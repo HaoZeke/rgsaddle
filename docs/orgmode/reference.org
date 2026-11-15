@@ -22,6 +22,8 @@ The table below lists the main types.
 | =SolidDimer=                   | That search on atoms plus Jacobian-scaled cell strain. =CellMask::frozen= is the fixed-cell dimer. =stress= and =elastic_dipole= are =σ= and =V σ= |
 | =StrainResponse=               | One hop. =barrier(ε)= is the lowest symmetry image of =ΔE0 - (P_saddle - P_minimum):ε=, or =NeedsSearch= past the validity bound. =ElasticDipole::from_stress= is =-V (σ_defect - σ_bulk)=. =refine= caches an index-1 solid dimer. =to_json= is the event record |
 | =defect_pair_rates=            | One relaxed geometry and a hop catalogue. Solid dimer, index check, connectivity, fixed CI-NEB, PAFI =ΔF=, Bennett–Chandler =κ=. =k = κ ν exp(-ΔF/kT)=. =RateCatalogue= is =rgsaddle.defect_pair_rates= |
+| =PairNetwork=                  | States are orbits of (relative vector, orientation) under a caller's integer point group; hop classes are orbits of the unordered configuration pair and saddle director. =sites= takes a per-edge rate closure and returns =VolumeSite= rows and outer hops. =cubic_group= is O_h |
+| =matched_capture_radius=       | Closes a site chain at its cutoff with capture =R/d= for an outer hop to =d=, =R= matched to the mean =P r= of the outermost sites, in closed form |
 | =Index1Session=                | Restricted-step partitioned RFO, Powell or Bofill update. =Index1Config= is non-exhaustive. =with_sparse_pattern= selects a CPR seed |
 | =SparsityPattern=              | Atom-level symmetric CSR from a linkcell cutoff walk. Diagonal blocks are implied and not stored as loops          |
 | =Colouring=                    | Smallest-last distance-2 colouring and the max-degree lower bound                                                  |

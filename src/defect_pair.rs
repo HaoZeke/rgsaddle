@@ -2302,6 +2302,127 @@ pub fn embed_sphere_return(
     Ok(out)
 }
 
+/// One hop from a site of the discrete region to `distance` from the origin,
+/// outside the region.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OuterHop {
+    /// Site the hop leaves.
+    pub source: String,
+    /// Hop rate.
+    pub rate: f64,
+    /// Landing distance from the origin.
+    pub distance: f64,
+}
+
+/// A site chain matched to the infinite crystal outside it.
+#[derive(Clone, Debug)]
+pub struct MatchedCapture {
+    /// Capture radius `R` with `P(r) = R / r` outside the region.
+    pub radius: f64,
+    /// The chain solved with every outer hop captured with probability
+    /// `radius / distance`.
+    pub volume: RecombinationVolume,
+}
+
+/// Capture radius of a site chain whose outside is the field-free infinite
+/// crystal.
+///
+/// Outside the region the capture probability is `R / r`, so an outer hop
+/// to `distance` is captured with probability `R / distance` and escapes
+/// otherwise. `R` is fixed by asking the multiplicity-weighted mean of
+/// `P r` over the `outer` sites (`(id, radius)`) to equal `R`. Capture
+/// probabilities are affine in `R`, so two solves give `R` in closed form
+/// and a third returns the matched chain.
+///
+/// [`embed_sphere_return`] returns a hop that lands just past the sphere
+/// with probability close to 1, which holds the outer sites high; matching
+/// does not need the landing to be far from the region.
+pub fn matched_capture_radius(
+    sites: &[VolumeSite],
+    hops: &[OuterHop],
+    outer: &[(String, f64)],
+    atomic_volume: f64,
+) -> Result<MatchedCapture, SaddleError> {
+    if hops.is_empty() || outer.is_empty() {
+        return Err(SaddleError::Invalid(
+            "matching needs outer hops and outer sites".into(),
+        ));
+    }
+    let nearest = hops
+        .iter()
+        .map(|hop| hop.distance)
+        .fold(f64::INFINITY, f64::min);
+    if !(nearest.is_finite() && nearest > 0.0) {
+        return Err(SaddleError::Invalid(
+            "outer hop distances must be finite and positive".into(),
+        ));
+    }
+    let with_radius = |radius: f64| -> Result<RecombinationVolume, SaddleError> {
+        let mut chain: Vec<VolumeSite> = sites.to_vec();
+        for hop in hops {
+            if !(hop.rate.is_finite() && hop.rate > 0.0) {
+                return Err(SaddleError::Invalid(
+                    "an outer hop rate must be finite and positive".into(),
+                ));
+            }
+            let site = chain
+                .iter_mut()
+                .find(|site| site.id == hop.source)
+                .ok_or_else(|| {
+                    SaddleError::Invalid(format!("outer hop source {} is not a site", hop.source))
+                })?;
+            if site.outcome != SiteOutcome::Kinetic {
+                return Err(SaddleError::Invalid(format!(
+                    "outer hop source {} is not a kinetic site",
+                    hop.source
+                )));
+            }
+            let caught = radius / hop.distance;
+            if caught > 0.0 {
+                site.rates.push(("recombined".into(), hop.rate * caught));
+            }
+            if caught < 1.0 {
+                site.rates
+                    .push(("escaped".into(), hop.rate * (1.0 - caught)));
+            }
+        }
+        kinetic_recombination_volume(&chain, atomic_volume)
+    };
+    let moments = |volume: &RecombinationVolume| -> Result<(f64, f64), SaddleError> {
+        let mut weight = 0.0;
+        let mut sum = 0.0;
+        for (id, radius) in outer {
+            let place = volume
+                .placements
+                .iter()
+                .find(|place| &place.id == id)
+                .ok_or_else(|| SaddleError::Invalid(format!("outer site {id} is not a site")))?;
+            weight += place.count;
+            sum += place.count * place.probability * radius;
+        }
+        Ok((weight, sum))
+    };
+    let (weight, base) = moments(&with_radius(0.0)?)?;
+    let (_, probe) = moments(&with_radius(nearest)?)?;
+    let slope = (probe - base) / nearest;
+    let denominator = weight - slope;
+    if !(weight > 0.0 && denominator > 0.0) {
+        return Err(SaddleError::Invalid(
+            "the outer sites cannot be matched to an outside capture radius".into(),
+        ));
+    }
+    let radius = base / denominator;
+    if !(radius.is_finite() && radius >= 0.0 && radius <= nearest) {
+        return Err(SaddleError::Invalid(format!(
+            "matched capture radius {radius} is outside [0, {nearest}]"
+        )));
+    }
+    Ok(MatchedCapture {
+        radius,
+        volume: with_radius(radius)?,
+    })
+}
+
 /// Unit path tangent at `arc`, pointing from the reactant toward the product.
 ///
 /// Frames are stored reactant-first, so increasing arc length is the product
