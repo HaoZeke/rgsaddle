@@ -151,4 +151,6 @@ Fit on 15 samples up to 1500 ps: slope -4.013711e-5 ± 4.900659e-6 /ps, k 4.2481
 
 Table 1 quotes the Ref. [12] SIA diffusivity as 0.526 ± 0.006 Å²/ps at this temperature. First-method V_iv = 13.32 ± 1.63 Ω.
 
+The free-dumbbell diffusivity measured with these dynamics (`direct_md_sia_d_long.md`) is 1.075 ± 0.040 Å²/ps. With it, first-method V_iv = 6.52 ± 0.83 Ω.
+
 Raw per-trajectory outcomes are the CSV this note was written from.

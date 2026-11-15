@@ -1503,7 +1503,20 @@ fn first_method_report(csv: &std::path::Path) -> String {
                 ));
             }
             _ => {
-                text.push_str("No Table 1 diffusivity is recorded for this temperature, so k is not converted to a volume.\n\n");
+                text.push_str("No Table 1 diffusivity is recorded for this temperature, so k is not converted with it.\n\n");
+            }
+        }
+        match measured_diffusivity(*temperature) {
+            Some((d_i, d_sigma)) if d_i > 0.0 => {
+                let per_atom = rate_to_volume(rate, lattice, d_i);
+                let rel = ((rate_sigma / rate).powi(2) + (d_sigma / d_i).powi(2)).sqrt();
+                text.push_str(&format!(
+                    "The free-dumbbell diffusivity measured with these dynamics (`direct_md_sia_d_long.md`) is {d_i:.3} ± {d_sigma:.3} Å²/ps. With it, first-method V_iv = {per_atom:.2} ± {:.2} Ω.\n\n",
+                    per_atom * rel
+                ));
+            }
+            _ => {
+                text.push_str("No diffusivity measured with these dynamics is recorded for this temperature.\n\n");
             }
         }
     }
@@ -1559,49 +1572,79 @@ fn random_survival_note(csv: &std::path::Path) -> String {
     }
     let mut text = String::new();
     text.push_str("# Random-vacancy survival, Mishin Cu\n\n");
-    text.push_str("The vacancy is the lattice site nearest the cell center. The <100> dumbbell host is drawn uniformly from the other sites of the 13³ cell, and the dumbbell axis uniformly from the three orientations. Under periodic boundaries the separation is uniform over the cell, which is the ensemble in section 2 of Mwungeli, Liu, and Demkowicz, Phys. Rev. Materials 9, 023601 (2025). The fit is ln(n(t)/N) = -(k/V_model) t through the origin, sampled every 25 ps. V_iv/Ω = 4k / (α a D_i) with α = 2/3, Ω = a³/4, and D_i from Table 1 of that paper (quoted from Ref. [12]). The quoted error is the standard deviation over 400 bootstrap resamples of the trajectories and does not include the Table 1 uncertainty on D_i.\n\n");
+    text.push_str("The vacancy is the lattice site nearest the cell center. The <100> dumbbell host is drawn uniformly from the other sites of the 13³ cell, and the dumbbell axis uniformly from the three orientations. Under periodic boundaries the separation is uniform over the cell, which is the ensemble in section 2 of Mwungeli, Liu, and Demkowicz, Phys. Rev. Materials 9, 023601 (2025). The fit is ln(n(t)/N) = -(k/V_model) t through the origin, sampled every 25 ps, with V_model the cell volume. V_iv/Ω = 4k / (α a D_i) with α = 2/3 and Ω = a³/4.\n\n");
+    text.push_str("Table 1 of that paper divides its k by the D_i in its own Table 1 column, which it quotes from Ref. [12], B. Zhang et al., Phys. Rev. Materials 6, 053605 (2022): SIA mean-square displacements in MD. The paper's own trajectories are NPH for 30 ps, then NVE with velocity rescaling, at its lattice constant. Our k comes from the Langevin dynamics in the CSV, so the self-consistent volume divides it by the free-dumbbell diffusivity measured with those same dynamics, potential, and cell, in `direct_md_sia_d_long.md`. Both conversions are listed. σ_k is the standard deviation over 400 bootstrap resamples of the trajectories. The bootstrap σ column carries only that; the total σ columns add the relative error of the D_i used in quadrature.\n\n");
     if trials.is_empty() {
         text.push_str("No trajectories.\n");
         return text;
     }
+    let table_d = table_diffusivity(temperature);
+    let measured_d = measured_diffusivity(temperature);
+    let fmt_d = |d: Option<(f64, f64)>| match d {
+        Some((value, error)) => format!("{value:.3} ± {error:.3} Å²/ps"),
+        None => "not available".to_string(),
+    };
+    text.push_str(&format!(
+        "At {temperature:.0} K, Table 1 D_i = {}; measured D_i = {}.\n\n",
+        fmt_d(table_d),
+        fmt_d(measured_d)
+    ));
+    let convert = |rate: f64, rate_sigma: f64, d: Option<(f64, f64)>| -> (f64, f64, f64) {
+        match d {
+            Some((d_i, d_sigma)) if d_i > 0.0 => {
+                let volume = rate_to_volume(rate, lattice, d_i);
+                let boot = volume.abs() * rate_sigma / rate.abs();
+                let total =
+                    volume.abs() * ((rate_sigma / rate).powi(2) + (d_sigma / d_i).powi(2)).sqrt();
+                (volume, boot, total)
+            }
+            _ => (f64::NAN, f64::NAN, f64::NAN),
+        }
+    };
     let caps = [300.0_f64, 600.0, 900.0, 1200.0, 1500.0];
-    text.push_str(
-        "| t_max (ps) | captured | N | V_iv/Ω | bootstrap σ |\n|---:|---:|---:|---:|---:|\n",
-    );
+    text.push_str("| t_max (ps) | captured | N | k (Å³/ps) | σ_k | V_iv/Ω, Table 1 D_i | bootstrap σ | total σ | V_iv/Ω, measured D_i | total σ |\n|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
     let mut rows: Vec<(f64, f64, f64)> = Vec::new();
     for cap in caps.iter().copied().filter(|cap| *cap <= window + 1.0e-6) {
-        let (volume, sigma) = bootstrap_volume(&trials, cap, lattice, repeats, temperature);
+        let (rate, rate_sigma) = bootstrap_rate(&trials, cap, lattice, repeats);
+        let (v_table, boot_table, total_table) = convert(rate, rate_sigma, table_d);
+        let (v_measured, _, total_measured) = convert(rate, rate_sigma, measured_d);
         text.push_str(&format!(
-            "| {cap:.0} | {} | {} | {volume:.2} | {sigma:.2} |\n",
+            "| {cap:.0} | {} | {} | {rate:.2} | {rate_sigma:.2} | {v_table:.2} | {boot_table:.2} | {total_table:.2} | {v_measured:.2} | {total_measured:.2} |\n",
             trials
                 .iter()
                 .filter(|(hit, time)| *hit && *time <= cap)
                 .count(),
             trials.len()
         ));
-        rows.push((cap, volume, sigma));
+        rows.push((cap, rate, rate_sigma));
     }
-    if let Some((cap, volume, sigma)) = rows.last().copied() {
+    if let Some((cap, rate, rate_sigma)) = rows.last().copied() {
+        let (v_table, boot_table, total_table) = convert(rate, rate_sigma, table_d);
+        let (v_measured, _, total_measured) = convert(rate, rate_sigma, measured_d);
         text.push_str(&format!(
-            "\nAt the longest window, {cap:.0} ps, V_iv = {volume:.2} ± {sigma:.2} Ω.\n"
+            "\nAt the longest window, {cap:.0} ps, k = {rate:.2} ± {rate_sigma:.2} Å³/ps. With the Table 1 D_i, V_iv = {v_table:.2} ± {boot_table:.2} Ω (bootstrap) or ± {total_table:.2} Ω (with D_i). With the measured D_i, V_iv = {v_measured:.2} ± {total_measured:.2} Ω.\n"
         ));
-        if let Some((d_i, d_sigma)) = table_diffusivity(temperature) {
-            if d_i > 0.0 {
-                text.push_str(&format!(
-                    "Table 1 gives D_i = {d_i:.3} ± {d_sigma:.3} Å²/ps. That relative uncertainty scales this volume by {:.2} Ω.\n",
-                    volume.abs() * d_sigma / d_i
-                ));
-            }
-        }
-        if let Some((k_mean, k_sigma, mean_time, mean_sigma)) = table_volume(temperature) {
+        if let (Some((k_mean, k_sigma, mean_time, mean_sigma)), Some((d_i, d_sigma)), Some(a_p)) = (
+            table_volume(temperature),
+            table_d,
+            table_lattice(temperature),
+        ) {
+            // V Ω α D / a² with Ω = a³/4 undoes the paper's own conversion.
+            let k_paper = k_mean * a_p * DUMBBELL_ALPHA * d_i / 4.0;
+            let k_paper_sigma =
+                k_paper * ((k_sigma / k_mean).powi(2) + (d_sigma / d_i).powi(2)).sqrt();
+            let ratio = rate / k_paper;
+            let ratio_sigma =
+                ratio * ((rate_sigma / rate).powi(2) + (k_paper_sigma / k_paper).powi(2)).sqrt();
             text.push_str(&format!(
-                "Table 1 at this temperature, 8788 atoms, is {k_mean:.0} ± {k_sigma:.0} Ω (k-method) and {mean_time:.0} ± {mean_sigma:.0} Ω (mean-time method). The longest-window volume minus the k-method value is {:.2} Ω.\n",
-                volume - k_mean
+                "Table 1 at this temperature, 8788 atoms, is {k_mean:.0} ± {k_sigma:.0} Ω (k-method) and {mean_time:.0} ± {mean_sigma:.0} Ω (mean-time method). The k-method value with the Table 1 D_i and the paper's lattice constant {a_p:.3} Å implies k = {k_paper:.2} ± {k_paper_sigma:.2} Å³/ps. Our longest-window k over that is {ratio:.3} ± {ratio_sigma:.3}. The Table 1-D_i volume minus the k-method value is {:.2} Ω; the measured-D_i volume minus it is {:.2} Ω.\n",
+                v_table - k_mean,
+                v_measured - k_mean,
             ));
         }
         text.push('\n');
     }
-    text.push_str("Table 1, 8788 atoms, k-method then mean-time method: 300 K 254 ± 21 and 286 ± 28; 500 K 185 ± 23 and 161 ± 15; 700 K 203 ± 10 and 210 ± 21.\n");
+    text.push_str("Table 1, 8788 atoms, k-method then mean-time method: 300 K 254 ± 21 and 286 ± 28; 500 K 185 ± 23 and 161 ± 15; 700 K 203 ± 10 and 210 ± 21. All use the Ref. [12] D_i of Table 1: 0.143, 0.526, and 0.910 Å²/ps.\n");
     text
 }
 
@@ -1615,17 +1658,8 @@ fn table_volume(temperature: f64) -> Option<(f64, f64, f64, f64)> {
     }
 }
 
-fn bootstrap_volume(
-    trials: &[(bool, f64)],
-    t_max: f64,
-    lattice: f64,
-    repeats: f64,
-    temperature: f64,
-) -> (f64, f64) {
-    let Some((d_i, _)) = table_diffusivity(temperature) else {
-        return (f64::NAN, f64::NAN);
-    };
-    let point = |sample: &[(bool, f64)]| survival_volume(sample, t_max, lattice, repeats, d_i);
+fn bootstrap_rate(trials: &[(bool, f64)], t_max: f64, lattice: f64, repeats: f64) -> (f64, f64) {
+    let point = |sample: &[(bool, f64)]| survival_rate(sample, t_max, lattice, repeats);
     let center = point(trials);
     let mut rng = SplitRng::new(0xB007);
     let mut values = Vec::with_capacity(400);
@@ -1649,6 +1683,11 @@ fn bootstrap_volume(
     (center, variance.sqrt())
 }
 
+/// V_iv/Ω = k a² / (α D_i Ω) with Ω = a³/4.
+fn rate_to_volume(rate: f64, lattice: f64, d_i: f64) -> f64 {
+    rate * lattice * lattice / (DUMBBELL_ALPHA * d_i) / (lattice.powi(3) / 4.0)
+}
+
 fn survival_volume(
     trials: &[(bool, f64)],
     t_max: f64,
@@ -1656,6 +1695,11 @@ fn survival_volume(
     repeats: f64,
     d_i: f64,
 ) -> f64 {
+    rate_to_volume(survival_rate(trials, t_max, lattice, repeats), lattice, d_i)
+}
+
+/// k in Å³/ps from the through-origin fit of ln(n/N) sampled every 25 ps.
+fn survival_rate(trials: &[(bool, f64)], t_max: f64, lattice: f64, repeats: f64) -> f64 {
     let mut times = Vec::new();
     let step = 25.0_f64;
     let mut time = step;
@@ -1673,10 +1717,7 @@ fn survival_volume(
     }
     let denominator: f64 = times.iter().map(|(time, _)| time * time).sum();
     let slope = times.iter().map(|(time, log_s)| time * log_s).sum::<f64>() / denominator;
-    let model = (repeats * lattice).powi(3);
-    let rate = -slope * model;
-    let volume = rate * lattice * lattice / (DUMBBELL_ALPHA * d_i);
-    volume / (lattice.powi(3) / 4.0)
+    -slope * (repeats * lattice).powi(3)
 }
 
 fn deduped_lines(csv: &std::path::Path) -> Vec<String> {
@@ -1955,6 +1996,496 @@ fn isolated_dumbbell(repeats: usize, a: f64) -> (Vec<f64>, [[f64; 3]; 3]) {
     (values, cell)
 }
 
+const SIA_D_HEADER: &str = "temperature_K,lattice_A,repeats,n_atoms,dt_fs,gamma_per_ps,seed,block,tau_ps,dx_A,dy_A,dz_A,r2_A2,site_changes,unresolved_samples";
+const SIA_SAMPLE_PS: f64 = 0.1;
+
+/// Nearest fcc site in half-lattice units: integer coordinates with an even sum.
+fn fcc_site(u: [f64; 3]) -> [i64; 3] {
+    let mut site = u.map(|value| value.round() as i64);
+    if (site[0] + site[1] + site[2]).rem_euclid(2) != 0 {
+        let mut worst = 0;
+        let mut miss = -1.0;
+        for axis in 0..3 {
+            let gap = (u[axis] - site[axis] as f64).abs();
+            if gap > miss {
+                miss = gap;
+                worst = axis;
+            }
+        }
+        site[worst] += if u[worst] > site[worst] as f64 { 1 } else { -1 };
+    }
+    site
+}
+
+/// The one doubly occupied Wigner-Seitz cell, in half-lattice units wrapped to the cell.
+///
+/// `shift` is the centre-of-mass displacement since time zero; it is removed
+/// so a drifting crystal keeps its sites. `None` if the occupancy is not
+/// exactly one cell with two atoms and none empty.
+fn dumbbell_site(
+    positions: &[f64],
+    shift: [f64; 3],
+    a: f64,
+    n_half: i64,
+    occupancy: &mut Vec<u8>,
+) -> Option<[i64; 3]> {
+    let span = n_half as usize;
+    occupancy.clear();
+    occupancy.resize(span * span * span, 0);
+    for atom in 0..positions.len() / 3 {
+        let u = [0, 1, 2].map(|axis| 2.0 * (positions[3 * atom + axis] - shift[axis]) / a);
+        let site = fcc_site(u).map(|value| value.rem_euclid(n_half) as usize);
+        let index = (site[0] * span + site[1]) * span + site[2];
+        occupancy[index] = occupancy[index].saturating_add(1);
+    }
+    let mut found = None;
+    for ix in 0..span {
+        for iy in 0..span {
+            for iz in 0..span {
+                if (ix + iy + iz) % 2 != 0 {
+                    continue;
+                }
+                match occupancy[(ix * span + iy) * span + iz] {
+                    1 => {}
+                    2 if found.is_none() => found = Some([ix as i64, iy as i64, iz as i64]),
+                    _ => return None,
+                }
+            }
+        }
+    }
+    found
+}
+
+fn center_of_mass(positions: &[f64]) -> [f64; 3] {
+    let n = (positions.len() / 3).max(1) as f64;
+    let mut sum = [0.0; 3];
+    for atom in 0..positions.len() / 3 {
+        for axis in 0..3 {
+            sum[axis] += positions[3 * atom + axis];
+        }
+    }
+    sum.map(|value| value / n)
+}
+
+fn sia_block_ps(temperature: f64) -> f64 {
+    if let Ok(text) = env::var("MD_SIA_TAU")
+        && let Ok(value) = text.parse::<f64>()
+    {
+        return value;
+    }
+    match temperature as i32 {
+        t if t <= 300 => 40.0,
+        t if t <= 500 => 20.0,
+        _ => 10.0,
+    }
+}
+
+/// One free <100> dumbbell, the V_iv dynamics, and the dumbbell-site
+/// displacement over consecutive production blocks of `tau_ps`.
+fn sia_d_trajectory(
+    spec: &RunSpec,
+    temperature: f64,
+    seed_index: u64,
+    tau_ps: f64,
+    blocks: usize,
+) -> Vec<String> {
+    let lattice = measured_lattice(temperature);
+    let (mut positions, cell) = isolated_dumbbell(spec.repeats, lattice);
+    let n_atoms = positions.len() / 3;
+    let n_half = 2 * spec.repeats as i64;
+    let mut potential = MishinCu::new();
+    let production =
+        Langevin::from_physical(spec.dt_fs, spec.gamma_per_ps, temperature, CU_MASS_AMU);
+    let equil = Langevin::from_physical(spec.dt_fs, 1.0, temperature, CU_MASS_AMU);
+    let seed = mix_seed(&[temperature.to_bits(), seed_index, 0xD1FF_05EE]);
+    let mut rng = SplitRng::new(seed);
+    let sigma = (production.thermal / production.mass).sqrt();
+    let mut velocities: Vec<f64> = (0..positions.len()).map(|_| rng.normal() * sigma).collect();
+    zero_com(&mut velocities);
+    let mut gradient = vec![0.0; positions.len()];
+    potential.energy_gradient(&positions, cell, &mut gradient);
+    let step_ps = spec.dt_fs * 1.0e-3;
+    let sample_steps = ((SIA_SAMPLE_PS / step_ps).round() as usize).max(1);
+    let equil_steps = ((2.0 / step_ps).round() as usize).div_ceil(sample_steps) * sample_steps;
+    let block_steps = ((tau_ps / step_ps).round() as usize).div_ceil(sample_steps) * sample_steps;
+    let total_steps = equil_steps + blocks * block_steps;
+    let com0 = center_of_mass(&positions);
+    let mut occupancy = Vec::new();
+    let mut site = dumbbell_site(&positions, [0.0; 3], lattice, n_half, &mut occupancy)
+        .expect("the starting dumbbell occupies one site");
+    let mut unwrapped = [0i64; 3];
+    let mut block_start = unwrapped;
+    let mut changes = 0usize;
+    let mut unresolved = 0usize;
+    let mut rows = Vec::with_capacity(blocks);
+    for step in 1..=total_steps {
+        let phase = if step <= equil_steps {
+            equil
+        } else {
+            production
+        };
+        phase.step(
+            &mut potential,
+            &mut positions,
+            &mut velocities,
+            &mut gradient,
+            cell,
+            &mut rng,
+        );
+        if step % sample_steps != 0 {
+            continue;
+        }
+        let com = center_of_mass(&positions);
+        let shift = [com[0] - com0[0], com[1] - com0[1], com[2] - com0[2]];
+        match dumbbell_site(&positions, shift, lattice, n_half, &mut occupancy) {
+            Some(here) => {
+                let mut moved = false;
+                for axis in 0..3 {
+                    let mut delta = (here[axis] - site[axis]).rem_euclid(n_half);
+                    if delta > n_half / 2 {
+                        delta -= n_half;
+                    }
+                    moved |= delta != 0;
+                    unwrapped[axis] += delta;
+                }
+                changes += usize::from(moved && step > equil_steps);
+                site = here;
+            }
+            None => {
+                unresolved += usize::from(step > equil_steps);
+            }
+        }
+        if step == equil_steps {
+            block_start = unwrapped;
+            changes = 0;
+            unresolved = 0;
+        } else if step > equil_steps && (step - equil_steps) % block_steps == 0 {
+            let block = (step - equil_steps) / block_steps - 1;
+            let d =
+                [0, 1, 2].map(|axis| (unwrapped[axis] - block_start[axis]) as f64 * 0.5 * lattice);
+            let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+            rows.push(format!(
+                "{temperature:.0},{lattice:.6},{},{n_atoms},{:.4},{:.4},{seed_index},{block},{:.4},{:.6},{:.6},{:.6},{r2:.6},{changes},{unresolved}",
+                spec.repeats,
+                spec.dt_fs,
+                spec.gamma_per_ps,
+                block_steps as f64 * step_ps,
+                d[0],
+                d[1],
+                d[2],
+            ));
+            block_start = unwrapped;
+            changes = 0;
+            unresolved = 0;
+        }
+    }
+    rows
+}
+
+fn sia_d_path() -> PathBuf {
+    if let Ok(over) = env::var("MD_SIA_OUT") {
+        return PathBuf::from(over);
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("validation/direct_md_sia_d_long.csv")
+}
+
+struct SiaBlock {
+    temperature: f64,
+    lattice: f64,
+    seed: u64,
+    block: usize,
+    tau: f64,
+    d: [f64; 3],
+    r2: f64,
+    changes: f64,
+    unresolved: f64,
+}
+
+fn read_sia_blocks(csv: &std::path::Path) -> Vec<SiaBlock> {
+    let Ok(file) = File::open(csv) else {
+        return Vec::new();
+    };
+    let mut rows = Vec::new();
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        let fields: Vec<&str> = line.split(',').collect();
+        if fields.len() < 15 {
+            continue;
+        }
+        let parsed: Option<SiaBlock> = (|| {
+            Some(SiaBlock {
+                temperature: fields[0].parse().ok()?,
+                lattice: fields[1].parse().ok()?,
+                seed: fields[6].parse().ok()?,
+                block: fields[7].parse().ok()?,
+                tau: fields[8].parse().ok()?,
+                d: [
+                    fields[9].parse().ok()?,
+                    fields[10].parse().ok()?,
+                    fields[11].parse().ok()?,
+                ],
+                r2: fields[12].parse().ok()?,
+                changes: fields[13].parse().ok()?,
+                unresolved: fields[14].parse().ok()?,
+            })
+        })();
+        if let Some(row) = parsed {
+            rows.push(row);
+        }
+    }
+    rows
+}
+
+struct SiaEstimate {
+    d: f64,
+    sigma: f64,
+    d_pair: f64,
+    sigma_pair: f64,
+    seeds: usize,
+    blocks: usize,
+    tau: f64,
+    lattice: f64,
+    changes_per_ps: f64,
+    unresolved_fraction: f64,
+}
+
+/// D = <|Δr|²>/(6τ) per trajectory, averaged over trajectories, with the
+/// standard error across trajectories. The pair estimate joins consecutive
+/// blocks into 2τ windows; it agrees with D when τ is past the correlated regime.
+fn sia_estimate(rows: &[SiaBlock], temperature: f64) -> Option<SiaEstimate> {
+    let mut by_seed: BTreeMap<u64, Vec<&SiaBlock>> = BTreeMap::new();
+    for row in rows.iter().filter(|row| row.temperature == temperature) {
+        by_seed.entry(row.seed).or_default().push(row);
+    }
+    if by_seed.is_empty() {
+        return None;
+    }
+    let mut per_seed = Vec::new();
+    let mut per_seed_pair = Vec::new();
+    let mut blocks = 0usize;
+    let mut changes = 0.0;
+    let mut unresolved = 0.0;
+    let mut time = 0.0;
+    let mut tau = 0.0;
+    let mut lattice = 0.0;
+    for group in by_seed.values_mut() {
+        group.sort_by_key(|row| row.block);
+        tau = group[0].tau;
+        lattice = group[0].lattice;
+        let msd = group.iter().map(|row| row.r2).sum::<f64>() / group.len() as f64;
+        per_seed.push(msd / (6.0 * tau));
+        let pairs: Vec<f64> = group
+            .chunks_exact(2)
+            .map(|pair| {
+                let d = [0, 1, 2].map(|axis| pair[0].d[axis] + pair[1].d[axis]);
+                d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
+            })
+            .collect();
+        if !pairs.is_empty() {
+            per_seed_pair.push(pairs.iter().sum::<f64>() / pairs.len() as f64 / (12.0 * tau));
+        }
+        blocks += group.len();
+        changes += group.iter().map(|row| row.changes).sum::<f64>();
+        unresolved += group.iter().map(|row| row.unresolved).sum::<f64>();
+        time += group.len() as f64 * tau;
+    }
+    let mean_se = |values: &[f64]| -> (f64, f64) {
+        let n = values.len() as f64;
+        let mean = values.iter().sum::<f64>() / n;
+        if values.len() < 2 {
+            return (mean, f64::NAN);
+        }
+        let var = values
+            .iter()
+            .map(|value| (value - mean).powi(2))
+            .sum::<f64>()
+            / (n - 1.0);
+        (mean, (var / n).sqrt())
+    };
+    let (d, sigma) = mean_se(&per_seed);
+    let (d_pair, sigma_pair) = if per_seed_pair.is_empty() {
+        (f64::NAN, f64::NAN)
+    } else {
+        mean_se(&per_seed_pair)
+    };
+    let samples = time / SIA_SAMPLE_PS;
+    Some(SiaEstimate {
+        d,
+        sigma,
+        d_pair,
+        sigma_pair,
+        seeds: per_seed.len(),
+        blocks,
+        tau,
+        lattice,
+        changes_per_ps: changes / time,
+        unresolved_fraction: unresolved / samples,
+    })
+}
+
+fn measured_diffusivity(temperature: f64) -> Option<(f64, f64)> {
+    let rows = read_sia_blocks(&sia_d_path());
+    sia_estimate(&rows, temperature).map(|estimate| (estimate.d, estimate.sigma))
+}
+
+fn defect_pair_diffusivity(temperature: f64) -> Option<(f64, f64)> {
+    // Å²/ps, the free-dumbbell MD diffusivity quoted by the defect-pair rate work.
+    match temperature as i32 {
+        300 => Some((0.278, 0.033)),
+        500 => Some((0.860, 0.071)),
+        700 => Some((1.886, 0.188)),
+        _ => None,
+    }
+}
+
+fn table_lattice(temperature: f64) -> Option<f64> {
+    // Å, the zero-pressure lattice parameter in Table 1 of Mwungeli, Liu, and Demkowicz.
+    match temperature as i32 {
+        300 => Some(3.631),
+        400 => Some(3.637),
+        500 => Some(3.643),
+        600 => Some(3.649),
+        700 => Some(3.655),
+        _ => None,
+    }
+}
+
+fn sia_d_note(csv: &std::path::Path) -> String {
+    let rows = read_sia_blocks(csv);
+    let mut text = String::new();
+    text.push_str("# Free dumbbell diffusivity, Mishin Cu\n\n");
+    text.push_str("One <100> dumbbell in the perfect 13×13×13 cell (8789 atoms) on the Mishin EAM1 of `tests/mishin_cu.rs`, at the lattice constant of the V_iv runs. The dynamics are the V_iv dynamics: Maxwellian start, 2 ps of Langevin at gamma = 1/ps, then gamma and dt from the columns `gamma_per_ps` and `dt_fs`. The dumbbell is the one doubly occupied Wigner-Seitz cell of the ideal lattice, found every 0.1 ps after the centre-of-mass drift of the cell is removed. A sample with no single doubly occupied cell is skipped and counted in `unresolved_samples`. Each row is the dumbbell-site displacement over one production block of `tau_ps`.\n\n");
+    text.push_str("D for one trajectory is the mean of |Δr|² over its blocks divided by 6τ. The quoted D is the mean over trajectories and σ is the standard error across trajectories. D(2τ) joins consecutive blocks; it matches D(τ) when τ is past the correlated part of the walk. Site changes per ps count samples at which the doubly occupied cell moved, so back-and-forth jumps inside 0.1 ps are not counted.\n\n");
+    let mut temperatures: Vec<f64> = rows.iter().map(|row| row.temperature).collect();
+    temperatures.sort_by(f64::total_cmp);
+    temperatures.dedup();
+    if temperatures.is_empty() {
+        text.push_str("No trajectories.\n");
+        return text;
+    }
+    text.push_str("| T (K) | a (Å) | seeds | blocks | τ (ps) | D (Å²/ps) | σ | σ/D | D(2τ) | σ(2τ) | site changes/ps | unresolved |\n|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+    let mut estimates = Vec::new();
+    for temperature in &temperatures {
+        let Some(estimate) = sia_estimate(&rows, *temperature) else {
+            continue;
+        };
+        text.push_str(&format!(
+            "| {temperature:.0} | {:.6} | {} | {} | {:.1} | {:.4} | {:.4} | {:.1}% | {:.4} | {:.4} | {:.3} | {:.2}% |\n",
+            estimate.lattice,
+            estimate.seeds,
+            estimate.blocks,
+            estimate.tau,
+            estimate.d,
+            estimate.sigma,
+            100.0 * estimate.sigma / estimate.d,
+            estimate.d_pair,
+            estimate.sigma_pair,
+            estimate.changes_per_ps,
+            100.0 * estimate.unresolved_fraction,
+        ));
+        estimates.push((*temperature, estimate));
+    }
+    text.push_str("\n## Cross-check\n\n");
+    text.push_str("Table 1 of Mwungeli, Liu, and Demkowicz lists D_i from their Ref. [12], B. Zhang et al., Phys. Rev. Materials 6, 053605 (2022), which took D_i from the mean-square displacement of SIAs in MD. Table 1 divides each measured rate coefficient by that D_i: V_iv = k a² / (α D_i) with α = 2/3. The defect-pair column is the free-dumbbell MD diffusivity quoted by the defect-pair rate work. z is the difference over the two errors in quadrature.\n\n");
+    text.push_str("| T (K) | this run | Table 1 [12] | this/Table 1 | z | defect-pair MD | this/defect-pair | z |\n|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+    for (temperature, estimate) in &estimates {
+        let cell = |other: Option<(f64, f64)>| -> String {
+            match other {
+                Some((value, error)) => format!(
+                    "{value:.3} ± {error:.3} | {:.3} | {:.2}",
+                    estimate.d / value,
+                    (estimate.d - value) / (estimate.sigma.powi(2) + error.powi(2)).sqrt()
+                ),
+                None => "- | - | -".to_string(),
+            }
+        };
+        text.push_str(&format!(
+            "| {temperature:.0} | {:.3} ± {:.3} | {} | {} |\n",
+            estimate.d,
+            estimate.sigma,
+            cell(table_diffusivity(*temperature)),
+            cell(defect_pair_diffusivity(*temperature)),
+        ));
+    }
+    text.push_str("\nRaw per-block displacements are the CSV this note was written from.\n");
+    text
+}
+
+fn run_sia_d() {
+    let spec = run_spec();
+    let blocks = env_u64("MD_SIA_BLOCKS", 40) as usize;
+    let path = sia_d_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).expect("validation dir");
+    }
+    if !path.exists() {
+        let mut header = File::create(&path).expect("csv");
+        writeln!(header, "{SIA_D_HEADER}").unwrap();
+    }
+    let done: std::collections::BTreeSet<(i64, u64)> = read_sia_blocks(&path)
+        .iter()
+        .map(|row| (row.temperature as i64, row.seed))
+        .collect();
+    let mut jobs: Vec<(f64, u64, f64)> = Vec::new();
+    for &temperature in &spec.temps {
+        for seed in 0..spec.seeds {
+            if !done.contains(&(temperature as i64, seed)) {
+                jobs.push((temperature, seed, sia_block_ps(temperature)));
+            }
+        }
+    }
+    jobs.sort_by(|left, right| right.2.total_cmp(&left.2));
+    println!(
+        "sia_d jobs {} temps {:?} seeds {} blocks {blocks} dt_fs {} gamma {}",
+        jobs.len(),
+        spec.temps,
+        spec.seeds,
+        spec.dt_fs,
+        spec.gamma_per_ps
+    );
+    let file = Mutex::new(OpenOptions::new().append(true).open(&path).expect("append"));
+    let cursor = AtomicUsize::new(0);
+    let workers = thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(jobs.len().max(1));
+    let started = Instant::now();
+    thread::scope(|scope| {
+        for _ in 0..workers {
+            let (jobs, cursor, file, spec) = (&jobs, &cursor, &file, &spec);
+            scope.spawn(move || {
+                loop {
+                    let index = cursor.fetch_add(1, Ordering::Relaxed);
+                    let Some(&(temperature, seed, tau)) = jobs.get(index) else {
+                        break;
+                    };
+                    let rows = sia_d_trajectory(spec, temperature, seed, tau, blocks);
+                    let msd = rows
+                        .iter()
+                        .filter_map(|row| row.split(',').nth(12)?.parse::<f64>().ok())
+                        .sum::<f64>()
+                        / rows.len().max(1) as f64;
+                    let mut handle = file.lock().expect("csv lock");
+                    for row in &rows {
+                        writeln!(handle, "{row}").unwrap();
+                    }
+                    println!(
+                        "{}/{} T {temperature:.0} seed {seed} tau {tau} D {:.4}",
+                        index + 1,
+                        jobs.len(),
+                        msd / (6.0 * tau)
+                    );
+                }
+            });
+        }
+    });
+    fs::write(note_path(&path), sia_d_note(&path)).expect("note");
+    println!(
+        "wrote {} in {:.1}s",
+        path.display(),
+        started.elapsed().as_secs_f64()
+    );
+}
+
 fn main() {
     let (perfect, cell) = fcc(1, 3.615);
     let mut gradient = vec![0.0; perfect.len()];
@@ -2052,6 +2583,15 @@ fn main() {
         return;
     }
 
+    if env::var("MD_SIA_D").ok().as_deref() == Some("1") {
+        run_sia_d();
+        return;
+    }
+    if env::var("MD_SIA_D_NOTE").ok().as_deref() == Some("1") {
+        let path = sia_d_path();
+        fs::write(note_path(&path), sia_d_note(&path)).expect("note");
+        return;
+    }
     if env::var("MD_MSD").ok().as_deref() == Some("1") {
         let spec = run_spec();
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("validation/direct_md_sia_d.csv");
@@ -2197,6 +2737,11 @@ fn main() {
                 );
             }
         }
+        return;
+    }
+    if env::var("MD_NOTE_ONLY").ok().as_deref() == Some("1") {
+        let path = output_path();
+        fs::write(note_path(&path), summarize(&path)).expect("note");
         return;
     }
 
@@ -2413,5 +2958,43 @@ mod tests {
         let (positions, cell) = place_vacancy_dumbbell(13, a, shells[0].1, [0.0, 0.0, 1.0]);
         assert_eq!(positions.len() / 3, 8788);
         assert!(coordination_deficit(&positions, cell) > 0);
+    }
+
+    #[test]
+    fn fcc_site_rounds_to_an_even_parity_site() {
+        assert_eq!(fcc_site([0.1, -0.2, 0.05]), [0, 0, 0]);
+        assert_eq!(fcc_site([1.1, 0.9, 0.2]), [1, 1, 0]);
+        // (1, 0, 0) is not an fcc site; z has the largest residual and flips.
+        assert_eq!(fcc_site([0.9, 0.1, 0.4]), [1, 0, 1]);
+        assert_eq!(fcc_site([3.0, -1.2, 0.95]), [3, -2, 1]);
+    }
+
+    #[test]
+    fn dumbbell_site_finds_the_doubly_occupied_cell() {
+        let a = measured_lattice(500.0);
+        let (mut positions, cell) = isolated_dumbbell(13, a);
+        let mut occupancy = Vec::new();
+        let center = [cell[0][0] * 0.5, cell[1][1] * 0.5, cell[2][2] * 0.5];
+        let expected =
+            fcc_site(center.map(|value| 2.0 * value / a)).map(|value| value.rem_euclid(26));
+        assert_eq!(
+            dumbbell_site(&positions, [0.0; 3], a, 26, &mut occupancy),
+            Some(expected)
+        );
+        let shift = [0.3 * a, -0.2 * a, 0.1 * a];
+        for atom in 0..positions.len() / 3 {
+            for axis in 0..3 {
+                positions[3 * atom + axis] += shift[axis];
+            }
+        }
+        assert_eq!(
+            dumbbell_site(&positions, shift, a, 26, &mut occupancy),
+            Some(expected)
+        );
+        let (perfect, _) = fcc(13, a);
+        assert_eq!(
+            dumbbell_site(&perfect, [0.0; 3], a, 26, &mut occupancy),
+            None
+        );
     }
 }
