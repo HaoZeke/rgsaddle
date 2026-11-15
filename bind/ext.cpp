@@ -977,6 +977,49 @@ nb::tuple project_band(Matrix positions, Vector energies, Matrix gradients, doub
   return nb::make_tuple(copy_vector(forces), ci);
 }
 
+nb::ndarray<nb::numpy, double> reparametrize_py(Matrix positions, const std::string &scheme,
+                                                nb::handle anchor, nb::handle cell) {
+  if (positions.shape(0) < 2 || positions.shape(1) <= 0 || positions.shape(1) % 3 != 0) {
+    throw nb::value_error("positions must be (images >= 2, 3N)");
+  }
+  std::int32_t code = 0;
+  if (scheme == "linear") {
+    code = RGSADDLE_REPARAM_LINEAR;
+  } else if (scheme == "not-a-knot" || scheme == "spline") {
+    code = RGSADDLE_REPARAM_NOT_A_KNOT;
+  } else {
+    throw nb::value_error("scheme must be linear, not-a-knot, or spline");
+  }
+  const std::size_t rows = static_cast<std::size_t>(positions.shape(0));
+  const std::size_t dof = static_cast<std::size_t>(positions.shape(1));
+  std::int64_t index = -1;
+  if (!anchor.is_none()) {
+    index = nb::cast<std::int64_t>(anchor);
+    if (index <= 0 || index >= static_cast<std::int64_t>(rows) - 1) {
+      throw nb::value_error("anchor must name an interior image");
+    }
+  }
+  std::vector<double> box;
+  if (!cell.is_none()) {
+    auto view = nb::cast<Matrix>(cell);
+    if (view.shape(0) != 3 || view.shape(1) != 3) {
+      throw nb::value_error("cell must be 3x3");
+    }
+    box.assign(view.data(), view.data() + 9);
+  }
+  std::vector<double> out(positions.data(), positions.data() + rows * dof);
+  const auto status = rgsaddle_reparametrize(static_cast<std::int64_t>(rows), static_cast<std::int64_t>(dof / 3),
+                                             out.data(), index, box.empty() ? nullptr : box.data(), code);
+  if (status != RGSADDLE_OK) {
+    status_error(status);
+  }
+  auto *raw = new double[rows * dof];
+  std::memcpy(raw, out.data(), rows * dof * sizeof(double));
+  nb::capsule owner(raw, [](void *ptr) noexcept { delete[] static_cast<double *>(ptr); });
+  const std::size_t shape[2] = {rows, dof};
+  return nb::ndarray<nb::numpy, double>(raw, 2, shape, owner);
+}
+
 nb::tuple halve_raised_energy_py(double previous, double trial, double step) {
   int32_t raised = 0;
   double next = 0.0;
@@ -1002,7 +1045,7 @@ double trust_update_py(double radius, double predicted, double actual, double st
 
 PyMinMode make_minmode(Vector x, Vector mode, const std::string &kind, double dr, double force_tol,
                        double max_move, double rotation_tol, std::int64_t max_rotations,
-                       std::int64_t krylov_dim) {
+                       std::int64_t krylov_dim, double rotation_stop_length) {
   if (x.shape(0) <= 0 || x.shape(0) % 3 != 0 || x.shape(0) != mode.shape(0)) {
     throw nb::value_error("position and mode must share a positive multiple of three");
   }
@@ -1026,6 +1069,9 @@ PyMinMode make_minmode(Vector x, Vector mode, const std::string &kind, double dr
   out.handle = rgsaddle_minmode_create(&config, out.n_atoms, x.data(), mode.data());
   if (out.handle == nullptr) {
     throw nb::value_error("minimum-mode configuration was refused");
+  }
+  if (rgsaddle_minmode_set_rotation_stop_length(out.handle, rotation_stop_length) != RGSADDLE_OK) {
+    throw nb::value_error("rotation_stop_length must be finite and non-negative");
   }
   return out;
 }
@@ -1214,6 +1260,18 @@ NB_MODULE(_core, m) {
       "caller's. k is energy per length squared.");
 
   m.def(
+      "reparametrize", &reparametrize_py, nb::arg("positions").noconvert(), nb::arg("scheme") = "linear",
+      nb::arg("anchor") = nb::none(), nb::arg("cell") = nb::none(),
+      nb::sig("def reparametrize(positions: numpy.typing.NDArray[numpy.float64], scheme: str = 'linear', "
+              "anchor: int | None = None, cell: numpy.typing.NDArray[numpy.float64] | None = None) -> "
+              "numpy.typing.NDArray[numpy.float64]"),
+      "Place the interior images of a band at equal arc length and return the new band. "
+      "scheme 'linear' places them on the polyline; 'not-a-knot' (or 'spline') on the "
+      "not-a-knot cubic spline through the images in their arc length (E, Ren and "
+      "Vanden-Eijnden 2007). The first and last rows, and an interior anchor, do not move. "
+      "cell is the 3x3 row-major cell; the chords are then minimum images. No surface is evaluated.");
+
+  m.def(
       "halve_raised_energy", &halve_raised_energy_py, nb::arg("previous"), nb::arg("trial"),
       nb::arg("step"),
       nb::sig("def halve_raised_energy(previous: float, trial: float, step: float) -> tuple[bool, float]"),
@@ -1235,14 +1293,18 @@ NB_MODULE(_core, m) {
       .def(
           "__init__",
           [](PyMinMode *self, Vector x, Vector mode, const std::string &kind, double dr, double force_tol,
-             double max_move, double rotation_tol, std::int64_t max_rotations, std::int64_t krylov_dim) {
+             double max_move, double rotation_tol, std::int64_t max_rotations, std::int64_t krylov_dim,
+             double rotation_stop_length) {
             new (self) PyMinMode(make_minmode(x, mode, kind, dr, force_tol, max_move, rotation_tol,
-                                              max_rotations, krylov_dim));
+                                              max_rotations, krylov_dim, rotation_stop_length));
           },
           nb::arg("x").noconvert(), nb::arg("mode").noconvert(), nb::arg("kind") = "dimer",
           nb::arg("dr") = 1e-3, nb::arg("force_tol") = 1e-3, nb::arg("max_move") = 0.2,
           nb::arg("rotation_tol") = 1e-4, nb::arg("max_rotations") = 20, nb::arg("krylov_dim") = 12,
-          "Dimer or Lanczos minimum-mode session. Lengths are the caller's.")
+          nb::arg("rotation_stop_length") = 0.0,
+          "Dimer or Lanczos minimum-mode session. Lengths are the caller's. A positive "
+          "rotation_stop_length stops a rotation once |C| * rotation_stop_length * |sin w| is "
+          "at most force_tol (Kastner and Sherwood 2008); 0 turns that stop off.")
       .def(
           "estimate",
           [](PyMinMode &self, nb::callable fn) {

@@ -18,6 +18,7 @@ from rgsaddle._core import (
     connect as connect,
     last_error as last_error,
     raise_status as raise_status,
+    reparametrize as reparametrize,
     version as _version,
 )
 
@@ -106,4 +107,5 @@ __all__ = [
     "connect",
     "last_error",
     "raise_status",
+    "reparametrize",
 ]

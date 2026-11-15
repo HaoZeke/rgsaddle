@@ -3423,6 +3423,22 @@ pub unsafe extern "C" fn rgsaddle_minmode_set_torque_window(
     RGSADDLE_OK
 }
 
+/// # Safety
+/// `session` is a live session or null. `length` is finite and not negative.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_minmode_set_rotation_stop_length(
+    session: *mut RgsaddleMinMode,
+    length: f64,
+) -> i32 {
+    if session.is_null() {
+        return RGSADDLE_NULL_SESSION;
+    }
+    match unsafe { (*session).session.set_rotation_stop_length(length) } {
+        Ok(()) => RGSADDLE_OK,
+        Err(_) => RGSADDLE_INVALID_PARAMETER,
+    }
+}
+
 #[cfg(test)]
 mod torque_window_abi_tests {
     use super::*;
@@ -3522,5 +3538,47 @@ mod torque_window_abi_tests {
         assert!(rotations(0.1, Some(0)) > rotations(0.1, None));
         assert!(rotations(1e-6, Some(1)) < rotations(1e-6, None));
         assert_eq!(rotations(1e-6, Some(1)), rotations(0.1, None));
+    }
+
+    fn stopped_rotations(length: f64) -> i64 {
+        let sess = session(1e-6);
+        assert_eq!(
+            unsafe { rgsaddle_minmode_set_rotation_stop_length(sess, length) },
+            RGSADDLE_OK
+        );
+        let mut report = std::mem::MaybeUninit::<RgsaddleReport>::zeroed();
+        let status = unsafe {
+            rgsaddle_minmode_estimate(
+                sess,
+                Some(quadratic_cb),
+                std::ptr::null_mut(),
+                report.as_mut_ptr(),
+            )
+        };
+        assert_eq!(status, RGSADDLE_OK);
+        unsafe { rgsaddle_minmode_free(sess) };
+        unsafe { report.assume_init() }.rotations
+    }
+
+    #[test]
+    fn minmode_rotation_stop_length_abi_checks_its_value() {
+        let sess = session(0.1);
+        let set = |v| unsafe { rgsaddle_minmode_set_rotation_stop_length(sess, v) };
+        assert_eq!(set(0.0), RGSADDLE_OK);
+        assert_eq!(set(0.2), RGSADDLE_OK);
+        assert_eq!(set(-1.0), RGSADDLE_INVALID_PARAMETER);
+        assert_eq!(set(f64::NAN), RGSADDLE_INVALID_PARAMETER);
+        assert_eq!(set(f64::INFINITY), RGSADDLE_INVALID_PARAMETER);
+        assert_eq!(
+            unsafe { rgsaddle_minmode_set_rotation_stop_length(std::ptr::null_mut(), 0.0) },
+            RGSADDLE_NULL_SESSION
+        );
+        unsafe { rgsaddle_minmode_free(sess) };
+    }
+
+    #[test]
+    fn minmode_rotation_stop_length_abi_cuts_rotations() {
+        assert_eq!(stopped_rotations(0.0), rotations(1e-6, None));
+        assert!(stopped_rotations(1e-3) < stopped_rotations(0.0));
     }
 }

@@ -28,7 +28,7 @@ extern "C" {
 #endif
 
 #define RGSADDLE_ABI_MAJOR 1u
-#define RGSADDLE_ABI_MINOR 37u
+#define RGSADDLE_ABI_MINOR 38u
 
 /**
  * Band config flags bit 0. When set, each evaluation calls the surface
@@ -76,6 +76,16 @@ extern "C" {
  * from. rgsaddle_ocineb_create does not read the bit.
  */
 #define RGSADDLE_BAND_NO_MIN_MODE (1ull << 3)
+
+/**
+ * Band config flags bit 4, ABI minor 38. With RGSADDLE_METHOD_RTR the
+ * trust-region trial places the interior images at equal arc length on
+ * the not-a-knot cubic spline through the images (E, Ren and
+ * Vanden-Eijnden, J. Chem. Phys. 126, 164103 (2007)) instead of the
+ * polyline. Read only from a config whose version minor is 38 or newer,
+ * by rgsaddle_band_create and rgsaddle_ocineb_create.
+ */
+#define RGSADDLE_BAND_SPLINE_REPARAM (1ull << 4)
 
 /** Request flags bit 0. positions and gradients are one image. */
 #define RGSADDLE_REQ_ONE_IMAGE (1ull << 0)
@@ -171,6 +181,12 @@ typedef enum {
    */
   RGSADDLE_MINMODE_LOBPCG = 2
 } rgsaddle_minmode_t;
+
+/** Equal arc-length placement of rgsaddle_reparametrize (ABI minor 38). */
+typedef enum {
+  RGSADDLE_REPARAM_LINEAR = 0,     /**< On the polyline through the images. */
+  RGSADDLE_REPARAM_NOT_A_KNOT = 1  /**< On the not-a-knot cubic spline in arc length. */
+} rgsaddle_reparametrization_t;
 
 /**
  * Finite difference of the min-mode Hessian actions. Forward costs one
@@ -625,6 +641,22 @@ rgsaddle_status_t rgsaddle_trust_update(double radius, double predicted, double 
                                         double step_norm, double sigma_inc, double sigma_dec,
                                         double rho_inc, double rho_dec, double delta_min,
                                         double *radius_out);
+
+/**
+ * ABI minor 38. Place the interior images of a band at equal arc length,
+ * in place. positions holds n_images rows of 3 * n_atoms doubles; rows 0
+ * and n_images - 1 do not move. anchor, when it names an interior image,
+ * stays, and each side of it is spaced on its own; a negative anchor is
+ * none. cell, when not NULL, is the row-major 3x3 cell and the chords are
+ * minimum images. scheme is an rgsaddle_reparametrization_t. The spline
+ * is the parabola for three distinct images, and images whose arc lengths
+ * coincide to 1e-12 of the total share one knot. A null positions, fewer
+ * than two images, a non-finite entry or an unknown scheme returns
+ * RGSADDLE_INVALID_PARAMETER with positions unchanged. No surface is
+ * evaluated.
+ */
+rgsaddle_status_t rgsaddle_reparametrize(int64_t n_images, int64_t n_atoms, double *positions,
+                                         int64_t anchor, const double *cell, int32_t scheme);
 
 /** Scale `step` so its largest absolute entry equals `trust_radius`. */
 rgsaddle_status_t rgsaddle_cap_max_abs(int64_t n, double *step, double trust_radius);
@@ -1170,6 +1202,20 @@ rgsaddle_status_t rgsaddle_minmode_set_highs(RgsaddleMinMode *session, int32_t e
  */
 rgsaddle_status_t rgsaddle_minmode_set_torque_window(RgsaddleMinMode *session,
                                                      int32_t window);
+/**
+ * ABI minor 38. Curvature-aware rotation stop (Kastner and Sherwood
+ * 2008). With `length` positive, a dimer rotation stops once
+ * |C| * length * |sin w| is at most force_tol, where w = atan(F/|C|)/2
+ * is the remaining rotation angle estimated from the rotational force F
+ * and the curvature C, and |C| is the larger of the current curvature
+ * and the curvature C - F tan w the rotation would reach. Lanczos stops
+ * on the same bound for its Ritz residual and Ritz value. The other
+ * rotation stops still apply. 0, the state of a new session, turns the
+ * stop off. A negative or non-finite length returns
+ * RGSADDLE_INVALID_PARAMETER and leaves the session unchanged.
+ */
+rgsaddle_status_t rgsaddle_minmode_set_rotation_stop_length(RgsaddleMinMode *session,
+                                                            double length);
 
 /**
  * Per-image exponential metric (Packwood et al. 2016) inside the band

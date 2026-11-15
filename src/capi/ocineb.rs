@@ -145,6 +145,7 @@ pub unsafe extern "C" fn rgsaddle_ocineb_create(
         && session
             .set_rtr(Some(crate::rtr::RtrConfig {
                 radius_max: max_move * ((n_images - 2) as f64).sqrt(),
+                reparametrization: super::rtr_reparametrization(band),
                 ..crate::rtr::RtrConfig::default()
             }))
             .is_err()

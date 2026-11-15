@@ -267,6 +267,10 @@ public:
     void set_torque_window(int window) {
         check(rgsaddle_minmode_set_torque_window(handle_, window));
     }
+    // 0 turns the curvature-aware rotation stop off.
+    void set_rotation_stop_length(double length) {
+        check(rgsaddle_minmode_set_rotation_stop_length(handle_, length));
+    }
     void set_position(double const* position, double const* gradient = nullptr) {
         check(rgsaddle_minmode_set_position(handle_, position, gradient));
     }

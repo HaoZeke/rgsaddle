@@ -24,6 +24,18 @@ extern "C" fn double_well(user: *mut c_void, request: *mut RgsaddleSurfaceReques
 
 #[test]
 fn rtr_selector_converges_and_reports_every_physical_row() {
+    let run = run_rtr(RGSADDLE_BAND_NO_MIN_MODE, RGSADDLE_ABI_MINOR);
+    assert!(run.rows > 0);
+}
+
+struct RtrRun {
+    x: Vec<f64>,
+    ci: usize,
+    rows: usize,
+    steps: i64,
+}
+
+fn run_rtr(flags: u64, minor: u32) -> RtrRun {
     let n = 7usize;
     let mut x = vec![0.0; 3 * n];
     for i in 0..n {
@@ -36,9 +48,9 @@ fn rtr_selector_converges_and_reports_every_physical_row() {
     let config = RgsaddleBandConfig {
         version: RgsaddleVersion {
             major: RGSADDLE_ABI_MAJOR,
-            minor: RGSADDLE_ABI_MINOR,
+            minor,
         },
-        flags: RGSADDLE_BAND_NO_MIN_MODE,
+        flags,
         tangent: 1,
         spring: 0,
         projection: 1,
@@ -108,4 +120,83 @@ fn rtr_selector_converges_and_reports_every_physical_row() {
     assert!(ci > 0 && ci < n - 1);
     assert!(x[3 * ci].abs() < 1e-3);
     unsafe { rgsaddle_band_free(session) };
+    RtrRun {
+        x,
+        ci,
+        rows: rows.load(Ordering::Relaxed),
+        steps: report.iteration,
+    }
+}
+
+#[test]
+fn rtr_spline_reparametrization_reaches_the_same_saddle() {
+    let linear = run_rtr(RGSADDLE_BAND_NO_MIN_MODE, RGSADDLE_ABI_MINOR);
+    let spline = run_rtr(
+        RGSADDLE_BAND_NO_MIN_MODE | RGSADDLE_BAND_SPLINE_REPARAM,
+        RGSADDLE_ABI_MINOR,
+    );
+    eprintln!(
+        "rtr linear rows {} steps {}, spline rows {} steps {}",
+        linear.rows, linear.steps, spline.rows, spline.steps
+    );
+    assert_eq!(linear.ci, spline.ci);
+    for c in 0..3 {
+        let (a, b) = (linear.x[3 * linear.ci + c], spline.x[3 * spline.ci + c]);
+        assert!((a - b).abs() < 1e-3, "{a} vs {b}");
+    }
+}
+
+#[test]
+fn a_config_before_minor_38_does_not_read_the_spline_bit() {
+    let plain = run_rtr(RGSADDLE_BAND_NO_MIN_MODE, 37);
+    let flagged = run_rtr(RGSADDLE_BAND_NO_MIN_MODE | RGSADDLE_BAND_SPLINE_REPARAM, 37);
+    assert_eq!(plain.rows, flagged.rows);
+    assert!(
+        plain
+            .x
+            .iter()
+            .zip(&flagged.x)
+            .all(|(a, b)| a.to_bits() == b.to_bits())
+    );
+}
+
+#[test]
+fn reparametrize_abi_places_images_and_checks_its_input() {
+    let mut band = vec![0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.5, 0.0, 0.0, 2.0, 0.0, 0.0];
+    for scheme in [0, 1] {
+        let mut x = band.clone();
+        let rc =
+            unsafe { rgsaddle_reparametrize(4, 1, x.as_mut_ptr(), -1, std::ptr::null(), scheme) };
+        assert_eq!(rc, RGSADDLE_OK);
+        for j in 0..4 {
+            assert!(
+                (x[3 * j] - 2.0 * j as f64 / 3.0).abs() < 1e-12,
+                "{scheme} {x:?}"
+            );
+        }
+    }
+    let cell = [10.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 10.0];
+    let mut wrapped = vec![9.5, 0.0, 0.0, 9.9, 0.0, 0.0, 0.3, 0.0, 0.0, 1.5, 0.0, 0.0];
+    let rc = unsafe { rgsaddle_reparametrize(4, 1, wrapped.as_mut_ptr(), -1, cell.as_ptr(), 1) };
+    assert_eq!(rc, RGSADDLE_OK);
+    assert!(
+        (wrapped[3] - (9.5 + 2.0 / 3.0))
+            .abs()
+            .min((wrapped[3] - (9.5 + 2.0 / 3.0 - 10.0)).abs())
+            < 1e-12
+    );
+    let before = band.clone();
+    let invalid = [
+        unsafe { rgsaddle_reparametrize(4, 1, band.as_mut_ptr(), -1, std::ptr::null(), 2) },
+        unsafe { rgsaddle_reparametrize(1, 1, band.as_mut_ptr(), -1, std::ptr::null(), 0) },
+        unsafe { rgsaddle_reparametrize(4, 0, band.as_mut_ptr(), -1, std::ptr::null(), 0) },
+        unsafe { rgsaddle_reparametrize(4, 1, std::ptr::null_mut(), -1, std::ptr::null(), 0) },
+    ];
+    assert!(invalid.iter().all(|&rc| rc == RGSADDLE_INVALID_PARAMETER));
+    band[4] = f64::NAN;
+    assert_eq!(
+        unsafe { rgsaddle_reparametrize(4, 1, band.as_mut_ptr(), -1, std::ptr::null(), 1) },
+        RGSADDLE_INVALID_PARAMETER
+    );
+    assert_eq!(band[..4], before[..4]);
 }

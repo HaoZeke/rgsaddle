@@ -31,7 +31,7 @@ use crate::tangent::TangentKind;
 /// The RGSADDLE ABI MAJOR.
 pub const RGSADDLE_ABI_MAJOR: u32 = 1;
 /// The RGSADDLE ABI MINOR.
-pub const RGSADDLE_ABI_MINOR: u32 = 37;
+pub const RGSADDLE_ABI_MINOR: u32 = 38;
 
 /// Band config bit 0. The C step calls the surface once per image
 /// carried by the evaluation: every image on the first evaluation
@@ -49,6 +49,20 @@ pub const RGSADDLE_BAND_CI_AFTER: u64 = 4;
 /// Band config bit 3 (ABI minor 21). No min-mode refinement of the
 /// climbing image: the plain CI-NEB of minor 20 and earlier.
 pub const RGSADDLE_BAND_NO_MIN_MODE: u64 = 8;
+/// Band config bit 4 (ABI minor 38). The trust-region stepper
+/// (`RGSADDLE_METHOD_RTR`) places its trial images at equal arc length
+/// on the not-a-knot cubic spline instead of the polyline. Read only
+/// when the config minor is 38 or newer.
+pub const RGSADDLE_BAND_SPLINE_REPARAM: u64 = 16;
+
+/// The trust-region reparametrization a band config asks for.
+pub(crate) fn rtr_reparametrization(cfg: &RgsaddleBandConfig) -> crate::Reparametrization {
+    if cfg.version.minor >= 38 && cfg.flags & RGSADDLE_BAND_SPLINE_REPARAM != 0 {
+        crate::Reparametrization::NotAKnot
+    } else {
+        crate::Reparametrization::Linear
+    }
+}
 
 /// Request bit 0. Positions and gradients are one image.
 pub const RGSADDLE_REQ_ONE_IMAGE: u64 = 1;
@@ -615,6 +629,7 @@ unsafe fn band_from_parts(
                 && session
                     .set_rtr(Some(crate::rtr::RtrConfig {
                         radius_max: cfg.max_move * ((n_images - 2) as f64).sqrt(),
+                        reparametrization: rtr_reparametrization(cfg),
                         ..crate::rtr::RtrConfig::default()
                     }))
                     .is_err()
@@ -1461,6 +1476,59 @@ pub unsafe extern "C" fn rgsaddle_trust_update(
     };
     unsafe {
         *radius_out = trust_update(radius, predicted, actual, step_norm, &schedule);
+    }
+    RGSADDLE_OK
+}
+
+/// # Safety
+/// `positions` holds `n_images * 3 * n_atoms` doubles and is rewritten
+/// in place. `cell`, when not null, holds nine doubles. The call does
+/// not evaluate a surface.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_reparametrize(
+    n_images: i64,
+    n_atoms: i64,
+    positions: *mut f64,
+    anchor: i64,
+    cell: *const f64,
+    scheme: i32,
+) -> i32 {
+    if positions.is_null() || n_images < 2 || n_atoms < 1 {
+        return RGSADDLE_INVALID_PARAMETER;
+    }
+    let Some(scheme) = crate::Reparametrization::from_abi(scheme) else {
+        return RGSADDLE_INVALID_PARAMETER;
+    };
+    let (Ok(rows), Ok(atoms)) = (usize::try_from(n_images), usize::try_from(n_atoms)) else {
+        return RGSADDLE_INVALID_PARAMETER;
+    };
+    let Some(total) = atoms.checked_mul(3).and_then(|dof| dof.checked_mul(rows)) else {
+        return RGSADDLE_INVALID_PARAMETER;
+    };
+    let flat = unsafe { slice::from_raw_parts_mut(positions, total) };
+    if !flat.iter().all(|v| v.is_finite()) {
+        return RGSADDLE_INVALID_PARAMETER;
+    }
+    let cell = if cell.is_null() {
+        None
+    } else {
+        let c = unsafe { slice::from_raw_parts(cell, 9) };
+        if !c.iter().all(|v| v.is_finite()) {
+            return RGSADDLE_INVALID_PARAMETER;
+        }
+        Some(Cell([
+            [c[0], c[1], c[2]],
+            [c[3], c[4], c[5]],
+            [c[6], c[7], c[8]],
+        ]))
+    };
+    let anchor = usize::try_from(anchor).ok();
+    let Ok(mut band) = Array2::from_shape_vec((rows, 3 * atoms), flat.to_vec()) else {
+        return RGSADDLE_INVALID_PARAMETER;
+    };
+    crate::reparametrize(&mut band, anchor, cell.as_ref(), scheme);
+    for (slot, value) in flat.iter_mut().zip(band.iter()) {
+        *slot = *value;
     }
     RGSADDLE_OK
 }
