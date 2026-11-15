@@ -2101,7 +2101,7 @@ fn random_survival_note(csv: &std::path::Path) -> String {
         .unwrap_or_else(|| "no matching campaign".to_string());
     let mut text = String::new();
     text.push_str("# Random-vacancy survival, Mishin Cu\n\n");
-    text.push_str("The vacancy is the lattice site nearest the cell center. The <100> dumbbell host is drawn uniformly from the other sites of the 13³ cell, and the dumbbell axis uniformly from the three orientations. Under periodic boundaries the separation is uniform over the cell, which is the ensemble in section 2 of Mwungeli, Liu, and Demkowicz, Phys. Rev. Materials 9, 023601 (2025). The fit is ln(n(t)/N) = -(k/V_model) t through the origin, sampled every 25 ps, with V_model the cell volume. V_iv/Ω = 4k / (α a D_i) with α = 2/3 and Ω = a³/4.\n\n");
+    text.push_str("The vacancy is the lattice site nearest the cell center. The <100> dumbbell host is drawn uniformly from the other sites of the 13³ cell, and the dumbbell axis uniformly from the three orientations. Under periodic boundaries the separation is uniform over the cell, which is the ensemble in section 2 of Mwungeli, Liu, and Demkowicz, Phys. Rev. Materials 9, 023601 (2025). The fit is ln S(t) = -(k/V_model) t through the origin, sampled every 25 ps, with V_model the cell volume and S the Kaplan-Meier survival, in which an uncaptured trajectory is censored at the end of its window; with equal windows S = n(t)/N. Samples after S reaches zero are left out. V_iv/Ω = 4k / (α a D_i) with α = 2/3 and Ω = a³/4.\n\n");
     let ours = match (kind, &dynamics) {
         (DynamicsKind::NphNve, Some((_, [equil_ps, rescale_ps, window_k, piston_ps]))) => format!(
             "Our k comes from the CSV's own NPH-then-NVE dynamics: {equil_ps:.0} ps of isotropic zero-pressure NPH (Andersen piston, period {piston_ps:.1} ps), then NVE in the mean box of the second half of that stage, with velocities rescaled to the target temperature every {rescale_ps:.2} ps whenever it is off by more than {window_k:.1} K. The capture clock starts at the Maxwellian start, NPH stage included, and the fit uses the mean production lattice constant {lattice:.6} Å of the trajectories that reached NVE. The self-consistent volume divides k by the free-dumbbell diffusivity measured with those same dynamics, potential, and cell, in `{measured_name}`. Both conversions are listed."
@@ -2164,6 +2164,23 @@ fn random_survival_note(csv: &std::path::Path) -> String {
         text.push_str(&format!(
             "\nAt the longest window, {cap:.0} ps, k = {rate:.2} ± {rate_sigma:.2} Å³/ps. With the Table 1 D_i, V_iv = {v_table:.2} ± {boot_table:.2} Ω (bootstrap) or ± {total_table:.2} Ω (with D_i). With the measured D_i, V_iv = {v_measured:.2} ± {total_measured:.2} Ω.\n"
         ));
+        if let Some((k_ml, low, high, captures)) = censored_rate(&trials, cap, lattice, repeats) {
+            let volumes = |d: Option<(f64, f64)>| match d {
+                Some((d_i, _)) if d_i > 0.0 => format!(
+                    "{:.2} Ω (95 % {:.2} to {:.2})",
+                    rate_to_volume(k_ml, lattice, d_i),
+                    rate_to_volume(low, lattice, d_i),
+                    rate_to_volume(high, lattice, d_i)
+                ),
+                _ => "not available".to_string(),
+            };
+            text.push_str(&format!(
+                "The constant-hazard maximum likelihood over the same {cap:.0} ps, with every uncaptured trajectory censored at the end of its window, is k = {k_ml:.2} Å³/ps from {captures} captures in {} trajectories, 95 % interval {low:.2} to {high:.2} from ln k ± 1.96/√captures. V_iv is {} with the Table 1 D_i and {} with the measured D_i; these intervals leave out the D_i error.\n",
+                trials.len(),
+                volumes(table_d),
+                volumes(measured_d),
+            ));
+        }
         if let (Some((k_mean, k_sigma, mean_time, mean_sigma)), Some((d_i, d_sigma)), Some(a_p)) = (
             table_volume(temperature),
             table_d,
@@ -2238,17 +2255,37 @@ fn survival_volume(
     rate_to_volume(survival_rate(trials, t_max, lattice, repeats), lattice, d_i)
 }
 
-/// k in Å³/ps from the through-origin fit of ln(n/N) sampled every 25 ps.
+/// Kaplan-Meier survival at `time`. An uncaptured trial's time is the end of
+/// its window, so it stays at risk until then and drops out uncounted.
+fn kaplan_meier(trials: &[(bool, f64)], time: f64) -> f64 {
+    let mut captures: Vec<f64> = trials
+        .iter()
+        .filter(|(hit, when)| *hit && *when <= time)
+        .map(|(_, when)| *when)
+        .collect();
+    captures.sort_by(f64::total_cmp);
+    captures.dedup();
+    captures.iter().fold(1.0, |survival, &at| {
+        let at_risk = trials.iter().filter(|(_, when)| *when >= at).count();
+        let died = trials
+            .iter()
+            .filter(|(hit, when)| *hit && *when == at)
+            .count();
+        survival * (1.0 - died as f64 / at_risk as f64)
+    })
+}
+
+/// k in Å³/ps from the through-origin fit of ln S, with S the Kaplan-Meier
+/// survival sampled every 25 ps up to the last sample where S > 0.
 fn survival_rate(trials: &[(bool, f64)], t_max: f64, lattice: f64, repeats: f64) -> f64 {
     let mut times = Vec::new();
     let step = 25.0_f64;
     let mut time = step;
     while time <= t_max + 1.0e-9 {
-        let alive = trials
-            .iter()
-            .filter(|(hit, when)| !(*hit && *when <= time))
-            .count();
-        let survival = (alive as f64 / trials.len() as f64).max(1.0e-12);
+        let survival = kaplan_meier(trials, time);
+        if survival <= 0.0 {
+            break;
+        }
         times.push((time, survival.ln()));
         time += step;
     }
@@ -2258,6 +2295,29 @@ fn survival_rate(trials: &[(bool, f64)], t_max: f64, lattice: f64, repeats: f64)
     let denominator: f64 = times.iter().map(|(time, _)| time * time).sum();
     let slope = times.iter().map(|(time, log_s)| time * log_s).sum::<f64>() / denominator;
     -slope * (repeats * lattice).powi(3)
+}
+
+/// Constant-hazard maximum likelihood with right censoring at `t_max` or the
+/// trial's own window: k = V_model × captures / Σ min(t_i, t_max), in Å³/ps.
+/// Returns k, the 95 % interval from ln k ± 1.96/√captures, and the capture
+/// count; no captures gives no estimate.
+fn censored_rate(
+    trials: &[(bool, f64)],
+    t_max: f64,
+    lattice: f64,
+    repeats: f64,
+) -> Option<(f64, f64, f64, usize)> {
+    let captures = trials
+        .iter()
+        .filter(|(hit, when)| *hit && *when <= t_max)
+        .count();
+    let exposure: f64 = trials.iter().map(|(_, when)| when.min(t_max)).sum();
+    if captures == 0 || exposure <= 0.0 {
+        return None;
+    }
+    let rate = captures as f64 / exposure * (repeats * lattice).powi(3);
+    let spread = (1.96 / (captures as f64).sqrt()).exp();
+    Some((rate, rate / spread, rate * spread, captures))
 }
 
 fn deduped_lines(csv: &std::path::Path) -> Vec<String> {
@@ -3987,6 +4047,71 @@ mod tests {
         let expected = 4.0 * (lambda * model) / (DUMBBELL_ALPHA * lattice * d_i);
         let miss = (volume - expected).abs() / expected;
         assert!(miss < 0.03, "{volume} {expected} {miss}");
+    }
+
+    #[test]
+    fn kaplan_meier_censors_short_windows() {
+        let trials = [
+            (true, 10.0),
+            (false, 20.0),
+            (true, 30.0),
+            (true, 30.0),
+            (false, 40.0),
+        ];
+        assert_eq!(kaplan_meier(&trials, 5.0), 1.0);
+        assert!((kaplan_meier(&trials, 25.0) - 0.8).abs() < 1.0e-15);
+        assert!((kaplan_meier(&trials, 35.0) - 0.8 / 3.0).abs() < 1.0e-15);
+        let equal = [(true, 10.0), (false, 50.0), (true, 30.0), (false, 50.0)];
+        assert!((kaplan_meier(&equal, 35.0) - 0.5).abs() < 1.0e-15);
+    }
+
+    fn quantile_trials(lambda: f64, n: usize, window: f64) -> Vec<(bool, f64)> {
+        (0..n)
+            .map(|index| {
+                let alive = 1.0 - (index as f64 + 0.5) / n as f64;
+                let time = -alive.ln() / lambda;
+                if time <= window {
+                    (true, time)
+                } else {
+                    (false, window)
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn survival_rate_stops_when_every_trial_is_captured() {
+        let (lattice, repeats, lambda): (f64, f64, f64) = (3.644035, 13.0, 0.01);
+        let trials = quantile_trials(lambda, 96, 1500.0);
+        assert!(trials.iter().all(|(hit, _)| *hit));
+        let model = (repeats * lattice).powi(3);
+        let rate = survival_rate(&trials, 1500.0, lattice, repeats);
+        let miss = (rate / (lambda * model) - 1.0).abs();
+        assert!(miss < 0.1, "{rate} {miss}");
+    }
+
+    #[test]
+    fn censored_rate_recovers_the_hazard_with_censoring() {
+        let (lattice, repeats, lambda): (f64, f64, f64) = (3.644035, 13.0, 1.0e-3);
+        let trials = quantile_trials(lambda, 400, 1500.0);
+        let censored = trials.iter().filter(|(hit, _)| !hit).count();
+        assert!(censored > 50, "{censored}");
+        let model = (repeats * lattice).powi(3);
+        let (rate, low, high, captures) =
+            censored_rate(&trials, 1500.0, lattice, repeats).expect("captures");
+        assert_eq!(captures, 400 - censored);
+        assert!((rate / (lambda * model) - 1.0).abs() < 0.02, "{rate}");
+        assert!(
+            low < lambda * model && lambda * model < high,
+            "{low} {high}"
+        );
+        let shorter = censored_rate(&trials, 500.0, lattice, repeats).expect("captures");
+        assert!(
+            (shorter.0 / (lambda * model) - 1.0).abs() < 0.03,
+            "{}",
+            shorter.0
+        );
+        assert!(censored_rate(&[(false, 1500.0)], 1500.0, lattice, repeats).is_none());
     }
 
     #[test]
