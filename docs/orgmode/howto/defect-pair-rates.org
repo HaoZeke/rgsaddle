@@ -65,6 +65,24 @@ which is =sqrt(5)/2 - 1/2 ≈ 0.618=. =tests/bennett_kramers.rs= compares the pl
 
 amsel is the absorbing-Markov selector for superbasin exit distributions. It does not parse this file itself. A loader groups entries that share a shell, a cell and a temperature, and passes =rate_Hz= to the FPTA or MRM kernel as the first-order exit rate of that channel. =hop= and =direction= are the channel name. =dE0=, =dF=, =dF_error=, =dF_harmonic=, =nu=, =vineyard=, =kappa=, the saddle Cauchy stress and the elastic dipole =P = -V (σ - σ_bulk)= are stored beside the rate so a later run can see what entered =k(T)=.
 
+* Relaxed states
+A placement is a starting geometry, not a state. Whether it is a bound pair or has recombined is a property of the minimum it relaxes to, so that minimum has to be reached. =relax_to_tolerance= minimizes in a fixed cell until the largest per-atom force norm, =max_i |F_i|=, is below =RelaxConfig::force_tol= (=DEFAULT_FORCE_TOL=, 1e-3 in the surface's force unit, eV/Å for eV and Å). =RelaxConfig::max_steps= (=DEFAULT_MAX_STEPS=, 10000) is a guard. Reaching it returns =SaddleError::Solver= with the step count and the force reached, never a geometry. The minimizer is any =rgmin::Method=, FIRE 2.0 by default.
+
+Convergence fixes the end state as a minimum, not which minimum. From a start near a basin boundary FIRE, which carries momentum, and L-BFGS, which extrapolates, can each settle below the tolerance in different basins. When the basin is the answer, as it is for recombination, follow the steepest-descent flow with =Method::Ode12r= and check it with a second integration of the same flow, =Method::Steepest= under a smaller per-atom cap.
+
+#+begin_src rust
+let relax = rgsaddle::RelaxConfig::default()
+    .with_method(rgmin::Method::Ode12r)
+    .with_force_tol(1.0e-3)
+    .with_max_atom_move(0.08)
+    .with_initial_step(0.08);
+let done = rgsaddle::relax_to_tolerance(&surface, start, cell, &relax)?;
+let occupancy = rgsaddle::site_occupancy(sites.view(), done.positions.view(), cell)?;
+let recombined = occupancy.is_perfect();
+#+end_src
+
+=site_occupancy= is the Wigner–Seitz test (Nordlund et al., Phys. Rev. B 57, 7556 (1998), doi:10.1103/PhysRevB.57.7556): each atom belongs to the nearest reference site under the minimum image, an empty site is a vacancy and a site with =n= atoms carries =n - 1= interstitials. A Frenkel pair relaxed to a configuration with every site singly occupied has recombined, whatever its local distortion. Neither function knows what the defect is; the caller supplies the surface and the sites.
+
 * Assumptions
 The dividing surface is a hyperplane normal to the path, not a variationally optimized surface. The harmonic prefactor uses a caller-chosen block of atoms when the whole-cell Hessian is too large; modes below =10⁻⁴= in the surface's curvature unit are left out of the product. Overdamped sampling assumes the constrained ensemble has been reached after =thermalize= steps. The Bennett–Chandler plateau is whatever record the caller names; a negative =κ= means that record is not a transmission coefficient and no rate is stored. The cell of a frozen search is the cell bound into the surface.
 
