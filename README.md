@@ -206,7 +206,8 @@ vectors, triclinic allowed) supplies minimum-image differences for the
 band mechanics; neighbor lists, when a surface wants them, are
 [vesin](https://github.com/Luthaf/vesin)'s job, not this crate's.
 
-A warm band step costs one evaluation of the interior images. The
+A warm band step costs one evaluation of the interior images, two
+when FIRE 2.0 backs up half a time step after an uphill move. The
 session caches the endpoint energies and its last evaluation, so a
 host that hands the band back unchanged (`set_positions`, wrapped
 into its cell or not) or restarts the optimizer (`restart`) pays no
