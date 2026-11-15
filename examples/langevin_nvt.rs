@@ -2892,7 +2892,7 @@ fn write_sia_d_notes() {
 fn dynamics_note() -> String {
     let mut text = String::new();
     text.push_str("# Thermostat test, Mishin Cu\n\n");
-    text.push_str("Our free-dumbbell D under Langevin at γ = 0.1/ps was about twice the Table 1 D_i of Mwungeli, Liu, and Demkowicz, Phys. Rev. Materials 9, 023601 (2025), which they quote from Ref. [12], B. Zhang et al., Phys. Rev. Materials 6, 053605 (2022). Our whole-cell k at 500 K was about 1.56 times the k implied by their Table 1. Their trajectories are NPH for 30 ps, then NVE with velocity rescaling. This note repeats the measurements under that protocol and under Langevin with ten times weaker friction. Every campaign uses the same potential, 13³ cell, timestep, seeds, and blocks; only the dynamics differ. Each number below is read from the CSV named in its section.\n\n");
+    text.push_str("Our free-dumbbell D under Langevin at γ = 0.1/ps is larger than the Table 1 D_i of Mwungeli, Liu, and Demkowicz, Phys. Rev. Materials 9, 023601 (2025), which they quote from Ref. [12], B. Zhang et al., Phys. Rev. Materials 6, 053605 (2022), and our whole-cell k at 500 K is larger than the k implied by their Table 1; the ratios are in the tables below. Their trajectories are NPH for 30 ps, then NVE with velocity rescaling. This note repeats the measurements under that protocol and under Langevin with ten times weaker friction. Every campaign uses the same potential, 13³ cell, timestep, seeds, and blocks; only the dynamics differ. Each number below is read from the CSV named in its section.\n\n");
     text.push_str("## Free dumbbell diffusivity\n\n");
     text.push_str("D for one trajectory is the block mean of |Δr|² over 6τ of the doubly occupied Wigner-Seitz cell; σ is the standard error across trajectories. Ratios carry both errors in quadrature, and z is the difference over the two errors in quadrature. The reference for the last two columns is Langevin at γ = 0.1/ps.\n\n");
     let mut sources = Vec::new();
@@ -2945,11 +2945,54 @@ fn dynamics_note() -> String {
             ));
         }
     }
-    text.push_str(
-        "\nTable 1 D_i: 300 K 0.143 ± 0.006, 500 K 0.526 ± 0.006, 700 K 0.910 ± 0.012 Å²/ps.\n\n",
-    );
+    let mut table_low = f64::INFINITY;
+    let mut table_high = f64::NEG_INFINITY;
+    for (_, _, rows, _) in &sources {
+        for temperature in [300.0_f64, 500.0, 700.0] {
+            if let (Some(estimate), Some((d_i, _))) = (
+                sia_estimate(rows, temperature),
+                table_diffusivity(temperature),
+            ) {
+                table_low = table_low.min(estimate.d / d_i);
+                table_high = table_high.max(estimate.d / d_i);
+            }
+        }
+    }
+    text.push('\n');
+    for (kind, gamma, rows, _) in sources.iter().skip(1) {
+        let mut low = f64::INFINITY;
+        let mut high = f64::NEG_INFINITY;
+        for temperature in [300.0_f64, 500.0, 700.0] {
+            if let (Some(top), Some(base)) = (
+                sia_estimate(rows, temperature),
+                sia_estimate(&sources[0].2, temperature),
+            ) {
+                low = low.min(top.d / base.d);
+                high = high.max(top.d / base.d);
+            }
+        }
+        if low.is_finite() {
+            text.push_str(&format!(
+                "{} over Langevin at γ = 0.1/ps: D ratio {low:.3} to {high:.3} across temperatures.\n",
+                campaign_label(*kind, *gamma)
+            ));
+        }
+    }
+    if table_low.is_finite() {
+        text.push_str(&format!(
+            "Every campaign over Table 1: D ratio {table_low:.3} to {table_high:.3}.\n"
+        ));
+    }
+    let table_line: Vec<String> = [300.0_f64, 500.0, 700.0]
+        .iter()
+        .filter_map(|t| table_diffusivity(*t).map(|(d, e)| format!("{t:.0} K {d:.3} ± {e:.3}")))
+        .collect();
+    text.push_str(&format!(
+        "\nTable 1 D_i (Å²/ps): {}.\n\n",
+        table_line.join("; ")
+    ));
     text.push_str("## Lattice constant after NPH\n\n");
-    text.push_str("The Langevin runs use the zero-pressure lattice constant of `npt_lattice` in `tests/mishin_cu.rs`. The NPH stage sets its own; the column is the mean and standard deviation over trajectories of the production lattice constant. Table 1 lists the paper's zero-pressure lattice constants.\n\n| T (K) | Langevin runs (Å) | after NPH (Å) | sd | trajectories | Table 1 (Å) |\n|---:|---:|---:|---:|---:|---:|\n");
+    text.push_str("The Langevin runs use the lattice constant of `npt_lattice` in `tests/mishin_cu.rs`. Its Berendsen loop drives the trace of the configurational stress from `evaluate` to zero, with no kinetic term, so that lattice carries the kinetic pressure N k_B T / V listed in the last column. The NPH stage uses the full virial pressure (2K - dE/dλ) / 3V; its column is the mean and standard deviation over trajectories of the production lattice constant. Table 1 lists the paper's zero-pressure lattice constants.\n\n| T (K) | Langevin runs (Å) | after NPH (Å) | sd | trajectories | Table 1 (Å) | N k_B T / V at the Langevin lattice (GPa) |\n|---:|---:|---:|---:|---:|---:|---:|\n");
     let nph_rows = &sources[2].2;
     for temperature in [300.0_f64, 500.0, 700.0] {
         let mut lattices = Vec::new();
@@ -2966,9 +3009,10 @@ fn dynamics_note() -> String {
         let mean = lattices.iter().sum::<f64>() / n;
         let sd =
             (lattices.iter().map(|a| (a - mean).powi(2)).sum::<f64>() / (n - 1.0).max(1.0)).sqrt();
+        let a = measured_lattice(temperature);
+        let kinetic_gpa = 4.0 * BOLTZMANN_EV_PER_K * temperature / a.powi(3) * EV_PER_A3_IN_GPA;
         text.push_str(&format!(
-            "| {temperature:.0} | {:.6} | {mean:.6} | {sd:.6} | {} | {} |\n",
-            measured_lattice(temperature),
+            "| {temperature:.0} | {a:.6} | {mean:.6} | {sd:.6} | {} | {} | {kinetic_gpa:.3} |\n",
             lattices.len(),
             table_lattice(temperature).map_or("-".to_string(), |a| format!("{a:.3}")),
         ));
@@ -3016,7 +3060,7 @@ fn dynamics_note() -> String {
         let k_paper = k_mean * a_p * DUMBBELL_ALPHA * d_i / 4.0;
         let k_paper_sigma = k_paper * ((k_sigma / k_mean).powi(2) + (d_sigma / d_i).powi(2)).sqrt();
         text.push_str(&format!(
-            "| Table 1, k-method | - | 100 | - | - | {a_p:.3} | {k_paper:.2} | {k_paper_sigma:.2} | {d_i:.3} ± {d_sigma:.3} | {k_mean:.0} | {k_sigma:.0} | {k_mean:.0} | {k_sigma:.0} |\n\n"
+            "| Table 1, k-method | - | {PAPER_TRIALS} | - | - | {a_p:.3} | {k_paper:.2} | {k_paper_sigma:.2} | {d_i:.3} ± {d_sigma:.3} | {k_mean:.0} | {k_sigma:.0} | {k_mean:.0} | {k_sigma:.0} |\n\n"
         ));
         for (kind, rate) in &rates {
             let (ratio, error, z) = ratio_with_error(*rate, (k_paper, k_paper_sigma));
@@ -3039,11 +3083,15 @@ fn dynamics_note() -> String {
             ));
         }
     }
-    text.push_str(
-        "\nTable 1, 8788 atoms at 500 K: 185 ± 23 Ω (k-method), 161 ± 15 Ω (mean-time method).\n",
-    );
+    if let Some((k_mean, k_sigma, mean_time, mean_sigma)) = table_volume(500.0) {
+        text.push_str(&format!("\nTable 1, 8788 atoms at 500 K: {k_mean:.0} ± {k_sigma:.0} Ω (k-method), {mean_time:.0} ± {mean_sigma:.0} Ω (mean-time method).\n"));
+    }
     text
 }
+
+/// Trajectories per temperature in Mwungeli, Liu, and Demkowicz.
+const PAPER_TRIALS: usize = 100;
+const EV_PER_A3_IN_GPA: f64 = 160.217_663;
 
 fn run_sia_d() {
     let spec = run_spec();
