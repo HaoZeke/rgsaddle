@@ -171,14 +171,14 @@ fn searches_match_the_allocating_code_bitwise() {
             MinModeKind::Dimer,
             FiniteDifference::Forward,
             None,
-            0x6aa6_d128_0d08_9963,
+            0x92cd_74a5_8079_10eb,
         ),
         (
             "dimer-central-fire",
             MinModeKind::Dimer,
             FiniteDifference::Central,
             None,
-            0x27c1_53f7_c02b_944f,
+            0x6961_5775_95f9_3851,
         ),
         (
             "dimer-forward-lbfgs",
@@ -192,7 +192,7 @@ fn searches_match_the_allocating_code_bitwise() {
             MinModeKind::Lanczos,
             FiniteDifference::Forward,
             None,
-            0xb735_0bce_aca5_a0f0,
+            0xd1a6_dd68_14a6_215c,
         ),
         (
             "lanczos-central-lbfgs",

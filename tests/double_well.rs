@@ -186,12 +186,14 @@ fn endpoints_are_evaluated_once_and_each_step_costs_one_interior_eval() {
     assert!(calls >= 1);
     assert_eq!(rows, n_images + (calls - 1) * interior, "calls={calls}");
 
-    // Every later step: one evaluation, interior rows only.
-    for k in 0..5 {
+    // Every later step: interior rows only. One evaluation, or two on a
+    // FIRE 2.0 step that backs up half a time step after an uphill move
+    // and takes the force at the corrected point.
+    for (k, want) in [1, 2, 2, 2, 2].into_iter().enumerate() {
         session.step(&surface).unwrap();
         let (calls, rows) = surface.take();
-        assert_eq!(calls, 1, "step {k}");
-        assert_eq!(rows, interior, "step {k}");
+        assert_eq!(calls, want, "step {k}");
+        assert_eq!(rows, want * interior, "step {k}");
     }
 
     // The report counts the same rows the surface saw.
@@ -265,9 +267,11 @@ fn wrapped_resync_keeps_the_cached_band() {
     session.set_positions(wrapped).unwrap();
     // The session keeps its own unwrapped rows.
     assert_eq!(session.positions(), before.view());
+    // This step is a FIRE 2.0 half-step back, whose corrected point is
+    // evaluated as well; neither evaluation carries the endpoints.
     session.step(&surface).unwrap();
     let (calls, rows) = surface.take();
-    assert_eq!((calls, rows), (1, interior));
+    assert_eq!((calls, rows), (2, 2 * interior));
 }
 
 #[test]
