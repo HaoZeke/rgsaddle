@@ -1511,8 +1511,10 @@ impl MinModeSession {
                 "force tolerance must be finite and non-negative".into(),
             ));
         }
-        if !(config.rotation_tol.is_finite() && config.rotation_tol >= 0.0)
-            || !(config.rotation_angle_tol.is_finite() && config.rotation_angle_tol >= 0.0)
+        if !(config.rotation_tol.is_finite()
+            && config.rotation_tol >= 0.0
+            && config.rotation_angle_tol.is_finite()
+            && config.rotation_angle_tol >= 0.0)
         {
             return Err(SaddleError::Invalid(
                 "rotation tolerances must be finite and non-negative".into(),
