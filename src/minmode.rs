@@ -498,13 +498,54 @@ impl DimerRotationHistory {
     }
 }
 
+/// Session-level stop controls of one dimer rotation.
+#[derive(Clone, Copy, Debug)]
+struct RotationStop {
+    /// See [`MinModeSession::set_torque_window`].
+    torque_window: Option<bool>,
+    /// See [`MinModeSession::set_rotation_stop_length`]; 0 is off.
+    length: f64,
+}
+
+/// Force error that the rotation still to come would leave in a
+/// translation of `length`.
+///
+/// Kästner and Sherwood, J. Chem. Phys. 128, 014106 (2008),
+/// doi:10.1063/1.2815812, estimate the remaining rotation angle from
+/// the rotational force `F` and the curvature `C` as
+/// `ω = atan(F / |C|) / 2`, the trial angle [`rotate_dimer`] uses. A
+/// translation of length `L` along a mode that is `ω` off moves by
+/// `L |sin ω|` across the true mode, which a curvature of magnitude
+/// `|C|` turns into a force error `|C| L |sin ω|`. The magnitude is the
+/// larger of `|C|` and the two-mode estimate of the curvature after
+/// the rotation, `C - F tan ω`: a dimer halfway between a negative and
+/// a positive mode reads `C ≈ 0` while the rotation ahead is 45 degrees
+/// (`validation/rotation_force_stop.py`).
+pub fn rotation_force_error(force_norm: f64, curvature: f64, length: f64) -> f64 {
+    let omega = 0.5 * force_norm.abs().atan2(curvature.abs());
+    let rotated = curvature - force_norm.abs() * omega.tan();
+    curvature.abs().max(rotated.abs()) * length * omega.sin().abs()
+}
+
+/// True when [`rotation_force_error`] is within `force_tol`. A
+/// non-positive length or tolerance, or a non-finite input, is false.
+fn rotation_force_converged(force_norm: f64, curvature: f64, length: f64, force_tol: f64) -> bool {
+    if !(length.is_finite() && length > 0.0 && force_tol.is_finite() && force_tol > 0.0) {
+        return false;
+    }
+    if !(force_norm.is_finite() && curvature.is_finite()) {
+        return false;
+    }
+    rotation_force_error(force_norm, curvature, length) <= force_tol
+}
+
 fn rotate_dimer<S: PointSurface>(
     surface: &Counted<'_, S>,
     x: ArrayView1<f64>,
     g0: ArrayView1<f64>,
     mode: Array1<f64>,
     config: &MinModeConfig,
-    torque_window: Option<bool>,
+    stop: RotationStop,
     history: &mut DimerRotationHistory,
 ) -> Result<(Array1<f64>, f64, usize), SaddleError> {
     let mut n = normalize(mode);
@@ -540,7 +581,9 @@ fn rotate_dimer<S: PointSurface>(
             .and(&n)
             .for_each(|f, &h, &n| *f = -(h - n * along));
         let force_norm = force.dot(&force).sqrt();
-        if rotation_finished(config, torque_window, force_norm, rotations) {
+        if rotation_finished(config, stop.torque_window, force_norm, rotations)
+            || rotation_force_converged(force_norm, curvature, stop.length, config.force_tol)
+        {
             // A finished rotation keeps its force for the next centre.
             // The cap leaves the previous iteration's pair: that
             // rotation did not meet the residual.
@@ -888,6 +931,8 @@ struct LanczosStop {
     rel_tol: Option<f64>,
     previous: f64,
     early: bool,
+    /// [`MinModeSession::set_rotation_stop_length`]; 0 is off.
+    length: f64,
 }
 
 /// Krylov vectors of one Lanczos estimate with their Hessian actions.
@@ -993,7 +1038,11 @@ fn lanczos_mode<S: PointSurface>(
         // mode on the first product, so it is not a stop here. A set
         // `rel_tol` replaces `rotation_tol` for that relative test.
         let agreed = lanczos_ritz_agreed(stop.rel_tol, config.rotation_tol, theta, ew_old);
-        let residual_ok = residual <= config.rotation_tol;
+        // The Ritz residual `H y - theta y` is the rotational force of
+        // the Ritz vector `y`, and `theta` its curvature: the dimer's
+        // force-error stop reads the same pair.
+        let residual_ok = residual <= config.rotation_tol
+            || rotation_force_converged(residual, theta, stop.length, config.force_tol);
         let capped = alpha.len() == m;
         if residual_ok || agreed || capped || b <= 1e-12 {
             let mut mode = Array1::zeros(n);
@@ -1324,6 +1373,8 @@ pub struct MinModeSession {
     /// Classic dimer torque window. `None` turns it on when
     /// `rotation_tol` is at least the stock 1e-4.
     torque_window: Option<bool>,
+    /// Translation length of the curvature-aware rotation stop; 0 is off.
+    rotation_stop_length: f64,
     /// Dimer rotational CG state retained across translations.
     dimer_rotation: DimerRotationHistory,
     /// Gradient at `x`, when known: from the last translation's
@@ -1496,6 +1547,7 @@ impl MinModeSession {
             iteration: 0,
             lanczos_rel_tol: None,
             torque_window: None,
+            rotation_stop_length: 0.0,
             dimer_rotation: DimerRotationHistory::default(),
             centre: None,
             surface_error: Mutex::new(None),
@@ -1618,6 +1670,41 @@ impl MinModeSession {
     /// `rotation_tol` 0.1 and `Some(false)`. Lanczos does not read it.
     pub fn set_torque_window(&mut self, window: Option<bool>) {
         self.torque_window = window;
+    }
+
+    /// Stop a rotation once the force error it could still remove is
+    /// within `force_tol`.
+    ///
+    /// With `length` positive, the dimer stops rotating when
+    /// [`rotation_force_error`] of its rotational force and curvature,
+    /// `|C| length |sin ω|`, is at most `force_tol`, before the trial
+    /// rotation spends a gradient. Lanczos stops on the same bound for
+    /// its Ritz residual and Ritz value. The other stops are unchanged
+    /// and still apply. `length` is the translation the mode steers:
+    /// `max_move` bounds the next step, and the dimer separation `dr`
+    /// is the length over which the dimer itself feels the error. 0,
+    /// the default, turns the stop off.
+    pub fn set_rotation_stop_length(&mut self, length: f64) -> Result<(), SaddleError> {
+        if !(length.is_finite() && length >= 0.0) {
+            return Err(SaddleError::Invalid(
+                "rotation stop length must be finite and non-negative".into(),
+            ));
+        }
+        self.rotation_stop_length = length;
+        Ok(())
+    }
+
+    /// Translation length of the curvature-aware rotation stop; 0 is off.
+    #[must_use]
+    pub fn rotation_stop_length(&self) -> f64 {
+        self.rotation_stop_length
+    }
+
+    fn rotation_stop(&self) -> RotationStop {
+        RotationStop {
+            torque_window: self.torque_window,
+            length: self.rotation_stop_length,
+        }
     }
 
     /// Select the optional HiGHS feasible-set step; requires the `highs` feature.
@@ -1943,7 +2030,7 @@ impl MinModeSession {
                     gradient,
                     self.mode.clone(),
                     &self.config,
-                    self.torque_window,
+                    self.rotation_stop(),
                     &mut history,
                 )?;
                 self.dimer_rotation = history;
@@ -1996,7 +2083,7 @@ impl MinModeSession {
                     gradient,
                     seed,
                     &self.config,
-                    self.torque_window,
+                    self.rotation_stop(),
                     &mut history,
                 )?;
                 self.dimer_rotation = DimerRotationHistory {
@@ -2050,6 +2137,7 @@ impl MinModeSession {
                 rel_tol: self.lanczos_rel_tol,
                 previous,
                 early,
+                length: self.rotation_stop_length,
             },
             block,
             &mut work,
@@ -2839,7 +2927,10 @@ impl MinModeSession {
 
 #[cfg(test)]
 mod tests {
-    use super::{MinModeConfig, MinModeSession, PointSurface, translated_gradient};
+    use super::{
+        MinModeConfig, MinModeKind, MinModeSession, PointSurface, rotation_force_converged,
+        rotation_force_error, translated_gradient,
+    };
     use crate::error::SaddleError;
     use approx::assert_abs_diff_eq;
     use ndarray::{Array1, ArrayView1, array};
@@ -3283,5 +3374,117 @@ mod tests {
         let report = session.run(&StiffWell, 40).unwrap();
         assert_eq!(report.status, super::MinModeStatus::Converged, "{report:?}");
         assert!(session.position()[1].abs() < 1e-2, "{}", session.position());
+    }
+
+    #[test]
+    fn rotation_force_error_is_curvature_length_and_sine() {
+        let (force, curvature, length) = (0.3, -2.0, 0.2);
+        let omega = 0.5 * f64::atan2(force, 2.0);
+        let rotated: f64 = curvature - force * omega.tan();
+        let expected = rotated.abs() * length * omega.sin();
+        assert_abs_diff_eq!(
+            rotation_force_error(force, curvature, length),
+            expected,
+            epsilon = 1e-15
+        );
+        assert_eq!(rotation_force_error(0.0, -2.0, length), 0.0);
+        assert!(rotation_force_converged(force, curvature, length, 1.0));
+        assert!(!rotation_force_converged(force, curvature, length, 1e-3));
+        assert!(!rotation_force_converged(force, curvature, 0.0, 1.0));
+        assert!(!rotation_force_converged(force, curvature, length, 0.0));
+        assert!(!rotation_force_converged(f64::NAN, curvature, length, 1.0));
+    }
+
+    #[test]
+    fn rotation_force_error_sees_the_mode_between_two_curvatures() {
+        // Halfway between curvatures -1 and +1 the dimer reads C = 0 and
+        // a rotational force of 1; the rotation ahead is 45 degrees and
+        // reaches the curvature -1.
+        let error = rotation_force_error(1.0, 0.0, 1.0);
+        assert_abs_diff_eq!(error, (0.25 * std::f64::consts::PI).sin(), epsilon = 1e-12);
+        assert!(!rotation_force_converged(1.0, 0.0, 1.0, 0.5));
+    }
+
+    fn stopped_rotations(kind: MinModeKind, length: f64) -> (usize, usize, Array1<f64>, f64) {
+        let config = MinModeConfig {
+            kind,
+            rotation_tol: 1e-6,
+            rotation_angle_tol: 0.0,
+            ..MinModeConfig::default()
+        };
+        let mut session = MinModeSession::new(
+            config,
+            array![0.3, 0.2, 0.1, 0.4],
+            array![0.5, 0.5, 0.5, 0.5],
+        )
+        .unwrap();
+        session.set_rotation_stop_length(length).unwrap();
+        assert_eq!(session.rotation_stop_length(), length);
+        let estimate = session.estimate_mode(&AnisotropicQuadratic).unwrap();
+        (
+            estimate.rotations,
+            estimate.evaluations,
+            estimate.mode,
+            estimate.curvature,
+        )
+    }
+
+    #[test]
+    fn rotation_stop_length_zero_keeps_the_rotation() {
+        for kind in [MinModeKind::Dimer, MinModeKind::Lanczos] {
+            let config = MinModeConfig {
+                kind,
+                rotation_tol: 1e-6,
+                rotation_angle_tol: 0.0,
+                ..MinModeConfig::default()
+            };
+            let mut session = MinModeSession::new(
+                config,
+                array![0.3, 0.2, 0.1, 0.4],
+                array![0.5, 0.5, 0.5, 0.5],
+            )
+            .unwrap();
+            assert_eq!(session.rotation_stop_length(), 0.0);
+            let stock = session.estimate_mode(&AnisotropicQuadratic).unwrap();
+            let (rotations, evaluations, mode, _) = stopped_rotations(kind, 0.0);
+            assert_eq!(rotations, stock.rotations);
+            assert_eq!(evaluations, stock.evaluations);
+            assert_eq!(mode, stock.mode);
+        }
+    }
+
+    #[test]
+    fn rotation_stop_length_ends_the_rotation_inside_the_force_tolerance() {
+        for kind in [MinModeKind::Dimer, MinModeKind::Lanczos] {
+            let (full, full_calls, full_mode, _) = stopped_rotations(kind, 0.0);
+            let (cut, cut_calls, cut_mode, curvature) = stopped_rotations(kind, 1e-3);
+            assert!(cut < full, "{kind:?}: {cut} vs {full}");
+            assert!(
+                cut_calls < full_calls,
+                "{kind:?}: {cut_calls} vs {full_calls}"
+            );
+            // The mode that stopped early still has the negative
+            // curvature and the force error it promised: the angle to
+            // the converged mode, times the curvature and the length, is
+            // inside force_tol.
+            assert!(curvature < 0.0, "{kind:?}: {curvature}");
+            let cosine = cut_mode.dot(&full_mode).abs().min(1.0);
+            let sine = (1.0 - cosine * cosine).sqrt();
+            assert!(2.0 * 1e-3 * sine <= 1e-3, "{kind:?}: sin {sine}");
+        }
+    }
+
+    #[test]
+    fn rotation_stop_length_rejects_negative_and_non_finite_values() {
+        let mut session = MinModeSession::new(
+            MinModeConfig::default(),
+            array![0.3, 0.2, 0.1, 0.4],
+            array![0.5, 0.5, 0.5, 0.5],
+        )
+        .unwrap();
+        for bad in [-1.0, f64::NAN, f64::INFINITY] {
+            assert!(session.set_rotation_stop_length(bad).is_err());
+        }
+        assert_eq!(session.rotation_stop_length(), 0.0);
     }
 }
