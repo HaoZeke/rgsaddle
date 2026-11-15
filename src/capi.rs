@@ -395,11 +395,9 @@ pub struct RgsaddleMinMode {
 
 fn method_of(v: i32, memory: i64) -> Method {
     match v {
-        1 => Method::Lbfgs {
-            memory: if memory > 0 { memory as usize } else { 20 },
-        },
+        1 => Method::lbfgs_with_memory(if memory > 0 { memory as usize } else { 20 }),
         4 => Method::Ode12r,
-        _ => Method::Fire { kind: FireKind::V2 },
+        _ => Method::fire(FireKind::V2),
     }
 }
 

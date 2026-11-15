@@ -168,9 +168,7 @@ fn muller_brown_matches_an_ase_autoneb_run() {
     let band = BandConfig {
         force_tol: 0.05,
         max_move: 0.05,
-        method: rgmin::Method::Fire {
-            kind: rgmin::FireKind::V1,
-        },
+        method: rgmin::Method::fire(rgmin::FireKind::V1),
         spring: rgsaddle::SpringKind::Uniform { k: 5.0 },
         climbing: Some(CiConfig {
             trigger_factor: 1.0,

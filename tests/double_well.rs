@@ -316,7 +316,7 @@ fn lbfgs_band_steps_once_per_evaluation_and_converges() {
     let config = BandConfig {
         force_tol: 1e-3,
         max_move: 0.1,
-        method: rgmin::Method::Lbfgs { memory: 10 },
+        method: rgmin::Method::lbfgs_with_memory(10),
         min_mode: None,
         ..BandConfig::default()
     };
@@ -347,7 +347,7 @@ fn lbfgs_band_opens_with_the_neb_scale() {
     let max_move = 0.1;
     let config = BandConfig {
         max_move,
-        method: rgmin::Method::Lbfgs { memory: 10 },
+        method: rgmin::Method::lbfgs_with_memory(10),
         ..BandConfig::default()
     };
     let start = initial_band(n_images);

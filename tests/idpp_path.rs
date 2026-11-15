@@ -337,7 +337,7 @@ fn neb(initial: Array2<f64>) -> (rgsaddle::BandReport, Array2<f64>) {
         force_tol: 0.01,
         max_move: 0.2,
         remove_translation: true,
-        method: rgmin::Method::Lbfgs { memory: 20 },
+        method: rgmin::Method::lbfgs_with_memory(20),
         min_mode: None,
         ..BandConfig::default()
     };

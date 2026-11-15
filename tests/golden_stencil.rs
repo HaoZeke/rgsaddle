@@ -248,9 +248,7 @@ fn band_config(preset: &str) -> BandConfig {
         climbing: None,
         force_tol: 1e-8,
         max_move: 0.2,
-        method: rgmin::Method::Fire {
-            kind: rgmin::FireKind::V2,
-        },
+        method: rgmin::Method::fire(rgmin::FireKind::V2),
         ..BandConfig::default()
     };
     match preset {
@@ -344,9 +342,7 @@ fn mode_config(preset: &str) -> MinModeConfig {
         krylov_dim: 6,
         force_tol: 1e-12,
         max_move: 0.1,
-        method: rgmin::Method::Fire {
-            kind: rgmin::FireKind::V2,
-        },
+        method: rgmin::Method::fire(rgmin::FireKind::V2),
         seed_curvature: false,
     }
 }
@@ -396,9 +392,7 @@ fn run_autoneb(fixture: &str, threads: usize) -> (Array2<f64>, Vec<f64>) {
     let config = BandConfig {
         force_tol: 1e-3,
         max_move: 0.1,
-        method: rgmin::Method::Fire {
-            kind: rgmin::FireKind::V2,
-        },
+        method: rgmin::Method::fire(rgmin::FireKind::V2),
         spring: SpringKind::Uniform { k: 5.0 },
         climbing: Some(CiConfig {
             trigger_factor: 0.5,

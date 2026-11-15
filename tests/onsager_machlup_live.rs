@@ -47,7 +47,7 @@ fn config(spring: SpringKind) -> BandConfig {
         climbing: None,
         force_tol: 1e-5,
         max_move: 0.1,
-        method: rgmin::Method::Lbfgs { memory: 10 },
+        method: rgmin::Method::lbfgs_with_memory(10),
         min_mode: None,
         ..BandConfig::default()
     }

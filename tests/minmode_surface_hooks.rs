@@ -85,7 +85,7 @@ fn force_gate_setter_preserves_default_and_changes_physical_translation() {
         actions: AtomicUsize::new(0),
     };
     let config = MinModeConfig {
-        method: rgmin::Method::Lbfgs { memory: 4 },
+        method: rgmin::Method::lbfgs_with_memory(4),
         force_tol: 1e-3,
         max_move: 1e-5,
         ..Default::default()

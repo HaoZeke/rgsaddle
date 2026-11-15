@@ -299,7 +299,9 @@ fn fd_lowest_curvature(surface: &MullerBrown, x: ArrayView1<f64>, dr: f64) -> f6
         }
     }
     let seed = Array1::from(vec![1.0, 0.3, 0.1, 0.0, 0.0, 0.0]);
-    rgmin::lowest_eigenpair(&Dense(h), x, seed.view(), 6).value
+    rgmin::lowest_eigenpair(&Dense(h), x, seed.view(), 6)
+        .expect("Lanczos on a non-empty seed")
+        .value
 }
 
 fn roll_branch(kind: IrcKind, direction: IrcDirection) -> (Array1<f64>, f64, f64, f64, bool) {

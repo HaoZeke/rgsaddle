@@ -38,7 +38,7 @@ fn translated_stationary_point(
 ) {
     let config = MinModeConfig {
         kind,
-        method: rgmin::Method::Lbfgs { memory: 4 },
+        method: rgmin::Method::lbfgs_with_memory(4),
         dr: 1e-3,
         rotation_tol: 1e-8,
         force_tol: 1e-10,
@@ -99,7 +99,7 @@ fn lanczos_translation_to_a_saddle_uses_its_negative_curvature() {
 fn failed_confirmation_preserves_position(kind: MinModeKind) {
     let config = MinModeConfig {
         kind,
-        method: rgmin::Method::Lbfgs { memory: 4 },
+        method: rgmin::Method::lbfgs_with_memory(4),
         dr: 1e-3,
         rotation_tol: 1e-8,
         force_tol: 1e-10,

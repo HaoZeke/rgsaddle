@@ -114,31 +114,24 @@ fn climb(kind: MinModeKind, method: rgmin::Method) {
 
 #[test]
 fn dimer_lbfgs_climbs_the_double_well() {
-    climb(MinModeKind::Dimer, rgmin::Method::Lbfgs { memory: 20 });
+    climb(MinModeKind::Dimer, rgmin::Method::lbfgs_with_memory(20));
 }
 
 #[test]
 fn dimer_fire_climbs_the_double_well() {
-    climb(
-        MinModeKind::Dimer,
-        rgmin::Method::Fire {
-            kind: rgmin::FireKind::V2,
-        },
-    );
+    climb(MinModeKind::Dimer, rgmin::Method::fire(rgmin::FireKind::V2));
 }
 
 #[test]
 fn lanczos_lbfgs_climbs_the_double_well() {
-    climb(MinModeKind::Lanczos, rgmin::Method::Lbfgs { memory: 20 });
+    climb(MinModeKind::Lanczos, rgmin::Method::lbfgs_with_memory(20));
 }
 
 #[test]
 fn lanczos_fire_climbs_the_double_well() {
     climb(
         MinModeKind::Lanczos,
-        rgmin::Method::Fire {
-            kind: rgmin::FireKind::V2,
-        },
+        rgmin::Method::fire(rgmin::FireKind::V2),
     );
 }
 
@@ -181,12 +174,7 @@ fn fire_returns_to_a_narrow_negative_ridge() {
     let start = array![0.06, 0.0, 0.0];
     let seed = array![1.0, 0.0, 0.0];
     let mut session = MinModeSession::new(
-        harness(
-            MinModeKind::Dimer,
-            rgmin::Method::Fire {
-                kind: rgmin::FireKind::V2,
-            },
-        ),
+        harness(MinModeKind::Dimer, rgmin::Method::fire(rgmin::FireKind::V2)),
         start,
         seed,
     )

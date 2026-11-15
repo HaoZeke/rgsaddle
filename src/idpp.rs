@@ -344,13 +344,11 @@ fn relax(
         Ok((values, force)) => (values.iter().sum(), -force),
         Err(_) => (f64::NAN, Array1::from_elem(y.len(), f64::NAN)),
     });
-    let control = Control {
-        maxiter: usize::MAX,
-        gtol: 0.0,
-        istep: config.time_step,
-        maxmove: None,
-        ..Control::default()
-    };
+    let control = Control::default()
+        .with_maxiter(usize::MAX)
+        .with_gtol(0.0)
+        .with_istep(config.time_step)
+        .with_maxmove(None);
     let mut solver = Solver::new(Method::QuickMin, control, x.len());
     solver.set_atom_maxmove(config.max_move);
     solver.set_quickmin_options(QuickMinOptions::eon());
@@ -549,16 +547,12 @@ fn relax_image(
         }
     });
     let mut solver = Solver::new(
-        Method::Lbfgs {
-            memory: config.memory,
-        },
-        Control {
-            maxiter: config.max_iterations,
-            gtol: config.grad_tol,
-            istep: 1.0,
-            maxmove: None,
-            ..Control::default()
-        },
+        Method::lbfgs_with_memory(config.memory),
+        Control::default()
+            .with_maxiter(config.max_iterations)
+            .with_gtol(config.grad_tol)
+            .with_istep(1.0)
+            .with_maxmove(None),
         dim,
     );
     solver.set_atom_maxmove(config.max_move);

@@ -426,7 +426,7 @@ fn climb_between(
         let config = MinModeConfig {
             force_tol: settings.forcetol,
             max_move: 0.1,
-            method: Method::Lbfgs { memory: 20 },
+            method: Method::lbfgs_with_memory(20),
             ..MinModeConfig::default()
         };
         let mut session = MinModeSession::new(config, start, seed.clone())?;
@@ -668,9 +668,7 @@ fn climb_lanczos(
         krylov_dim: settings.lanczos_iterations.max(1),
         force_tol: settings.forcetol,
         max_move: settings.minmode_max_move,
-        method: Method::Lbfgs {
-            memory: settings.minmode_memory.max(1),
-        },
+        method: Method::lbfgs_with_memory(settings.minmode_memory.max(1)),
         ..MinModeConfig::default()
     };
     let mut session = MinModeSession::new(

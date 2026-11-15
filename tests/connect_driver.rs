@@ -638,7 +638,7 @@ fn run_band(pair_index: usize, springs: Springs) -> BandRow {
         climbing: Some(CiConfig::after_rel(0.5)),
         force_tol: 1e-3,
         max_move: 0.05,
-        method: Method::Lbfgs { memory: 100 },
+        method: Method::lbfgs_with_memory(100),
         ..BandConfig::default()
     };
     let mut session = match BandSession::new(config, images) {

@@ -181,10 +181,8 @@ enum MethodKind {
 impl MethodKind {
     fn method(self) -> rgmin::Method {
         match self {
-            Self::Fire => rgmin::Method::Fire {
-                kind: rgmin::FireKind::V2,
-            },
-            Self::Lbfgs => rgmin::Method::Lbfgs { memory: 10 },
+            Self::Fire => rgmin::Method::fire(rgmin::FireKind::V2),
+            Self::Lbfgs => rgmin::Method::lbfgs_with_memory(10),
         }
     }
 

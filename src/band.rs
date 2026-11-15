@@ -289,9 +289,7 @@ impl Default for BandConfig {
             force_tol: 1e-3,
             max_move: 0.2,
             remove_translation: true,
-            method: Method::Fire {
-                kind: rgmin::FireKind::V2,
-            },
+            method: Method::fire(rgmin::FireKind::V2),
             solid: None,
             quickmin: false,
             quickmin_options: rgmin::QuickMinOptions::rgmin(),
@@ -2020,13 +2018,11 @@ impl<S: BandSurface> BandSurface for CachedBandSurface<'_, S> {
 /// The rgmin solver of a band: the per-atom cap, the quick-min options,
 /// and L-BFGS under `Accept::Step` with eOn's NEB resets.
 fn build_solver(config: &BandConfig, method: &Method, interior_dof: usize) -> Solver {
-    let control = Control {
-        maxiter: usize::MAX,
-        gtol: 0.0,
-        istep: config.time_step,
-        maxmove: None,
-        ..Control::default()
-    };
+    let control = Control::default()
+        .with_maxiter(usize::MAX)
+        .with_gtol(0.0)
+        .with_istep(config.time_step)
+        .with_maxmove(None);
     let mut solver = Solver::new(method.clone(), control, interior_dof);
     // The flat band vector is consecutive xyz triples, so the cap
     // applies to the largest single-atom displacement (eOn
@@ -2344,15 +2340,13 @@ impl BandSession {
                 "exponential metric: no finite nearest-neighbour distance on the band".into(),
             ));
         }
-        let params = ExpParams {
-            a: precon.a,
-            c_stab: precon.c_stab,
-            mu: held_mu,
-            r_nn: Some(r_nn),
-            r_cut: None,
-            recalc_mu: false,
-            ..ExpParams::default()
-        };
+        let params = ExpParams::default()
+            .with_a(precon.a)
+            .with_c_stab(precon.c_stab)
+            .with_mu(held_mu)
+            .with_r_nn(r_nn)
+            .with_r_cut(None)
+            .with_recalc_mu(false);
         let dof = self.positions.ncols();
         let first = self.positions.row(1).to_owned();
         let mu = match held_mu {

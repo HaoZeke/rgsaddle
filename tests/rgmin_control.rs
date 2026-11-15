@@ -84,13 +84,11 @@ fn ftol_rel_and_noise_floor_default_to_the_0_5_1_behaviour() {
     assert_eq!(control.noise_floor, None);
 
     // The same fill the band, minimum-mode, stencil, and IRC solvers use.
-    let session = Control {
-        maxiter: usize::MAX,
-        gtol: 0.0,
-        istep: 1.0,
-        maxmove: None,
-        ..Control::default()
-    };
+    let session = Control::default()
+        .with_maxiter(usize::MAX)
+        .with_gtol(0.0)
+        .with_istep(1.0)
+        .with_maxmove(None);
     assert_eq!(session.ftol_rel, None);
     assert_eq!(session.noise_floor, None);
 

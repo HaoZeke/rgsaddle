@@ -17,12 +17,10 @@ impl Default for KappaDimerConfig {
     fn default() -> Self {
         Self {
             beta: 5.0,
-            eigen: EigenParams {
-                kind: EigensolverKind::Dimer,
-                tol: 1e-6,
-                max_iter: 100,
-                ..EigenParams::default()
-            },
+            eigen: EigenParams::default()
+                .with_kind(EigensolverKind::Dimer)
+                .with_tol(1e-6)
+                .with_max_iter(100),
         }
     }
 }

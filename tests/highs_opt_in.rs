@@ -15,7 +15,7 @@ impl PointSurface for Saddle {
 fn optional_feasible_steps_preserve_the_saddle_and_atom_motion_cap() {
     for enabled in [false, true] {
         let config = MinModeConfig {
-            method: rgmin::Method::Lbfgs { memory: 5 },
+            method: rgmin::Method::lbfgs_with_memory(5),
             max_move: 0.05,
             force_tol: 1e-5,
             ..Default::default()

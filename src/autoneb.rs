@@ -2036,7 +2036,7 @@ mod tests {
         for (name, initial, pot) in cases {
             let run = |threads: usize| {
                 let config = BandConfig {
-                    method: rgmin::Method::Lbfgs { memory: 10 },
+                    method: rgmin::Method::lbfgs_with_memory(10),
                     max_move: 0.1,
                     autoneb: Some(AutoNebTuning {
                         n_simul: 3,
@@ -2260,7 +2260,7 @@ mod tests {
             for rep in 0..5 {
                 for (index, &threads) in thread_counts.iter().enumerate() {
                     let config = BandConfig {
-                        method: rgmin::Method::Lbfgs { memory: 10 },
+                        method: rgmin::Method::lbfgs_with_memory(10),
                         max_move: 0.1,
                         autoneb: Some(AutoNebTuning {
                             n_simul,

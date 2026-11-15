@@ -517,14 +517,14 @@ impl PointBuilder {
                 dr: self.dr,
                 force_tol: self.force_tol,
                 max_move: self.max_move,
-                solver: force_solver(Method::Lbfgs { memory: 20 }, dof, self.max_move)?,
+                solver: force_solver(Method::lbfgs_with_memory(20), dof, self.max_move)?,
                 iteration: 0,
                 max_force: f64::NAN,
             })),
             Preset::Min => Engine::Min(Box::new(MinEngine {
                 x: self.x,
                 force_tol: self.force_tol,
-                solver: force_solver(Method::Fire { kind: FireKind::V2 }, dof, self.max_move)?,
+                solver: force_solver(Method::fire(FireKind::V2), dof, self.max_move)?,
                 iteration: 0,
                 max_force: f64::NAN,
             })),
@@ -621,7 +621,7 @@ fn mode_session(builder: &PointBuilder, mode: Array1<f64>) -> Result<MinModeSess
         krylov_dim: builder.krylov_dim,
         force_tol: builder.force_tol,
         max_move: builder.max_move,
-        method: Method::Fire { kind: FireKind::V2 },
+        method: Method::fire(FireKind::V2),
         seed_curvature: false,
     };
     MinModeSession::new(config, builder.x.clone(), mode)
@@ -638,20 +638,18 @@ fn art_mode_config(engine: &ArtEngine) -> MinModeConfig {
         krylov_dim: engine.krylov_dim,
         force_tol: engine.force_tol,
         max_move: engine.max_move,
-        method: Method::Fire { kind: FireKind::V2 },
+        method: Method::fire(FireKind::V2),
         seed_curvature: false,
     }
 }
 
 fn force_solver(method: Method, n: usize, max_move: f64) -> Result<Solver, SaddleError> {
     crate::band::check_force_driven(&method)?;
-    let control = Control {
-        maxiter: usize::MAX,
-        gtol: 0.0,
-        istep: 1.0,
-        maxmove: None,
-        ..Control::default()
-    };
+    let control = Control::default()
+        .with_maxiter(usize::MAX)
+        .with_gtol(0.0)
+        .with_istep(1.0)
+        .with_maxmove(None);
     let lbfgs = matches!(method, Method::Lbfgs { .. });
     let mut solver = Solver::new(method, control, n);
     solver.set_atom_maxmove(max_move);
