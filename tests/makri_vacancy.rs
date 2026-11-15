@@ -331,10 +331,10 @@ fn ode12r_reproduces_the_cu_vacancy_counts_of_table_ii() {
         "evaluations per image (1e-1, 1e-3, steps): ODE12r {plain:?}, ODE12r-Exp {precon:?}, L-BFGS {lbfgs:?}; paper NEB ode12r 8 / 27, NEB(p) ode12r 8 / 19"
     );
     // Measured: ODE12r 8.67 and 26.67 (paper 8 and 27), ODE12r-Exp 7.33
-    // and 19.33 (paper 8 and 19), L-BFGS 7.67 and 19.67, with k = 1
+    // and 18.33 (paper 8 and 19), L-BFGS 7.67 and 19.67, with k = 1
     // eV/A^2 (kappa = k / mu = 0.83 at the estimated mu = 1.21 eV/A^2).
     // The metric count moves with the spring: k = 0.3 gives 20.33, k = 3
-    // gives 77.33, k = 10 gives 199.33. The bounds leave 15 percent over
+    // gives 65.33, k = 10 gives 183.33. The bounds leave 15 percent over
     // the paper's rows.
     assert!(
         plain.0 <= 10.0,
