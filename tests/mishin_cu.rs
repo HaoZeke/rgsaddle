@@ -11395,14 +11395,11 @@ fn assemble_run13() {
     }
 }
 
-/// Recombined and total sites per radius (to 0.001 Å) at one temperature of
-/// `defect_pair_census.csv`. A row that did not converge stops the
-/// assembly.
-fn census_fractions(
-    text: &str,
-    temperature: f64,
-) -> std::collections::BTreeMap<String, (usize, usize)> {
-    let mut shells: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
+/// Radius, recombined sites and total sites of each shell at one
+/// temperature of `defect_pair_census.csv`. A row that did not converge
+/// stops the assembly.
+fn census_fractions(text: &str, temperature: f64) -> Vec<(f64, usize, usize)> {
+    let mut shells: Vec<(f64, usize, usize)> = Vec::new();
     for line in text.lines().skip(1) {
         let fields: Vec<&str> = line.split(',').collect();
         let Some(temp) = fields.get(1).and_then(|field| field.parse::<f64>().ok()) else {
@@ -11414,13 +11411,31 @@ fn census_fractions(
         assert_eq!(fields[8], "1", "census row not converged: {line}");
         let radius: f64 = fields[2].parse().expect("radius");
         let sites: usize = fields[3].parse().expect("sites");
-        let entry = shells.entry(format!("{radius:.3}")).or_default();
+        let index = shells
+            .iter()
+            .position(|shell| (shell.0 - radius).abs() < 1.0e-3)
+            .unwrap_or_else(|| {
+                shells.push((radius, 0, 0));
+                shells.len() - 1
+            });
         if fields[4] == "1" {
-            entry.0 += sites;
+            shells[index].1 += sites;
         }
-        entry.1 += sites;
+        shells[index].2 += sites;
     }
     shells
+}
+
+/// The rates run 13 assembles from: the catalogue and the run-12 and run-13
+/// rows.
+fn recorded_rates() -> String {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benchmarks");
+    let mut text = catalogue_text();
+    for name in ["defect_pair_run12.csv", "defect_pair_run13.csv"] {
+        text.push_str(&std::fs::read_to_string(root.join(name)).unwrap_or_default());
+        text.push('\n');
+    }
+    text
 }
 
 /// The rate catalogue with each recorded isolated-dumbbell PAFI row replaced
@@ -11435,12 +11450,7 @@ fn converged_rates() -> String {
             .then(|| (fields[3].to_string(), fields[5].to_string()))
     };
     let fresh: std::collections::HashSet<_> = isolated.lines().filter_map(key).collect();
-    let mut text = catalogue_text();
-    for name in ["defect_pair_run12.csv", "defect_pair_run13.csv"] {
-        text.push_str(&std::fs::read_to_string(root.join(name)).unwrap_or_default());
-        text.push('\n');
-    }
-    let mut kept: String = text
+    let mut kept: String = recorded_rates()
         .lines()
         .filter(|line| key(line).is_none_or(|item| !fresh.contains(&item)))
         .flat_map(|line| [line, "\n"])
@@ -11501,24 +11511,49 @@ fn md_channel_jumps(temperature: f64) -> Option<f64> {
 /// and dumbbell axis is spontaneous in the fraction of its sites whose orbit
 /// recombines. The errors are the spread over draws of the translation,
 /// rotation and capture rates within their own errors.
-fn assemble_converged() {
+///
+/// With `recorded` the census is combined with the recorded rates instead,
+/// which separates the two changes. The recorded 300 and 500 K isolated
+/// rows carry no kappa error, so that variant has no draws.
+fn assemble_converged(recorded: bool) {
     let started = Instant::now();
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benchmarks");
     let census = std::fs::read_to_string(root.join("defect_pair_census.csv")).expect("census");
-    let rates = converged_rates();
-    let draws: usize = env_csv("RGSADDLE_DRAWS", "32")[0].parse().expect("draws");
+    let rates = if recorded {
+        recorded_rates()
+    } else {
+        converged_rates()
+    };
+    let (name, rates_note) = if recorded {
+        ("defect_pair_census_volume.csv", "recorded rates")
+    } else {
+        (
+            "defect_pair_converged_volume.csv",
+            "converged isolated rates",
+        )
+    };
+    let draws: usize = if recorded {
+        0
+    } else {
+        env_csv("RGSADDLE_DRAWS", "64")[0].parse().expect("draws")
+    };
     let mut out = String::from(
         "temperature_K,estimator,volume_over_Omega,sigma,spontaneous_sites,R_eff_A,demkowicz_8788,note\n",
     );
     for temperature in [300.0_f64, 500.0, 700.0] {
         let a = demkowicz_lattice(temperature);
         let fractions = census_fractions(&census, temperature);
-        let recombined: usize = fractions.values().map(|(caught, _)| caught).sum();
+        let recombined: usize = fractions.iter().map(|shell| shell.1).sum();
         let spontaneous = |id: &str| {
-            let radius = id.split('-').next().unwrap_or_default();
+            let radius: f64 = id
+                .split('-')
+                .next()
+                .and_then(|text| text.parse().ok())
+                .unwrap_or(f64::NAN);
             fractions
-                .get(radius)
-                .map(|(caught, sites)| *caught as f64 / *sites as f64)
+                .iter()
+                .find(|shell| (shell.0 - radius).abs() < 2.0e-3)
+                .map(|shell| shell.1 as f64 / shell.2 as f64)
                 .unwrap_or(0.0)
         };
         let (mut k_mig, mut mig_spread, mut mig_note) = (
@@ -11605,14 +11640,21 @@ fn assemble_converged() {
                 tau_cell,
             } = central;
             let common = format!(
-                "cutoff {cutoff:.1}; flow census; k_mig {k_mig:.4e} Hz {mig_note}; k_rot {k_rot:.4e} Hz; sigma from {draws} rate draws"
+                "cutoff {cutoff:.1}; flow census; {rates_note}; k_mig {k_mig:.4e} Hz {mig_note}; k_rot {k_rot:.4e} Hz; sigma from {draws} rate draws"
             );
-            out.push_str(&format!("{temperature},smoluchowski,{sphere:.4},{:.4},{spont_sites:.4},{r_eff:.4},{table},{common}; infinite crystal; chain R {chain_radius:.4}; D_graph {:.6}\n", spread[0], d_graph / 1.0e12));
-            out.push_str(&format!("{temperature},cell-decay,{decay_volume:.4},{:.4},{spont_sites:.4},{r_eff:.4},{table},{common}; slowest decay in the 13^3 cell\n", spread[1]));
-            out.push_str(&format!("{temperature},mean-time,{mean_volume:.4},{:.4},{spont_sites:.4},{r_eff:.4},{table},{common}; uniform-start mean time in the 13^3 cell {tau_cell:.6e} s\n", spread[2]));
+            let spread = spread.map(|sigma| {
+                if sigma.is_finite() {
+                    format!("{sigma:.4}")
+                } else {
+                    String::new()
+                }
+            });
+            out.push_str(&format!("{temperature},smoluchowski,{sphere:.4},{},{spont_sites:.4},{r_eff:.4},{table},{common}; infinite crystal; chain R {chain_radius:.4}; D_graph {:.6}\n", spread[0], d_graph / 1.0e12));
+            out.push_str(&format!("{temperature},cell-decay,{decay_volume:.4},{},{spont_sites:.4},{r_eff:.4},{table},{common}; slowest decay in the 13^3 cell\n", spread[1]));
+            out.push_str(&format!("{temperature},mean-time,{mean_volume:.4},{},{spont_sites:.4},{r_eff:.4},{table},{common}; uniform-start mean time in the 13^3 cell {tau_cell:.6e} s\n", spread[2]));
             out.push_str(&format!("{temperature},site-sum,{total:.4},{sigma:.4},{spont_sites:.4},,{table},{common}; sigma from the capture rates only\n"));
             eprintln!(
-                "converged {temperature} K R {cutoff:.1}: sphere {sphere:.2}±{:.2} cell {decay_volume:.2}±{:.2} mean {mean_volume:.2}±{:.2} site-sum {total:.2} R_eff {r_eff:.3} spontaneous {spont_sites:.2} at {:.1} min",
+                "converged {temperature} K R {cutoff:.1}: sphere {sphere:.2}±{} cell {decay_volume:.2}±{} mean {mean_volume:.2}±{} site-sum {total:.2} R_eff {r_eff:.3} spontaneous {spont_sites:.2} at {:.1} min",
                 spread[0],
                 spread[1],
                 spread[2],
@@ -11620,13 +11662,19 @@ fn assemble_converged() {
             );
         }
     }
-    std::fs::write(root.join("defect_pair_converged_volume.csv"), out).expect("volume");
+    std::fs::write(root.join(name), out).expect("volume");
 }
 
 #[test]
 #[ignore = "V_iv from the flow census and the converged isolated rates"]
 fn defect_pair_converged_volume() {
-    assemble_converged();
+    assemble_converged(false);
+}
+
+#[test]
+#[ignore = "V_iv from the flow census and the recorded rates"]
+fn defect_pair_census_volume() {
+    assemble_converged(true);
 }
 
 #[allow(clippy::too_many_arguments)]
