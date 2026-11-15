@@ -11123,7 +11123,6 @@ fn rate_volumes(
     cutoff: f64,
 ) -> RateVolumes {
     let omega = a * a * a / 4.0;
-    let thermal = temperature * rgsaddle::BOLTZMANN_EV_PER_K;
     let max_r = shells.last().map(|(radius, _, _)| *radius).unwrap_or(0.0);
     let jump = a / 2.0_f64.sqrt();
     let return_sites = return_layer_count(a, shells, max_r);
@@ -11149,6 +11148,51 @@ fn rate_volumes(
         &binding,
     );
     let k_rot = rotation_channel(rates, temperature).0 * scale.rotation;
+    let SphereVolumes {
+        d_graph,
+        r_eff,
+        sphere,
+        decay_volume,
+        mean_volume,
+        tau_cell,
+    } = sphere_volumes(chain_radius, max_r, a, temperature, k_mig, k_rot, field);
+    RateVolumes {
+        total,
+        sigma,
+        spont_sites,
+        chain_radius,
+        d_graph,
+        r_eff,
+        sphere,
+        decay_volume,
+        mean_volume,
+        tau_cell,
+    }
+}
+
+/// The volumes one chain radius gives: the Debye-matched radius, its free
+/// sphere, and that radius as a sink in the 13³ cell where Table 1
+/// measures k.
+struct SphereVolumes {
+    d_graph: f64,
+    r_eff: f64,
+    sphere: f64,
+    decay_volume: f64,
+    mean_volume: f64,
+    tau_cell: f64,
+}
+
+fn sphere_volumes(
+    chain_radius: f64,
+    max_r: f64,
+    a: f64,
+    temperature: f64,
+    k_mig: f64,
+    k_rot: f64,
+    field: Option<&PairField>,
+) -> SphereVolumes {
+    let omega = a * a * a / 4.0;
+    let thermal = temperature * rgsaddle::BOLTZMANN_EV_PER_K;
     let d_graph = dumbbell_diffusivity(a, k_mig, k_rot).unwrap_or(f64::NAN);
     let nu = (2.0 / 3.0) * d_graph / (a * a);
     let n_atoms = 4.0 * (13usize * 13 * 13) as f64;
@@ -11171,11 +11215,7 @@ fn rate_volumes(
         }
         None => (f64::NAN, f64::NAN, f64::NAN),
     };
-    RateVolumes {
-        total,
-        sigma,
-        spont_sites,
-        chain_radius,
+    SphereVolumes {
         d_graph,
         r_eff,
         sphere,
@@ -13654,4 +13694,648 @@ fn dumbbell_network_matches_census_orbits() {
         .collect();
     census.sort();
     assert_eq!(orbits, census);
+}
+
+/// Saddle and state energies of one temperature of
+/// `defect_pair_network.csv`. A hop's saddle is the verified dimer saddle,
+/// else the highest image of a band of at most 0.02 eV/Å whose relaxed
+/// product is the hop's target; `band` names the hops that used the band.
+struct NetworkInputs {
+    saddles: std::collections::HashMap<String, f64>,
+    band: std::collections::HashSet<String>,
+    states: std::collections::HashMap<String, f64>,
+    isolated: [f64; 2],
+    rows: usize,
+}
+
+fn network_inputs(
+    text: &str,
+    temperature: f64,
+    group: &[rgsaddle::Mat3i],
+    spontaneous: &std::collections::HashSet<String>,
+) -> NetworkInputs {
+    let mut inputs = NetworkInputs {
+        saddles: Default::default(),
+        band: Default::default(),
+        states: Default::default(),
+        isolated: [f64::NAN; 2],
+        rows: 0,
+    };
+    let parse_config = |label: &str| -> Option<rgsaddle::PairConfig> {
+        let (offset, orientation) = label.split_once(':')?;
+        let offset: Vec<i32> = offset
+            .split('_')
+            .map(|c| c.parse().ok())
+            .collect::<Option<_>>()?;
+        let orientation: Vec<i32> = orientation
+            .chars()
+            .map(|c| c.to_digit(10).map(|d| d as i32))
+            .collect::<Option<_>>()?;
+        (offset.len() == 3 && orientation.len() == 3).then(|| {
+            rgsaddle::PairConfig::new(
+                [offset[0], offset[1], offset[2]],
+                [orientation[0], orientation[1], orientation[2]],
+            )
+        })
+    };
+    for line in text.lines().skip(1) {
+        let fields: Vec<&str> = line.split(',').collect();
+        if fields.len() < 19 || fields[0].parse::<f64>().ok() != Some(temperature) {
+            continue;
+        }
+        inputs.rows += 1;
+        let number = |index: usize| fields[index].parse::<f64>().ok();
+        match (fields[2], fields[7]) {
+            ("state", "bound") => {
+                inputs
+                    .states
+                    .insert(fields[5].to_string(), number(9).expect("state energy"));
+            }
+            ("isolated", "connected") => {
+                let which = usize::from(fields[3] == "rotate");
+                inputs.isolated[which] = number(8).expect("isolated barrier");
+            }
+            ("hop", "connected") => {
+                inputs
+                    .saddles
+                    .insert(fields[4].to_string(), number(9).expect("saddle energy"));
+            }
+            ("hop", _) => {
+                let target_spontaneous = fields[6] == "contact" || spontaneous.contains(fields[6]);
+                let product = fields[14];
+                let lands = if target_spontaneous {
+                    product == "recombined"
+                } else {
+                    parse_config(product)
+                        .is_some_and(|config| config_label(config.canonical(group)) == fields[6])
+                };
+                if let (true, Some(force), Some(top)) = (lands, number(15), number(16))
+                    && force <= 0.02
+                {
+                    inputs.saddles.insert(fields[4].to_string(), top);
+                    inputs.band.insert(fields[4].to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    inputs
+}
+
+/// Spread of the barrier-shift model against the recorded near-shell PAFI
+/// rates. Each rated near-shell translation or capture row of a file is set
+/// against that file's isolated translation at the same temperature; the
+/// model predicts `ln(k/k_iso) = -(E0 - E0_iso)/kT`, PAFI gives
+/// `ln(nu/nu_iso) - (F - F_iso)/kT`. Returns the root mean square of the
+/// difference and the number of rows.
+fn barrier_shift_spread() -> (f64, usize) {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benchmarks");
+    let mut residuals = Vec::new();
+    for name in [
+        "defect_pair_capture.csv",
+        "defect_pair_finish.csv",
+        "defect_pair_local.csv",
+        "defect_pair_run11.csv",
+        "defect_pair_run9.csv",
+        "defect_pair_viv.csv",
+    ] {
+        let text = std::fs::read_to_string(root.join(name)).unwrap_or_default();
+        let rows: Vec<Vec<&str>> = text
+            .lines()
+            .map(|line| line.split(',').collect::<Vec<_>>())
+            .filter(|f| f.len() >= 13 && f[0] == "pafi" && f[12] == "rated")
+            .collect();
+        let values = |f: &[&str]| -> Option<(f64, f64, f64, f64)> {
+            Some((
+                f[5].parse().ok()?,
+                f[7].parse().ok()?,
+                f[8].parse().ok()?,
+                f[10].parse().ok()?,
+            ))
+        };
+        for row in &rows {
+            if row[1] == "isolated" || !(row[3].starts_with("translate") || row[3] == "capture") {
+                continue;
+            }
+            let Some((temperature, zero, free, nu)) = values(row) else {
+                continue;
+            };
+            let Some((_, zero_iso, free_iso, nu_iso)) = rows
+                .iter()
+                .filter(|f| f[1] == "isolated" && f[3] == "translate")
+                .filter_map(|f| values(f))
+                .find(|v| v.0 == temperature)
+            else {
+                continue;
+            };
+            let thermal = temperature * rgsaddle::BOLTZMANN_EV_PER_K;
+            let pafi = (nu / nu_iso).ln() - (free - free_iso) / thermal;
+            let model = -(zero - zero_iso) / thermal;
+            residuals.push(pafi - model);
+        }
+    }
+    let n = residuals.len();
+    let rms = (residuals.iter().map(|r| r * r).sum::<f64>() / n.max(1) as f64).sqrt();
+    (rms, n)
+}
+
+/// Rates of the per-vector network. `capture` multiplies every rate taken
+/// from a near-shell saddle; `mig` and `rot` scale the isolated channels.
+#[derive(Clone, Copy)]
+struct NetworkScale {
+    mig: f64,
+    rot: f64,
+    capture: f64,
+}
+
+/// One per-vector volume and what built it.
+struct NetworkVolumes {
+    total: f64,
+    spont_sites: f64,
+    chain_radius: f64,
+    max_r: f64,
+    states: usize,
+    explicit_edges: usize,
+    band_edges: usize,
+    elastic_edges: usize,
+    fallback_edges: usize,
+    sphere: SphereVolumes,
+}
+
+/// The per-vector absorbing chain at one cutoff. Inside the census radius
+/// every state is spontaneous or bound from the census, and with `explicit`
+/// each hop out of a bound state there runs at
+/// `k_kind exp(-(E_saddle - E_state - E0_kind)/kT)`, `E0_kind` the isolated
+/// barrier in the same cell. Any other hop runs at `k_kind` times half the
+/// change of the vector- and orientation-resolved dipole interaction,
+/// `exp(-(E_b(to) - E_b(from))/2kT)`. With `matched` the chain is matched
+/// to the field-free crystal outside the cutoff by
+/// [`rgsaddle::matched_capture_radius`] over the sites within one
+/// nearest-neighbour distance of it, and that radius is the chain radius.
+/// Without it, hops past the cutoff enter the return layer of
+/// [`rgsaddle::embed_sphere_return`] and come back to their source, and
+/// the chain radius is the site-weighted median of `P r` over the sites
+/// past 8 Å and 0.55 of the cutoff, as the lumped model takes it.
+#[allow(clippy::too_many_arguments)]
+fn network_volumes(
+    network: &rgsaddle::PairNetwork,
+    group: &[rgsaddle::Mat3i],
+    spontaneous: &std::collections::HashSet<String>,
+    explicit: Option<&NetworkInputs>,
+    field: &PairField,
+    temperature: f64,
+    a: f64,
+    k_mig: f64,
+    k_rot: f64,
+    scale: NetworkScale,
+    matched: bool,
+) -> NetworkVolumes {
+    let omega = a * a * a / 4.0;
+    let thermal = temperature * rgsaddle::BOLTZMANN_EV_PER_K;
+    let half = 0.5 * a;
+    let radius_of = |config: rgsaddle::PairConfig| {
+        half * (rgsaddle::pair_network::norm2(config.offset) as f64).sqrt()
+    };
+    let binding = |config: rgsaddle::PairConfig| -> f64 {
+        let radius = radius_of(config);
+        if radius <= 0.0 {
+            return 0.0;
+        }
+        let direction = config.offset.map(|c| half * c as f64 / radius);
+        let which = config.orientation.iter().position(|c| *c != 0).unwrap_or(0);
+        field.interaction(radius, direction, which)
+    };
+    let is_spontaneous = |i: usize| {
+        let config = network.states[i].config;
+        rgsaddle::pair_network::norm2(config.offset) <= EXPLICIT_NORM2
+            && spontaneous.contains(&state_miller(config, group))
+    };
+    let counts = std::cell::Cell::new([0usize; 4]);
+    let tally = |slot: usize| {
+        let mut value = counts.get();
+        value[slot] += 1;
+        counts.set(value);
+    };
+    let rate = |i: usize, edge: &rgsaddle::PairEdge| -> f64 {
+        let hop = &network.hops[edge.hop];
+        let rotation = hop.kind == "rotate";
+        let base = if rotation {
+            k_rot * scale.rot
+        } else {
+            k_mig * scale.mig
+        };
+        let source = network.states[i].config;
+        let inside = rgsaddle::pair_network::norm2(source.offset) <= EXPLICIT_NORM2
+            && match edge.target {
+                rgsaddle::PairTarget::State(j) => {
+                    rgsaddle::pair_network::norm2(network.states[j].config.offset) <= EXPLICIT_NORM2
+                }
+                rgsaddle::PairTarget::Contact => true,
+                rgsaddle::PairTarget::Outside => false,
+            };
+        if inside && let Some(inputs) = explicit {
+            let label = hop_label(hop);
+            let reference = inputs.isolated[usize::from(rotation)];
+            if let (Some(saddle), Some(state), true) = (
+                inputs.saddles.get(&label),
+                inputs.states.get(&network.id(i)),
+                reference.is_finite(),
+            ) {
+                tally(usize::from(inputs.band.contains(&label)));
+                let barrier = (saddle - state).max(0.0);
+                return base * scale.capture * (-(barrier - reference) / thermal).exp();
+            }
+            tally(3);
+        } else {
+            tally(2);
+        }
+        let shift = match edge.target {
+            rgsaddle::PairTarget::Contact => 0.0,
+            _ => 0.5 * (binding(edge.config) - binding(source)),
+        };
+        base * (-shift / thermal).exp()
+    };
+    let (sites, exits) = network
+        .sites(&is_spontaneous, &rate)
+        .expect("network sites");
+    let max_r = network
+        .states
+        .iter()
+        .map(|state| radius_of(state.config))
+        .fold(0.0, f64::max);
+    let radius: std::collections::HashMap<String, f64> = (0..network.states.len())
+        .map(|i| (network.id(i), radius_of(network.states[i].config)))
+        .collect();
+    let (solved, chain_radius) = if matched {
+        let outer: Vec<(String, f64)> = radius
+            .iter()
+            .filter(|(_, r)| **r >= max_r - a / 2.0_f64.sqrt())
+            .map(|(id, r)| (id.clone(), *r))
+            .collect();
+        let hops: Vec<rgsaddle::OuterHop> = exits
+            .iter()
+            .map(|exit| rgsaddle::OuterHop {
+                source: exit.source.clone(),
+                rate: exit.rate,
+                distance: half * (exit.norm2 as f64).sqrt(),
+            })
+            .collect();
+        let found =
+            rgsaddle::matched_capture_radius(&sites, &hops, &outer, omega).expect("matched chain");
+        (found.volume, found.radius)
+    } else {
+        let landings: Vec<rgsaddle::SphereLanding> = exits
+            .iter()
+            .map(|exit| rgsaddle::SphereLanding {
+                source: exit.source.clone(),
+                boundary: exit.source.clone(),
+                rate: exit.rate,
+                distance: half * (exit.norm2 as f64).sqrt(),
+            })
+            .collect();
+        let embedded =
+            rgsaddle::embed_sphere_return(&sites, max_r, &landings).expect("return layer");
+        let solved = rgsaddle::kinetic_recombination_volume(&embedded, omega).expect("volume");
+        let mut band: Vec<(f64, f64)> = solved
+            .placements
+            .iter()
+            .filter_map(|place| {
+                let r = *radius.get(&place.id)?;
+                (r >= 8.0 && r >= 0.55 * max_r).then_some((place.probability * r, place.count))
+            })
+            .collect();
+        band.sort_by(|l, r| l.0.total_cmp(&r.0));
+        let weight: f64 = band.iter().map(|item| item.1).sum();
+        let mut running = 0.0;
+        let chain_radius = band
+            .iter()
+            .find(|item| {
+                running += item.1;
+                running >= 0.5 * weight
+            })
+            .map_or(f64::NAN, |item| item.0);
+        (solved, chain_radius)
+    };
+    let [explicit_edges, band_edges, elastic_edges, fallback_edges] = counts.get();
+    NetworkVolumes {
+        total: solved.total_sites,
+        spont_sites: solved.spontaneous_sites,
+        chain_radius,
+        max_r,
+        states: network.states.len(),
+        explicit_edges,
+        band_edges,
+        elastic_edges,
+        fallback_edges,
+        sphere: sphere_volumes(
+            chain_radius,
+            max_r,
+            a,
+            temperature,
+            k_mig * scale.mig,
+            k_rot * scale.rot,
+            Some(field),
+        ),
+    }
+}
+
+/// Standard deviation of each of the three volumes over `samples`.
+fn draw_spread(samples: &[[f64; 3]]) -> [f64; 3] {
+    let n = samples.len();
+    if n < 2 {
+        return [f64::NAN; 3];
+    }
+    std::array::from_fn(|which| {
+        let mean = samples.iter().map(|s| s[which]).sum::<f64>() / n as f64;
+        (samples
+            .iter()
+            .map(|s| (s[which] - mean).powi(2))
+            .sum::<f64>()
+            / (n - 1) as f64)
+            .sqrt()
+    })
+}
+
+fn blank_or(value: f64) -> String {
+    if value.is_finite() {
+        format!("{value:.4}")
+    } else {
+        String::new()
+    }
+}
+
+/// V_iv from the per-vector network: the flow census, the converged
+/// isolated rates, and the near-shell saddles of `defect_pair_network.csv`.
+/// The errors are the spread over the 64 draws of the isolated translation
+/// and rotation rates within their own errors and a common factor
+/// `exp(z sigma)` on every near-shell rate, `sigma` from
+/// [`barrier_shift_spread`]. At the 30 Å cutoff the change from the
+/// recorded converged-campaign volume is split into four steps: the
+/// lumped model without its near-shell rows; the per-vector network with
+/// dipole-biased rates only and the lumped model's return layer and chain
+/// radius; the same network matched to the crystal outside the cutoff;
+/// and the matched network with the near-shell saddles.
+fn assemble_network() {
+    let started = Instant::now();
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benchmarks");
+    let census = std::fs::read_to_string(root.join("defect_pair_census.csv")).expect("census");
+    let saddles = std::fs::read_to_string(root.join("defect_pair_network.csv")).expect("network");
+    let before =
+        std::fs::read_to_string(root.join("defect_pair_converged_volume.csv")).expect("before");
+    let rates = converged_rates();
+    let isolated_only: String = rates
+        .lines()
+        .filter(|line| line.split(',').nth(1) == Some("isolated"))
+        .flat_map(|line| [line, "\n"])
+        .collect();
+    let draws: usize = env_csv("RGSADDLE_DRAWS", "64")[0].parse().expect("draws");
+    let (model_sigma, model_rows) = barrier_shift_spread();
+    let group = rgsaddle::cubic_group();
+    let (_, explicit_network) = dumbbell_network(EXPLICIT_NORM2);
+    eprintln!("barrier-shift spread {model_sigma:.4} in ln k over {model_rows} PAFI rows");
+    let mut out = String::from(
+        "temperature_K,estimator,volume_over_Omega,sigma,spontaneous_sites,R_eff_A,demkowicz_8788,note\n",
+    );
+    for temperature in [300.0_f64, 500.0, 700.0] {
+        let a = demkowicz_lattice(temperature);
+        let half = 0.5 * a;
+        let spontaneous = census_spontaneous(&census, temperature);
+        let spontaneous_ids: std::collections::HashSet<String> = (0..explicit_network.states.len())
+            .filter(|i| {
+                spontaneous.contains(&state_miller(explicit_network.states[*i].config, &group))
+            })
+            .map(|i| explicit_network.id(i))
+            .collect();
+        let inputs = network_inputs(&saddles, temperature, &group, &spontaneous_ids);
+        let (mut k_mig, mut mig_spread, mut mig_note) = (
+            migration_rate(&rates, temperature).unwrap_or(f64::NAN),
+            isolated_spread(&rates, "translate", temperature).unwrap_or(f64::NAN),
+            "PAFI translation",
+        );
+        if pafi_kappa_unresolved(&rates, temperature)
+            && let Some(measured) = md_channel_rate(temperature)
+        {
+            k_mig = measured;
+            mig_spread = md_channel_jumps(temperature).map_or(f64::NAN, |n| 1.0 / n.sqrt());
+            mig_note = "direct-MD channel rate (PAFI kappa unresolved)";
+        }
+        let rot_spread = isolated_spread(&rates, "rotate", temperature).unwrap_or(0.0);
+        let (k_rot, _) = rotation_channel(&rates, temperature);
+        let copper = FastCopper::new();
+        let field = pair_field(&copper, a).expect("pair field relaxation");
+        let table = match temperature as i32 {
+            300 => "254-286",
+            500 => "161-185",
+            700 => "203-210",
+            _ => "",
+        };
+        eprintln!(
+            "network {temperature} K: k_mig {k_mig:.4e} ({mig_note}, sigma {mig_spread:.3}); k_rot {k_rot:.4e} (sigma {rot_spread:.3}); {} saddles ({} from the band), {} bound states, isolated E0 {:.6}/{:.6} eV",
+            inputs.saddles.len(),
+            inputs.band.len(),
+            inputs.states.len(),
+            inputs.isolated[0],
+            inputs.isolated[1]
+        );
+        let mut rng = TinyRng(0x5eed_0000 + temperature as u64);
+        let shifts: Vec<[f64; 3]> = (0..draws)
+            .map(|_| [rng.gauss(), rng.gauss(), rng.gauss()])
+            .collect();
+        let scale_of = |z: &[f64; 3]| NetworkScale {
+            mig: (z[0] * mig_spread).exp(),
+            rot: (z[1] * rot_spread).exp(),
+            capture: (z[2] * model_sigma).exp(),
+        };
+        let unit = NetworkScale {
+            mig: 1.0,
+            rot: 1.0,
+            capture: 1.0,
+        };
+        let solve = |network: &rgsaddle::PairNetwork,
+                     explicit: bool,
+                     scale: NetworkScale,
+                     matched: bool| {
+            network_volumes(
+                network,
+                &group,
+                &spontaneous,
+                explicit.then_some(&inputs),
+                &field,
+                temperature,
+                a,
+                k_mig,
+                k_rot,
+                scale,
+                matched,
+            )
+        };
+        let spread_of = |network: &rgsaddle::PairNetwork, explicit: bool| {
+            let samples: Vec<[f64; 3]> = shifts
+                .par_iter()
+                .map(|z| {
+                    let varied = solve(network, explicit, scale_of(z), true).sphere;
+                    [varied.sphere, varied.decay_volume, varied.mean_volume]
+                })
+                .collect();
+            draw_spread(&samples)
+        };
+        let common = format!(
+            "per-vector network; flow census; near-shell saddles of defect_pair_network.csv; k_mig {k_mig:.4e} Hz {mig_note}; k_rot {k_rot:.4e} Hz; sigma from {draws} draws (translation, rotation, near-shell factor sigma {model_sigma:.4})"
+        );
+        let mut at_30 = None;
+        for cutoff in [10.8_f64, 14.0, 18.0, 22.0, 26.0, 30.0] {
+            let max_norm2 = ((cutoff / half).powi(2) + 1.0e-6).floor() as i64;
+            let (_, network) = dumbbell_network(max_norm2);
+            let central = solve(&network, true, unit, true);
+            let spread = spread_of(&network, true).map(blank_or);
+            let SphereVolumes {
+                d_graph,
+                r_eff,
+                sphere,
+                decay_volume,
+                mean_volume,
+                tau_cell,
+            } = central.sphere;
+            let spont = central.spont_sites;
+            let detail = format!(
+                "cutoff {cutoff:.1}; {common}; {} states to {:.4} A; edges {} saddle {} band {} dipole {} fallback; chain R {:.4}",
+                central.states,
+                central.max_r,
+                central.explicit_edges,
+                central.band_edges,
+                central.elastic_edges,
+                central.fallback_edges,
+                central.chain_radius
+            );
+            out.push_str(&format!("{temperature},smoluchowski,{sphere:.4},{},{spont:.4},{r_eff:.4},{table},{detail}; infinite crystal; D_graph {:.6}\n", spread[0], d_graph / 1.0e12));
+            out.push_str(&format!("{temperature},cell-decay,{decay_volume:.4},{},{spont:.4},{r_eff:.4},{table},{detail}; slowest decay in the 13^3 cell\n", spread[1]));
+            out.push_str(&format!("{temperature},mean-time,{mean_volume:.4},{},{spont:.4},{r_eff:.4},{table},{detail}; uniform-start mean time in the 13^3 cell {tau_cell:.6e} s\n", spread[2]));
+            out.push_str(&format!(
+                "{temperature},site-sum,{:.4},,{spont:.4},,{table},{detail}\n",
+                central.total
+            ));
+            eprintln!(
+                "network {temperature} K R {cutoff:.1}: sphere {sphere:.2}±{} cell {decay_volume:.2}±{} mean {mean_volume:.2}±{} R_eff {r_eff:.3} states {} edges {}/{}/{}/{} at {:.1} min",
+                spread[0],
+                spread[1],
+                spread[2],
+                central.states,
+                central.explicit_edges,
+                central.band_edges,
+                central.elastic_edges,
+                central.fallback_edges,
+                started.elapsed().as_secs_f64() / 60.0
+            );
+            if cutoff == 30.0 {
+                at_30 = Some((network, central.sphere, spread));
+            }
+        }
+        let (network, explicit, explicit_spread) = at_30.expect("30 A cutoff");
+        let estimators = ["smoluchowski", "cell-decay", "mean-time"];
+        let recorded: Vec<(f64, String)> = estimators
+            .iter()
+            .map(|name| {
+                before
+                    .lines()
+                    .map(|line| line.split(',').collect::<Vec<_>>())
+                    .find(|f| {
+                        f.len() > 7
+                            && f[0].parse::<f64>().ok() == Some(temperature)
+                            && f[1] == *name
+                            && f[7].starts_with("cutoff 30.0;")
+                    })
+                    .map(|f| (f[2].parse().expect("volume"), f[3].to_string()))
+                    .expect("recorded volume at 30 A")
+            })
+            .collect();
+        let fractions = census_fractions(&census, temperature);
+        let lumped = rate_volumes(
+            &shell_table_within(a, 24, 30.0),
+            &|id: &str| {
+                let radius: f64 = id
+                    .split('-')
+                    .next()
+                    .and_then(|text| text.parse().ok())
+                    .unwrap_or(f64::NAN);
+                fractions
+                    .iter()
+                    .find(|shell| (shell.0 - radius).abs() < 2.0e-3)
+                    .map(|shell| shell.1 as f64 / shell.2 as f64)
+                    .unwrap_or(0.0)
+            },
+            RateScale::RECORDED,
+            &isolated_only,
+            temperature,
+            k_mig,
+            a,
+            Some(&field),
+            30.0,
+        );
+        let sphere_return = solve(&network, false, unit, false).sphere;
+        let elastic = solve(&network, false, unit, true).sphere;
+        let elastic_spread = spread_of(&network, false).map(blank_or);
+        let steps: [(&str, [f64; 3], [String; 3], &str); 5] = [
+            (
+                "before",
+                [recorded[0].0, recorded[1].0, recorded[2].0],
+                [
+                    recorded[0].1.clone(),
+                    recorded[1].1.clone(),
+                    recorded[2].1.clone(),
+                ],
+                "defect_pair_converged_volume.csv: lumped radius/axis states with the recorded near-shell capture, rotation, away and strain rows",
+            ),
+            (
+                "lumped-isolated",
+                [lumped.sphere, lumped.decay_volume, lumped.mean_volume],
+                [String::new(), String::new(), String::new()],
+                "the same lumped model with every near-shell row dropped: isolated rates and the orientation-averaged dipole bias",
+            ),
+            (
+                "vector-return",
+                [
+                    sphere_return.sphere,
+                    sphere_return.decay_volume,
+                    sphere_return.mean_volume,
+                ],
+                [String::new(), String::new(), String::new()],
+                "per-vector network; every hop at the isolated rate with the vector- and orientation-resolved dipole bias; return layer and median P r as in the lumped model",
+            ),
+            (
+                "vector-dipole",
+                [elastic.sphere, elastic.decay_volume, elastic.mean_volume],
+                elastic_spread,
+                "the same network matched to the field-free crystal outside the cutoff",
+            ),
+            (
+                "vector-saddles",
+                [explicit.sphere, explicit.decay_volume, explicit.mean_volume],
+                explicit_spread,
+                "the matched network with the 13^3 near-shell saddles inside the census radius",
+            ),
+        ];
+        for (step, values, spreads, note) in &steps {
+            for (which, name) in estimators.iter().enumerate() {
+                out.push_str(&format!(
+                    "{temperature},{step}:{name},{:.4},{},,,{table},cutoff 30.0; {note}\n",
+                    values[which], spreads[which]
+                ));
+            }
+            eprintln!(
+                "breakdown {temperature} K {step}: sphere {:.2} cell {:.2} mean {:.2}",
+                values[0], values[1], values[2]
+            );
+        }
+    }
+    std::fs::write(root.join("defect_pair_network_volume.csv"), out).expect("volume");
+    eprintln!(
+        "network assembly {:.1} min",
+        started.elapsed().as_secs_f64() / 60.0
+    );
+}
+
+#[test]
+#[ignore = "V_iv from the per-vector network with the near-shell saddles"]
+fn defect_pair_network_volume() {
+    assemble_network();
 }
