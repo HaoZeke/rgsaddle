@@ -7,9 +7,10 @@ use rgsaddle::{
     idpp_path,
 };
 
-/// Default-path digest of [`crossing`] at base main f2ded3bb, one and
-/// two image-evaluation threads, before the interpolant existed.
-const BASE_DIGEST: u64 = 0x9c05_29d3_d1f6_5e1d;
+/// Default-path digest of [`crossing`] on one and two image-evaluation
+/// threads: the path the band took before the interpolant existed, on
+/// rgmin 0.6.0's FIRE 2.0 (Guénolé 2020 integration order).
+const BASE_DIGEST: u64 = 0xf225_bed2_2612_2a93;
 
 /// Harmonic pair term on squared distances plus a flat-plane term on z.
 struct Pairs;

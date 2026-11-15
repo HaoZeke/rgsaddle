@@ -176,10 +176,10 @@ fn trajectory_hash(config: &BandConfig, n_images: usize, steps: usize) -> u64 {
 #[test]
 fn band_trajectories_match_the_allocating_assembly_bitwise() {
     let expected = [
-        ("cineb-uniform-fire", 0x80c7_3a0c_da8b_a09e),
-        ("neb-uniform-fire", 0xcb00_29a5_02ca_20b9),
-        ("dneb-weighted-fire", 0x0a11_786f_e60a_cd48),
-        ("peb-om-live-fire", 0x3b34_02d1_dec7_90d6),
+        ("cineb-uniform-fire", 0x8ad6_e8b5_7d78_d832),
+        ("neb-uniform-fire", 0x58b7_c2c4_f54b_fb79),
+        ("dneb-weighted-fire", 0x9c22_c0aa_946e_a6a4),
+        ("peb-om-live-fire", 0x6526_66c5_01bd_da06),
         ("cineb-uniform-quickmin", 0x2904_fa78_e5d2_b94f),
     ];
     let got: Vec<_> = configs()
