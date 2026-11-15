@@ -173,3 +173,103 @@ parent at 38 atoms, 1.04 (1.03-1.04) at 128 and 1.01 (1.00-1.02) at 256,
 and the dimer 1.03, 1.02 and 1.02, with 8 to 11 of 12 pairs won.
 At 256 atoms both searches converge at step 108, as they do on the
 parent.
+
+** Read a pt-island campaign miss
+
+The optbench pt-island campaign displaces the Pt island from its
+minimum, climbs, pushes off the saddle 0.2 along the mode on either
+side and minimizes both, as eOn's client does (Chill, Welborn,
+Terrell, Zhang, Berthet, Pedersen, Jónsson, and Henkelman, Modelling
+Simul. Mater. Sci. Eng. 22, 055002 (2014),
+doi:10.1088/0965-0393/22/5/055002; Goswami, Gunde, and Jónsson,
+Front. Chem. 14 (2026), doi:10.3389/fchem.2026.1807063; Goswami,
+arXiv:2510.21368 (2025)).
+Its goal is 27 distinct saddles under 1.5 eV that connect to the
+reactant.
+The driver files every other converged index-1 saddle under
+~divergence~: one whose endpoints both leave the reactant
+(disconnected), one 1.5 eV or more up, and a repeat (duplicate).
+None of these is a climb that ran away.
+~validation/benchmark/pt_island/export.py~ gives each search the first
+of disconnected, over 1.5 eV and duplicate that applies, and
+~wrong_stationary~ for a converged point of another index.
+
+A disconnected search is a saddle that does not border the reactant,
+not a bad push-off.
+~pushoff.py~ replays the first 100 catalog searches of each method and
+compares the mode the driver pushes off along with the lowest
+eigenvector of its central-difference Hessian.
+On develop f5eb736 the mode is a unit vector within 0.971 of that
+eigenvector on all 400, and pushing off along the eigenvector instead
+gives the same verdict on all 400.
+On 8fa0eb15 the verdicts of FIRE and rotation-skip agree on 198 of 199
+index-1 points, and the one that differs connects only along the
+session mode.
+For the dimer methods the largest atom displacement of a disconnected
+saddle from the reactant has median 2.6 to 3.6 A, against 1.8 to 1.9 A
+for a connected one.
+
+What changed the disconnected count is the dimer rotation history
+that 116b92e keeps across translations (=explanation=, the dimer of
+Henkelman and Jónsson, J. Chem. Phys. 111, 7010 (1999),
+doi:10.1063/1.480097).
+0.2.2 (2db34b42) and 8fa0eb15 lack it; develop has it from
+ef1fd64, a merge that main fast-forwards to.
+Over the first 40 searches rotation-skip leaves 31 disconnected on
+06c55c5, 16 with 116b92e on that base, 29 on 8fa0eb15 and 9 from
+ef1fd64 on (~validation/benchmark/pt_island/results/bisect.csv~).
+~pinned.py~ replays dimer FIRE searches 1, 2, 5 and 18 and
+rotation-skip search 62. It fails on 2db34b42 and 8fa0eb15, where FIRE
+1 reaches a 1.2 eV saddle between two other states and rotation-skip
+62 an index-3 point 16 A out, and passes on develop, where FIRE 1 is
+the 0.60 eV hop, FIRE 2 repeats it and rotation-skip 62 is an index-1
+saddle at 3.4 eV.
+FIRE 18 is disconnected on 8fa0eb15, on develop and in eOn.
+
+The table is the first 200 catalog searches (seed 20261016) on
+8fa0eb15 and then 2000 on develop f5eb736, from =results/main= and
+=results/develop= under ~validation/benchmark/pt_island~, with eOn 3.5.0's classic
+dimer and L-BFGS (conda-forge build 7ec1840) on the same starts,
+judged on optbench's surface by ~eon_catalog.py~.
+Connected counts the saddles toward the goal and unique the
+distinct connected saddles of any barrier.
+eOn's aborts are climbs past its 5 eV ~max_energy~.
+
+| Code | Method | Searches | Connected | Disconnected | Over 1.5 eV | Duplicate | Wrong stationary | eOn abort | Unique | Force calls per search |
+|---+---+---+---+---+---+---+---+---+---+---|
+| 8fa0eb15 | dimer FIRE | 200 | 15 | 84 | 36 | 65 | 0 | | 33 | 1020 |
+| 8fa0eb15 | dimer L-BFGS | 200 | 14 | 92 | 40 | 54 | 0 | | 31 | 472 |
+| 8fa0eb15 | rotation-skip | 200 | 11 | 134 | 30 | 23 | 2 | | 29 | 548 |
+| 8fa0eb15 | Lanczos L-BFGS | 200 | 10 | 8 | 19 | 163 | 0 | | 23 | 637 |
+| eOn | classic dimer | 200 | 13 | 65 | 29 | 59 | 0 | 34 | 26 | 482 |
+| f5eb736 | dimer FIRE | 2000 | 20 | 618 | 316 | 1045 | 0 | | 72 | 1049 |
+| f5eb736 | dimer L-BFGS | 2000 | 22 | 729 | 359 | 888 | 2 | | 86 | 460 |
+| f5eb736 | rotation-skip | 2000 | 23 | 721 | 388 | 868 | 0 | | 86 | 445 |
+| f5eb736 | Lanczos L-BFGS | 2000 | 17 | 63 | 177 | 1743 | 0 | | 56 | 620 |
+| eOn | classic dimer | 2000 | 23 | 622 | 286 | 659 | 0 | 410 | 62 | 463 |
+
+One FIRE search on f5eb736 stops short of an index-1 point.
+The first 200 of f5eb736 leave 56, 67, 65 and 8 disconnected for the
+four methods, against eOn's 65.
+eOn reaches the goal at search 5678, with 23 at search 1467 and 24 at
+3426.
+Force calls per search include both endpoint minimizations and not the
+Hessian of the index check.
+The wall seconds in =summary.csv= are the driver's whole search,
+Hessian included, on eight shared cores, and eOn's are its client
+alone.
+
+The Lanczos estimate (Olsen, Kroes, Henkelman, Arnaldsson, and
+Jónsson, J. Chem. Phys. 121, 9776 (2004), doi:10.1063/1.1809574)
+follows the lowest mode out of the basin to the nearest saddles:
+1729 of its 1743 duplicates are the 0.60, 0.62 and 0.99 eV hops, from
+epicentres spread 273 to 302 over the seven island atoms.
+The displacement is the host's and is eOn's: a random atom of the
+island and its neighbours within 3.3 A, each search drawing in turn
+from one generator seeded with the campaign seed.
+On the first 200 starts eOn's Lanczos repeats the 0.60 and 0.62 eV hops
+in 157 of its 171 connected repeats (=searches_eon_lanczos.csv=).
+
+~validation/benchmark/pt_island/campaign.py~ runs a method;
+~OPTBENCH_ROOT~ names an optbench checkout (18fa13dca), ~RGSADDLE_LIB~
+the library and ~RGSADDLE_SRC~ its source.

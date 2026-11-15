@@ -1,0 +1,4 @@
+~validation/benchmark/pt_island~ runs the optbench pt-island catalog campaign for the four min-mode methods and eOn's classic dimer on the same starts, and keeps the per-search and summary CSVs.
+On develop no search diverges: the misses are disconnected, over-1.5 eV or repeated index-1 saddles, as eOn's are.
+~pinned.py~ replays dimer FIRE searches 1, 2, 5 and 18 and rotation-skip search 62, which fail on 0.2.2 and 8fa0eb15 and pass once the dimer keeps its rotation history across translations (116b92e).
+~tests/minmode_pushoff.rs~ checks that the mode a converged search reports is the unit lowest eigenvector and pushes off into both basins.
