@@ -53,6 +53,7 @@ pub mod nichols;
 pub mod ocineb;
 pub mod prfo;
 pub mod projection;
+pub mod site_occupancy;
 pub mod solid_dimer;
 pub mod solid_state;
 pub mod spring;
@@ -102,6 +103,7 @@ pub use ocineb::{
 };
 pub use prfo::{PrfoKind, partitioned_rfo_eigen, restricted_prfo_displacement};
 pub use projection::ProjectionKind;
+pub use site_occupancy::{Occupancy, Persistence, SiteOccupancy, centroid};
 pub use solid_dimer::{
     CellMask, IndexCheck, IndexReport, JointChart, STRAIN_VOIGT, SolidDimer, SolidDimerConfig,
     SolidDimerReport, finite_difference_cauchy_stress, index_at, virial,
