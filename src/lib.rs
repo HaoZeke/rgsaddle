@@ -55,10 +55,12 @@ pub mod idpp;
 pub mod indexk;
 pub mod minmode;
 pub mod nichols;
+pub mod occupancy;
 pub mod ocineb;
 pub mod pafi;
 pub mod prfo;
 pub mod projection;
+pub mod relax;
 pub mod solid_dimer;
 pub mod solid_state;
 pub mod spring;
@@ -116,6 +118,7 @@ pub use nichols::{
     HessianUpdate, Index1Config, Index1Report, Index1Session, Index1Status, NicholsMode,
     bofill_update, cap_max_abs, nichols_displacement, nichols_step, powell_update,
 };
+pub use occupancy::{SiteOccupancy, site_occupancy};
 pub use ocineb::{
     MIN_ALIGNMENT, OcinebConfig, OcinebPhase, OcinebReport, OcinebSession, OcinebStatus,
     backoff_threshold, initial_threshold, mode_alignment, should_trigger, success_threshold,
@@ -127,6 +130,10 @@ pub use pafi::{
 };
 pub use prfo::{PrfoKind, partitioned_rfo_eigen, restricted_prfo_displacement};
 pub use projection::ProjectionKind;
+pub use relax::{
+    DEFAULT_FORCE_TOL, DEFAULT_MAX_STEPS, RelaxConfig, Relaxation, max_atom_force,
+    relax_to_tolerance,
+};
 pub use solid_dimer::{
     CellMask, IndexCheck, IndexReport, JointChart, STRAIN_VOIGT, SolidDimer, SolidDimerConfig,
     SolidDimerReport, finite_difference_cauchy_stress, index_at, virial,

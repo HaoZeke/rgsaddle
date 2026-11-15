@@ -1,0 +1,6 @@
+~relax_to_tolerance~ relaxes a configuration in a fixed cell until the largest per-atom force norm is below ~RelaxConfig::force_tol~ (~DEFAULT_FORCE_TOL~, 1e-3 in the surface's force unit).
+The step cap ~RelaxConfig::max_steps~ (~DEFAULT_MAX_STEPS~, 10000) is reported as ~SaddleError::Solver~ naming the steps taken and the force reached, never returned as a geometry.
+~RelaxConfig~ is built from ~Default~ with ~with_method~, ~with_force_tol~, ~with_max_steps~, ~with_max_atom_move~ and ~with_initial_step~; any ~rgmin::Method~ a session steps can be used, FIRE 2.0 by default.
+When the basin a start falls into is the result, ~Method::Ode12r~ follows the steepest-descent flow; FIRE and L-BFGS can converge into different basins from the same start.
+~site_occupancy~ assigns every atom to its nearest reference site under the minimum image and returns ~SiteOccupancy~ with the vacancies, the crowded sites and ~is_perfect~, the Wigner–Seitz defect count of Nordlund et al., Phys. Rev. B 57, 7556 (1998).
+Neither knows what material or defect it is given.
