@@ -101,7 +101,7 @@ impl RelaxConfig {
         self
     }
 
-    fn check(&self) -> Result<(), SaddleError> {
+    pub(crate) fn check(&self) -> Result<(), SaddleError> {
         if !(self.force_tol.is_finite() && self.force_tol > 0.0) {
             return Err(SaddleError::Invalid(
                 "relaxation force tolerance must be finite and positive".into(),

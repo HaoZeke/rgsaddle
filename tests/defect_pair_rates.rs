@@ -76,10 +76,11 @@ fn control_config() -> DefectPairConfig {
         images: 5,
         max_dimer_steps: 40,
         max_band_steps: 30,
-        max_relax_steps: 20,
-        relax_tol: 1.0e-4,
-        relax_step: 0.05,
-        max_move: 0.05,
+        relax: rgsaddle::RelaxConfig::default()
+            .with_method(rgmin::Method::Ode12r)
+            .with_force_tol(1.0e-4)
+            .with_initial_step(0.05)
+            .with_max_atom_move(0.05),
         seed_fraction: 0.35,
         push: 0.2,
         connect_rmsd: 0.15,
