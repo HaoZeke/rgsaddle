@@ -2800,13 +2800,32 @@ fn cart_of(key: (i32, i32, i32), a: f64) -> [f64; 3] {
 }
 
 /// Zero-pressure lattice parameter of the Mishin crystal.
-///
-/// Langevin dynamics plus a Berendsen barostat. The stress this EAM
-/// returns is tension-positive, so a compressed cell (negative trace)
-/// is expanded. The average is the second half of the run.
 fn npt_lattice(copper: &FastCopper, temperature: f64) -> f64 {
-    let repeats = 6usize;
+    npt_lattice_run(copper, temperature, 6, 4000).mean
+}
+
+struct NptLattice {
+    mean: f64,
+    /// Standard error of `mean` from eight blocks of the averaged half.
+    error: f64,
+    /// Mean total pressure over the averaged half, eV/Å³.
+    pressure: f64,
+}
+
+/// Langevin dynamics plus a Berendsen barostat on the total pressure.
+///
+/// The stress this EAM returns is the configurational part, tension
+/// positive; the barostat subtracts the kinetic pressure N k_B T / V from
+/// it, so a cell expands while the sum is compressive. The average is the
+/// second half of the run.
+fn npt_lattice_run(
+    copper: &FastCopper,
+    temperature: f64,
+    repeats: usize,
+    steps: usize,
+) -> NptLattice {
     let (mut positions, mut cell) = fcc(repeats, 3.615);
+    let atoms = (positions.len() / 3) as f64;
     let thermal = rgsaddle::BOLTZMANN_EV_PER_K * temperature;
     let omega = rgsaddle::angular_scale_rad_s();
     let dt = 2.0e-15 * omega;
@@ -2821,9 +2840,8 @@ fn npt_lattice(copper: &FastCopper, temperature: f64) -> f64 {
     zero_mean(&mut velocity);
     let beta = 1.0 / 0.87;
     let tau = 0.5e-12 * omega;
-    let steps = 4000usize;
-    let mut sum = 0.0;
-    let mut count = 0.0;
+    let mut samples = Vec::with_capacity(steps / 2 + 1);
+    let mut pressure_sum = 0.0;
     for step in 0..steps {
         let (_, gradient, _) = copper.evaluate(positions.view(), cell);
         velocity = &velocity + &(&gradient * (-0.5 * dt / mass));
@@ -2837,7 +2855,8 @@ fn npt_lattice(copper: &FastCopper, temperature: f64) -> f64 {
         positions = &positions + &(&velocity * (0.5 * dt));
         let (_, gradient, stress) = copper.evaluate(positions.view(), cell);
         velocity = &velocity + &(&gradient * (-0.5 * dt / mass));
-        let hydro = (stress[0][0] + stress[1][1] + stress[2][2]) / 3.0;
+        let volume = cell[0][0] * cell[1][1] * cell[2][2];
+        let hydro = (stress[0][0] + stress[1][1] + stress[2][2]) / 3.0 - atoms * thermal / volume;
         let mu = (1.0 - beta * dt / tau * hydro).clamp(0.995, 1.005);
         let scale = mu.cbrt();
         positions *= scale;
@@ -2853,11 +2872,74 @@ fn npt_lattice(copper: &FastCopper, temperature: f64) -> f64 {
             );
         }
         if step >= steps / 2 {
-            sum += cell[0][0] / repeats as f64;
-            count += 1.0;
+            samples.push(cell[0][0] / repeats as f64);
+            pressure_sum -= hydro;
         }
     }
-    sum / count
+    let count = samples.len() as f64;
+    let mean = samples.iter().sum::<f64>() / count;
+    let blocks = 8usize;
+    let width = samples.len() / blocks;
+    let block_means: Vec<f64> = (0..blocks)
+        .map(|block| {
+            samples[block * width..(block + 1) * width]
+                .iter()
+                .sum::<f64>()
+                / width as f64
+        })
+        .collect();
+    let spread = block_means
+        .iter()
+        .map(|value| (value - mean).powi(2))
+        .sum::<f64>();
+    NptLattice {
+        mean,
+        error: (spread / (blocks * (blocks - 1)) as f64).sqrt(),
+        pressure: pressure_sum / count,
+    }
+}
+
+/// Zero-pressure lattice constants for `examples/langevin_nvt.rs`.
+#[test]
+#[ignore = "release zero-pressure Mishin lattice; writes validation/direct_md_lattice.csv"]
+fn direct_md_lattice() {
+    let repeats = env_usize("RGSADDLE_NPT_REPEATS", 8);
+    let steps = env_usize("RGSADDLE_NPT_STEPS", 40_000);
+    let temperatures = [300.0, 400.0, 500.0, 600.0, 700.0];
+    let copper = FastCopper::new();
+    let rows: Vec<(f64, NptLattice)> = temperatures
+        .par_iter()
+        .map(|temperature| {
+            (
+                *temperature,
+                npt_lattice_run(&copper, *temperature, repeats, steps),
+            )
+        })
+        .collect();
+    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.push("validation");
+    path.push("direct_md_lattice.csv");
+    let mut csv = File::create(&path).expect("lattice csv");
+    writeln!(
+        csv,
+        "temperature_K,a_A,a_error_A,mean_pressure_GPa,repeats,steps,dt_fs"
+    )
+    .unwrap();
+    for (temperature, row) in &rows {
+        assert!(
+            (3.50..3.85).contains(&row.mean),
+            "{temperature} K: {}",
+            row.mean
+        );
+        writeln!(
+            csv,
+            "{temperature:.0},{:.6},{:.6},{:.4},{repeats},{steps},2",
+            row.mean,
+            row.error,
+            row.pressure * 160.217_663
+        )
+        .unwrap();
+    }
 }
 
 #[derive(Clone)]
