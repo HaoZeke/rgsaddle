@@ -543,11 +543,8 @@ impl EnergyGradient for MishinCu {
         let skin = 1.0;
         if orthogonal && lengths.iter().all(|length| *length > 2.0 * (RC + skin)) {
             if self.list_stale(positions, lengths, skin) {
-                self.pairs.clear();
-                self.pairs_cell(positions, lengths, RC + skin);
                 self.neigh.clear();
-                self.neigh
-                    .extend(self.pairs.iter().map(|bond| (bond.i, bond.j)));
+                self.pairs_cell(positions, lengths, RC + skin, true);
                 self.anchor.clear();
                 self.anchor.extend_from_slice(positions);
                 self.pairs.clear();
@@ -558,7 +555,7 @@ impl EnergyGradient for MishinCu {
             self.anchor.clear();
             self.neigh.clear();
             if orthogonal {
-                self.pairs_cell(positions, lengths, RC);
+                self.pairs_cell(positions, lengths, RC, false);
             } else {
                 self.pairs_images(positions, cell);
             }
@@ -641,23 +638,27 @@ impl MishinCu {
     fn pairs_from_list(&mut self, positions: &[f64], lengths: [f64; 3]) {
         self.pairs.clear();
         let cutoff2 = RC * RC;
-        let neigh = self.neigh.clone();
+        let inverse = lengths.map(|length| 1.0 / length);
+        let neigh = std::mem::take(&mut self.neigh);
         for &(left, right) in &neigh {
             let i = left as usize;
             let j = right as usize;
             let mut d = [0.0; 3];
             for axis in 0..3 {
                 d[axis] = positions[3 * j + axis] - positions[3 * i + axis];
-                d[axis] -= lengths[axis] * (d[axis] / lengths[axis]).round();
+                d[axis] -= lengths[axis] * (d[axis] * inverse[axis]).round();
             }
             let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
             if r2 > 1.0e-16 && r2 < cutoff2 {
                 self.push_pair(i, j, d, r2.sqrt());
             }
         }
+        self.neigh = neigh;
     }
 
-    fn pairs_cell(&mut self, positions: &[f64], lengths: [f64; 3], cutoff: f64) {
+    /// Every pair inside `cutoff` in cell-list order. `list_only` appends the
+    /// index pairs to the Verlet list instead of sampling them into `pairs`.
+    fn pairs_cell(&mut self, positions: &[f64], lengths: [f64; 3], cutoff: f64, list_only: bool) {
         let n = positions.len() / 3;
         // With two bins along an axis the +1 and -1 neighbours are the same
         // bin and the half stencil visits its pairs twice; one bin is exact.
@@ -699,6 +700,7 @@ impl MishinCu {
             cursor[bin] += 1;
         }
         let cutoff2 = cutoff * cutoff;
+        let inverse = lengths.map(|length| 1.0 / length);
         for slot_i in 0..n {
             let i = self.order[slot_i] as usize;
             let ri = self.packed[slot_i];
@@ -729,11 +731,15 @@ impl MishinCu {
                     let rj = self.packed[slot];
                     let mut d = [rj[0] - ri[0], rj[1] - ri[1], rj[2] - ri[2]];
                     for axis in 0..3 {
-                        d[axis] -= lengths[axis] * (d[axis] / lengths[axis]).round();
+                        d[axis] -= lengths[axis] * (d[axis] * inverse[axis]).round();
                     }
                     let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
                     if r2 > 1.0e-16 && r2 < cutoff2 {
-                        self.push_pair(i, j, d, r2.sqrt());
+                        if list_only {
+                            self.neigh.push((i as u32, j as u32));
+                        } else {
+                            self.push_pair(i, j, d, r2.sqrt());
+                        }
                     }
                 }
             }
