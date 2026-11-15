@@ -659,7 +659,12 @@ impl MishinCu {
 
     fn pairs_cell(&mut self, positions: &[f64], lengths: [f64; 3], cutoff: f64) {
         let n = positions.len() / 3;
-        let nside = lengths.map(|length| ((length / cutoff).floor() as i32).max(1));
+        // With two bins along an axis the +1 and -1 neighbours are the same
+        // bin and the half stencil visits its pairs twice; one bin is exact.
+        let nside = lengths.map(|length| match (length / cutoff).floor() as i32 {
+            count if count >= 3 => count,
+            _ => 1,
+        });
         let bins_n = (nside[0] * nside[1] * nside[2]) as usize;
         self.counts.clear();
         self.counts.resize(bins_n, 0);
@@ -2958,6 +2963,24 @@ mod tests {
         let (positions, cell) = place_vacancy_dumbbell(13, a, shells[0].1, [0.0, 0.0, 1.0]);
         assert_eq!(positions.len() / 3, 8788);
         assert!(coordination_deficit(&positions, cell) > 0);
+    }
+
+    #[test]
+    fn small_cells_count_each_pair_once() {
+        let (unit, unit_cell) = fcc(1, 3.615);
+        let mut scratch = vec![0.0; unit.len()];
+        let reference = analytic_gradient(&unit, unit_cell, &mut scratch) / 4.0;
+        let mut potential = MishinCu::new();
+        for repeats in [4usize, 5, 6, 8] {
+            let (positions, cell) = fcc(repeats, 3.615);
+            let mut gradient = vec![0.0; positions.len()];
+            let per_atom = potential.energy_gradient(&positions, cell, &mut gradient)
+                / (positions.len() / 3) as f64;
+            assert!(
+                (per_atom - reference).abs() < 1.0e-6,
+                "{repeats} {per_atom} {reference}"
+            );
+        }
     }
 
     #[test]
