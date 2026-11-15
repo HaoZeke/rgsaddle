@@ -2564,6 +2564,45 @@ fn shell_table(a: f64, repeats: usize) -> Vec<(f64, [f64; 3], usize)> {
     shell_table_within(a, repeats, 10.8)
 }
 
+/// Lattice vectors out to the scan cutoff, grouped into orbits of a
+/// `<100>` dumbbell along x: `x -> -x` and the eight symmetries of the
+/// square in `(y, z)`. A shell of one radius can hold several orbits, and
+/// so can one radius with two crystallographic families. Each orbit is
+/// `(radius, representative, sites)` with the representative
+/// `(|i|, max(|j|, |k|), min(|j|, |k|)) a / 2`, so the choice does not
+/// depend on how equal radii happen to round.
+fn axis_orbits(a: f64, repeats: usize) -> Vec<(f64, [f64; 3], usize)> {
+    let max_r = 10.8_f64.min(repeats as f64 * a * 0.48);
+    let limit = ((2.0 * max_r / a).ceil() as i32) + 1;
+    let mut orbits: std::collections::BTreeMap<(i32, i32, i32, i32), usize> = Default::default();
+    for i in -limit..=limit {
+        for j in -limit..=limit {
+            for k in -limit..=limit {
+                if (i + j + k) % 2 != 0 {
+                    continue;
+                }
+                let n2 = i * i + j * j + k * k;
+                let r = 0.5 * a * (n2 as f64).sqrt();
+                if n2 < 1 || r < 0.5 * a || r > max_r {
+                    continue;
+                }
+                let (high, low) = (j.abs().max(k.abs()), j.abs().min(k.abs()));
+                *orbits.entry((n2, i.abs(), high, low)).or_default() += 1;
+            }
+        }
+    }
+    orbits
+        .into_iter()
+        .map(|((n2, i, j, k), sites)| {
+            (
+                0.5 * a * (n2 as f64).sqrt(),
+                [0.5 * a * i as f64, 0.5 * a * j as f64, 0.5 * a * k as f64],
+                sites,
+            )
+        })
+        .collect()
+}
+
 fn shell_table_within(a: f64, repeats: usize, max_r: f64) -> Vec<(f64, [f64; 3], usize)> {
     let max_r = max_r.min(repeats as f64 * a * 0.48);
     let limit = ((2.0 * max_r / a).ceil() as i32) + 1;
@@ -3049,10 +3088,75 @@ struct ShellRow {
     temperature: f64,
     radius: f64,
     count: usize,
+    converged: bool,
     recombined: bool,
     gap: f64,
     separation: f64,
     key: (i32, i32, i32),
+    steps: usize,
+    max_force: f64,
+    vacancies: usize,
+    interstitials: usize,
+}
+
+impl ShellRow {
+    fn scanned(
+        repeats: usize,
+        temperature: f64,
+        a: f64,
+        (radius, vector, count): (f64, [f64; 3], usize),
+        relaxed: &Result<PairState, SaddleError>,
+    ) -> Self {
+        let mut row = Self {
+            repeats,
+            temperature,
+            radius,
+            count,
+            converged: false,
+            recombined: false,
+            gap: f64::NAN,
+            separation: f64::NAN,
+            key: miller(vector, a),
+            steps: 0,
+            max_force: f64::NAN,
+            vacancies: 0,
+            interstitials: 0,
+        };
+        if let Ok(pair) = relaxed {
+            row.converged = true;
+            row.recombined = pair.recombined;
+            row.gap = pair.gap;
+            row.separation = pair.separation;
+            row.steps = pair.steps;
+            row.max_force = pair.max_force;
+            row.vacancies = pair.vacancies;
+            row.interstitials = pair.interstitials;
+        }
+        row
+    }
+}
+
+const SHELL_HEADER: &str = "cell_repeats,temperature_K,radius_A,sites,recombined,gap_A,separation_A,miller,converged,relax_steps,max_force_eV_per_A,vacancies,interstitials";
+
+fn shell_line(row: &ShellRow) -> String {
+    format!(
+        "{},{},{:.4},{},{},{:.4},{:.4},{} {} {},{},{},{:.3e},{},{}",
+        row.repeats,
+        row.temperature,
+        row.radius,
+        row.count,
+        row.recombined as u8,
+        row.gap,
+        row.separation,
+        row.key.0,
+        row.key.1,
+        row.key.2,
+        row.converged as u8,
+        row.steps,
+        row.max_force,
+        row.vacancies,
+        row.interstitials,
+    )
 }
 
 struct Prepared {
@@ -3076,45 +3180,87 @@ fn occupied(positions: &Array1<f64>, site: [f64; 3], cell: [[f64; 3]; 3]) -> boo
     (0..n).any(|atom| mic_distance(point_of(positions, atom), site, cell) < 0.8)
 }
 
-#[allow(clippy::type_complexity)]
+/// FIRE 2.0 to the default 1e-3 eV/Å largest atom force, with the 0.08 Å
+/// per-atom cap and time step the pair searches use.
+fn pair_fire() -> rgsaddle::RelaxConfig {
+    rgsaddle::RelaxConfig::default()
+        .with_max_atom_move(0.08)
+        .with_initial_step(0.08)
+}
+
+/// ODE12r, the steepest-descent flow, to 1e-3 eV/Å under the same cap.
+///
+/// A placement's fate is the basin the flow carries it into. From the
+/// `<200>` placements perpendicular to the dumbbell, FIRE and L-BFGS each
+/// end in recombination on some lattices and in a bound pair on others,
+/// both converged, so neither defines the basin.
+fn pair_relax() -> rgsaddle::RelaxConfig {
+    pair_fire().with_method(Method::Ode12r)
+}
+
+/// Steepest descent under a 0.02 Å per-atom cap: a second, finer
+/// integration of the same flow, to check [`pair_relax`].
+fn pair_flow_check() -> rgsaddle::RelaxConfig {
+    pair_fire()
+        .with_method(Method::Steepest)
+        .with_max_atom_move(0.02)
+        .with_initial_step(0.02)
+}
+
+/// A placement relaxed to its force tolerance.
+///
+/// `recombined` is the site occupancy of the relaxed configuration: with a
+/// vacancy, every lattice site singly occupied. `gap` and `separation`
+/// are the dumbbell's atoms and its centroid to the vacated site, kept as
+/// descriptors only.
+struct PairState {
+    positions: Array1<f64>,
+    vacancy: [f64; 3],
+    dumbbell: [usize; 2],
+    cell: [[f64; 3]; 3],
+    gap: f64,
+    separation: f64,
+    recombined: bool,
+    steps: usize,
+    max_force: f64,
+    vacancies: usize,
+    interstitials: usize,
+}
+
 fn relax_pair(
     copper: &FastCopper,
     repeats: usize,
     a: f64,
     shell: [f64; 3],
     vacancy: bool,
-) -> (
-    Array1<f64>,
-    [f64; 3],
-    [usize; 2],
-    [[f64; 3]; 3],
-    f64,
-    f64,
-    bool,
-) {
+    relax: &rgsaddle::RelaxConfig,
+) -> Result<PairState, SaddleError> {
     let length = repeats as f64 * a;
     let cell = [[length, 0.0, 0.0], [0.0, length, 0.0], [0.0, 0.0, length]];
     let built = build_pair(repeats, a, shell, vacancy);
-    let mut positions = built.positions;
-    relax_fast(copper, &mut positions, cell, 1.0e-3, 60);
+    let done =
+        rgsaddle::relax_to_tolerance(&FastHeld { copper, cell }, built.positions, cell, relax)?;
+    let positions = done.positions;
+    let (sites, _) = fcc(repeats, a);
+    let occupancy = rgsaddle::site_occupancy(sites.view(), positions.view(), cell)?;
     let gap = dist(
         point_of(&positions, built.dumbbell[0]),
         point_of(&positions, built.dumbbell[1]),
     );
     let separation = dist(centroid(&positions, built.dumbbell), built.vacancy);
-    let recombined = vacancy
-        && (occupied(&positions, built.vacancy, cell)
-            || !(1.2..2.5).contains(&gap)
-            || separation < 1.6);
-    (
+    Ok(PairState {
         positions,
-        built.vacancy,
-        built.dumbbell,
+        vacancy: built.vacancy,
+        dumbbell: built.dumbbell,
         cell,
         gap,
         separation,
-        recombined,
-    )
+        recombined: vacancy && occupancy.is_perfect(),
+        steps: done.steps,
+        max_force: done.max_force,
+        vacancies: occupancy.vacancy_count(),
+        interstitials: occupancy.interstitial_count(),
+    })
 }
 
 fn scale_positions(positions: &Array1<f64>, factor: f64) -> Array1<f64> {
@@ -3281,27 +3427,9 @@ fn write_campaign(campaign: &Campaign) {
     )
     .unwrap();
     let mut shells = File::create(root.join("defect_pair_shells.csv")).expect("shells");
-    writeln!(
-        shells,
-        "cell_repeats,temperature_K,radius_A,sites,recombined,gap_A,separation_A,miller"
-    )
-    .unwrap();
+    writeln!(shells, "{SHELL_HEADER}").unwrap();
     for row in &campaign.shells {
-        writeln!(
-            shells,
-            "{},{},{:.4},{},{},{:.4},{:.4},{} {} {}",
-            row.repeats,
-            row.temperature,
-            row.radius,
-            row.count,
-            row.recombined as u8,
-            row.gap,
-            row.separation,
-            row.key.0,
-            row.key.1,
-            row.key.2
-        )
-        .unwrap();
+        writeln!(shells, "{}", shell_line(row)).unwrap();
     }
     let mut lattice = File::create(root.join("defect_pair_lattice.csv")).expect("lattice");
     writeln!(lattice, "temperature_K,a_A,npt_repeats").unwrap();
@@ -3601,6 +3729,7 @@ fn defect_pair_cu_catalogue() {
     let samples = env_usize("RGSADDLE_SAMPLES", 32);
     let target = env_usize("RGSADDLE_TARGET_MEV", 5) as f64 * 1.0e-3;
     let copper = FastCopper::new();
+    let relax = pair_relax();
     let mut lattice = Vec::new();
     for temperature in &temperatures {
         let a = npt_lattice(&copper, *temperature);
@@ -3666,11 +3795,25 @@ fn defect_pair_cu_catalogue() {
             let shells = shell_table(reference.1, repeats);
             let mut stable = 0usize;
             for (radius, vector, _count) in shells {
-                let (positions, vacancy, dumbbell, cell, _gap, _separation, recombined) =
-                    relax_pair(&copper, repeats, reference.1, vector, true);
-                if recombined {
+                let pair = match relax_pair(&copper, repeats, reference.1, vector, true, &relax) {
+                    Ok(pair) => pair,
+                    Err(error) => {
+                        campaign.notes.push(format!(
+                            "repeats {repeats} shell {radius:.3} A skipped for hop search: {error}"
+                        ));
+                        continue;
+                    }
+                };
+                if pair.recombined {
                     continue;
                 }
+                let PairState {
+                    positions,
+                    vacancy,
+                    dumbbell,
+                    cell,
+                    ..
+                } = pair;
                 if shell_cap != 0 && stable >= shell_cap {
                     break;
                 }
@@ -3704,10 +3847,19 @@ fn defect_pair_cu_catalogue() {
             }
             if repeats == 8 || rate_sizes.len() == 1 {
                 let isolated = build_pair(repeats, reference.1, [reference.1, 0.0, 0.0], false);
-                let mut positions = isolated.positions;
                 let length = repeats as f64 * reference.1;
                 let cell = [[length, 0.0, 0.0], [0.0, length, 0.0], [0.0, 0.0, length]];
-                relax_fast(&copper, &mut positions, cell, 1.0e-3, 60);
+                let positions = rgsaddle::relax_to_tolerance(
+                    &FastHeld {
+                        copper: &copper,
+                        cell,
+                    },
+                    isolated.positions,
+                    cell,
+                    &relax,
+                )
+                .expect("isolated dumbbell relaxation")
+                .positions;
                 let center = centroid(&positions, isolated.dumbbell);
                 let spectator = [center[0] + 6.0, center[1], center[2]];
                 let escapes = enumerate_escapes(
@@ -3732,23 +3884,24 @@ fn defect_pair_cu_catalogue() {
             }
         }
         for &(temperature, a) in &lattice {
-            let shells = shell_table(a, repeats);
+            let shells = axis_orbits(a, repeats);
             for (radius, vector, count) in &shells {
-                let (_positions, _vacancy, _dumbbell, _cell, gap, separation, recombined) =
-                    relax_pair(&copper, repeats, a, *vector, true);
-                let row = ShellRow {
+                let relaxed = relax_pair(&copper, repeats, a, *vector, true, &relax);
+                let row = ShellRow::scanned(
                     repeats,
                     temperature,
-                    radius: *radius,
-                    count: *count,
-                    recombined,
-                    gap,
-                    separation,
-                    key: miller(*vector, a),
-                };
-                if recombined {
+                    a,
+                    (*radius, *vector, *count),
+                    &relaxed,
+                );
+                if let Err(error) = &relaxed {
                     campaign.notes.push(format!(
-                        "repeats {repeats} T {temperature} shell {radius:.3} A recombined, {count} sites, gap {gap:.3} separation {separation:.3}"
+                        "repeats {repeats} T {temperature} shell {radius:.3} A not counted: {error}"
+                    ));
+                } else if row.recombined {
+                    campaign.notes.push(format!(
+                        "repeats {repeats} T {temperature} shell {radius:.4} A recombined, {count} sites, gap {:.4} separation {:.4}",
+                        row.gap, row.separation
                     ));
                 }
                 campaign.shells.push(row);
@@ -3839,6 +3992,223 @@ fn defect_pair_cu_catalogue() {
     eprintln!("{}", campaign.notes.join("\n"));
 }
 
+/// Largest gap or separation difference, in Å, allowed between the end
+/// states of one placement under two optimizers at 1e-3 eV/Å.
+const OPTIMIZER_AGREEMENT_A: f64 = 0.02;
+
+/// End states of one placement under two optimizers, compared.
+fn optimizer_disagreement(first: &PairState, second: &PairState) -> Option<String> {
+    let gap = (first.gap - second.gap).abs();
+    let separation = (first.separation - second.separation).abs();
+    if first.recombined != second.recombined
+        || !(gap <= OPTIMIZER_AGREEMENT_A && separation <= OPTIMIZER_AGREEMENT_A)
+    {
+        Some(format!(
+            "recombined {} gap {:.4} separation {:.4} against recombined {} gap {:.4} separation {:.4}",
+            first.recombined,
+            first.gap,
+            first.separation,
+            second.recombined,
+            second.gap,
+            second.separation
+        ))
+    } else {
+        None
+    }
+}
+
+/// The 3.63 Å `<200>` and the 4.44 Å `<211>` placements on the 300 K
+/// lattice, in a 4x4x4 cell, with the dumbbell along x. Sixty FIRE steps
+/// stop the first at a 2.36 Å gap under a 1 eV/Å force, which a gap window
+/// reads as bound while sixty L-BFGS steps reach recombination. Followed
+/// to 1e-3 eV/Å by ODE12r and by steepest descent, the first recombines
+/// and the second stays a bound pair.
+#[test]
+fn pair_recombination_does_not_depend_on_the_optimizer() {
+    let copper = FastCopper::new();
+    let (repeats, a) = (4usize, measured_lattice(300.0));
+    let optimizers = [("ODE12r", pair_relax()), ("steepest", pair_flow_check())];
+    for (shell, recombines) in [([a, 0.0, 0.0], true), ([a, 0.5 * a, 0.5 * a], false)] {
+        let truncated = relax_pair(
+            &copper,
+            repeats,
+            a,
+            shell,
+            true,
+            &pair_fire().with_max_steps(60),
+        );
+        assert!(
+            truncated.is_err(),
+            "60 FIRE steps accepted as converged for {shell:?}"
+        );
+        let states: Vec<(&str, PairState)> = optimizers
+            .iter()
+            .map(|(name, relax)| {
+                let state = relax_pair(&copper, repeats, a, shell, true, relax)
+                    .unwrap_or_else(|error| panic!("{name} {shell:?}: {error}"));
+                assert!(state.max_force < rgsaddle::DEFAULT_FORCE_TOL);
+                (*name, state)
+            })
+            .collect();
+        for (name, state) in &states[1..] {
+            if let Some(text) = optimizer_disagreement(&states[0].1, state) {
+                panic!("{} and {name} disagree at {shell:?}: {text}", states[0].0);
+            }
+        }
+        assert_eq!(states[0].1.recombined, recombines, "{shell:?}");
+    }
+}
+
+#[test]
+#[ignore = "recombination scan followed to 1e-3 eV/A by ODE12r and steepest descent; writes benchmarks/defect_pair_shells.csv"]
+fn defect_pair_recombination_scan() {
+    let started = Instant::now();
+    let sizes: Vec<usize> = env_csv("RGSADDLE_REPEATS", "8,10")
+        .iter()
+        .map(|item| item.parse().expect("repeats"))
+        .collect();
+    let temperatures: Vec<f64> = env_csv("RGSADDLE_TEMPS", "300,400,500,600,700")
+        .iter()
+        .map(|item| item.parse().expect("temperature"))
+        .collect();
+    let copper = FastCopper::new();
+    let flow = pair_relax();
+    let check = pair_flow_check();
+    let deviation = Mutex::new(Vec::new());
+    let mut jobs = Vec::new();
+    for &repeats in &sizes {
+        for &temperature in &temperatures {
+            let a = measured_lattice(temperature);
+            for shell in axis_orbits(a, repeats) {
+                jobs.push((repeats, temperature, a, shell));
+            }
+        }
+    }
+    let results: Vec<(ShellRow, Option<String>, f64)> = jobs
+        .par_iter()
+        .map(|&(repeats, temperature, a, shell)| {
+            let clock = Instant::now();
+            let by_flow = relax_pair(&copper, repeats, a, shell.1, true, &flow);
+            let by_check = relax_pair(&copper, repeats, a, shell.1, true, &check);
+            let disagreement = match (&by_flow, &by_check) {
+                (Ok(left), Ok(right)) => {
+                    deviation.lock().expect("deviation").push((
+                        (left.gap - right.gap).abs(),
+                        (left.separation - right.separation).abs(),
+                        left.steps,
+                        right.steps,
+                    ));
+                    optimizer_disagreement(left, right)
+                }
+                (left, right) => Some(format!(
+                    "ODE12r {:?}; steepest {:?}",
+                    left.as_ref().err().map(ToString::to_string),
+                    right.as_ref().err().map(ToString::to_string)
+                )),
+            };
+            let row = ShellRow::scanned(repeats, temperature, a, shell, &by_flow);
+            (row, disagreement, clock.elapsed().as_secs_f64())
+        })
+        .collect();
+    let deviation = deviation.into_inner().expect("deviation");
+    let largest =
+        |pick: fn(&(f64, f64, usize, usize)) -> f64| deviation.iter().map(pick).fold(0.0, f64::max);
+    eprintln!(
+        "ODE12r against steepest descent over {} placements: largest gap difference {:.2e} A, separation {:.2e} A; ODE12r steps at most {}, steepest at most {}",
+        deviation.len(),
+        largest(|d| d.0),
+        largest(|d| d.1),
+        deviation.iter().map(|d| d.2).max().unwrap_or(0),
+        deviation.iter().map(|d| d.3).max().unwrap_or(0)
+    );
+    let mut csv = String::from(SHELL_HEADER);
+    csv.push('\n');
+    let mut problems = Vec::new();
+    for (row, disagreement, seconds) in &results {
+        csv.push_str(&shell_line(row));
+        csv.push('\n');
+        eprintln!(
+            "repeats {} T {} shell {:.4} sites {} recombined {} gap {:.4} separation {:.4} steps {} force {:.2e} vacancies {} interstitials {} ({seconds:.1}s)",
+            row.repeats,
+            row.temperature,
+            row.radius,
+            row.count,
+            row.recombined as u8,
+            row.gap,
+            row.separation,
+            row.steps,
+            row.max_force,
+            row.vacancies,
+            row.interstitials
+        );
+        if let Some(text) = disagreement {
+            problems.push(format!(
+                "repeats {} T {} shell {:.4}: {text}",
+                row.repeats, row.temperature, row.radius
+            ));
+        }
+    }
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benchmarks");
+    std::fs::write(root.join("defect_pair_shells.csv"), csv).expect("shells");
+    let viv_path = root.join("defect_pair_viv.csv");
+    let previous = std::fs::read_to_string(&viv_path).unwrap_or_default();
+    let is_site_row = |line: &&str| {
+        line.split(',')
+            .next()
+            .is_some_and(|f| f.parse::<usize>().is_ok())
+    };
+    let recorded: std::collections::BTreeMap<(usize, i64), String> = previous
+        .lines()
+        .skip(1)
+        .take_while(is_site_row)
+        .filter_map(|line| {
+            let mut fields = line.splitn(4, ',');
+            let repeats = fields.next()?.parse().ok()?;
+            let temperature = fields.next()?.parse::<f64>().ok()?.round() as i64;
+            Some(((repeats, temperature), fields.nth(1)?.to_string()))
+        })
+        .collect();
+    let mut table = String::from("cell_repeats,temperature_K,spontaneous_sites,table_1_Omega\n");
+    for &repeats in &sizes {
+        for &temperature in &temperatures {
+            let sites: usize = results
+                .iter()
+                .map(|(row, _, _)| row)
+                .filter(|row| {
+                    row.repeats == repeats && row.temperature == temperature && row.recombined
+                })
+                .map(|row| row.count)
+                .sum();
+            let reference = recorded
+                .get(&(repeats, temperature.round() as i64))
+                .cloned()
+                .unwrap_or_else(|| table_i(temperature).to_string());
+            table.push_str(&format!("{repeats},{temperature},{sites},{reference}\n"));
+        }
+    }
+    // The capture rows that defect_pair_viv appends follow the site table.
+    for line in previous.lines().skip(1).skip_while(is_site_row) {
+        table.push_str(line);
+        table.push('\n');
+    }
+    std::fs::write(&viv_path, table).expect("viv");
+    let unconverged = results.iter().filter(|(row, _, _)| !row.converged).count();
+    let worst = results
+        .iter()
+        .map(|(_, _, seconds)| *seconds)
+        .fold(0.0, f64::max);
+    eprintln!(
+        "{} placements, {unconverged} not converged, slowest {worst:.1}s, wall {:.1} min",
+        results.len(),
+        started.elapsed().as_secs_f64() / 60.0
+    );
+    assert!(
+        problems.is_empty(),
+        "ODE12r and steepest descent disagree:\n{}",
+        problems.join("\n")
+    );
+}
+
 fn run_rate_job(
     copper: &FastCopper,
     job: &RateJob,
@@ -3852,11 +4222,25 @@ fn run_rate_job(
         cart_of(job.key, job.a)
     };
     let vacancy_flag = job.radius != 0.0;
-    let (positions, vacancy, dumbbell, cell, _gap, _separation, recombined) =
-        relax_pair(copper, job.repeats, job.a, vector, vacancy_flag);
-    if recombined {
+    let pair = relax_pair(
+        copper,
+        job.repeats,
+        job.a,
+        vector,
+        vacancy_flag,
+        &pair_relax(),
+    )
+    .map_err(|error| error.to_string())?;
+    if pair.recombined {
         return Ok(Vec::new());
     }
+    let PairState {
+        positions,
+        vacancy,
+        dumbbell,
+        cell,
+        ..
+    } = pair;
     let fixed = if vacancy_flag {
         vacancy
     } else {
@@ -10632,22 +11016,36 @@ fn probe_binding(copper: &FastCopper, a: f64) {
     }
 }
 
-fn pair_field(copper: &FastCopper, a: f64) -> Option<PairField> {
+/// FIRE 2.0 to 1e-4 eV/Å for the stress of one isolated defect. The
+/// dipole is read from that stress, so the tolerance is ten times below
+/// that of `pair_relax`.
+fn field_relax() -> rgsaddle::RelaxConfig {
+    pair_fire().with_force_tol(1.0e-4)
+}
+
+fn pair_field(copper: &FastCopper, a: f64) -> Result<PairField, SaddleError> {
+    pair_field_with(copper, a, &field_relax())
+}
+
+fn pair_field_with(
+    copper: &FastCopper,
+    a: f64,
+    relax: &rgsaddle::RelaxConfig,
+) -> Result<PairField, SaddleError> {
     let repeats = 8usize;
     let (perfect, cell) = fcc(repeats, a);
+    let held = FastHeld { copper, cell };
     let (_, _, bulk_stress) = copper.evaluate(perfect.view(), cell);
-    let mut vacancy = perfect.clone();
-    let drop = vacancy.len() - 3;
-    vacancy = vacancy.slice(ndarray::s![..drop]).to_owned();
-    relax_fast(copper, &mut vacancy, cell, 1.0e-2, 30);
+    let drop = perfect.len() - 3;
+    let vacancy = perfect.slice(ndarray::s![..drop]).to_owned();
+    let vacancy = rgsaddle::relax_to_tolerance(&held, vacancy, cell, relax)?.positions;
     let (_, _, vacancy_stress) = copper.evaluate(vacancy.view(), cell);
-    let mut dumbbell_pos = dumbbell(&perfect, [1.0, 0.0, 0.0], 2.05);
-    relax_fast(copper, &mut dumbbell_pos, cell, 1.0e-2, 30);
-    let (_, _, sia_stress) = copper.evaluate(dumbbell_pos.view(), cell);
+    let sia = dumbbell(&perfect, [1.0, 0.0, 0.0], 2.05);
+    let sia = rgsaddle::relax_to_tolerance(&held, sia, cell, relax)?.positions;
+    let (_, _, sia_stress) = copper.evaluate(sia.view(), cell);
     let volume = cell[0][0] * cell[1][1] * cell[2][2];
-    let vacancy_dipole =
-        rgsaddle::ElasticDipole::from_stress(volume, vacancy_stress, bulk_stress).ok()?;
-    let sia = rgsaddle::ElasticDipole::from_stress(volume, sia_stress, bulk_stress).ok()?;
+    let vacancy_dipole = rgsaddle::ElasticDipole::from_stress(volume, vacancy_stress, bulk_stress)?;
+    let sia = rgsaddle::ElasticDipole::from_stress(volume, sia_stress, bulk_stress)?;
     let to_010 = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
     let to_001 = [[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]];
     let (c11, c12, c44) = cubic_moduli(copper, a);
@@ -10658,9 +11056,9 @@ fn pair_field(copper: &FastCopper, a: f64) -> Option<PairField> {
     } else {
         0.3
     };
-    let kelvin = rgsaddle::Kelvin::new(shear.abs().max(1.0e-6), poisson.clamp(-0.9, 0.49)).ok()?;
+    let kelvin = rgsaddle::Kelvin::new(shear.abs().max(1.0e-6), poisson.clamp(-0.9, 0.49))?;
     eprintln!("dipoles vacancy {vacancy_dipole:?} sia {sia:?} mu {shear:.4} nu {poisson:.3}");
-    Some(PairField {
+    Ok(PairField {
         kelvin,
         vacancy: vacancy_dipole,
         sia: [sia, rotate_dipole(sia, to_010), rotate_dipole(sia, to_001)],
@@ -10693,7 +11091,7 @@ fn assemble_run13() {
         if (temperature - 300.0).abs() < 1.0 {
             probe_binding(&copper, a);
         }
-        let field = pair_field(&copper, a);
+        let field = Some(pair_field(&copper, a).expect("pair field relaxation"));
         if let Some(item) = field.as_ref() {
             for radius in [8.0_f64, 12.0, 20.0] {
                 eprintln!(
@@ -11898,40 +12296,78 @@ fn direct_md_capture_radius() {
 
 const SAMPLE_INTERVAL_PS: f64 = 0.25;
 
+/// Largest difference, in Å, allowed between the FIRE and L-BFGS dipole
+/// envelope radii.
+const ENVELOPE_AGREEMENT_A: f64 = 0.005;
+
+fn dipole_envelope(
+    field: &PairField,
+    directions: &[[f64; 3]],
+    radius: f64,
+    attractive: bool,
+) -> f64 {
+    let mut value = if attractive { f64::MAX } else { f64::MIN };
+    for direction in directions {
+        for which in 0..3 {
+            let energy = field.interaction(radius, *direction, which);
+            value = if attractive {
+                value.min(energy)
+            } else {
+                value.max(energy)
+            };
+        }
+    }
+    value
+}
+
+fn envelope_radii(
+    field: &PairField,
+    directions: &[[f64; 3]],
+    chain: f64,
+    thermal: f64,
+) -> (f64, f64) {
+    let matched = |attractive: bool| {
+        rgsaddle::debye_matched_radius(chain, chain, thermal, |r| {
+            dipole_envelope(field, directions, r, attractive)
+        })
+        .unwrap_or(f64::NAN)
+    };
+    (matched(true), matched(false))
+}
+
 #[test]
 #[ignore = "bound the elastic drift on the capture radius by the most attractive dipole envelope"]
 fn defect_pair_run19_field() {
+    let started = Instant::now();
     let copper = FastCopper::new();
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benchmarks");
     let mut out = File::create(root.join("defect_pair_run19_field.csv")).expect("field csv");
     writeln!(out, "temperature_K,radius_A,E_min_eV,E_max_eV,R_rate_model_A,R_attractive_envelope_A,R_repulsive_envelope_A").unwrap();
+    let directions = fibonacci_directions(200);
+    let mut problems = Vec::new();
     for temperature in [300.0_f64, 500.0, 700.0] {
         let a = demkowicz_lattice(temperature);
         let thermal = temperature * rgsaddle::BOLTZMANN_EV_PER_K;
-        let field = pair_field(&copper, a).expect("pair field");
-        let directions = fibonacci_directions(200);
-        let envelope = |radius: f64, pick: fn(f64, f64) -> f64, start: f64| {
-            let mut value = start;
-            for direction in &directions {
-                for which in 0..3 {
-                    value = pick(value, field.interaction(radius, *direction, which));
-                }
-            }
-            value
-        };
+        let field = pair_field(&copper, a).expect("pair field relaxation");
+        let check = pair_field_with(&copper, a, &field_relax().with_method(Method::lbfgs()))
+            .expect("L-BFGS pair field relaxation");
         let chain = rate_model_radius(temperature).unwrap_or(f64::NAN);
-        let attractive = rgsaddle::debye_matched_radius(chain, chain, thermal, |r| {
-            envelope(r, f64::min, f64::MAX)
-        })
-        .unwrap_or(f64::NAN);
-        let repulsive = rgsaddle::debye_matched_radius(chain, chain, thermal, |r| {
-            envelope(r, f64::max, f64::MIN)
-        })
-        .unwrap_or(f64::NAN);
+        let (attractive, repulsive) = envelope_radii(&field, &directions, chain, thermal);
+        let (check_attractive, check_repulsive) =
+            envelope_radii(&check, &directions, chain, thermal);
+        let spread = (attractive - check_attractive)
+            .abs()
+            .max((repulsive - check_repulsive).abs());
+        eprintln!(
+            "{temperature:.0} K L-BFGS envelopes {check_attractive:.4} / {check_repulsive:.4}, largest difference from FIRE {spread:.2e} A"
+        );
+        if spread.is_nan() || spread > ENVELOPE_AGREEMENT_A {
+            problems.push(format!("{temperature:.0} K: FIRE {attractive:.4}/{repulsive:.4}, L-BFGS {check_attractive:.4}/{check_repulsive:.4}"));
+        }
         for radius in [3.0_f64, 4.0, 5.0, 6.0, 8.0, 10.0] {
             let (low, high) = (
-                envelope(radius, f64::min, f64::MAX),
-                envelope(radius, f64::max, f64::MIN),
+                dipole_envelope(&field, &directions, radius, true),
+                dipole_envelope(&field, &directions, radius, false),
             );
             writeln!(out, "{temperature:.0},{radius:.1},{low:.6},{high:.6},{chain:.4},{attractive:.4},{repulsive:.4}").unwrap();
             eprintln!("{temperature:.0} K r {radius:.1} E [{low:.5}, {high:.5}] eV");
@@ -11940,6 +12376,12 @@ fn defect_pair_run19_field() {
             "{temperature:.0} K R_eff {chain:.4} attractive envelope {attractive:.4} repulsive envelope {repulsive:.4}"
         );
     }
+    eprintln!("run19 field {:.1} s", started.elapsed().as_secs_f64());
+    assert!(
+        problems.is_empty(),
+        "FIRE and L-BFGS envelopes differ by more than {ENVELOPE_AGREEMENT_A} A:\n{}",
+        problems.join("\n")
+    );
 }
 
 fn graph_diffusivity(temperature: f64) -> Option<f64> {
