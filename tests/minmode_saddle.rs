@@ -313,7 +313,7 @@ fn lbfgs_translation_costs_one_evaluation_per_step() {
     let config = MinModeConfig {
         force_tol: 1e-4,
         max_move: 0.1,
-        method: rgmin::Method::Lbfgs { memory: 10 },
+        method: rgmin::Method::lbfgs_with_memory(10),
         ..MinModeConfig::default()
     };
     let start = array![0.35, 0.4, -0.3];
@@ -515,22 +515,12 @@ fn near_saddle(seed_curvature: bool, method: rgmin::Method) -> MinModeSession {
 /// force, so the same start is still away from the origin.
 #[test]
 fn seeded_fire_takes_the_newton_step_inside_the_cap() {
-    let mut plain = near_saddle(
-        false,
-        rgmin::Method::Fire {
-            kind: rgmin::FireKind::V2,
-        },
-    );
+    let mut plain = near_saddle(false, rgmin::Method::fire(rgmin::FireKind::V2));
     plain.step(&QuadraticSaddle).unwrap();
     let left = plain.position().mapv(f64::abs).sum();
     assert!(left > 1e-3, "stock translation arrived at {left}");
 
-    let mut seeded = near_saddle(
-        true,
-        rgmin::Method::Fire {
-            kind: rgmin::FireKind::V2,
-        },
-    );
+    let mut seeded = near_saddle(true, rgmin::Method::fire(rgmin::FireKind::V2));
     let report = seeded.step(&QuadraticSaddle).unwrap();
     assert_eq!(report.status, MinModeStatus::Converged);
     let arrived = seeded.position().mapv(f64::abs).sum();
@@ -552,7 +542,7 @@ fn seeded_lbfgs_finishes_a_stiff_direction() {
 
     let config = MinModeConfig {
         seed_curvature: true,
-        method: rgmin::Method::Lbfgs { memory: 10 },
+        method: rgmin::Method::lbfgs_with_memory(10),
         max_move: 0.2,
         force_tol: 1e-6,
         ..MinModeConfig::default()

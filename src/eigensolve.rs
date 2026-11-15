@@ -241,11 +241,9 @@ pub fn lowest_on(
         EigenDevice::Host => EigensolverKind::Lanczos,
         EigenDevice::Dlpk => EigensolverKind::RayleighRitz,
     };
-    let params = EigenParams {
-        kind,
-        krylov: seed.len().clamp(2, 8),
-        ..EigenParams::default()
-    };
+    let params = EigenParams::default()
+        .with_kind(kind)
+        .with_krylov(seed.len().clamp(2, 8));
     let mode = lowest_mode(&DenseApply(&a.to_owned()), x.view(), seed, &params)
         .map_err(|e| SaddleError::Solver(e.to_string()))?;
     Ok((mode.value, mode.vector))

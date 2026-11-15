@@ -180,14 +180,12 @@ pub unsafe extern "C" fn rgsaddle_minmode_set_kappa(
         };
         Some(crate::kappa::KappaDimerConfig {
             beta: c.beta,
-            eigen: rgmin::EigenParams {
-                kind,
-                nev: 1,
-                krylov: c.krylov_dimension as usize,
-                max_iter: c.max_iterations as usize,
-                tol: c.tolerance,
-                ..rgmin::EigenParams::default()
-            },
+            eigen: rgmin::EigenParams::default()
+                .with_kind(kind)
+                .with_nev(1)
+                .with_krylov(c.krylov_dimension as usize)
+                .with_max_iter(c.max_iterations as usize)
+                .with_tol(c.tolerance),
         })
     };
     match unsafe { &mut *session }.session.set_kappa(cfg) {

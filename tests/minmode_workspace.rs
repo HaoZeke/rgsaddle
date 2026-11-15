@@ -164,7 +164,7 @@ fn search_hash(config: MinModeConfig, steps: usize) -> u64 {
 
 #[test]
 fn searches_match_the_allocating_code_bitwise() {
-    let lbfgs = rgmin::Method::Lbfgs { memory: 5 };
+    let lbfgs = rgmin::Method::lbfgs_with_memory(5);
     let cases = [
         (
             "dimer-forward-fire",

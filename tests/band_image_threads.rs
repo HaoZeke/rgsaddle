@@ -81,7 +81,7 @@ fn configs() -> Vec<(&'static str, BandConfig)> {
                     k_min: 1.0,
                     k_max: 5.0,
                 },
-                method: rgmin::Method::Lbfgs { memory: 5 },
+                method: rgmin::Method::lbfgs_with_memory(5),
                 ..base.clone()
             },
         ),

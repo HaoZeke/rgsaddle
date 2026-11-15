@@ -169,7 +169,7 @@ fn config(force_tol: f64, full_band: bool) -> BandConfig {
     BandConfig {
         force_tol,
         max_move: 0.1,
-        method: rgmin::Method::Lbfgs { memory: 10 },
+        method: rgmin::Method::lbfgs_with_memory(10),
         // The band's default arming: climb once the largest component is
         // under 0.5.
         climbing: Some(CiConfig::default()),

@@ -134,10 +134,10 @@ fn dimer_fire_mode_pushes_off_into_both_basins() {
 
 #[test]
 fn dimer_lbfgs_mode_pushes_off_into_both_basins() {
-    pushes_off_into_both_basins(MinModeKind::Dimer, Method::Lbfgs { memory: 10 });
+    pushes_off_into_both_basins(MinModeKind::Dimer, Method::lbfgs_with_memory(10));
 }
 
 #[test]
 fn lanczos_lbfgs_mode_pushes_off_into_both_basins() {
-    pushes_off_into_both_basins(MinModeKind::Lanczos, Method::Lbfgs { memory: 10 });
+    pushes_off_into_both_basins(MinModeKind::Lanczos, Method::lbfgs_with_memory(10));
 }

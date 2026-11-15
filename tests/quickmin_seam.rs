@@ -10,7 +10,8 @@ fn fire_remains_the_default_band_method() {
     assert!(matches!(
         config.method,
         rgmin::Method::Fire {
-            kind: rgmin::FireKind::V2
+            kind: rgmin::FireKind::V2,
+            ..
         }
     ));
 }

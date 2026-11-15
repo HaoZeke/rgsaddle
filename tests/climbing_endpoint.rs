@@ -44,7 +44,7 @@ fn band() -> Array2<f64> {
 fn config() -> BandConfig {
     BandConfig {
         force_tol: 0.01,
-        method: rgmin::Method::Lbfgs { memory: 20 },
+        method: rgmin::Method::lbfgs_with_memory(20),
         min_mode: None,
         ..BandConfig::default()
     }

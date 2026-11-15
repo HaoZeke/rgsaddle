@@ -109,7 +109,7 @@ fn lanczos_rotation_fails_closed_on_oracle_error() {
 #[test]
 fn kappa_lbfgs_finds_the_saddle() {
     let config = MinModeConfig {
-        method: rgmin::Method::Lbfgs { memory: 20 },
+        method: rgmin::Method::lbfgs_with_memory(20),
         force_tol: 1e-4,
         max_move: 0.05,
         ..MinModeConfig::default()
@@ -152,7 +152,7 @@ impl PointSurface for HarmonicWithRigidMode {
 fn both_dimer_rotations_exclude_rigid_zero_modes() {
     let config = MinModeConfig {
         max_move: 0.05,
-        method: rgmin::Method::Lbfgs { memory: 20 },
+        method: rgmin::Method::lbfgs_with_memory(20),
         ..Default::default()
     };
     let mut session =

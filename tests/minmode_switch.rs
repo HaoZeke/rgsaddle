@@ -70,32 +70,25 @@ fn escapes_the_basin(kind: MinModeKind, method: rgmin::Method) -> usize {
 
 #[test]
 fn dimer_fire_escapes_the_basin() {
-    escapes_the_basin(
-        MinModeKind::Dimer,
-        rgmin::Method::Fire {
-            kind: rgmin::FireKind::V2,
-        },
-    );
+    escapes_the_basin(MinModeKind::Dimer, rgmin::Method::fire(rgmin::FireKind::V2));
 }
 
 #[test]
 fn dimer_lbfgs_escapes_the_basin() {
-    escapes_the_basin(MinModeKind::Dimer, rgmin::Method::Lbfgs { memory: 10 });
+    escapes_the_basin(MinModeKind::Dimer, rgmin::Method::lbfgs_with_memory(10));
 }
 
 #[test]
 fn lanczos_fire_escapes_the_basin() {
     escapes_the_basin(
         MinModeKind::Lanczos,
-        rgmin::Method::Fire {
-            kind: rgmin::FireKind::V2,
-        },
+        rgmin::Method::fire(rgmin::FireKind::V2),
     );
 }
 
 #[test]
 fn lanczos_lbfgs_escapes_the_basin() {
-    escapes_the_basin(MinModeKind::Lanczos, rgmin::Method::Lbfgs { memory: 10 });
+    escapes_the_basin(MinModeKind::Lanczos, rgmin::Method::lbfgs_with_memory(10));
 }
 
 /// The dimer's estimate is a measured Rayleigh quotient, inside the

@@ -170,9 +170,7 @@ impl Default for MinModeConfig {
             krylov_dim: 12,
             force_tol: 1e-3,
             max_move: 0.2,
-            method: Method::Fire {
-                kind: rgmin::FireKind::V2,
-            },
+            method: Method::fire(rgmin::FireKind::V2),
             seed_curvature: false,
         }
     }
@@ -1454,13 +1452,11 @@ pub(crate) fn build_solver(
     highs: bool,
     lbfgs_guards: bool,
 ) -> Solver {
-    let control = Control {
-        maxiter: usize::MAX,
-        gtol: 0.0,
-        istep,
-        maxmove: None,
-        ..Control::default()
-    };
+    let control = Control::default()
+        .with_maxiter(usize::MAX)
+        .with_gtol(0.0)
+        .with_istep(istep)
+        .with_maxmove(None);
     let mut solver = Solver::new(method.clone(), control, n);
     // Per-atom cap over consecutive xyz triples (eOn maxAtomMotionApplied).
     // A non-positive max_move leaves the step uncapped.
@@ -1888,7 +1884,7 @@ impl MinModeSession {
     fn reload_projected_pairs(&mut self) {
         let mode = self.mode.clone();
         let memory = match self.config.method {
-            Method::Lbfgs { memory } => memory.max(1),
+            Method::Lbfgs { memory, .. } => memory.max(1),
             _ => 1,
         };
         let stored = std::mem::take(&mut self.lbfgs_shadow);
@@ -1911,7 +1907,7 @@ impl MinModeSession {
             return;
         }
         let memory = match self.config.method {
-            Method::Lbfgs { memory } => memory.max(1),
+            Method::Lbfgs { memory, .. } => memory.max(1),
             _ => 1,
         };
         self.lbfgs_shadow.push_back((s.clone(), y.clone()));
@@ -2970,7 +2966,7 @@ mod tests {
     fn seeded_lbfgs_step_leaves_a_secant_pair() {
         let config = MinModeConfig {
             seed_curvature: true,
-            method: Method::Lbfgs { memory: 10 },
+            method: Method::lbfgs_with_memory(10),
             force_tol: 1e-12,
             max_move: 0.2,
             ..MinModeConfig::default()
@@ -3016,7 +3012,7 @@ mod tests {
     #[test]
     fn lbfgs_pairs_survive_a_turn_inside_the_cone() {
         let config = MinModeConfig {
-            method: Method::Lbfgs { memory: 10 },
+            method: Method::lbfgs_with_memory(10),
             force_tol: 1e-8,
             max_move: 0.05,
             rotation_angle_tol: 0.0,
@@ -3364,7 +3360,7 @@ mod tests {
         let config = MinModeConfig {
             force_tol: 1e-3,
             max_move: 0.2,
-            method: Method::Lbfgs { memory: 10 },
+            method: Method::lbfgs_with_memory(10),
             rotation_angle_tol: 0.0,
             ..MinModeConfig::default()
         };

@@ -137,14 +137,12 @@ pub unsafe extern "C" fn rgsaddle_kappa_dimer_force(
     let excluded = ArrayView2::from_shape((n_excluded as usize, n), excluded_slice).unwrap();
     let cfg = KappaDimerConfig {
         beta: cfg.beta,
-        eigen: EigenParams {
-            kind,
-            nev: 1,
-            krylov: cfg.krylov_dimension as usize,
-            max_iter: cfg.max_iterations as usize,
-            tol: cfg.tolerance,
-            ..EigenParams::default()
-        },
+        eigen: EigenParams::default()
+            .with_kind(kind)
+            .with_nev(1)
+            .with_krylov(cfg.krylov_dimension as usize)
+            .with_max_iter(cfg.max_iterations as usize)
+            .with_tol(cfg.tolerance),
     };
     let result = kappa_dimer_force(
         g,

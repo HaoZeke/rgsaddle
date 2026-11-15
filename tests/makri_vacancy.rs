@@ -193,13 +193,11 @@ fn relax(mut x: Array1<f64>) -> Array1<f64> {
         ),
         dim,
     };
-    let control = Control {
-        maxiter: 1,
-        gtol: 0.0,
-        istep: 0.1,
-        ..Control::default()
-    };
-    let mut solver = Solver::new(Method::Lbfgs { memory: 10 }, control, dim);
+    let control = Control::default()
+        .with_maxiter(1)
+        .with_gtol(0.0)
+        .with_istep(0.1);
+    let mut solver = Solver::new(Method::lbfgs_with_memory(10), control, dim);
     for _ in 0..2000 {
         let rep = solver.step(&obj, &mut x).unwrap();
         if morse(x.view())
@@ -328,7 +326,7 @@ fn ode12r_reproduces_the_cu_vacancy_counts_of_table_ii() {
     };
     let plain = evaluations(Method::Ode12r, None, 1.0, &band);
     let precon = evaluations(Method::Ode12r, Some(exp), 1.0, &band);
-    let lbfgs = evaluations(Method::Lbfgs { memory: 20 }, None, 1.0, &band);
+    let lbfgs = evaluations(Method::lbfgs_with_memory(20), None, 1.0, &band);
     eprintln!(
         "evaluations per image (1e-1, 1e-3, steps): ODE12r {plain:?}, ODE12r-Exp {precon:?}, L-BFGS {lbfgs:?}; paper NEB ode12r 8 / 27, NEB(p) ode12r 8 / 19"
     );

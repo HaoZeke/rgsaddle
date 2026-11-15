@@ -286,11 +286,9 @@ impl IrcSession {
             ));
         }
         let (_, g0) = surface.eval(saddle.view())?;
-        let params = EigenParams {
-            kind: config.eigen_kind,
-            krylov: config.krylov_dim,
-            ..EigenParams::default()
-        };
+        let params = EigenParams::default()
+            .with_kind(config.eigen_kind)
+            .with_krylov(config.krylov_dim);
         let (mode, _curv, _actions) = lowest_via_fd(
             surface,
             saddle.view(),
@@ -363,11 +361,7 @@ impl IrcSession {
     }
 
     fn trust(&self) -> IrcTrust {
-        IrcTrust {
-            d1: self.d1.clone(),
-            sqrtm: self.sqrtm.clone(),
-            dx: self.radius(),
-        }
+        IrcTrust::new(self.d1.clone(), self.sqrtm.clone(), self.radius())
     }
 
     /// `x_k` less the [`IrcKind::Gs2`] pivot, `(dx / 2) g / |g|` in the
@@ -1172,11 +1166,7 @@ mod tests {
         let sqrtm = sqrt_masses_3n(&[1.0, 4.0]);
         let mut d1_mw = Array1::zeros(6);
         d1_mw[3] = dx;
-        let trust = IrcTrust {
-            d1: to_mw(&d1_mw, &sqrtm, true),
-            sqrtm: sqrtm.clone(),
-            dx,
-        };
+        let trust = IrcTrust::new(to_mw(&d1_mw, &sqrtm, true), sqrtm.clone(), dx);
         let toward_centre = to_mw(&(&d1_mw * -0.3), &sqrtm, true);
         let radial = to_mw(&trust.project(&toward_centre), &sqrtm, false);
         assert!(nrm2(radial.view()) < 1e-12, "{radial}");
