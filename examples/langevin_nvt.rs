@@ -2059,7 +2059,11 @@ fn main() {
             fs::create_dir_all(parent).expect("validation dir");
         }
         let mut out = File::create(&path).expect("diffusivity");
-        writeln!(out, "temperature_K,D_A2_per_ps,error_A2_per_ps,seed,window_ps,hops,channel_Hz,rejected").unwrap();
+        writeln!(
+            out,
+            "temperature_K,D_A2_per_ps,error_A2_per_ps,seed,window_ps,hops,channel_Hz,rejected"
+        )
+        .unwrap();
         for &temperature in &spec.temps {
             let lattice = measured_lattice(temperature);
             for seed in 0..spec.seeds {
@@ -2147,10 +2151,13 @@ fn main() {
                     }
                 }
                 let elapsed = if started { window_ps - 2.0 } else { window_ps };
-                let msd = samples_pos.last().map(|end| {
-                    let d = [end[0] - start[0], end[1] - start[1], end[2] - start[2]];
-                    d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
-                }).unwrap_or(0.0);
+                let msd = samples_pos
+                    .last()
+                    .map(|end| {
+                        let d = [end[0] - start[0], end[1] - start[1], end[2] - start[2]];
+                        d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
+                    })
+                    .unwrap_or(0.0);
                 let d_i = msd / (6.0 * elapsed);
                 let blocks = 4usize;
                 let block_n = (samples_pos.len() / blocks).max(1);
@@ -2164,20 +2171,30 @@ fn main() {
                     let a0 = samples_pos[begin];
                     let a1 = samples_pos[end - 1];
                     let d = [a1[0] - a0[0], a1[1] - a0[1], a1[2] - a0[2]];
-                    let block_time = elapsed * (end - begin) as f64 / samples_pos.len().max(1) as f64;
+                    let block_time =
+                        elapsed * (end - begin) as f64 / samples_pos.len().max(1) as f64;
                     block_d.push((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) / (6.0 * block_time));
                 }
-                let mean = if block_d.is_empty() { d_i } else { block_d.iter().sum::<f64>() / block_d.len() as f64 };
+                let mean = if block_d.is_empty() {
+                    d_i
+                } else {
+                    block_d.iter().sum::<f64>() / block_d.len() as f64
+                };
                 let error = if block_d.len() < 2 {
                     0.0
                 } else {
-                    let var = block_d.iter().map(|value| (value - mean).powi(2)).sum::<f64>()
+                    let var = block_d
+                        .iter()
+                        .map(|value| (value - mean).powi(2))
+                        .sum::<f64>()
                         / (block_d.len() as f64 * (block_d.len() - 1) as f64);
                     var.sqrt()
                 };
                 let channel = hops as f64 / elapsed * 1.0e12 / 8.0;
                 writeln!(out, "{temperature:.0},{d_i:.8e},{error:.8e},{seed},{elapsed:.2},{hops},{channel:.6e},{rejected}").unwrap();
-                println!("msd T {temperature:.0} seed {seed} D {d_i:.4} ± {error:.4} hops {hops} channel {channel:.3e} rejected {rejected}");
+                println!(
+                    "msd T {temperature:.0} seed {seed} D {d_i:.4} ± {error:.4} hops {hops} channel {channel:.3e} rejected {rejected}"
+                );
             }
         }
         return;
