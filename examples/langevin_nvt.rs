@@ -25,6 +25,11 @@
 //! ```
 //!
 //! `MD_CHECK=1` checks the cohesive energy and times one force call.
+//! `MD_BENCH=1` times whole steps and force calls of `MD_BENCH_THREADS`
+//! concurrent 500 K trajectories and prints a hash of the final positions,
+//! so a kernel change can be checked for bit-identical trajectories.
+//! `MD_SKIN_A` (default 1 Å) is the Verlet skin; it changes the summation
+//! order and therefore the trajectories.
 //! A CSV row is skipped when the same temperature, shell, orientation,
 //! seed, and window are already in the output.
 
@@ -38,6 +43,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::thread;
 use std::time::Instant;
 
+use rgsaddle::mic::nearest_integer;
 use rgsaddle::{BOLTZMANN_EV_PER_K, Persistence, SiteOccupancy, angular_scale_rad_s};
 
 const RC: f64 = 5.50679;
@@ -654,6 +660,8 @@ struct MishinCu {
     neigh: Vec<(u32, u32)>,
     anchor: Vec<f64>,
     dilation: Option<f64>,
+    rebuilds: usize,
+    skin: f64,
 }
 
 impl MishinCu {
@@ -679,6 +687,8 @@ impl MishinCu {
             neigh: Vec::new(),
             anchor: Vec::new(),
             dilation: None,
+            rebuilds: 0,
+            skin: env_f64("MD_SKIN_A", 1.0),
         }
     }
 
@@ -688,7 +698,8 @@ impl MishinCu {
             return [0.0; 4];
         }
         let t_grid = (r / TABLE_H).max(0.0);
-        let mut index = t_grid.floor() as usize;
+        // `as` truncates, which is floor for the non-negative `t_grid`.
+        let mut index = t_grid as usize;
         if index + 1 >= self.knots {
             index = self.knots - 2;
         }
@@ -794,9 +805,10 @@ impl EnergyGradient for MishinCu {
             + cell[2][0].abs()
             + cell[2][1].abs()
             < 1.0e-8;
-        let skin = 1.0;
+        let skin = self.skin;
         if orthogonal && lengths.iter().all(|length| *length > 2.0 * (RC + skin)) {
             if self.list_stale(positions, lengths, skin) {
+                self.rebuilds += 1;
                 self.neigh.clear();
                 self.pairs_cell(positions, lengths, RC + skin, true);
                 self.anchor.clear();
@@ -886,7 +898,7 @@ impl MishinCu {
             let mut distance = 0.0;
             for axis in 0..3 {
                 let mut delta = positions[3 * atom + axis] - self.anchor[3 * atom + axis];
-                delta -= lengths[axis] * (delta / lengths[axis]).round();
+                delta -= lengths[axis] * nearest_integer(delta / lengths[axis]);
                 distance += delta * delta;
             }
             if distance > limit {
@@ -907,7 +919,7 @@ impl MishinCu {
             let mut d = [0.0; 3];
             for axis in 0..3 {
                 d[axis] = positions[3 * j + axis] - positions[3 * i + axis];
-                d[axis] -= lengths[axis] * (d[axis] * inverse[axis]).round();
+                d[axis] -= lengths[axis] * nearest_integer(d[axis] * inverse[axis]);
             }
             let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
             if r2 > 1.0e-16 && r2 < cutoff2 {
@@ -992,7 +1004,7 @@ impl MishinCu {
                     let rj = self.packed[slot];
                     let mut d = [rj[0] - ri[0], rj[1] - ri[1], rj[2] - ri[2]];
                     for axis in 0..3 {
-                        d[axis] -= lengths[axis] * (d[axis] * inverse[axis]).round();
+                        d[axis] -= lengths[axis] * nearest_integer(d[axis] * inverse[axis]);
                     }
                     let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
                     if r2 > 1.0e-16 && r2 < cutoff2 {
@@ -3313,6 +3325,108 @@ fn dynamics_note() -> String {
     text
 }
 
+struct Timed<'a> {
+    inner: &'a mut MishinCu,
+    seconds: f64,
+    calls: usize,
+}
+
+impl EnergyGradient for Timed<'_> {
+    fn energy_gradient(
+        &mut self,
+        positions: &[f64],
+        cell: [[f64; 3]; 3],
+        gradient: &mut [f64],
+    ) -> f64 {
+        let start = Instant::now();
+        let energy = self.inner.energy_gradient(positions, cell, gradient);
+        self.seconds += start.elapsed().as_secs_f64();
+        self.calls += 1;
+        energy
+    }
+
+    fn dilation_derivative(&mut self, positions: &[f64], cell: [[f64; 3]; 3]) -> f64 {
+        self.inner.dilation_derivative(positions, cell)
+    }
+}
+
+/// `MD_BENCH_THREADS` independent 500 K Langevin trajectories of a vacancy and
+/// a dumbbell in the `MD_REPEATS` cell, `MD_BENCH_STEPS` steps each, run at
+/// once so the timing includes the contention of a production campaign.
+fn bench_steps() {
+    let threads = env_u64("MD_BENCH_THREADS", 8) as usize;
+    let steps = env_u64("MD_BENCH_STEPS", 2000) as usize;
+    let repeats = env_u64("MD_REPEATS", 13) as usize;
+    let dt_fs = env_f64("MD_DT_FS", 10.0);
+    let a = measured_lattice(500.0);
+    let rows: Vec<(f64, f64, usize, usize, u64)> = thread::scope(|scope| {
+        let handles: Vec<_> = (0..threads)
+            .map(|index| {
+                scope.spawn(move || {
+                    let (positions, cell) =
+                        place_vacancy_dumbbell(repeats, a, [3.0 * a, 2.0 * a, a], [0.0, 0.0, 1.0]);
+                    let dynamics = Dynamics {
+                        kind: DynamicsKind::Langevin,
+                        dt_fs,
+                        temperature: 500.0,
+                        mass: CU_MASS_AMU,
+                        gamma_per_ps: 0.1,
+                        equil_gamma_per_ps: 1.0,
+                        equil_ps: 2.0,
+                        rescale_ps: 0.1,
+                        rescale_window_k: 0.0,
+                        piston_ps: 2.0,
+                        bulk_ev_a3: 0.87,
+                        pressure_ev_a3: 0.0,
+                    };
+                    let mut potential = MishinCu::new();
+                    let mut timed = Timed {
+                        inner: &mut potential,
+                        seconds: 0.0,
+                        calls: 0,
+                    };
+                    let mut state =
+                        MdState::new(&dynamics, &mut timed, positions, cell, 11 + index as u64);
+                    let force_before = timed.seconds;
+                    let calls_before = timed.calls;
+                    let rebuilds_before = timed.inner.rebuilds;
+                    let start = Instant::now();
+                    for _ in 0..steps {
+                        state.advance(&dynamics, &mut timed);
+                    }
+                    (
+                        start.elapsed().as_secs_f64(),
+                        timed.seconds - force_before,
+                        timed.calls - calls_before,
+                        timed.inner.rebuilds - rebuilds_before,
+                        state
+                            .positions
+                            .iter()
+                            .fold(0u64, |hash, x| hash.rotate_left(5) ^ x.to_bits()),
+                    )
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect()
+    });
+    for (index, (wall, force, calls, rebuilds, hash)) in rows.iter().enumerate() {
+        println!(
+            "bench thread {index} steps {steps} ms/step {:.3} force ms/call {:.3} calls {calls} rebuilds {rebuilds} steps/rebuild {:.1} positions {hash:016x}",
+            1.0e3 * wall / steps as f64,
+            1.0e3 * force / *calls as f64,
+            steps as f64 / (*rebuilds).max(1) as f64
+        );
+    }
+    let mean = rows.iter().map(|row| row.0).sum::<f64>() / rows.len() as f64;
+    println!(
+        "bench threads {threads} mean ms/step {:.3}",
+        1.0e3 * mean / steps as f64
+    );
+}
+
 /// Trajectories per temperature in Mwungeli, Liu, and Demkowicz.
 const PAPER_TRIALS: usize = 100;
 const EV_PER_A3_IN_GPA: f64 = 160.217_663;
@@ -3410,6 +3524,10 @@ fn main() {
     if (per_atom + 3.54).abs() > 5.0e-4 || max_force > 1.0e-6 {
         eprintln!("Mishin crystal check failed");
         std::process::exit(1);
+    }
+    if env::var("MD_BENCH").ok().as_deref() == Some("1") {
+        bench_steps();
+        return;
     }
     if env::var("MD_STABILITY").ok().as_deref() == Some("1") {
         let spec = run_spec();
