@@ -4,11 +4,16 @@
 //! executable's test is a vacancy plus a <100> split interstitial on the
 //! Mishin EAM1 that `tests/mishin_cu.rs` evaluates (Mishin, Mehl,
 //! Papaconstantopoulos, Voter, and Kress, Phys. Rev. B 63, 224106 (2001),
-//! Table I). Recombination follows the first method of Mwungeli, Liu, and
-//! Demkowicz, Phys. Rev. Materials 9, 023601 (2025): an atom is
-//! recombined-crystal when its coordination, inside 3.1 Å, is 12, sampled
-//! every 0.25 ps. The volume is the shell sum of those capture
-//! probabilities, not the survival-curve slope in that paper.
+//! Table I). Recombination is read every 0.25 ps. `MD_DETECTOR=site_occupancy`,
+//! the default, calls the pair recombined when every Wigner-Seitz site of the
+//! ideal lattice holds one atom for `MD_CONFIRM_PS`, and dates the capture to
+//! the first sample of that run. `MD_DETECTOR=coordination` is the first
+//! method of Mwungeli, Liu, and Demkowicz, Phys. Rev. Materials 9, 023601
+//! (2025): every atom has 12 neighbours inside 3.1 Å at one sample.
+//!
+//! The lattice constant at each temperature is the zero-total-pressure value
+//! that `direct_md_lattice` in `tests/mishin_cu.rs` writes to
+//! `validation/direct_md_lattice.csv`.
 //!
 //! Time is the same code unit as `npt_lattice` in the copper test.
 //! `angular_scale_rad_s` converts a physical timestep so that
@@ -33,7 +38,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::thread;
 use std::time::Instant;
 
-use rgsaddle::{BOLTZMANN_EV_PER_K, angular_scale_rad_s};
+use rgsaddle::{BOLTZMANN_EV_PER_K, Persistence, SiteOccupancy, angular_scale_rad_s};
 
 const RC: f64 = 5.50679;
 const H_CUT: f64 = 0.50037;
@@ -414,58 +419,69 @@ pub struct TrajectoryOutcome {
     pub dilation: f64,
 }
 
-/// Maxwellian velocities, then `dynamics` until `recombined` or the window.
+/// Maxwellian velocities, then `dynamics` until the defect count `defects`
+/// has read zero for `confirm` consecutive samples, or the window ends.
 ///
-/// `score` is recorded at the start and at the end. Capture time is the
-/// first sample at which `recombined` is true, counted from the Maxwellian
-/// start, equilibration included. Sampling starts after the first interval,
-/// so a geometry that is already recombined is time zero.
-pub fn run_until<P, F, S>(
+/// The count is recorded at the start and at the end. Capture time is the
+/// first sample of the confirming run, counted from the Maxwellian start,
+/// equilibration included; the start itself is sample zero, so a geometry
+/// that is already recombined is time zero. A run that begins inside the
+/// window may finish confirming after it.
+#[allow(clippy::too_many_arguments)]
+pub fn run_until<P, D>(
     dynamics: &Dynamics,
     potential: &mut P,
     positions: Vec<f64>,
     cell: [[f64; 3]; 3],
     window_ps: f64,
     sample_ps: f64,
+    confirm: usize,
     seed: u64,
-    mut recombined: F,
-    mut score: S,
+    mut defects: D,
 ) -> TrajectoryOutcome
 where
     P: EnergyGradient,
-    F: FnMut(&[f64], [[f64; 3]; 3]) -> bool,
-    S: FnMut(&[f64], [[f64; 3]; 3]) -> usize,
+    D: FnMut(&[f64], [[f64; 3]; 3]) -> usize,
 {
     let mut state = MdState::new(dynamics, potential, positions, cell, seed);
-    let initial_score = score(&state.positions, state.cell);
-    if recombined(&state.positions, state.cell) {
+    let initial_score = defects(&state.positions, state.cell);
+    let mut watch = Persistence::new(confirm);
+    let sample_steps = dynamics.steps(sample_ps).max(1);
+    let total_steps = dynamics.steps(window_ps).max(sample_steps);
+    let mut captured = false;
+    let mut when = total_steps;
+    let mut last = initial_score;
+    if let Some(began) = watch.observe(0, initial_score == 0) {
         return TrajectoryOutcome {
             captured: true,
             time_ps: 0.0,
-            steps: 0,
+            steps: began,
             initial_score,
             final_score: initial_score,
             dilation: 1.0,
         };
     }
-    let sample_steps = dynamics.steps(sample_ps).max(1);
-    let total_steps = dynamics.steps(window_ps).max(sample_steps);
-    let mut captured = false;
-    let mut when = total_steps;
-    while state.step < total_steps {
+    while state.step < total_steps || watch.pending() {
         state.advance(dynamics, potential);
-        if state.step % sample_steps == 0 && recombined(&state.positions, state.cell) {
+        if state.step % sample_steps != 0 {
+            continue;
+        }
+        last = defects(&state.positions, state.cell);
+        if let Some(began) = watch.observe(state.step, last == 0) {
             captured = true;
-            when = state.step;
+            when = began;
             break;
         }
+    }
+    if !captured && state.step % sample_steps != 0 {
+        last = defects(&state.positions, state.cell);
     }
     TrajectoryOutcome {
         captured,
         time_ps: when as f64 * dynamics.dt_fs * 1.0e-3,
         steps: when,
         initial_score,
-        final_score: score(&state.positions, state.cell),
+        final_score: last,
         dilation: state.dilation(),
     }
 }
@@ -1098,8 +1114,12 @@ pub fn coordination_deficit(positions: &[f64], cell: [[f64; 3]; 3]) -> usize {
     coord.into_iter().filter(|count| *count != 12).count()
 }
 
-pub fn crystal_recombined(positions: &[f64], cell: [[f64; 3]; 3]) -> bool {
-    coordination_deficit(positions, cell) == 0
+/// Wigner-Seitz sites holding other than one atom.
+pub fn site_defects(sites: &mut SiteOccupancy, positions: &[f64], cell: [[f64; 3]; 3]) -> usize {
+    sites
+        .occupancy(positions, cell)
+        .expect("orthorhombic cell")
+        .defect_sites()
 }
 
 fn fcc(n: usize, a: f64) -> (Vec<f64>, [[f64; 3]; 3]) {
@@ -1236,15 +1256,33 @@ fn nearest(points: &[[f64; 3]], target: [f64; 3], skip: Option<usize>) -> usize 
     best
 }
 
+/// Zero-total-pressure lattice constant and its standard error by temperature,
+/// from `validation/direct_md_lattice.csv`.
+fn zero_pressure_lattices() -> &'static BTreeMap<i64, (f64, f64)> {
+    static TABLE: std::sync::OnceLock<BTreeMap<i64, (f64, f64)>> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("validation/direct_md_lattice.csv");
+        let text = fs::read_to_string(&path).expect("validation/direct_md_lattice.csv");
+        let mut table = BTreeMap::new();
+        for line in text.lines().skip(1) {
+            let fields: Vec<&str> = line.split(',').collect();
+            if let (Some(t), Some(a), Some(e)) = (fields.first(), fields.get(1), fields.get(2))
+                && let (Ok(t), Ok(a), Ok(e)) =
+                    (t.parse::<f64>(), a.parse::<f64>(), e.parse::<f64>())
+            {
+                table.insert(t.round() as i64, (a, e));
+            }
+        }
+        table
+    })
+}
+
 fn measured_lattice(temperature: f64) -> f64 {
-    match temperature as i32 {
-        300 => 3.628311,
-        400 => 3.633713,
-        500 => 3.638666,
-        600 => 3.644160,
-        700 => 3.649788,
-        _ => 3.638666,
-    }
+    zero_pressure_lattices()
+        .get(&(temperature.round() as i64))
+        .unwrap_or_else(|| panic!("no zero-pressure lattice at {temperature} K"))
+        .0
 }
 
 const ORIENTATIONS: [(&str, [f64; 3]); 3] = [
@@ -1265,6 +1303,24 @@ struct Job {
     seed: u64,
 }
 
+/// How a whole-cell trajectory decides the pair has recombined.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Detector {
+    /// Every atom 12-coordinated inside 3.1 Å at one sample.
+    Coordination,
+    /// Every Wigner-Seitz site singly occupied for the confirmation window.
+    SiteOccupancy,
+}
+
+impl Detector {
+    fn label(self) -> &'static str {
+        match self {
+            Detector::Coordination => "coordination",
+            Detector::SiteOccupancy => "site_occupancy",
+        }
+    }
+}
+
 struct RunSpec {
     temps: Vec<f64>,
     seeds: u64,
@@ -1280,6 +1336,8 @@ struct RunSpec {
     rescale_window_k: f64,
     piston_ps: f64,
     bulk_ev_a3: f64,
+    detector: Detector,
+    confirm_ps: f64,
 }
 
 impl RunSpec {
@@ -1308,6 +1366,40 @@ impl RunSpec {
         }
     }
 
+    /// Consecutive samples that confirm a capture.
+    fn confirm_samples(&self) -> usize {
+        match self.detector {
+            Detector::Coordination => 1,
+            Detector::SiteOccupancy => ((self.confirm_ps / SAMPLE_PS).round() as usize).max(1),
+        }
+    }
+
+    /// Columns after the outcome when the detector is not the coordination test.
+    fn detector_suffix(&self) -> String {
+        match self.detector {
+            Detector::Coordination => String::new(),
+            Detector::SiteOccupancy => {
+                format!(",{},{:.4}", self.detector.label(), self.confirm_ps)
+            }
+        }
+    }
+
+    fn header(&self) -> String {
+        let base = match self.detector {
+            Detector::Coordination => HEADER.to_string(),
+            Detector::SiteOccupancy => {
+                HEADER.replace(
+                    "initial_non12,final_non12",
+                    "initial_defect_sites,final_defect_sites",
+                ) + DETECTOR_HEADER
+            }
+        };
+        match self.kind {
+            DynamicsKind::Langevin => base,
+            DynamicsKind::NphNve => base + DYNAMICS_HEADER,
+        }
+    }
+
     /// Columns appended to a row when the dynamics are not Langevin.
     fn dynamics_suffix(&self) -> String {
         match self.kind {
@@ -1325,6 +1417,23 @@ impl RunSpec {
 }
 
 const DYNAMICS_HEADER: &str = ",dynamics,equil_ps,rescale_ps,rescale_window_K,piston_ps";
+const DETECTOR_HEADER: &str = ",detector,confirm_ps";
+
+/// Detector of a trajectory row and the index of its dynamics columns.
+/// Rows without detector columns predate them and used the coordination test.
+fn row_detector(fields: &[&str]) -> (Detector, f64, usize) {
+    match fields.get(19) {
+        Some(label) if *label == Detector::SiteOccupancy.label() => (
+            Detector::SiteOccupancy,
+            fields
+                .get(20)
+                .and_then(|text| text.parse().ok())
+                .unwrap_or(f64::NAN),
+            21,
+        ),
+        _ => (Detector::Coordination, 0.0, 19),
+    }
+}
 
 fn env_f64(key: &str, default: f64) -> f64 {
     env::var(key)
@@ -1374,6 +1483,12 @@ fn run_spec() -> RunSpec {
         rescale_window_k: env_f64("MD_RESCALE_WINDOW_K", 0.0),
         piston_ps: env_f64("MD_PISTON_PS", 2.0),
         bulk_ev_a3: env_f64("MD_BULK_EV_A3", 0.87),
+        detector: match env::var("MD_DETECTOR").ok().as_deref() {
+            Some("coordination") => Detector::Coordination,
+            Some("site_occupancy") | None => Detector::SiteOccupancy,
+            Some(other) => panic!("MD_DETECTOR={other} is not site_occupancy or coordination"),
+        },
+        confirm_ps: env_f64("MD_CONFIRM_PS", 1.0),
     }
 }
 
@@ -1535,17 +1650,35 @@ fn settled_keys(path: &std::path::Path, target_window: f64) -> BTreeMap<String, 
 fn run_job(potential: &mut MishinCu, spec: &RunSpec, job: &Job) -> (usize, TrajectoryOutcome) {
     let (positions, cell) = place_vacancy_dumbbell(spec.repeats, job.lattice, job.shell, job.axis);
     let n_atoms = positions.len() / 3;
-    let outcome = run_until(
-        &spec.dynamics(job.temperature),
-        potential,
-        positions,
-        cell,
-        spec.window_ps,
-        SAMPLE_PS,
-        job.seed,
-        crystal_recombined,
-        coordination_deficit,
-    );
+    let dynamics = spec.dynamics(job.temperature);
+    let outcome = match spec.detector {
+        Detector::Coordination => run_until(
+            &dynamics,
+            potential,
+            positions,
+            cell,
+            spec.window_ps,
+            SAMPLE_PS,
+            1,
+            job.seed,
+            coordination_deficit,
+        ),
+        Detector::SiteOccupancy => {
+            let mut sites = SiteOccupancy::new(&fcc(spec.repeats, job.lattice).0, cell, &positions)
+                .expect("orthorhombic reference");
+            run_until(
+                &dynamics,
+                potential,
+                positions,
+                cell,
+                spec.window_ps,
+                SAMPLE_PS,
+                spec.confirm_samples(),
+                job.seed,
+                |positions: &[f64], cell| site_defects(&mut sites, positions, cell),
+            )
+        }
+    };
     (n_atoms, outcome)
 }
 
@@ -1570,7 +1703,7 @@ fn format_row(spec: &RunSpec, job: &Job, n_atoms: usize, outcome: &TrajectoryOut
         outcome.steps,
         outcome.initial_score,
         outcome.final_score,
-        spec.dynamics_suffix(),
+        spec.detector_suffix() + &spec.dynamics_suffix(),
     )
 }
 
@@ -1642,7 +1775,7 @@ fn first_method_report(csv: &std::path::Path) -> String {
             captured: captured == 1,
             time_ps,
             gamma: fields[12].parse().unwrap_or(f64::NAN),
-            kind: kind_of(&dynamics_columns(&fields, 19)),
+            kind: kind_of(&dynamics_columns(&fields, row_detector(&fields).2)),
         });
     }
     if trials.is_empty() {
@@ -1828,17 +1961,13 @@ fn first_method_report(csv: &std::path::Path) -> String {
                 text.push_str("No Table 1 diffusivity is recorded for this temperature, so k is not converted with it.\n\n");
             }
         }
-        match measured_diffusivity(members[0].kind, members[0].gamma, *temperature) {
-            Some((d_i, d_sigma)) if d_i > 0.0 => {
+        match measured_diffusivity(members[0].kind, members[0].gamma, *temperature, lattice) {
+            Some((d_i, d_sigma, file)) if d_i > 0.0 => {
                 let per_atom = rate_to_volume(rate, lattice, d_i);
                 let rel = ((rate_sigma / rate).powi(2) + (d_sigma / d_i).powi(2)).sqrt();
                 text.push_str(&format!(
                     "The free-dumbbell diffusivity measured with these dynamics (`{}`) is {d_i:.3} ± {d_sigma:.3} Å²/ps. With it, first-method V_iv = {per_atom:.2} ± {:.2} Ω.\n\n",
-                    sia_d_default(members[0].kind, members[0].gamma)
-                        .with_extension("md")
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or(""),
+                    file.replace(".csv", ".md"),
                     per_atom * rel
                 ));
             }
@@ -1871,6 +2000,8 @@ struct RandomSet {
     gamma: f64,
     kind: DynamicsKind,
     dynamics: Option<(String, [f64; 4])>,
+    /// Detector, confirmation window in ps, and the dynamics column index.
+    detector: (Detector, f64, usize),
 }
 
 /// Whole-cell trajectories of one random-vacancy CSV. With NPH-then-NVE
@@ -1884,6 +2015,7 @@ fn read_random_set(csv: &std::path::Path) -> RandomSet {
     let mut window = 0.0_f64;
     let mut gamma = f64::NAN;
     let mut dynamics = None;
+    let mut detector = (Detector::Coordination, 0.0, 19);
     let mut production_lattices = Vec::new();
     for line in deduped_lines(csv) {
         let fields: Vec<&str> = line.split(',').collect();
@@ -1913,7 +2045,8 @@ fn read_random_set(csv: &std::path::Path) -> RandomSet {
         repeats = rep;
         window = window.max(span);
         gamma = fields[12].parse().unwrap_or(f64::NAN);
-        dynamics = dynamics_columns(&fields, 19);
+        dynamics = dynamics_columns(&fields, row_detector(&fields).2);
+        detector = row_detector(&fields);
         if let Some((_, [equil_ps, ..])) = &dynamics
             && time_ps > *equil_ps
         {
@@ -1934,6 +2067,7 @@ fn read_random_set(csv: &std::path::Path) -> RandomSet {
         gamma,
         kind,
         dynamics,
+        detector,
     }
 }
 
@@ -1947,13 +2081,12 @@ fn random_survival_note(csv: &std::path::Path) -> String {
         gamma,
         kind,
         dynamics,
+        detector,
     } = read_random_set(csv);
-    let measured_note = sia_d_default(kind, gamma).with_extension("md");
-    let measured_name = measured_note
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("")
-        .to_string();
+    let measured = measured_diffusivity(kind, gamma, temperature, lattice);
+    let measured_name = measured
+        .map(|(_, _, file)| file.replace(".csv", ".md"))
+        .unwrap_or_else(|| "no matching campaign".to_string());
     let mut text = String::new();
     text.push_str("# Random-vacancy survival, Mishin Cu\n\n");
     text.push_str("The vacancy is the lattice site nearest the cell center. The <100> dumbbell host is drawn uniformly from the other sites of the 13³ cell, and the dumbbell axis uniformly from the three orientations. Under periodic boundaries the separation is uniform over the cell, which is the ensemble in section 2 of Mwungeli, Liu, and Demkowicz, Phys. Rev. Materials 9, 023601 (2025). The fit is ln(n(t)/N) = -(k/V_model) t through the origin, sampled every 25 ps, with V_model the cell volume. V_iv/Ω = 4k / (α a D_i) with α = 2/3 and Ω = a³/4.\n\n");
@@ -1970,8 +2103,11 @@ fn random_survival_note(csv: &std::path::Path) -> String {
         text.push_str("No trajectories.\n");
         return text;
     }
+    if detector.0 == Detector::SiteOccupancy {
+        text.push_str(&format!("A trajectory is captured when every Wigner-Seitz site of the ideal lattice holds one atom at {:.0} consecutive samples, {:.2} ps; the capture time is the first of them. Sites move with the cell and the centroid drift is removed. The last two outcome columns count sites holding other than one atom at the start and at the end.\n\n", (detector.1 / SAMPLE_PS).round(), detector.1));
+    }
     let table_d = table_diffusivity(temperature);
-    let measured_d = measured_diffusivity(kind, gamma, temperature);
+    let measured_d = measured.map(|(d, sigma, _)| (d, sigma));
     let fmt_d = |d: Option<(f64, f64)>| match d {
         Some((value, error)) => format!("{value:.3} ± {error:.3} Å²/ps"),
         None => "not available".to_string(),
@@ -2569,17 +2705,22 @@ fn sia_d_trajectory(
     rows
 }
 
-fn sia_d_default(kind: DynamicsKind, gamma_per_ps: f64) -> PathBuf {
-    let name = match kind {
-        DynamicsKind::Langevin if (gamma_per_ps - 0.1).abs() < 1.0e-9 => {
-            "direct_md_sia_d_long.csv".to_string()
-        }
-        DynamicsKind::Langevin => format!("direct_md_sia_d_gamma{gamma_per_ps}.csv"),
-        DynamicsKind::NphNve => "direct_md_sia_d_nph_nve.csv".to_string(),
-    };
+fn validation_file(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("validation")
         .join(name)
+}
+
+/// Output of a new free-dumbbell campaign at the current lattice table.
+fn sia_d_default(kind: DynamicsKind, gamma_per_ps: f64) -> PathBuf {
+    let name = match kind {
+        DynamicsKind::Langevin if (gamma_per_ps - 0.1).abs() < 1.0e-9 => {
+            "direct_md_sia_d_p0.csv".to_string()
+        }
+        DynamicsKind::Langevin => format!("direct_md_sia_d_p0_gamma{gamma_per_ps}.csv"),
+        DynamicsKind::NphNve => "direct_md_sia_d_nph_nve.csv".to_string(),
+    };
+    validation_file(&name)
 }
 
 fn sia_d_path(spec: &RunSpec) -> PathBuf {
@@ -2589,11 +2730,42 @@ fn sia_d_path(spec: &RunSpec) -> PathBuf {
     sia_d_default(spec.kind, spec.gamma_per_ps)
 }
 
-/// The free-dumbbell campaigns the notes compare, in table order.
-const SIA_D_CAMPAIGNS: [(DynamicsKind, f64); 3] = [
-    (DynamicsKind::Langevin, 0.1),
-    (DynamicsKind::Langevin, 0.01),
-    (DynamicsKind::NphNve, 0.0),
+struct SiaCampaign {
+    kind: DynamicsKind,
+    gamma: f64,
+    file: &'static str,
+    label: &'static str,
+}
+
+/// The free-dumbbell campaigns the notes compare, in table order. The first
+/// is the reference for ratios. The first two Langevin campaigns ran at the
+/// earlier `npt_lattice` constants, which balanced only the configurational
+/// stress; `direct_md_sia_d_p0.csv` runs at zero total pressure.
+const SIA_D_CAMPAIGNS: [SiaCampaign; 4] = [
+    SiaCampaign {
+        kind: DynamicsKind::Langevin,
+        gamma: 0.1,
+        file: "direct_md_sia_d_long.csv",
+        label: "Langevin, γ = 0.1/ps",
+    },
+    SiaCampaign {
+        kind: DynamicsKind::Langevin,
+        gamma: 0.01,
+        file: "direct_md_sia_d_gamma0.01.csv",
+        label: "Langevin, γ = 0.01/ps",
+    },
+    SiaCampaign {
+        kind: DynamicsKind::NphNve,
+        gamma: 0.0,
+        file: "direct_md_sia_d_nph_nve.csv",
+        label: "NPH then NVE, rescaled",
+    },
+    SiaCampaign {
+        kind: DynamicsKind::Langevin,
+        gamma: 0.1,
+        file: "direct_md_sia_d_p0.csv",
+        label: "Langevin, γ = 0.1/ps, zero total pressure",
+    },
 ];
 
 struct SiaBlock {
@@ -2750,14 +2922,25 @@ fn kind_of(dynamics: &Option<(String, [f64; 4])>) -> DynamicsKind {
     }
 }
 
-/// The free-dumbbell D measured with the given dynamics, from its default CSV.
+/// The free-dumbbell D, its error, and its CSV for the given dynamics. A
+/// Langevin campaign must also have run at `lattice`; NPH-then-NVE sets its
+/// own lattice.
 fn measured_diffusivity(
     kind: DynamicsKind,
     gamma_per_ps: f64,
     temperature: f64,
-) -> Option<(f64, f64)> {
-    let rows = read_sia_blocks(&sia_d_default(kind, gamma_per_ps));
-    sia_estimate(&rows, temperature).map(|estimate| (estimate.d, estimate.sigma))
+    lattice: f64,
+) -> Option<(f64, f64, &'static str)> {
+    SIA_D_CAMPAIGNS
+        .iter()
+        .filter(|campaign| campaign.kind == kind && (campaign.gamma - gamma_per_ps).abs() < 1.0e-9)
+        .find_map(|campaign| {
+            let rows = read_sia_blocks(&validation_file(campaign.file));
+            let estimate = sia_estimate(&rows, temperature)?;
+            let matches =
+                kind == DynamicsKind::NphNve || (estimate.lattice - lattice).abs() < 1.0e-5;
+            matches.then_some((estimate.d, estimate.sigma, campaign.file))
+        })
 }
 
 fn defect_pair_diffusivity(temperature: f64) -> Option<(f64, f64)> {
@@ -2789,11 +2972,21 @@ fn sia_d_note(csv: &std::path::Path) -> String {
     match (kind_of(&dynamics), &dynamics) {
         (DynamicsKind::NphNve, Some((_, [equil_ps, rescale_ps, window_k, piston_ps]))) => {
             text.push_str("# Free dumbbell diffusivity, Mishin Cu, NPH then NVE\n\n");
-            text.push_str(&format!("One <100> dumbbell in the perfect 13×13×13 cell (8789 atoms) on the Mishin EAM1 of `tests/mishin_cu.rs`, started at the lattice constant of the V_iv runs. The dynamics follow the protocol Mwungeli, Liu, and Demkowicz describe: Maxwellian start, {equil_ps:.0} ps of isotropic zero-pressure NPH (Andersen piston, period {piston_ps:.1} ps), then NVE in the mean box of the second half of that stage. Both stages rescale velocities to the target temperature every {rescale_ps:.2} ps whenever it is off by more than {window_k:.1} K. The timestep is the column `dt_fs`; the lattice column is the production lattice constant after the NPH stage. The dumbbell"));
+            text.push_str(&format!("One <100> dumbbell in the perfect 13×13×13 cell (8789 atoms) on the Mishin EAM1 of `tests/mishin_cu.rs`, started at a lattice constant from `npt_lattice`. The dynamics follow the protocol Mwungeli, Liu, and Demkowicz describe: Maxwellian start, {equil_ps:.0} ps of isotropic zero-pressure NPH (Andersen piston, period {piston_ps:.1} ps), then NVE in the mean box of the second half of that stage. Both stages rescale velocities to the target temperature every {rescale_ps:.2} ps whenever it is off by more than {window_k:.1} K. The timestep is the column `dt_fs`; the lattice column is the production lattice constant after the NPH stage. The dumbbell"));
         }
         _ => {
             text.push_str("# Free dumbbell diffusivity, Mishin Cu\n\n");
-            text.push_str("One <100> dumbbell in the perfect 13×13×13 cell (8789 atoms) on the Mishin EAM1 of `tests/mishin_cu.rs`, at the lattice constant of the V_iv runs. The dynamics are the V_iv dynamics: Maxwellian start, 2 ps of Langevin at gamma = 1/ps, then gamma and dt from the columns `gamma_per_ps` and `dt_fs`. The dumbbell");
+            let current = rows.first().is_some_and(|row| {
+                zero_pressure_lattices()
+                    .get(&(row.temperature.round() as i64))
+                    .is_some_and(|(a, _)| (a - row.lattice).abs() < 1.0e-5)
+            });
+            text.push_str(if current {
+                "One <100> dumbbell in the perfect 13×13×13 cell (8789 atoms) on the Mishin EAM1 of `tests/mishin_cu.rs`, at the zero-total-pressure lattice constant of `direct_md_lattice.csv`."
+            } else {
+                "One <100> dumbbell in the perfect 13×13×13 cell (8789 atoms) on the Mishin EAM1 of `tests/mishin_cu.rs`, at the lattice constant `npt_lattice` produced while it balanced only the configurational stress, with no kinetic term."
+            });
+            text.push_str(" The dynamics are the V_iv dynamics: Maxwellian start, 2 ps of Langevin at gamma = 1/ps, then gamma and dt from the columns `gamma_per_ps` and `dt_fs`. The dumbbell");
         }
     }
     text.push_str(" is the one doubly occupied Wigner-Seitz cell of the ideal lattice, found every 0.1 ps after the centre-of-mass drift of the cell is removed. A sample with no single doubly occupied cell is skipped and counted in `unresolved_samples`. Each row is the dumbbell-site displacement over one production block of `tau_ps`.\n\n");
@@ -2860,6 +3053,14 @@ fn campaign_label(kind: DynamicsKind, gamma_per_ps: f64) -> String {
     }
 }
 
+/// Whole-cell ensemble written by the site-occupancy detector.
+fn random_sites_path(kind: DynamicsKind, temperature: f64) -> PathBuf {
+    validation_file(&format!(
+        "direct_md_random_sites_{}_{temperature:.0}K.csv",
+        kind.label()
+    ))
+}
+
 fn ratio_with_error(top: (f64, f64), bottom: (f64, f64)) -> (f64, f64, f64) {
     let ratio = top.0 / bottom.0;
     let error = ratio.abs() * ((top.1 / top.0).powi(2) + (bottom.1 / bottom.0).powi(2)).sqrt();
@@ -2867,20 +3068,10 @@ fn ratio_with_error(top: (f64, f64), bottom: (f64, f64)) -> (f64, f64, f64) {
     (ratio, error, z)
 }
 
-fn random_default(kind: DynamicsKind) -> PathBuf {
-    let name = match kind {
-        DynamicsKind::Langevin => "direct_md_random.csv",
-        DynamicsKind::NphNve => "direct_md_random_nph_nve.csv",
-    };
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("validation")
-        .join(name)
-}
-
-/// Every default free-dumbbell note, then the cross-dynamics comparison.
+/// Every free-dumbbell note, then the cross-dynamics comparison.
 fn write_sia_d_notes() {
-    for (kind, gamma) in SIA_D_CAMPAIGNS {
-        let path = sia_d_default(kind, gamma);
+    for campaign in &SIA_D_CAMPAIGNS {
+        let path = validation_file(campaign.file);
         if path.exists() {
             fs::write(note_path(&path), sia_d_note(&path)).expect("note");
         }
@@ -2890,36 +3081,42 @@ fn write_sia_d_notes() {
 }
 
 fn dynamics_note() -> String {
+    let temperatures = [300.0_f64, 500.0, 700.0];
     let mut text = String::new();
-    text.push_str("# Thermostat test, Mishin Cu\n\n");
-    text.push_str("Our free-dumbbell D under Langevin at γ = 0.1/ps is larger than the Table 1 D_i of Mwungeli, Liu, and Demkowicz, Phys. Rev. Materials 9, 023601 (2025), which they quote from Ref. [12], B. Zhang et al., Phys. Rev. Materials 6, 053605 (2022), and our whole-cell k at 500 K is larger than the k implied by their Table 1; the ratios are in the tables below. Their trajectories are NPH for 30 ps, then NVE with velocity rescaling. This note repeats the measurements under that protocol and under Langevin with ten times weaker friction. Every campaign uses the same potential, 13³ cell, timestep, seeds, and blocks; only the dynamics differ. Each number below is read from the CSV named in its section.\n\n");
+    text.push_str("# Thermostat, lattice, and detector tests, Mishin Cu\n\n");
+    text.push_str("Our free-dumbbell D under Langevin at γ = 0.1/ps is larger than the Table 1 D_i of Mwungeli, Liu, and Demkowicz, Phys. Rev. Materials 9, 023601 (2025), which they quote from Ref. [12], B. Zhang et al., Phys. Rev. Materials 6, 053605 (2022), and our first whole-cell k at 500 K is larger than the k implied by their Table 1. Their trajectories are NPH for 30 ps, then NVE with velocity rescaling, at zero pressure. This note repeats the D measurement under that protocol, under Langevin with ten times weaker friction, and under Langevin at the zero-total-pressure lattice; and the whole-cell k with a Wigner-Seitz capture test under Langevin and NPH-then-NVE. Every campaign uses the same potential, 13³ cell, timestep, seeds, and blocks. Each number below is read from the CSV named in its row.\n\n");
     text.push_str("## Free dumbbell diffusivity\n\n");
-    text.push_str("D for one trajectory is the block mean of |Δr|² over 6τ of the doubly occupied Wigner-Seitz cell; σ is the standard error across trajectories. Ratios carry both errors in quadrature, and z is the difference over the two errors in quadrature. The reference for the last two columns is Langevin at γ = 0.1/ps.\n\n");
-    let mut sources = Vec::new();
-    for (kind, gamma) in SIA_D_CAMPAIGNS {
-        let path = sia_d_default(kind, gamma);
-        let name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("")
-            .to_string();
-        sources.push((kind, gamma, read_sia_blocks(&path), name));
-    }
-    text.push_str("| T (K) | dynamics | CSV | a (Å) | seeds | blocks | τ (ps) | D (Å²/ps) | σ | σ/D | D / Table 1 | D / Langevin γ = 0.1 | z |\n|---:|:---|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
-    for temperature in [300.0_f64, 500.0, 700.0] {
-        let reference = sia_estimate(&sources[0].2, temperature).map(|e| (e.d, e.sigma));
-        for (kind, gamma, rows, name) in &sources {
+    text.push_str("D for one trajectory is the block mean of |Δr|² over 6τ of the doubly occupied Wigner-Seitz cell; σ is the standard error across trajectories. Ratios carry both errors in quadrature, and z is the difference over the two errors in quadrature. The reference for the last two columns is the first campaign.\n\n");
+    let sources: Vec<(&SiaCampaign, Vec<SiaBlock>)> = SIA_D_CAMPAIGNS
+        .iter()
+        .map(|campaign| (campaign, read_sia_blocks(&validation_file(campaign.file))))
+        .collect();
+    let reference_label = sources[0].0.label;
+    text.push_str(&format!("| T (K) | dynamics | CSV | a (Å) | seeds | blocks | τ (ps) | D (Å²/ps) | σ | σ/D | D / Table 1 | D / {reference_label} | z |\n|---:|:---|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n"));
+    let mean_lattice = |rows: &[SiaBlock], temperature: f64| -> Option<(f64, f64, usize)> {
+        let mut lattices: Vec<f64> = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for row in rows.iter().filter(|row| row.temperature == temperature) {
+            if seen.insert(row.seed) {
+                lattices.push(row.lattice);
+            }
+        }
+        if lattices.is_empty() {
+            return None;
+        }
+        let n = lattices.len() as f64;
+        let mean = lattices.iter().sum::<f64>() / n;
+        let sd =
+            (lattices.iter().map(|a| (a - mean).powi(2)).sum::<f64>() / (n - 1.0).max(1.0)).sqrt();
+        Some((mean, sd, lattices.len()))
+    };
+    for temperature in temperatures {
+        let reference = sia_estimate(&sources[0].1, temperature).map(|e| (e.d, e.sigma));
+        for (index, (campaign, rows)) in sources.iter().enumerate() {
             let Some(estimate) = sia_estimate(rows, temperature) else {
                 continue;
             };
-            let mut lattices: Vec<f64> = Vec::new();
-            let mut seen = std::collections::BTreeSet::new();
-            for row in rows.iter().filter(|row| row.temperature == temperature) {
-                if seen.insert(row.seed) {
-                    lattices.push(row.lattice);
-                }
-            }
-            let lattice = lattices.iter().sum::<f64>() / lattices.len().max(1) as f64;
+            let lattice = mean_lattice(rows, temperature).map_or(f64::NAN, |(a, _, _)| a);
             let table = table_diffusivity(temperature)
                 .map(|t| {
                     let (ratio, error, _) = ratio_with_error((estimate.d, estimate.sigma), t);
@@ -2927,15 +3124,16 @@ fn dynamics_note() -> String {
                 })
                 .unwrap_or_else(|| "-".to_string());
             let versus = match reference {
-                Some(base) if !(sources[0].0 == *kind && sources[0].1 == *gamma) => {
+                Some(base) if index > 0 => {
                     let (ratio, error, z) = ratio_with_error((estimate.d, estimate.sigma), base);
                     format!("{ratio:.3} ± {error:.3} | {z:.2}")
                 }
                 _ => "- | -".to_string(),
             };
             text.push_str(&format!(
-                "| {temperature:.0} | {} | `{name}` | {lattice:.6} | {} | {} | {:.1} | {:.4} | {:.4} | {:.1}% | {table} | {versus} |\n",
-                campaign_label(*kind, *gamma),
+                "| {temperature:.0} | {} | `{}` | {lattice:.6} | {} | {} | {:.1} | {:.4} | {:.4} | {:.1}% | {table} | {versus} |\n",
+                campaign.label,
+                campaign.file,
                 estimate.seeds,
                 estimate.blocks,
                 estimate.tau,
@@ -2947,8 +3145,8 @@ fn dynamics_note() -> String {
     }
     let mut table_low = f64::INFINITY;
     let mut table_high = f64::NEG_INFINITY;
-    for (_, _, rows, _) in &sources {
-        for temperature in [300.0_f64, 500.0, 700.0] {
+    for (_, rows) in &sources {
+        for temperature in temperatures {
             if let (Some(estimate), Some((d_i, _))) = (
                 sia_estimate(rows, temperature),
                 table_diffusivity(temperature),
@@ -2959,13 +3157,13 @@ fn dynamics_note() -> String {
         }
     }
     text.push('\n');
-    for (kind, gamma, rows, _) in sources.iter().skip(1) {
+    for (campaign, rows) in sources.iter().skip(1) {
         let mut low = f64::INFINITY;
         let mut high = f64::NEG_INFINITY;
-        for temperature in [300.0_f64, 500.0, 700.0] {
+        for temperature in temperatures {
             if let (Some(top), Some(base)) = (
                 sia_estimate(rows, temperature),
-                sia_estimate(&sources[0].2, temperature),
+                sia_estimate(&sources[0].1, temperature),
             ) {
                 low = low.min(top.d / base.d);
                 high = high.max(top.d / base.d);
@@ -2973,8 +3171,8 @@ fn dynamics_note() -> String {
         }
         if low.is_finite() {
             text.push_str(&format!(
-                "{} over Langevin at γ = 0.1/ps: D ratio {low:.3} to {high:.3} across temperatures.\n",
-                campaign_label(*kind, *gamma)
+                "{} over {reference_label}: D ratio {low:.3} to {high:.3} across temperatures.\n",
+                campaign.label
             ));
         }
     }
@@ -2983,7 +3181,7 @@ fn dynamics_note() -> String {
             "Every campaign over Table 1: D ratio {table_low:.3} to {table_high:.3}.\n"
         ));
     }
-    let table_line: Vec<String> = [300.0_f64, 500.0, 700.0]
+    let table_line: Vec<String> = temperatures
         .iter()
         .filter_map(|t| table_diffusivity(*t).map(|(d, e)| format!("{t:.0} K {d:.3} ± {e:.3}")))
         .collect();
@@ -2991,101 +3189,127 @@ fn dynamics_note() -> String {
         "\nTable 1 D_i (Å²/ps): {}.\n\n",
         table_line.join("; ")
     ));
-    text.push_str("## Lattice constant after NPH\n\n");
-    text.push_str("The Langevin runs use the lattice constant of `npt_lattice` in `tests/mishin_cu.rs`. Its Berendsen loop drives the trace of the configurational stress from `evaluate` to zero, with no kinetic term, so that lattice carries the kinetic pressure N k_B T / V listed in the last column. The NPH stage uses the full virial pressure (2K - dE/dλ) / 3V; its column is the mean and standard deviation over trajectories of the production lattice constant. Table 1 lists the paper's zero-pressure lattice constants.\n\n| T (K) | Langevin runs (Å) | after NPH (Å) | sd | trajectories | Table 1 (Å) | N k_B T / V at the Langevin lattice (GPa) |\n|---:|---:|---:|---:|---:|---:|---:|\n");
-    let nph_rows = &sources[2].2;
-    for temperature in [300.0_f64, 500.0, 700.0] {
-        let mut lattices = Vec::new();
-        let mut seen = std::collections::BTreeSet::new();
-        for row in nph_rows.iter().filter(|row| row.temperature == temperature) {
-            if seen.insert(row.seed) {
-                lattices.push(row.lattice);
-            }
-        }
-        if lattices.is_empty() {
-            continue;
-        }
-        let n = lattices.len() as f64;
-        let mean = lattices.iter().sum::<f64>() / n;
-        let sd =
-            (lattices.iter().map(|a| (a - mean).powi(2)).sum::<f64>() / (n - 1.0).max(1.0)).sqrt();
-        let a = measured_lattice(temperature);
-        let kinetic_gpa = 4.0 * BOLTZMANN_EV_PER_K * temperature / a.powi(3) * EV_PER_A3_IN_GPA;
-        text.push_str(&format!(
-            "| {temperature:.0} | {a:.6} | {mean:.6} | {sd:.6} | {} | {} | {kinetic_gpa:.3} |\n",
-            lattices.len(),
-            table_lattice(temperature).map_or("-".to_string(), |a| format!("{a:.3}")),
-        ));
-    }
-    text.push_str("\n## Whole-cell k at 500 K\n\n");
-    text.push_str("Random-vacancy ensembles as in `direct_md_random.md`: the through-origin fit of ln(n/N) every 25 ps up to the longest window, σ_k from 400 bootstrap resamples. V_iv/Ω = 4k / (α a D_i) with α = 2/3; the total σ adds the D_i error in quadrature. Own D is the free-dumbbell D measured with the same dynamics. The Table 1 row backs k out of the k-method volume with the Table 1 D_i and the paper's lattice constant.\n\n");
-    text.push_str("| dynamics | CSV | N | captured | t_max (ps) | a (Å) | k (Å³/ps) | σ_k | own D (Å²/ps) | V_iv/Ω, own D | σ | V_iv/Ω, Table 1 D | σ |\n|:---|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
-    let mut rates = Vec::new();
-    for kind in [DynamicsKind::Langevin, DynamicsKind::NphNve] {
-        let path = random_default(kind);
-        let set = read_random_set(&path);
-        if set.trials.is_empty() {
-            continue;
-        }
-        let t_max = set.window;
-        let (rate, rate_sigma) = bootstrap_rate(&set.trials, t_max, set.lattice, set.repeats);
-        let convert = |d: Option<(f64, f64)>| match d {
-            Some((d_i, d_sigma)) => {
-                let volume = rate_to_volume(rate, set.lattice, d_i);
-                let total = volume * ((rate_sigma / rate).powi(2) + (d_sigma / d_i).powi(2)).sqrt();
-                (
-                    format!("{d_i:.3} ± {d_sigma:.3}"),
-                    format!("{volume:.2} | {total:.2}"),
-                )
-            }
-            None => ("-".to_string(), "- | -".to_string()),
+    text.push_str("## Lattice constant\n\n");
+    text.push_str(&format!("The first two campaigns ran at the lattice constants `npt_lattice` in `tests/mishin_cu.rs` produced while its Berendsen loop balanced only the configurational stress from `evaluate`; that lattice carries the kinetic pressure N k_B T / V in the last column. `npt_lattice` now subtracts N k_B T / V from the tension, so it reaches zero total pressure; `direct_md_lattice` in that file writes the result to `direct_md_lattice.csv` (σ from eight blocks of the averaged half), and the driver reads its lattice constants from there. The NPH column is the mean and standard deviation over trajectories of the production lattice constant of `{}`, whose barostat uses the full virial pressure (2K - dE/dλ) / 3V. Table 1 lists the paper's zero-pressure lattice constants.\n\n| T (K) | configurational-stress lattice (Å) | zero total pressure (Å) | σ | after NPH (Å) | sd | trajectories | Table 1 (Å) | N k_B T / V at the configurational-stress lattice (GPa) |\n|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n", sources[2].0.file));
+    for temperature in temperatures {
+        let old = mean_lattice(&sources[0].1, temperature);
+        let nph = mean_lattice(&sources[2].1, temperature);
+        let zero = zero_pressure_lattices()
+            .get(&(temperature.round() as i64))
+            .copied();
+        let cell = |value: Option<f64>, digits: usize| {
+            value.map_or("-".to_string(), |v| format!("{v:.digits$}"))
         };
-        let (own_d, own_v) = convert(measured_diffusivity(set.kind, set.gamma, set.temperature));
-        let (_, table_v) = convert(table_diffusivity(set.temperature));
+        let kinetic_gpa = old
+            .map(|(a, _, _)| 4.0 * BOLTZMANN_EV_PER_K * temperature / a.powi(3) * EV_PER_A3_IN_GPA);
         text.push_str(&format!(
-            "| {} | `{}` | {} | {} | {t_max:.0} | {:.6} | {rate:.2} | {rate_sigma:.2} | {own_d} | {own_v} | {table_v} |\n",
-            campaign_label(set.kind, set.gamma),
-            path.file_name().and_then(|name| name.to_str()).unwrap_or(""),
-            set.trials.len(),
-            set.trials.iter().filter(|(hit, time)| *hit && *time <= t_max).count(),
-            set.lattice,
+            "| {temperature:.0} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+            cell(old.map(|(a, _, _)| a), 6),
+            cell(zero.map(|(a, _)| a), 6),
+            cell(zero.map(|(_, e)| e), 6),
+            cell(nph.map(|(a, _, _)| a), 6),
+            cell(nph.map(|(_, sd, _)| sd), 6),
+            nph.map_or("-".to_string(), |(_, _, n)| n.to_string()),
+            cell(table_lattice(temperature), 3),
+            cell(kinetic_gpa, 3),
         ));
-        rates.push((set.kind, (rate, rate_sigma)));
     }
-    if let (Some((k_mean, k_sigma, _, _)), Some((d_i, d_sigma)), Some(a_p)) = (
-        table_volume(500.0),
-        table_diffusivity(500.0),
-        table_lattice(500.0),
-    ) {
-        let k_paper = k_mean * a_p * DUMBBELL_ALPHA * d_i / 4.0;
-        let k_paper_sigma = k_paper * ((k_sigma / k_mean).powi(2) + (d_sigma / d_i).powi(2)).sqrt();
-        text.push_str(&format!(
-            "| Table 1, k-method | - | {PAPER_TRIALS} | - | - | {a_p:.3} | {k_paper:.2} | {k_paper_sigma:.2} | {d_i:.3} ± {d_sigma:.3} | {k_mean:.0} | {k_sigma:.0} | {k_mean:.0} | {k_sigma:.0} |\n\n"
-        ));
-        for (kind, rate) in &rates {
-            let (ratio, error, z) = ratio_with_error(*rate, (k_paper, k_paper_sigma));
+    text.push_str("\n## Whole-cell k\n\n");
+    text.push_str("Random-vacancy ensembles as in `direct_md_random.md`: the through-origin fit of ln(n/N) every 25 ps up to the longest window, σ_k from 400 bootstrap resamples. V_iv/Ω = 4k / (α a D_i) with α = 2/3; the total σ adds the D_i error in quadrature. Own D is the free-dumbbell D measured with the same dynamics at the same lattice constant. The coordination detector calls a trajectory captured at the first sample at which every atom has 12 neighbours inside 3.1 Å; the site detector when every Wigner-Seitz site of the ideal lattice holds one atom for the confirmation window, dated to the first sample of that window. An ensemble with fewer trajectories than the others is a partial run of the same seeds. The Table 1 row backs k out of the k-method volume with the Table 1 D_i and the paper's lattice constant.\n\n");
+    text.push_str("| T (K) | dynamics | detector | CSV | N | captured | t_max (ps) | a (Å) | k (Å³/ps) | σ_k | own D (Å²/ps) | V_iv/Ω, own D | σ | V_iv/Ω, Table 1 D | σ | k / Table 1 k |\n|---:|:---|:---|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+    let mut ratios = Vec::new();
+    for temperature in temperatures {
+        let paper = match (
+            table_volume(temperature),
+            table_diffusivity(temperature),
+            table_lattice(temperature),
+        ) {
+            (Some((k_mean, k_sigma, _, _)), Some((d_i, d_sigma)), Some(a_p)) => {
+                let k_paper = k_mean * a_p * DUMBBELL_ALPHA * d_i / 4.0;
+                let k_paper_sigma =
+                    k_paper * ((k_sigma / k_mean).powi(2) + (d_sigma / d_i).powi(2)).sqrt();
+                Some((k_mean, k_sigma, d_i, d_sigma, a_p, k_paper, k_paper_sigma))
+            }
+            _ => None,
+        };
+        let mut paths = Vec::new();
+        if temperature == 500.0 {
+            paths.push(validation_file("direct_md_random.csv"));
+        }
+        for kind in [DynamicsKind::Langevin, DynamicsKind::NphNve] {
+            paths.push(random_sites_path(kind, temperature));
+        }
+        let mut rates = Vec::new();
+        for path in paths {
+            let set = read_random_set(&path);
+            if set.trials.is_empty() || set.temperature != temperature {
+                continue;
+            }
+            let t_max = set.window;
+            let (rate, rate_sigma) = bootstrap_rate(&set.trials, t_max, set.lattice, set.repeats);
+            let convert = |d: Option<(f64, f64)>| match d {
+                Some((d_i, d_sigma)) => {
+                    let volume = rate_to_volume(rate, set.lattice, d_i);
+                    let total =
+                        volume * ((rate_sigma / rate).powi(2) + (d_sigma / d_i).powi(2)).sqrt();
+                    (
+                        format!("{d_i:.3} ± {d_sigma:.3}"),
+                        format!("{volume:.2} | {total:.2}"),
+                    )
+                }
+                None => ("-".to_string(), "- | -".to_string()),
+            };
+            let own = measured_diffusivity(set.kind, set.gamma, temperature, set.lattice)
+                .map(|(d, sigma, _)| (d, sigma));
+            let (own_d, own_v) = convert(own);
+            let (_, table_v) = convert(table_diffusivity(temperature));
+            let versus = paper.map_or("-".to_string(), |(.., k_paper, k_paper_sigma)| {
+                let (ratio, error, _) =
+                    ratio_with_error((rate, rate_sigma), (k_paper, k_paper_sigma));
+                format!("{ratio:.3} ± {error:.3}")
+            });
+            let label = campaign_label(set.kind, set.gamma);
+            let detector = set.detector.0.label();
             text.push_str(&format!(
-                "{}: k / Table 1 k = {ratio:.3} ± {error:.3} (z = {z:.2}).\n",
-                campaign_label(
-                    *kind,
-                    if *kind == DynamicsKind::Langevin {
-                        0.1
-                    } else {
-                        0.0
-                    }
-                )
+                "| {temperature:.0} | {label} | {detector} | `{}` | {} | {} | {t_max:.0} | {:.6} | {rate:.2} | {rate_sigma:.2} | {own_d} | {own_v} | {table_v} | {versus} |\n",
+                path.file_name().and_then(|name| name.to_str()).unwrap_or(""),
+                set.trials.len(),
+                set.trials.iter().filter(|(hit, time)| *hit && *time <= t_max).count(),
+                set.lattice,
+            ));
+            rates.push((label, set.detector.0, (rate, rate_sigma)));
+        }
+        if let Some((k_mean, k_sigma, d_i, d_sigma, a_p, k_paper, k_paper_sigma)) = paper {
+            text.push_str(&format!(
+                "| {temperature:.0} | Table 1, k-method | - | - | {PAPER_TRIALS} | - | - | {a_p:.3} | {k_paper:.2} | {k_paper_sigma:.2} | {d_i:.3} ± {d_sigma:.3} | {k_mean:.0} | {k_sigma:.0} | {k_mean:.0} | {k_sigma:.0} | - |\n"
             ));
         }
-        if rates.len() == 2 {
-            let (ratio, error, z) = ratio_with_error(rates[1].1, rates[0].1);
-            text.push_str(&format!(
-                "NPH then NVE over Langevin at γ = 0.1/ps: k ratio {ratio:.3} ± {error:.3} (z = {z:.2}).\n"
+        let sites: Vec<_> = rates
+            .iter()
+            .filter(|(_, detector, _)| *detector == Detector::SiteOccupancy)
+            .collect();
+        if let [langevin, nph] = sites.as_slice() {
+            let (ratio, error, z) = ratio_with_error(nph.2, langevin.2);
+            ratios.push(format!(
+                "At {temperature:.0} K with the site detector, {} over {}: k ratio {ratio:.3} ± {error:.3} (z = {z:.2}).",
+                nph.0, langevin.0
             ));
         }
     }
-    if let Some((k_mean, k_sigma, mean_time, mean_sigma)) = table_volume(500.0) {
-        text.push_str(&format!("\nTable 1, 8788 atoms at 500 K: {k_mean:.0} ± {k_sigma:.0} Ω (k-method), {mean_time:.0} ± {mean_sigma:.0} Ω (mean-time method).\n"));
+    text.push('\n');
+    for line in ratios {
+        text.push_str(&line);
+        text.push('\n');
     }
+    let quoted: Vec<String> = temperatures
+        .iter()
+        .filter_map(|t| {
+            table_volume(*t).map(|(k, ks, m, ms)| {
+                format!("{t:.0} K {k:.0} ± {ks:.0} Ω (k-method), {m:.0} ± {ms:.0} Ω (mean-time)")
+            })
+        })
+        .collect();
+    text.push_str(&format!("\nTable 1, 8788 atoms: {}.\n", quoted.join("; ")));
     text
 }
 
@@ -3442,12 +3666,7 @@ fn main() {
     }
     if !path.exists() {
         let mut header = File::create(&path).expect("csv");
-        let extra = if spec.kind == DynamicsKind::Langevin {
-            ""
-        } else {
-            DYNAMICS_HEADER
-        };
-        writeln!(header, "{HEADER}{extra}").unwrap();
+        writeln!(header, "{}", spec.header()).unwrap();
     }
     let done = settled_keys(&path, spec.window_ps);
     let pending: Vec<&Job> = jobs
@@ -3495,7 +3714,7 @@ fn main() {
                     let mut handle: MutexGuard<'_, File> = file.lock().expect("csv lock");
                     writeln!(handle, "{line}").unwrap();
                     println!(
-                        "{}/{} T {:.0} shell {:.3} {} seed {} captured {} t {:.3} ps non12 {} -> {}",
+                        "{}/{} T {:.0} shell {:.3} {} seed {} captured {} t {:.3} ps defects {} -> {}",
                         index + 1,
                         pending.len(),
                         job.temperature,
@@ -3620,6 +3839,8 @@ mod tests {
             rescale_window_k: 0.0,
             piston_ps: 2.0,
             bulk_ev_a3: 0.87,
+            detector: Detector::SiteOccupancy,
+            confirm_ps: 1.0,
         };
         let jobs = random_jobs(&spec);
         assert_eq!(jobs.len(), 192);
@@ -3758,6 +3979,81 @@ mod tests {
         assert_eq!(state.cell[0][0] / 4.0, lattice);
         let temperature = state.temperature(CU_MASS_AMU);
         assert!((temperature - 50.0).abs() < 1.0e-6, "{temperature}");
+    }
+
+    #[test]
+    fn a_hot_perfect_crystal_is_captured_at_the_first_sample() {
+        let a = measured_lattice(500.0);
+        let (positions, cell) = fcc(6, a);
+        let mut sites = SiteOccupancy::new(&positions, cell, &positions).unwrap();
+        let dynamics = small_dynamics(DynamicsKind::Langevin, 500.0, 2.0);
+        let mut potential = MishinCu::new();
+        let outcome = run_until(
+            &dynamics,
+            &mut potential,
+            positions,
+            cell,
+            5.0,
+            SAMPLE_PS,
+            4,
+            3,
+            |positions: &[f64], cell| site_defects(&mut sites, positions, cell),
+        );
+        assert!(outcome.captured);
+        assert_eq!(outcome.time_ps, 0.0);
+        assert_eq!(outcome.final_score, 0);
+    }
+
+    #[test]
+    fn a_frozen_frenkel_pair_is_never_captured() {
+        let a = measured_lattice(500.0);
+        let (perfect, _) = fcc(6, a);
+        let (positions, cell) =
+            place_vacancy_dumbbell(6, a, [3.0 * a, 3.0 * a, 0.0], [0.0, 0.0, 1.0]);
+        let mut sites = SiteOccupancy::new(&perfect, cell, &positions).unwrap();
+        assert_eq!(site_defects(&mut sites, &positions, cell), 2);
+        let dynamics = small_dynamics(DynamicsKind::Langevin, 5.0, 2.0);
+        let mut potential = MishinCu::new();
+        let outcome = run_until(
+            &dynamics,
+            &mut potential,
+            positions,
+            cell,
+            3.0,
+            SAMPLE_PS,
+            4,
+            5,
+            |positions: &[f64], cell| site_defects(&mut sites, positions, cell),
+        );
+        assert!(!outcome.captured);
+        assert_eq!(outcome.initial_score, 2);
+        assert_eq!(outcome.final_score, 2);
+    }
+
+    #[test]
+    fn a_capture_that_does_not_persist_is_not_counted() {
+        let (positions, cell) = fcc(4, 3.6);
+        let dynamics = small_dynamics(DynamicsKind::Langevin, 10.0, 0.0);
+        let mut potential = MishinCu::new();
+        let readings = [3usize, 0, 0, 2, 0, 0, 0, 0, 1];
+        let mut index = 0;
+        let outcome = run_until(
+            &dynamics,
+            &mut potential,
+            positions,
+            cell,
+            1.5,
+            SAMPLE_PS,
+            4,
+            1,
+            |_: &[f64], _| {
+                let value = readings[index.min(readings.len() - 1)];
+                index += 1;
+                value
+            },
+        );
+        assert!(outcome.captured);
+        assert_eq!(outcome.time_ps, 4.0 * SAMPLE_PS);
     }
 
     #[test]
