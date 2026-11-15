@@ -24,6 +24,11 @@
 //! `RGSADDLE_BENCH_METHOD` select one row. `RGSADDLE_BENCH_SEEDS` sets
 //! how many seeds to run. The study below uses every system and twelve
 //! seeds.
+//!
+//! `RGSADDLE_BENCH_ROTATION_STOP` compares the stock rotation with the
+//! curvature-aware rotation stop instead. Its value is the stop length:
+//! `max_move`, `dr`, or a number in the system's length unit. The rows
+//! give the matched force calls and the summed rotations, off then on.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
@@ -50,6 +55,7 @@ fn main() {
     let only_kind = std::env::var("RGSADDLE_BENCH_KIND").ok();
     let only_method = std::env::var("RGSADDLE_BENCH_METHOD").ok();
     let translator = std::env::var("RGSADDLE_BENCH_TRANSLATOR").ok();
+    let rotation_stop = std::env::var("RGSADDLE_BENCH_ROTATION_STOP").ok();
     let skip_off = std::env::var("RGSADDLE_BENCH_SKIP_OFF").ok().as_deref() == Some("1");
     let systems = systems();
     let mut csv = vec![
@@ -71,6 +77,17 @@ fn main() {
             }
             if let Some(name) = &translator {
                 compare_translator(system, kind, name, seeds);
+                continue;
+            }
+            if let Some(spec) = &rotation_stop {
+                for method in [MethodKind::Fire, MethodKind::Lbfgs] {
+                    if only_method
+                        .as_ref()
+                        .is_none_or(|name| name == method.label())
+                    {
+                        compare_rotation_stop(system, kind, method, spec, seeds);
+                    }
+                }
                 continue;
             }
             for method in [MethodKind::Fire, MethodKind::Lbfgs] {
@@ -97,6 +114,7 @@ fn main() {
                             position: Vec::new(),
                             max_force: f64::NAN,
                             curvature: f64::NAN,
+                            rotations: 0,
                         }
                     } else {
                         search(
@@ -208,6 +226,7 @@ fn main() {
         }
     }
     if translator.is_none()
+        && rotation_stop.is_none()
         && only.is_none()
         && only_kind.is_none()
         && only_method.is_none()
@@ -318,6 +337,7 @@ struct Outcome {
     position: Vec<f64>,
     max_force: f64,
     curvature: f64,
+    rotations: usize,
 }
 
 struct Arm {
@@ -334,6 +354,18 @@ fn search(
     start: &Array1<f64>,
     mode: &Array1<f64>,
 ) -> Outcome {
+    search_stopped(system, kind, arm, start, mode, 0.0)
+}
+
+/// [`search`] with the curvature-aware rotation stop at `stop_length`.
+fn search_stopped(
+    system: &System,
+    kind: MinModeKind,
+    arm: Arm,
+    start: &Array1<f64>,
+    mode: &Array1<f64>,
+    stop_length: f64,
+) -> Outcome {
     let config = MinModeConfig {
         kind,
         method: arm.method.method(),
@@ -345,6 +377,9 @@ fn search(
     session.set_fire_curvature(arm.curvature);
     session.set_cg_translate(arm.cg);
     session.set_lbfgs_project(arm.project);
+    session
+        .set_rotation_stop_length(stop_length)
+        .expect("rotation stop length");
     let surface = Counting {
         inner: system.surface,
         calls: AtomicUsize::new(0),
@@ -353,6 +388,7 @@ fn search(
     let mut converged = false;
     let mut max_force = f64::NAN;
     let mut curvature = f64::NAN;
+    let mut rotations = 0;
     for _ in 0..system.steps {
         let report = match session.step(&surface) {
             Ok(report) => report,
@@ -361,6 +397,7 @@ fn search(
                 break;
             }
         };
+        rotations += report.rotations;
         max_force = report.max_force;
         curvature = report.curvature;
         if report.status == MinModeStatus::Converged {
@@ -384,7 +421,83 @@ fn search(
         position: session.position().to_vec(),
         max_force,
         curvature,
+        rotations,
     }
+}
+
+/// The stock rotation against the curvature-aware stop at the length
+/// `spec` names, one translator.
+fn compare_rotation_stop(
+    system: &System,
+    kind: MinModeKind,
+    method: MethodKind,
+    spec: &str,
+    seeds: usize,
+) {
+    let length = match spec {
+        "max_move" => system.max_move,
+        "dr" => MinModeConfig::default().dr,
+        other => other.parse().expect("rotation stop length"),
+    };
+    let arm = || Arm {
+        method,
+        curvature: false,
+        cg: false,
+        project: false,
+    };
+    let mut calls_off = Vec::new();
+    let mut calls_on = Vec::new();
+    let mut rotations_off = Vec::new();
+    let mut rotations_on = Vec::new();
+    let mut diverged = 0usize;
+    for index in 0..seeds {
+        let seed = mix_seed(index);
+        let (start, mode) = (system.start)(seed);
+        let off = search_stopped(system, kind, arm(), &start, &mode, 0.0);
+        let on = search_stopped(system, kind, arm(), &start, &mode, length);
+        let rmsd = aligned_rmsd(&off.position, &on.position, system.align);
+        let same = off.converged
+            && on.converged
+            && (off.energy - on.energy).abs() <= ENERGY_TOL
+            && rmsd <= RMSD_TOL;
+        println!(
+            "seed\t{name}\t{kind}\t{method}\t{seed}\t{oc}/{nc}\tcalls {ocalls}/{ncalls}\trotations {orot}/{nrot}\tde {de:.2e}\trmsd {rmsd:.2e}",
+            name = system.name,
+            kind = kind_label(kind),
+            method = method.label(),
+            oc = off.converged,
+            nc = on.converged,
+            ocalls = off.calls,
+            ncalls = on.calls,
+            orot = off.rotations,
+            nrot = on.rotations,
+            de = (off.energy - on.energy).abs(),
+        );
+        if same {
+            calls_off.push(off.calls as f64);
+            calls_on.push(on.calls as f64);
+            rotations_off.push(off.rotations as f64);
+            rotations_on.push(on.rotations as f64);
+        } else {
+            diverged += 1;
+        }
+    }
+    let n = calls_off.len();
+    let total = |values: &[f64]| values.iter().sum::<f64>();
+    println!(
+        "{}\t{}\t{}\tL={length}\t{n}/{seeds}\tcalls {} -> {} (sum {:.0} -> {:.0})\trotations {} -> {} (sum {:.0} -> {:.0})\tdiverged {diverged}",
+        system.name,
+        kind_label(kind),
+        method.label(),
+        band(&mut calls_off.clone(), true),
+        band(&mut calls_on.clone(), true),
+        total(&calls_off),
+        total(&calls_on),
+        band(&mut rotations_off.clone(), true),
+        band(&mut rotations_on.clone(), true),
+        total(&rotations_off),
+        total(&rotations_on),
+    );
 }
 
 #[derive(Clone, Copy)]
