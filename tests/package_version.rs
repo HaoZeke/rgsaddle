@@ -34,7 +34,11 @@ fn meson_project_version(text: &str) -> String {
         let Some(rest) = line.trim().strip_prefix("version:") else {
             continue;
         };
-        return rest.trim().trim_end_matches(',').trim_matches('\'').to_string();
+        return rest
+            .trim()
+            .trim_end_matches(',')
+            .trim_matches('\'')
+            .to_string();
     }
     panic!("no version: in project()");
 }
