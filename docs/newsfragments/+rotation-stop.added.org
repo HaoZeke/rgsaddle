@@ -1,0 +1,3 @@
+~MinModeSession::set_rotation_stop_length~ adds the curvature-aware rotation stop of Kästner and Sherwood (J. Chem. Phys. 128, 014106 (2008)): a dimer rotation ends once the curvature times the length times the sine of the remaining rotation angle is at most ~force_tol~, and Lanczos accepts a Ritz pair on the same bound for its residual.
+It is off by default; ~rotation_force_error~ is the bound.
+C ABI minor 38 adds ~rgsaddle_minmode_set_rotation_stop_length~, the C++ wrapper ~MinMode::set_rotation_stop_length~, and Python ~MinMode~ the ~rotation_stop_length~ keyword.

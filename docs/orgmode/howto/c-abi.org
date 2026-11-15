@@ -1,7 +1,7 @@
 #+TITLE: Use the C and C++ interfaces
 #+OPTIONS: toc:nil num:nil
 
-~include/rgsaddle.h~ declares the C application binary interface (ABI), major 1, minor 37. It preserves the main band, minimum-mode and index-1 layouts and adds intrinsic reaction coordinate (IRC), Sella, constraint and geometry controls. Include this header rather than duplicating its structures. Check ~rgsaddle_abi_stamp~ before constructing a session.
+~include/rgsaddle.h~ declares the C application binary interface (ABI), major 1, minor 38. It preserves the main band, minimum-mode and index-1 layouts and adds intrinsic reaction coordinate (IRC), Sella, constraint and geometry controls. Include this header rather than duplicating its structures. Check ~rgsaddle_abi_stamp~ before constructing a session.
 
 A surface callback returns ~rgsaddle_status_t~ and receives one ~rgsaddle_surface_request_t~. Positions and gradients are image-major Cartesian triples. The host supplies the energy and gradient arrays for every requested image; the library performs no Message Passing Interface (MPI) communication.
 
@@ -62,3 +62,14 @@ From minor 35, create returns NULL on a kind other than 0, 1 and 2.
 The C++ helper ~irc_config~ selects ~RGSADDLE_IRC_SELLA_SPHERE~.
 
 ~include/rgsaddle/session.hpp~ provides the C++ owning wrappers. ~Band~, ~MinMode~ and ~Irc~ release their opaque handles automatically and translate failing statuses into exceptions. ~tests/c/main_abi_contract.h~ checks the retained main layouts and signatures; the C and C++ smoke executables exercise the official header and library together.
+
+~rgsaddle_minmode_set_rotation_stop_length~ (ABI minor 38) takes a length in the host's unit.
+A positive length stops a dimer rotation once the curvature times that length times the sine of the estimated remaining rotation angle is at most ~force_tol~, and stops Lanczos on the same bound for its Ritz residual and Ritz value.
+0, the state of a new session, turns the stop off; a negative or non-finite length returns ~RGSADDLE_INVALID_PARAMETER~ and leaves the session unchanged.
+The C++ ~MinMode~ wrapper calls it as ~set_rotation_stop_length~, and Python takes it as the ~rotation_stop_length~ keyword of ~MinMode~.
+
+~rgsaddle_reparametrize~ (ABI minor 38) places the interior images of a band at equal arc length, in place, with no surface call.
+~RGSADDLE_REPARAM_LINEAR~ places them on the polyline and ~RGSADDLE_REPARAM_NOT_A_KNOT~ on the not-a-knot cubic spline through the images.
+A non-negative ~anchor~ names an interior image that stays, and a non-null ~cell~ makes the chords minimum images.
+Band config bit 4, ~RGSADDLE_BAND_SPLINE_REPARAM~, read from a config at minor 38 or newer, puts the trust-region band (~RGSADDLE_METHOD_RTR~) on the spline; ~rgsaddle_band_create~ and ~rgsaddle_ocineb_create~ read it.
+Python exposes the function as ~rgsaddle.reparametrize(positions, scheme, anchor, cell)~.
