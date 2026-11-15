@@ -19,7 +19,7 @@ use std::time::Instant;
 
 use ndarray::{Array1, Array2, ArrayView1};
 use rayon::prelude::*;
-use rgmin::{FireKind, Method};
+use rgmin::{Control, FireKind, Method, Oracle, Solver};
 use rgsaddle::{
     BOLTZMANN_EV_PER_K, CellMask, DefectSource, ElasticDipole, ElasticMultipole, FieldSolver,
     FmmSolver, IndexCheck, Kelvin, LINEAR_FOLD_EV, MinModeConfig, MinModeStatus, PointSurface,
@@ -442,23 +442,37 @@ fn dumbbell(perfect: &Array1<f64>, direction: [f64; 3], separation: f64) -> Arra
 
 /// FIRE to `tol` eV/Å on the largest atom force under a 0.06 Å cap, on
 /// the direct pair sum. Returns the steps taken.
+/// FIRE 2.0 under a 0.06 Å cap until the largest gradient component is
+/// below `tol`; the steps taken. The shear rows are compared with eOn's on
+/// this component test, so it is not the per-atom norm of
+/// `relax_to_tolerance`.
 fn relax_direct(
     copper: &Copper,
     positions: &mut Array1<f64>,
     cell: [[f64; 3]; 3],
     tol: f64,
 ) -> usize {
-    let done = rgsaddle::relax_to_tolerance(
-        &Held { copper, cell },
-        positions.clone(),
-        cell,
-        &rgsaddle::RelaxConfig::default()
-            .with_force_tol(tol)
-            .with_max_atom_move(0.06),
-    )
-    .expect("direct-sum relaxation");
-    *positions = done.positions;
-    done.steps
+    let mut solver = Solver::new(
+        Method::fire(FireKind::V2),
+        Control::default().with_maxiter(usize::MAX).with_gtol(0.0),
+        positions.len(),
+    );
+    solver.set_atom_maxmove(0.06);
+    let oracle = Oracle::unbounded(positions.len(), |x: ArrayView1<f64>| {
+        let (energy, gradient, _) = copper.evaluate(x, cell);
+        (energy, gradient)
+    });
+    for done in 1..=rgsaddle::DEFAULT_MAX_STEPS {
+        solver.step(&oracle, positions).expect("relax");
+        let (_, gradient, _) = copper.evaluate(positions.view(), cell);
+        if gradient.iter().fold(0.0_f64, |m, g| m.max(g.abs())) < tol {
+            return done;
+        }
+    }
+    panic!(
+        "direct-sum relaxation above {tol:e} after {} steps",
+        rgsaddle::DEFAULT_MAX_STEPS
+    );
 }
 
 fn max_abs(gradient: &Array1<f64>) -> f64 {
