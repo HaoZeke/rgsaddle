@@ -236,7 +236,7 @@ fn ode12r_evaluates_each_band_once() {
     assert!(stalled, "the fixture ends in the stall");
     assert_eq!(repeated, 0, "rows {rows}");
     assert_eq!(
-        hash, 0xca90_c1d4_6f6f_bbf3,
+        hash, 0x652a_6536_d12d_868d,
         "ode12r trajectory {hash:#018x}, rows {rows}"
     );
 }

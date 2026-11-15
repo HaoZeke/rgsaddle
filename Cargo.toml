@@ -46,7 +46,7 @@ readcon-db = { version = "0.2", optional = true }
 # keys a git source by its reference, so a dependent that pins the same
 # commit by rev would otherwise lock a second copy. The exact version is
 # the crate at that rev, and crates.io packaged that release from it.
-rgmin = { version = "=0.6.0", git = "https://github.com/OmniPotentRPC/rgmin", rev = "6b8a9fc3a9cbe3c72cf6e09d1136f55a68a00d40" }
+rgmin = { version = "=0.6.0", git = "https://github.com/OmniPotentRPC/rgmin", rev = "d3f94d11c583864d980c750a9240333d1244bd00" }
 eindir-core = { version = "0.6.0", features = ["capi"] }
 ndarray = "0.17"
 faer = { version = "0.24.4", optional = true, default-features = false, features = ["std", "linalg"] }
