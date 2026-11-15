@@ -4247,6 +4247,103 @@ fn defect_pair_recombination_scan() {
     );
 }
 
+const CENSUS_HEADER: &str = "cell_repeats,temperature_K,radius_A,sites,recombined,gap_A,separation_A,miller,converged,relax_steps,max_force_eV_per_A,vacancies,interstitials,lattice_A,check_recombined,check_steps,seconds";
+
+/// Rows of `defect_pair_census.csv` already written, by temperature and
+/// orbit representative.
+fn census_done(text: &str) -> std::collections::HashSet<(i64, String)> {
+    text.lines()
+        .skip(1)
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split(',').collect();
+            let temperature = fields.get(1)?.parse::<f64>().ok()?.round() as i64;
+            Some((temperature, fields.get(7)?.to_string()))
+        })
+        .collect()
+}
+
+#[test]
+#[ignore = "flow census of every axis orbit in the 8788-atom cell on the Table 1 lattices"]
+fn defect_pair_census() {
+    let started = Instant::now();
+    let repeats = 13usize;
+    let temperatures: Vec<f64> = env_csv("RGSADDLE_TEMPS", "300,500,700")
+        .iter()
+        .map(|item| item.parse().expect("temperature"))
+        .collect();
+    let copper = FastCopper::new();
+    let flow = pair_relax();
+    let check = pair_flow_check();
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benchmarks/defect_pair_census.csv");
+    if !path.exists() {
+        std::fs::write(&path, format!("{CENSUS_HEADER}\n")).expect("census");
+    }
+    let done = census_done(&std::fs::read_to_string(&path).expect("census"));
+    let mut jobs = Vec::new();
+    for &temperature in &temperatures {
+        let a = demkowicz_lattice(temperature);
+        for shell in axis_orbits(a, repeats) {
+            let (i, j, k) = miller(shell.1, a);
+            if !done.contains(&(temperature.round() as i64, format!("{i} {j} {k}"))) {
+                jobs.push((temperature, a, shell));
+            }
+        }
+    }
+    // The far orbits relax slowest; starting them first keeps the threads busy.
+    jobs.sort_by(|left, right| right.2.0.total_cmp(&left.2.0));
+    eprintln!(
+        "census: {} placements on {} threads",
+        jobs.len(),
+        rayon::current_num_threads()
+    );
+    let checkpoint = Mutex::new(File::options().append(true).open(&path).expect("append"));
+    let problems = Mutex::new(Vec::new());
+    jobs.par_iter().for_each(|&(temperature, a, shell)| {
+        let clock = Instant::now();
+        let by_flow = relax_pair(&copper, repeats, a, shell.1, true, &flow);
+        let by_check = relax_pair(&copper, repeats, a, shell.1, true, &check);
+        let row = ShellRow::scanned(repeats, temperature, a, shell, &by_flow);
+        let seconds = clock.elapsed().as_secs_f64();
+        let disagreement = match (&by_flow, &by_check) {
+            (Ok(left), Ok(right)) => optimizer_disagreement(left, right),
+            (left, right) => Some(format!(
+                "ODE12r {:?}; steepest {:?}",
+                left.as_ref().err().map(ToString::to_string),
+                right.as_ref().err().map(ToString::to_string)
+            )),
+        };
+        let (check_recombined, check_steps) = by_check
+            .as_ref()
+            .map(|pair| (pair.recombined as u8, pair.steps))
+            .unwrap_or((0, 0));
+        let line = format!(
+            "{},{a:.3},{check_recombined},{check_steps},{seconds:.1}",
+            shell_line(&row)
+        );
+        eprintln!(
+            "census {line} at {:.1} min",
+            started.elapsed().as_secs_f64() / 60.0
+        );
+        append_checkpoint(&checkpoint, &line);
+        if let Some(text) = disagreement {
+            problems.lock().expect("problems").push(format!(
+                "T {temperature} shell {:.4} {:?}: {text}",
+                shell.0, row.key
+            ));
+        }
+    });
+    eprintln!(
+        "census wall {:.1} min",
+        started.elapsed().as_secs_f64() / 60.0
+    );
+    let problems = problems.into_inner().expect("problems");
+    assert!(
+        problems.is_empty(),
+        "ODE12r and steepest descent disagree:\n{}",
+        problems.join("\n")
+    );
+}
+
 fn run_rate_job(
     copper: &FastCopper,
     job: &RateJob,
@@ -9916,7 +10013,8 @@ fn assemble_run12() {
             _,
         ) = channel_volumes(
             &shells,
-            &spontaneous,
+            &|id: &str| f64::from(u8::from(spontaneous.contains(id))),
+            RateScale::RECORDED,
             &rates,
             temperature,
             k_mig,
@@ -10321,6 +10419,23 @@ fn strain_bias(
     }
 }
 
+/// Shifts of the rotation and capture rates of [`channel_volumes`], for
+/// propagating their uncertainty: `rotation` multiplies every rotation
+/// rate, and each capture rate is multiplied by `exp(capture * relative)`
+/// with `relative` its own free-energy error over kT.
+#[derive(Clone, Copy)]
+struct RateScale {
+    rotation: f64,
+    capture: f64,
+}
+
+impl RateScale {
+    const RECORDED: Self = Self {
+        rotation: 1.0,
+        capture: 0.0,
+    };
+}
+
 #[allow(
     clippy::needless_range_loop,
     clippy::too_many_arguments,
@@ -10328,7 +10443,8 @@ fn strain_bias(
 )]
 fn channel_volumes(
     shells: &[(f64, [f64; 3], usize)],
-    spontaneous: &std::collections::HashSet<String>,
+    spontaneous: &dyn Fn(&str) -> f64,
+    scale: RateScale,
     rates: &str,
     temperature: f64,
     k_mig: f64,
@@ -10474,15 +10590,23 @@ fn channel_volumes(
             for (index, (radius, _, count)) in kept.iter().enumerate() {
                 let id = format!("{radius:.3}-{orientation}");
                 let share = *count as f64 / 3.0;
-                if spontaneous.contains(&id) {
+                let fraction = spontaneous(&id).clamp(0.0, 1.0);
+                if fraction > 0.0 {
                     sites.push(rgsaddle::VolumeSite {
-                        id,
-                        count: share,
+                        id: if fraction < 1.0 {
+                            format!("{id}~spontaneous")
+                        } else {
+                            id.clone()
+                        },
+                        count: share * fraction,
                         outcome: rgsaddle::SiteOutcome::Spontaneous,
                         rates: Vec::new(),
                     });
+                }
+                if fraction >= 1.0 {
                     continue;
                 }
+                let share = share * (1.0 - fraction);
                 let mut capture_neighbors = 0.0_f64;
                 let mut edges = Vec::new();
                 let mut rotation_capture = 0.0_f64;
@@ -10587,9 +10711,9 @@ fn channel_volumes(
                     let factor =
                         rgsaddle::shell_pair_factor(class, source_factor, destination_factor);
                     let other_id = format!("{:.3}-{landed}", kept[other].0);
-                    if spontaneous.contains(&other_id) {
-                        capture_neighbors += weight;
-                    } else {
+                    let caught = spontaneous(&other_id).clamp(0.0, 1.0);
+                    capture_neighbors += weight * caught;
+                    if caught < 1.0 {
                         let hop_rate = if size_barriers && class == rgsaddle::DirectionClass::Away {
                             sized_away_rate(rates, temperature, *radius, kept[other].0, a)
                                 .unwrap_or(k_mig)
@@ -10604,7 +10728,7 @@ fn channel_volumes(
                             landed,
                             temperature,
                         );
-                        edges.push((other_id, weight * hop_rate * factor * bias));
+                        edges.push((other_id, weight * (1.0 - caught) * hop_rate * factor * bias));
                     }
                 }
                 if rotation {
@@ -10616,16 +10740,17 @@ fn channel_volumes(
                         let per_saddle =
                             shell_rotation_rate(rates, *radius, orientation, temperature)
                                 .unwrap_or(k_rot);
-                        let rate = 2.0 * per_saddle;
-                        if spontaneous.contains(&dest) {
-                            rotation_capture += rate;
-                        } else if rate > 0.0 {
-                            edges.push((dest, rate));
+                        let rate = 2.0 * per_saddle * scale.rotation;
+                        let caught = spontaneous(&dest).clamp(0.0, 1.0);
+                        rotation_capture += rate * caught;
+                        if caught < 1.0 && rate > 0.0 {
+                            edges.push((dest, rate * (1.0 - caught)));
                         }
                     }
                 }
                 let radius_ours = radius * a_ours / a;
-                let capture = capture_rate_row(rates, radius_ours, orientation, temperature);
+                let capture = capture_rate_row(rates, radius_ours, orientation, temperature)
+                    .map(|(rate, relative)| (rate * (scale.capture * relative).exp(), relative));
                 if capture_neighbors > 0.0 {
                     let (per_hop, relative) = capture.unwrap_or((k_mig, 0.0));
                     let total = capture_neighbors * per_hop;
@@ -10955,6 +11080,97 @@ fn pair_field_with(
     })
 }
 
+/// The rate-model volumes of [`channel_volumes`] at one cutoff: the site
+/// sum, the free sphere of the Debye-matched radius, and that radius as a
+/// sink in the 13³ cell where Table 1 measures k.
+struct RateVolumes {
+    total: f64,
+    sigma: f64,
+    spont_sites: f64,
+    chain_radius: f64,
+    d_graph: f64,
+    r_eff: f64,
+    sphere: f64,
+    decay_volume: f64,
+    mean_volume: f64,
+    tau_cell: f64,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rate_volumes(
+    shells: &[(f64, [f64; 3], usize)],
+    spontaneous: &dyn Fn(&str) -> f64,
+    scale: RateScale,
+    rates: &str,
+    temperature: f64,
+    k_mig: f64,
+    a: f64,
+    field: Option<&PairField>,
+    cutoff: f64,
+) -> RateVolumes {
+    let omega = a * a * a / 4.0;
+    let thermal = temperature * rgsaddle::BOLTZMANN_EV_PER_K;
+    let max_r = shells.last().map(|(radius, _, _)| *radius).unwrap_or(0.0);
+    let jump = a / 2.0_f64.sqrt();
+    let return_sites = return_layer_count(a, shells, max_r);
+    let binding = |radius: f64, orientation: &str| {
+        field
+            .map(|item| item.binding(radius, orientation))
+            .unwrap_or(0.0)
+    };
+    let (total, sigma, spont_sites, _, _, _, _, _, _, _, _, chain_radius) = channel_volumes(
+        shells,
+        spontaneous,
+        scale,
+        rates,
+        temperature,
+        k_mig,
+        a,
+        omega,
+        max_r,
+        jump,
+        return_sites,
+        cutoff + 0.05,
+        true,
+        &binding,
+    );
+    let k_rot = rotation_channel(rates, temperature).0 * scale.rotation;
+    let d_graph = dumbbell_diffusivity(a, k_mig, k_rot).unwrap_or(f64::NAN);
+    let nu = (2.0 / 3.0) * d_graph / (a * a);
+    let n_atoms = 4.0 * (13usize * 13 * 13) as f64;
+    let energy = |radius: f64| {
+        field
+            .map(|item| item.effective(radius, thermal))
+            .unwrap_or(0.0)
+    };
+    let r_eff = rgsaddle::debye_matched_radius(chain_radius, max_r, thermal, energy)
+        .unwrap_or(chain_radius);
+    let capture_rate = rgsaddle::smoluchowski_rate(d_graph, r_eff).unwrap_or(f64::NAN);
+    let sphere = rgsaddle::volume_from_frequency(capture_rate, nu).unwrap_or(f64::NAN) / omega;
+    // Table 1 measures k in the 13³ cell, where the sink's periodic images
+    // speed up capture. The same radius is put in that cell here.
+    let cell = rgsaddle::periodic_sink_rate(r_eff, 13.0 * a, 1.0).ok();
+    let (decay_volume, mean_volume, tau_cell) = match cell {
+        Some(rate) => {
+            let tau = n_atoms * omega / (d_graph * rate.mean_time);
+            (rate.decay * d_graph / nu / omega, n_atoms / (tau * nu), tau)
+        }
+        None => (f64::NAN, f64::NAN, f64::NAN),
+    };
+    RateVolumes {
+        total,
+        sigma,
+        spont_sites,
+        chain_radius,
+        d_graph,
+        r_eff,
+        sphere,
+        decay_volume,
+        mean_volume,
+        tau_cell,
+    }
+}
+
 fn assemble_run13() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benchmarks");
     let mut census =
@@ -11057,60 +11273,34 @@ fn assemble_run13() {
                     .map(|item| item.binding(radius, orientation))
                     .unwrap_or(0.0)
             };
-            let (
+            let RateVolumes {
                 total,
                 sigma,
                 spont_sites,
-                _kinetic_sites,
-                _,
-                _,
-                _,
-                _,
-                _,
-                _,
-                _tau_capture,
                 chain_radius,
-            ) = channel_volumes(
+                d_graph,
+                r_eff,
+                sphere,
+                decay_volume,
+                mean_volume,
+                tau_cell,
+            } = rate_volumes(
                 &shells,
-                &spontaneous,
+                &|id: &str| f64::from(u8::from(spontaneous.contains(id))),
+                RateScale::RECORDED,
                 &rates,
                 temperature,
                 k_mig,
                 a,
-                omega,
-                max_r,
-                jump,
-                return_sites,
-                cutoff + 0.05,
-                true,
-                &binding,
+                field.as_ref(),
+                cutoff,
             );
-            let (k_rot, _) = rotation_channel(&rates, temperature);
-            let d_graph = dumbbell_diffusivity(a, k_mig, k_rot).unwrap_or(f64::NAN);
-            let nu = (2.0 / 3.0) * d_graph / (a * a);
-            let n_atoms = 4.0 * (13usize * 13 * 13) as f64;
+            let cell_length = 13.0 * a;
             let energy = |radius: f64| {
                 field
                     .as_ref()
                     .map(|item| item.effective(radius, thermal))
                     .unwrap_or(0.0)
-            };
-            let r_eff = rgsaddle::debye_matched_radius(chain_radius, max_r, thermal, energy)
-                .unwrap_or(chain_radius);
-            let capture_rate = rgsaddle::smoluchowski_rate(d_graph, r_eff).unwrap_or(f64::NAN);
-            let sphere_volume =
-                rgsaddle::volume_from_frequency(capture_rate, nu).unwrap_or(f64::NAN);
-            let sphere = sphere_volume / omega;
-            // Table 1 measures k in the 13³ cell, where the sink's periodic images
-            // speed up capture. The same radius is put in that cell here.
-            let cell_length = 13.0 * a;
-            let cell = rgsaddle::periodic_sink_rate(r_eff, cell_length, 1.0).ok();
-            let (decay_volume, mean_volume, tau_cell) = match cell {
-                Some(rate) => {
-                    let tau = n_atoms * omega / (d_graph * rate.mean_time);
-                    (rate.decay * d_graph / nu / omega, n_atoms / (tau * nu), tau)
-                }
-                None => (f64::NAN, f64::NAN, f64::NAN),
             };
             let delta = previous
                 .map(|prior: f64| sphere - prior)
@@ -11140,7 +11330,8 @@ fn assemble_run13() {
                     }
                     let variant = channel_volumes(
                         &shells,
-                        &isotropic,
+                        &|id: &str| f64::from(u8::from(isotropic.contains(id))),
+                        RateScale::RECORDED,
                         &rates,
                         temperature,
                         k_mig,
@@ -11164,7 +11355,8 @@ fn assemble_run13() {
                 }
                 let unbiased = channel_volumes(
                     &shells,
-                    &spontaneous,
+                    &|id: &str| f64::from(u8::from(spontaneous.contains(id))),
+                    RateScale::RECORDED,
                     &rates,
                     temperature,
                     k_mig,
@@ -11187,6 +11379,240 @@ fn assemble_run13() {
             previous = Some(sphere);
         }
     }
+}
+
+/// Recombined and total sites per radius (to 0.001 Å) at one temperature of
+/// `defect_pair_census.csv`. A row that did not converge stops the
+/// assembly.
+fn census_fractions(
+    text: &str,
+    temperature: f64,
+) -> std::collections::BTreeMap<String, (usize, usize)> {
+    let mut shells: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
+    for line in text.lines().skip(1) {
+        let fields: Vec<&str> = line.split(',').collect();
+        let Some(temp) = fields.get(1).and_then(|field| field.parse::<f64>().ok()) else {
+            continue;
+        };
+        if (temp - temperature).abs() > 1.0 {
+            continue;
+        }
+        assert_eq!(fields[8], "1", "census row not converged: {line}");
+        let radius: f64 = fields[2].parse().expect("radius");
+        let sites: usize = fields[3].parse().expect("sites");
+        let entry = shells.entry(format!("{radius:.3}")).or_default();
+        if fields[4] == "1" {
+            entry.0 += sites;
+        }
+        entry.1 += sites;
+    }
+    shells
+}
+
+/// The rate catalogue with each recorded isolated-dumbbell PAFI row replaced
+/// by the `defect_pair_isolated.csv` row of the same hop and temperature.
+fn converged_rates() -> String {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benchmarks");
+    let isolated =
+        std::fs::read_to_string(root.join("defect_pair_isolated.csv")).unwrap_or_default();
+    let key = |line: &str| {
+        let fields: Vec<&str> = line.split(',').collect();
+        (fields.len() > 5 && fields[0] == "pafi" && fields[1] == "isolated")
+            .then(|| (fields[3].to_string(), fields[5].to_string()))
+    };
+    let fresh: std::collections::HashSet<_> = isolated.lines().filter_map(key).collect();
+    let mut text = catalogue_text();
+    for name in ["defect_pair_run12.csv", "defect_pair_run13.csv"] {
+        text.push_str(&std::fs::read_to_string(root.join(name)).unwrap_or_default());
+        text.push('\n');
+    }
+    let mut kept: String = text
+        .lines()
+        .filter(|line| key(line).is_none_or(|item| !fresh.contains(&item)))
+        .flat_map(|line| [line, "\n"])
+        .collect();
+    kept.push_str(&isolated);
+    kept
+}
+
+/// The relative one-sigma error of an isolated-dumbbell PAFI rate: the
+/// free-energy error over kT and the relative error of kappa.
+fn isolated_spread(text: &str, hop: &str, temperature: f64) -> Option<f64> {
+    let thermal = temperature * rgsaddle::BOLTZMANN_EV_PER_K;
+    text.lines().find_map(|line| {
+        let fields: Vec<&str> = line.split(',').collect();
+        if fields.len() < 15
+            || fields[0] != "pafi"
+            || fields[1] != "isolated"
+            || fields[3] != hop
+            || fields[12] != "rated"
+            || fields[5].parse::<f64>().ok()? != temperature
+        {
+            return None;
+        }
+        let free = fields[9].parse::<f64>().ok()? / thermal;
+        let words: Vec<&str> = fields[14].split([' ', ';']).collect();
+        let after = |name: &str| {
+            words
+                .windows(2)
+                .find(|pair| pair[0] == name)
+                .and_then(|pair| pair[1].parse::<f64>().ok())
+        };
+        let kappa = after("kappa")?;
+        let kappa_error = after("error").unwrap_or(0.0);
+        Some((free * free + (kappa_error / kappa).powi(2)).sqrt())
+    })
+}
+
+/// Jumps counted in the direct-MD channel rate at `temperature`.
+fn md_channel_jumps(temperature: f64) -> Option<f64> {
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benchmarks/defect_pair_diffusivity.csv");
+    std::fs::read_to_string(path)
+        .ok()?
+        .lines()
+        .skip(1)
+        .find_map(|line| {
+            let fields: Vec<&str> = line.split(',').collect();
+            (fields.first()?.parse::<f64>().ok()? == temperature)
+                .then(|| fields.get(5)?.parse::<f64>().ok())
+                .flatten()
+        })
+}
+
+/// The run-13 rate model again, with every input that a relaxation decides
+/// taken from a converged run: the spontaneous sites from the flow census
+/// of every axis orbit in the 13³ cell, and the isolated translation and
+/// rotation rates from converged end states. A lumped state of one radius
+/// and dumbbell axis is spontaneous in the fraction of its sites whose orbit
+/// recombines. The errors are the spread over draws of the translation,
+/// rotation and capture rates within their own errors.
+fn assemble_converged() {
+    let started = Instant::now();
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benchmarks");
+    let census = std::fs::read_to_string(root.join("defect_pair_census.csv")).expect("census");
+    let rates = converged_rates();
+    let draws: usize = env_csv("RGSADDLE_DRAWS", "32")[0].parse().expect("draws");
+    let mut out = String::from(
+        "temperature_K,estimator,volume_over_Omega,sigma,spontaneous_sites,R_eff_A,demkowicz_8788,note\n",
+    );
+    for temperature in [300.0_f64, 500.0, 700.0] {
+        let a = demkowicz_lattice(temperature);
+        let fractions = census_fractions(&census, temperature);
+        let recombined: usize = fractions.values().map(|(caught, _)| caught).sum();
+        let spontaneous = |id: &str| {
+            let radius = id.split('-').next().unwrap_or_default();
+            fractions
+                .get(radius)
+                .map(|(caught, sites)| *caught as f64 / *sites as f64)
+                .unwrap_or(0.0)
+        };
+        let (mut k_mig, mut mig_spread, mut mig_note) = (
+            migration_rate(&rates, temperature).unwrap_or(f64::NAN),
+            isolated_spread(&rates, "translate", temperature).unwrap_or(f64::NAN),
+            "PAFI translation",
+        );
+        if pafi_kappa_unresolved(&rates, temperature)
+            && let Some(measured) = md_channel_rate(temperature)
+        {
+            k_mig = measured;
+            mig_spread = md_channel_jumps(temperature).map_or(f64::NAN, |n| 1.0 / n.sqrt());
+            mig_note = "direct-MD channel rate (PAFI kappa unresolved)";
+        }
+        let rot_spread = isolated_spread(&rates, "rotate", temperature).unwrap_or(0.0);
+        let (k_rot, rot_note) = rotation_channel(&rates, temperature);
+        let copper = FastCopper::new();
+        let field = pair_field(&copper, a).expect("pair field relaxation");
+        let table = match temperature as i32 {
+            300 => "254-286",
+            500 => "161-185",
+            700 => "203-210",
+            _ => "",
+        };
+        eprintln!(
+            "converged {temperature} K: k_mig {k_mig:.4e} Hz ({mig_note}, sigma {mig_spread:.3}); k_rot {k_rot:.4e} Hz ({rot_note}, sigma {rot_spread:.3}); census {recombined} recombined sites"
+        );
+        for cutoff in [10.8_f64, 14.0, 18.0, 22.0, 26.0, 30.0] {
+            let shells = shell_table_within(a, 24, cutoff);
+            let volumes = |k_mig: f64, scale: RateScale| {
+                rate_volumes(
+                    &shells,
+                    &spontaneous,
+                    scale,
+                    &rates,
+                    temperature,
+                    k_mig,
+                    a,
+                    Some(&field),
+                    cutoff,
+                )
+            };
+            let central = volumes(k_mig, RateScale::RECORDED);
+            let spread: [f64; 3] = if draws > 0 {
+                let mut rng = TinyRng(0x5eed_0000 + temperature as u64);
+                let shifts: Vec<[f64; 3]> = (0..draws)
+                    .map(|_| [rng.gauss(), rng.gauss(), rng.gauss()])
+                    .collect();
+                let samples: Vec<[f64; 3]> = shifts
+                    .par_iter()
+                    .map(|z| {
+                        let varied = volumes(
+                            k_mig * (z[0] * mig_spread).exp(),
+                            RateScale {
+                                rotation: (z[1] * rot_spread).exp(),
+                                capture: z[2],
+                            },
+                        );
+                        [varied.sphere, varied.decay_volume, varied.mean_volume]
+                    })
+                    .collect();
+                std::array::from_fn(|which| {
+                    let mean = samples.iter().map(|s| s[which]).sum::<f64>() / draws as f64;
+                    (samples
+                        .iter()
+                        .map(|s| (s[which] - mean).powi(2))
+                        .sum::<f64>()
+                        / (draws.max(2) - 1) as f64)
+                        .sqrt()
+                })
+            } else {
+                [f64::NAN; 3]
+            };
+            let RateVolumes {
+                total,
+                sigma,
+                spont_sites,
+                chain_radius,
+                d_graph,
+                r_eff,
+                sphere,
+                decay_volume,
+                mean_volume,
+                tau_cell,
+            } = central;
+            let common = format!(
+                "cutoff {cutoff:.1}; flow census; k_mig {k_mig:.4e} Hz {mig_note}; k_rot {k_rot:.4e} Hz; sigma from {draws} rate draws"
+            );
+            out.push_str(&format!("{temperature},smoluchowski,{sphere:.4},{:.4},{spont_sites:.4},{r_eff:.4},{table},{common}; infinite crystal; chain R {chain_radius:.4}; D_graph {:.6}\n", spread[0], d_graph / 1.0e12));
+            out.push_str(&format!("{temperature},cell-decay,{decay_volume:.4},{:.4},{spont_sites:.4},{r_eff:.4},{table},{common}; slowest decay in the 13^3 cell\n", spread[1]));
+            out.push_str(&format!("{temperature},mean-time,{mean_volume:.4},{:.4},{spont_sites:.4},{r_eff:.4},{table},{common}; uniform-start mean time in the 13^3 cell {tau_cell:.6e} s\n", spread[2]));
+            out.push_str(&format!("{temperature},site-sum,{total:.4},{sigma:.4},{spont_sites:.4},,{table},{common}; sigma from the capture rates only\n"));
+            eprintln!(
+                "converged {temperature} K R {cutoff:.1}: sphere {sphere:.2}±{:.2} cell {decay_volume:.2}±{:.2} mean {mean_volume:.2}±{:.2} site-sum {total:.2} R_eff {r_eff:.3} spontaneous {spont_sites:.2} at {:.1} min",
+                spread[0],
+                spread[1],
+                spread[2],
+                started.elapsed().as_secs_f64() / 60.0
+            );
+        }
+    }
+    std::fs::write(root.join("defect_pair_converged_volume.csv"), out).expect("volume");
+}
+
+#[test]
+#[ignore = "V_iv from the flow census and the converged isolated rates"]
+fn defect_pair_converged_volume() {
+    assemble_converged();
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -11448,6 +11874,129 @@ fn run14_rotation_pafi_700(copper: &FastCopper) {
         &product,
         job.cell,
         true,
+    );
+}
+
+/// The lattice each recorded isolated-dumbbell PAFI row was measured on:
+/// ours, except the 700 K rotation, which was run on the Table 1 lattice.
+fn isolated_lattice(hop: &str, temperature: f64) -> f64 {
+    if hop == "rotate" && temperature as i32 == 700 {
+        demkowicz_lattice(temperature)
+    } else {
+        measured_lattice(temperature)
+    }
+}
+
+fn isolated_rate(copper: &FastCopper, checkpoint: &Mutex<File>, hop: &str, temperature: f64) {
+    let clock = Instant::now();
+    let repeats = 8usize;
+    let a = isolated_lattice(hop, temperature);
+    let (perfect, cell) = fcc(repeats, a);
+    let (_, _, bulk) = copper.evaluate(perfect.view(), cell);
+    let job = rotation_job(copper, repeats, a);
+    let dumbbell = [job.mobile[0], job.mobile[1]];
+    let reactant = settle(copper, job.positions.clone(), job.cell, 2.0e-4)
+        .expect("isolated dumbbell relaxation");
+    let reactant_energy = basin_energy(copper, &reactant, job.cell);
+    let found = if hop == "rotate" {
+        let (hint, mode) = rotation_hint(&reactant, dumbbell);
+        tight_dimer(copper, job.cell, hint, mode)
+    } else {
+        let mechanisms = find_mechanisms(copper, repeats, a);
+        mechanisms
+            .iter()
+            .find(|item| item.kind == "translate")
+            .and_then(|translate| {
+                mapped_hops(
+                    &reactant,
+                    job.cell,
+                    centroid(&reactant, dumbbell),
+                    axis_of(&reactant, dumbbell),
+                    std::slice::from_ref(translate),
+                )
+                .into_iter()
+                .next()
+            })
+            .and_then(|hop| tight_dimer(copper, job.cell, hop.saddle?, hop.mode?))
+    };
+    let direction = if hop == "rotate" {
+        "tangential"
+    } else {
+        "toward"
+    };
+    let Some(hit) = found else {
+        write_tight(
+            checkpoint,
+            &format!(
+                "pafi,isolated,100,{hop},{direction},{temperature},,,,,,,not_converged,,dimer failed; a {a:.6}"
+            ),
+        );
+        return;
+    };
+    let mut product = hit.positions.clone();
+    let norm = hit.mode.dot(&hit.mode).sqrt().max(1.0e-8);
+    for i in 0..product.len() {
+        product[i] += 0.35 * hit.mode[i] / norm;
+    }
+    let product =
+        descend(copper, product, job.cell, 2.0e-4).expect("push off the saddle relaxation");
+    record_pafi(
+        copper,
+        checkpoint,
+        bulk,
+        "isolated",
+        "100",
+        hop,
+        direction,
+        temperature,
+        &reactant,
+        reactant_energy,
+        &hit.positions,
+        &hit.mode,
+        &product,
+        job.cell,
+        false,
+    );
+    eprintln!(
+        "isolated {hop} {temperature} K on a {a:.6}: {:.1} min",
+        clock.elapsed().as_secs_f64() / 60.0
+    );
+}
+
+#[test]
+#[ignore = "isolated-dumbbell translation and rotation PAFI rates from converged end states"]
+fn defect_pair_isolated_rates() {
+    let started = Instant::now();
+    let copper = FastCopper::new();
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benchmarks/defect_pair_isolated.csv");
+    if !path.exists() {
+        std::fs::write(&path, "kind,shell,orientation,hop,direction,temperature_K,dE0_eV,zero_T_eV,dF_eV,dF_error_eV,nu_Hz,rate_Hz,outcome,band_force,note\n").expect("isolated");
+    }
+    let prior = std::fs::read_to_string(&path).expect("isolated");
+    let mut jobs = Vec::new();
+    for temperature in env_csv("RGSADDLE_TEMPS", "300,500,700") {
+        let temperature: f64 = temperature.parse().expect("temperature");
+        for hop in env_csv("RGSADDLE_HOPS", "translate,rotate") {
+            let direction = if hop == "rotate" {
+                "tangential"
+            } else {
+                "toward"
+            };
+            if !checkpoint_has(
+                &prior,
+                &format!("pafi,isolated,100,{hop},{direction},{temperature},"),
+            ) {
+                jobs.push((hop, temperature));
+            }
+        }
+    }
+    let checkpoint = Mutex::new(File::options().append(true).open(&path).expect("append"));
+    jobs.par_iter()
+        .for_each(|(hop, temperature)| isolated_rate(&copper, &checkpoint, hop, *temperature));
+    eprintln!(
+        "isolated rates wall {:.1} min",
+        started.elapsed().as_secs_f64() / 60.0
     );
 }
 
