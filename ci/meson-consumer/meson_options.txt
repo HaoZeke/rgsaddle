@@ -1,0 +1,13 @@
+option(
+    'expect',
+    type: 'combo',
+    choices: ['internal', 'pkgconfig'],
+    value: 'internal',
+    description: 'Where rgsaddle-headers has to come from: the subproject or an installed .pc',
+)
+option(
+    'rgsaddle_version',
+    type: 'string',
+    value: '',
+    description: 'Version rgsaddle-headers has to report',
+)

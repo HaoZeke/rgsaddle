@@ -70,6 +70,30 @@ jobs:
           python3 examples/usage.py
           python3 examples/step_controls.py
 
+  # A meson parent project takes the headers from this checkout, as a
+  # wrap-git subproject or from the installed rgsaddle-headers.pc, and
+  # steps a band through the dlopened cdylib. meson.build's
+  # meson_version floor is the first meson row.
+  meson-consumer:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [subproject, pkgconfig]
+        meson: ["meson==0.63.0", "meson"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ${{ matrix.meson }} and ninja
+        run: python3 -m pip install '${{ matrix.meson }}' ninja
+      - name: Build the C ABI library
+        run: cargo build --locked --features capi
+      - name: Build and run the consumer (${{ matrix.mode }})
+        run: ci/meson_consumer.sh ${{ matrix.mode }} target/debug/librgsaddle.so
+
   ase-parity:
     runs-on: ubuntu-latest
     steps:
