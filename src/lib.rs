@@ -198,6 +198,9 @@ pub mod capi_kappa;
 pub mod afir;
 pub use afir::{afir_force, try_afir_force};
 
+pub mod reparam;
+pub use reparam::{Reparametrization, reparametrize};
+
 pub mod rtr;
 pub use rtr::{
     BandForces, BandRtr, RtrConfig, RtrRadius, RtrReport, TcgResult, TcgStop, band_forces,

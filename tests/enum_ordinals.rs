@@ -1,7 +1,8 @@
 //! The eight Python IntEnum tables and the Rust `to_abi` ordinals.
 
 use rgsaddle::{
-    CellChart, EigenDevice, ExpandKind, ForceGate, HessUpdate, IrcKind, MinModeKind, RestrictedKind,
+    CellChart, EigenDevice, ExpandKind, ForceGate, HessUpdate, IrcKind, MinModeKind,
+    Reparametrization, RestrictedKind,
 };
 
 #[test]
@@ -36,4 +37,14 @@ fn to_abi_matches_the_python_and_c_table() {
     assert_eq!(RestrictedKind::TrustRegion.to_abi(), 0);
     assert_eq!(RestrictedKind::MaxInternalStep.to_abi(), 1);
     assert_eq!(RestrictedKind::RestrictedAtomicStep.to_abi(), 2);
+
+    assert_eq!(Reparametrization::Linear.to_abi(), 0);
+    assert_eq!(Reparametrization::NotAKnot.to_abi(), 1);
+    for code in 0..2 {
+        assert_eq!(
+            Reparametrization::from_abi(code).map(Reparametrization::to_abi),
+            Some(code)
+        );
+    }
+    assert_eq!(Reparametrization::from_abi(2), None);
 }

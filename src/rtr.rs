@@ -5,7 +5,8 @@
 //! perpendicular to their chord tangents; the climbing image retains
 //! its reaction-path component.
 //!
-//! A trial combines this increment with equal-arc reparameterization.
+//! A trial combines this increment with equal-arc reparameterization,
+//! on the polyline or on the not-a-knot spline ([`RtrConfig::reparametrization`]).
 //! Its complete displacement is capped by the trust radius before evaluation.
 //! The reported model decrease uses that displacement and a central
 //! finite difference of the assembled force. The measured decrease is
@@ -29,6 +30,7 @@ use crate::band::{BandConfig, BandSurface};
 use crate::error::SaddleError;
 use crate::force::ForceGate;
 use crate::projection::{ProjectionKind, climbing_image_force, dneb_component, force_perp};
+use crate::reparam::Reparametrization;
 use crate::tangent::compute_tangent;
 
 pub use rgmin::rtr::{RtrRadius, TcgResult, TcgStop, truncated_cg_projected as truncated_cg};
@@ -148,7 +150,7 @@ fn band_forces_with_gate<S: BandSurface + ?Sized>(
 /// polyline; with `anchor` an interior image, each side of it is spaced on
 /// its own and the anchor stays. Endpoints never move.
 pub fn reparametrize_equal_arc(positions: &mut Array2<f64>, anchor: Option<usize>) {
-    reparametrize(positions, anchor, None);
+    reparametrize_linear(positions, anchor, None);
 }
 
 /// Equal-arc interpolation using minimum-image chords, with fixed endpoints.
@@ -157,10 +159,14 @@ pub fn reparametrize_equal_arc_in_cell(
     anchor: Option<usize>,
     cell: &crate::Cell,
 ) {
-    reparametrize(positions, anchor, Some(cell));
+    reparametrize_linear(positions, anchor, Some(cell));
 }
 
-fn reparametrize(positions: &mut Array2<f64>, anchor: Option<usize>, cell: Option<&crate::Cell>) {
+pub(crate) fn reparametrize_linear(
+    positions: &mut Array2<f64>,
+    anchor: Option<usize>,
+    cell: Option<&crate::Cell>,
+) {
     let n = positions.nrows();
     if n < 3 {
         return;
@@ -230,6 +236,9 @@ pub struct RtrConfig {
     pub max_cg: usize,
     /// Central-difference step of the force along a unit tangent direction.
     pub fd_step: f64,
+    /// Placement of the trial's interior images at equal arc length.
+    /// [`Reparametrization::Linear`], the default, is the polyline.
+    pub reparametrization: Reparametrization,
 }
 
 impl RtrConfig {
@@ -260,6 +269,7 @@ impl Default for RtrConfig {
             kappa: 0.1,
             max_cg: 50,
             fd_step: 1e-4,
+            reparametrization: Reparametrization::Linear,
         }
     }
 }
@@ -508,7 +518,12 @@ impl BandRtr {
             let mut row = trial.row_mut(i);
             row.scaled_add(1.0, &seg);
         }
-        reparametrize(&mut trial, ci, band.cell.as_ref());
+        crate::reparam::reparametrize(
+            &mut trial,
+            ci,
+            band.cell.as_ref(),
+            self.config.reparametrization,
+        );
         let mut displacement = Array1::zeros(interior);
         for i in 1..n_images - 1 {
             let mut difference = &trial.row(i) - &base.row(i);

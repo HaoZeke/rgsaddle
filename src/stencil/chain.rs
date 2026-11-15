@@ -49,6 +49,10 @@ pub enum Mesh {
     RemeshLinear,
     /// The RemeshHermite.
     RemeshHermite,
+    /// Equal arc length on the not-a-knot cubic spline through the
+    /// images (E, Ren, and Vanden-Eijnden, J. Chem. Phys. 126, 164103
+    /// (2007)); see [`crate::reparam`].
+    RemeshSpline,
     /// Insert one image after an existing index.
     Insert {
         /// Insert after this image index.
@@ -320,6 +324,16 @@ impl Mesh {
             }
             Mesh::RemeshHermite => {
                 hermite_equal_arc(&mut chain.x)?;
+                chain.filled = false;
+                Ok(MeshEvent::Remeshed)
+            }
+            Mesh::RemeshSpline => {
+                crate::reparam::reparametrize(
+                    &mut chain.x,
+                    None,
+                    None,
+                    crate::reparam::Reparametrization::NotAKnot,
+                );
                 chain.filled = false;
                 Ok(MeshEvent::Remeshed)
             }
