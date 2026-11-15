@@ -199,9 +199,9 @@ impl SiteOccupancy {
 
     fn distance2(&self, point: [f64; 3], site: usize) -> f64 {
         let mut sum = 0.0;
-        for axis in 0..3 {
-            let mut d = point[axis] - self.sites[site][axis];
-            d -= self.lengths[axis] * (d / self.lengths[axis]).round();
+        for ((here, there), length) in point.iter().zip(self.sites[site]).zip(self.lengths) {
+            let mut d = here - there;
+            d -= length * (d / length).round();
             sum += d * d;
         }
         sum
