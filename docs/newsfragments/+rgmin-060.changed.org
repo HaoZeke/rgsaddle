@@ -1,0 +1,5 @@
+rgsaddle builds on rgmin 0.6.0, pinned by full rev at ~=0.6.0~ here and in ~ci/consumer~.
+Every rgmin configuration is built from ~Default~ or a named constructor with ~with_*~ setters, and every ~Method~ and ~LineSearch~ variant through its constructor, so a field rgmin adds later does not break the build.
+FIRE 2.0 now follows Guénolé et al. (2020), Algorithm 2: Euler then mixing, a half step back after non-positive power with the force taken again at the corrected point, and no time-step decrease in the opening delay.
+A FIRE band step that backs up costs two evaluations of the interior images, and the recorded FIRE band, dimer, Lanczos and AutoNEB trajectories moved with the integrator.
+A capped FIRE translation that left the negative-curvature neighborhood restarts with half the time step, which FIRE 2.0's delay no longer does on its own.

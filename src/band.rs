@@ -2539,7 +2539,7 @@ impl BandSession {
     /// (within `1e-10` per component) keep the session's own copy, so
     /// a host that wraps atoms into its cell and hands the band back
     /// changes nothing: the endpoint energies and the last evaluation
-    /// survive and the next step costs one interior evaluation. A
+    /// survive and the next step evaluates only the interior images. A
     /// moved endpoint drops the endpoint energies (the next evaluation
     /// carries the whole band); a moved interior image drops the last
     /// evaluation. Optimizer history survives; call
@@ -2631,7 +2631,7 @@ impl BandSession {
     /// and the armed climbing image, keep the endpoint energies and
     /// the last evaluation. Mirrors eOn's optimizer reset after a
     /// reparameterization; with [`BandSession::set_positions`] for the
-    /// moved images it costs one interior evaluation.
+    /// moved images the next step evaluates only the interior images.
     pub fn restart(&mut self) {
         self.solver.forget();
         self.state.restart();
