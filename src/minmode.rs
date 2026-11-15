@@ -256,17 +256,26 @@ const TORQUE_MAX: f64 = 1.0;
 ///
 /// The reflected force is not a potential gradient (Goswami, Gunde, and
 /// Jónsson, Front. Chem. (2026), doi:10.3389/fchem.2026.1807063, Eq. 9).
-/// From rest, FIRE 2.0 treats a zero power as a missed step and moves by
-/// `F / 4` (Bitzek, Koskinen, Gähler, Moseler, and Gumbsch, Phys. Rev.
-/// Lett. 97, 170201 (2006), doi:10.1103/PhysRevLett.97.170201; rgmin
-/// halves `dt` before that Euler step, and the initial `dt` is 1). When
-/// that move exceeds `max_move` the per-atom cap truncates it, and the
-/// truncated move can leave the negative-curvature neighborhood. The
-/// replacement, taken from the last point that was still negative, is
-/// the empty-memory L-BFGS step `0.01 F`. A capped step whose arrival
-/// stays negative is kept, so a basin wider than `max_move` follows the
-/// integrator.
+/// From rest, FIRE 2.0 moves by `F dt^2`: a zero power inside the
+/// opening delay leaves `dt` unchanged (Guénolé, Nöhring, Vaid, Houllé,
+/// Xie, Prakash, and Bitzek, Comput. Mater. Sci. 175, 109584 (2020),
+/// doi:10.1016/j.commatsci.2020.109584, Algorithm 2; the initial `dt` is
+/// [`FIRE_OPENING_DT`]). When that move exceeds `max_move` the per-atom
+/// cap truncates it, and the truncated move can leave the
+/// negative-curvature neighborhood. The replacement, taken from the last
+/// point that was still negative, is the empty-memory L-BFGS step
+/// `0.01 F`. A capped step whose arrival stays negative is kept, so a
+/// basin wider than `max_move` follows the integrator.
 const FIRE_EMPTY_SCALE: f64 = 0.01;
+
+/// FIRE's opening time step for the min-mode translation.
+const FIRE_OPENING_DT: f64 = 1.0;
+
+/// Each replaced capped FIRE move restarts the integrator with `dt`
+/// scaled by FIRE's `f_dec`, the response to a missed step that the
+/// opening delay of FIRE 2.0 withholds. Without it the restart from rest
+/// repeats the same capped move out of the neighborhood.
+const FIRE_RETREAT_DT_SCALE: f64 = 0.5;
 
 /// Whether a trial energy rose, and the step length to try next.
 ///
@@ -1398,6 +1407,9 @@ pub struct MinModeSession {
     /// still negative. An arrival with non-negative curvature left the
     /// neighborhood; the step is replaced from [`CappedFireStep::origin`].
     capped_fire: Option<CappedFireStep>,
+    /// FIRE time step the translation solver restarts with; below
+    /// [`FIRE_OPENING_DT`] after a capped move was replaced.
+    fire_dt: f64,
     /// The translator has already taken a step, so a later FIRE move
     /// is the integrator's own.
     solver_stepped: bool,
@@ -1528,7 +1540,7 @@ impl MinModeSession {
             &config.method,
             x.len(),
             config.max_move,
-            1.0,
+            FIRE_OPENING_DT,
             false,
             lbfgs_guards,
         );
@@ -1554,6 +1566,7 @@ impl MinModeSession {
             lanczos_ready: false,
             lanczos_carry: None,
             capped_fire: None,
+            fire_dt: FIRE_OPENING_DT,
             solver_stepped: false,
             lbfgs_seeded: false,
             fire_curvature: true,
@@ -1760,11 +1773,28 @@ impl MinModeSession {
         self.last_translated.as_ref().map(|force| force.view())
     }
 
+    /// Restart the FIRE translation integrator from rest with time step
+    /// `dt`; the other parameters are the integrator's defaults.
+    fn set_fire_dt(&mut self, dt: f64) -> Result<(), SaddleError> {
+        let config = rgmin::FireConfig::ase()
+            .with_dt(dt)
+            .with_dt_max(2.5 * FIRE_OPENING_DT);
+        self.solver
+            .set_fire_config(config)
+            .map_err(|e| SaddleError::Solver(e.to_string()))?;
+        self.fire_dt = dt;
+        Ok(())
+    }
+
     /// Drop optimizer history, dimer rotation history, carried
     /// curvature, and the cached centre gradient at a surface-epoch
     /// boundary. The mode stays as the next seed.
     pub fn reset(&mut self) {
         self.solver.forget();
+        if self.fire_dt != FIRE_OPENING_DT {
+            // Only a FIRE session lowers fire_dt, so the restore cannot fail.
+            let _ = self.set_fire_dt(FIRE_OPENING_DT);
+        }
         self.dimer_rotation.clear();
         self.clear_cg();
         self.lbfgs_shadow.clear();
@@ -2747,6 +2777,7 @@ impl MinModeSession {
             if largest_atom_move(left.origin.view(), retreated.view()) > 0.0 {
                 let (energy, gradient) = counted.eval(retreated.view())?;
                 self.solver.forget();
+                self.set_fire_dt(self.fire_dt * FIRE_RETREAT_DT_SCALE)?;
                 self.x = retreated;
                 self.centre = Some(PointEval {
                     x: self.x.clone(),
