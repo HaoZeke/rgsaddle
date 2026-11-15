@@ -1,0 +1,3 @@
+~DefectPairConfig~ takes its minimizations from ~relax~, a ~RelaxConfig~, instead of ~max_relax_steps~, ~relax_tol~, ~relax_step~ and ~max_move~, which defaulted to 80 steps and ended a relaxation wherever those steps left it.
+The reactant, the products and the pushes off each saddle now run to ~relax.force_tol~ on the largest per-atom force, along the steepest-descent flow (~Method::Ode12r~ under a 0.08 cap) by default, and reaching ~relax.max_steps~ is an error.
+~descend_limited~, which stopped at the step budget or at the last point before a collision, is replaced by ~descend_to_floor~: it follows ~config.relax~ until the energy is at or below the floor or the forces are below tolerance, and fails on the step cap or a non-finite energy.
