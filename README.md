@@ -29,6 +29,7 @@ cargo add rgsaddle
 
 The [Python](#python) section below installs the Python package.
 The [C interface guide](https://omnipotentrpc.github.io/rgsaddle/howto/c-abi.html) covers the C library.
+A meson project takes the C and C++ headers from the top-level `meson.build`, as a wrap subproject or through `rgsaddle-headers.pc`; the [meson guide](https://omnipotentrpc.github.io/rgsaddle/howto/meson.html) has the wrap file.
 
 ## Example
 
@@ -105,6 +106,7 @@ cargo add rgsaddle
 
 The [Python](#python) section below installs the Python package.
 The [C interface guide](https://omnipotentrpc.github.io/rgsaddle/howto/c-abi.html) covers the C library.
+A meson project takes the C and C++ headers from the top-level `meson.build`, as a wrap subproject or through `rgsaddle-headers.pc`; the [meson guide](https://omnipotentrpc.github.io/rgsaddle/howto/meson.html) has the wrap file.
 
 ## Example
 

@@ -75,6 +75,7 @@ while report.status != BandStatus::Converged {
    howto/irc
    howto/io
    howto/c-abi
+   howto/meson
    howto/python
    howto/migrate
    howto/stencil

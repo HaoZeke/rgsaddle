@@ -14,6 +14,9 @@ Enable =capi=. The header is =rgsaddle.h=. ABI major 1. Every wire struct opens 
 
 There is no run-to-completion C entry point. Units are the caller's. Positions are unwrapped Cartesian, image-major, stride =3 * n_atoms=.
 
+* Use the headers from meson
+The top-level =meson.build= provides the headers as the dependency =rgsaddle-headers= (also =rgsaddle=), from a wrap or from an installed =rgsaddle-headers.pc=. It does not build the library. =howto/meson= has the wrap, the migration from a packagefiles overlay, and the run-time loading.
+
 * Grow the band with AutoNEB
 =howto/autoneb= is the AutoNEB loop: insert where the resolution is worst, relax a local window, and climb. The tuning sits on =BandConfig::autoneb=. A weighted spring supplied by the host is refused for now; zoom-NEB will recompute it.
 

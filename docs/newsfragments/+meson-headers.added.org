@@ -1,0 +1,4 @@
+A top-level ~meson.build~ provides the C and C++ headers to meson projects as a wrap subproject or through an installed ~rgsaddle-headers.pc~, so a consumer no longer carries a packagefiles overlay.
+The dependency answers to ~rgsaddle-headers~ and ~rgsaddle~, and ~rgsaddle_headers_dep~ keeps the overlay's fallback variable, so an existing ~dependency()~ call resolves unchanged.
+It does not build the Rust library; the cargo-c ~rgsaddle.pc~ that links it keeps its name.
+The meson version is the crate's, and ~tests/package_version.rs~ holds them equal.
