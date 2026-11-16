@@ -1,6 +1,6 @@
 //! The hyperplane and the mass-weighted surface it lives on.
 
-use ndarray::{Array1, Array2, ArrayView1, s};
+use ndarray::{Array1, Array2, ArrayView1, ArrayView2, s};
 
 use crate::error::SaddleError;
 use crate::minmode::{MinModeSession, ModeEstimate, PointSurface};
@@ -122,6 +122,22 @@ impl Hyperplane {
         self
     }
 
+    /// The same plane with its normal made orthogonal to the rows of
+    /// `modes`, rigid translations for instance, and normalized again.
+    pub fn orthogonal_to(&self, modes: ArrayView2<f64>) -> Result<Self, SaddleError> {
+        if modes.nrows() > 0 && modes.ncols() != self.dim() {
+            return Err(SaddleError::Shape(
+                "modes differ in length from the plane".into(),
+            ));
+        }
+        let mut normal = self.normal.clone();
+        for direction in orthonormal_rows(modes, self.dim()) {
+            let c = direction.dot(&normal);
+            normal.scaled_add(-c, &direction);
+        }
+        Self::new(self.point.clone(), normal)
+    }
+
     /// `[p; ν]`, length `2n`: the point of `R^n × S^{n-1}` the optimizer
     /// moves.
     pub fn packed(&self) -> Array1<f64> {
@@ -142,6 +158,30 @@ impl Hyperplane {
         let n = x.len() / 2;
         Self::new(x.slice(s![..n]).to_owned(), x.slice(s![n..]).to_owned())
     }
+}
+
+/// Gram–Schmidt over the rows, twice for round-off. Rows that depend on
+/// earlier ones are dropped.
+pub(crate) fn orthonormal_rows(rows: ArrayView2<f64>, n: usize) -> Vec<Array1<f64>> {
+    let mut basis: Vec<Array1<f64>> = Vec::with_capacity(rows.nrows());
+    for row in rows.rows() {
+        if row.len() != n {
+            continue;
+        }
+        let scale = row.dot(&row).sqrt();
+        let mut v = row.to_owned();
+        for _ in 0..2 {
+            for b in &basis {
+                let c = b.dot(&v);
+                v.scaled_add(-c, b);
+            }
+        }
+        let norm = v.dot(&v).sqrt();
+        if scale > 0.0 && norm > 1.0e-10 * scale {
+            basis.push(v / norm);
+        }
+    }
+    basis
 }
 
 fn sqrt_masses(masses: &[f64], n: usize) -> Result<Array1<f64>, SaddleError> {

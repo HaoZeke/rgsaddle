@@ -99,6 +99,11 @@ impl Rng {
         result
     }
 
+    /// Uniform on `[0, 1)` with 53 random bits.
+    pub(crate) fn uniform(&mut self) -> f64 {
+        (self.u64() >> 11) as f64 * (1.0 / ((1u64 << 53) as f64))
+    }
+
     pub(crate) fn normal(&mut self) -> f64 {
         let u1 = ((self.u64() >> 11) as f64 * (1.0 / ((1u64 << 53) as f64))).max(1.0e-16);
         let u2 = (self.u64() >> 11) as f64 * (1.0 / ((1u64 << 53) as f64));

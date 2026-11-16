@@ -25,5 +25,7 @@
 //! surface built with that cell.
 
 mod plane;
+mod sample;
 
 pub use plane::{Hyperplane, MassWeighted};
+pub use sample::{PlaneSample, SamplerConfig, sample_plane};
