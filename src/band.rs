@@ -267,8 +267,9 @@ pub struct BandConfig {
     pub max_move: f64,
     /// Drop the mean Cartesian force of every image that has two or
     /// more atoms. eOn does this when every atom is free and leaves
-    /// the mean in place when any atom is fixed, so a host with fixed
-    /// atoms clears this flag.
+    /// the mean in place when any atom is fixed; a band with any atom
+    /// set in [`BandConfig::fixed_atoms`] keeps the mean whatever this
+    /// flag says.
     pub remove_translation: bool,
     /// Band stepper. FIRE by default (eOn's velocity NEB stepper).
     /// L-BFGS runs under rgmin's `Accept::Step`: the two-loop
@@ -310,6 +311,20 @@ pub struct BandConfig {
     /// Zoom-NEB: once the climbing image is stable, place the band on
     /// a window around it. `None`, the default, keeps the band whole.
     pub zoom: Option<ZoomConfig>,
+    /// Per-atom fixed mask shared by every image, one entry per atom;
+    /// empty (the default) or all `false` leaves every atom free and
+    /// the band bitwise as without a mask. A fixed atom never moves:
+    /// its gradient reads as zero, so it carries no force in any
+    /// stepper, in the convergence norm or in the report; tangents and
+    /// springs are formed on the free coordinates; the climbing image
+    /// and the min-mode refinement step the free block only; and the
+    /// exponential metric is assembled on the free atoms, with fixed
+    /// atoms still counted as neighbours. With any atom fixed the mean
+    /// force stays (see [`BandConfig::remove_translation`]). The
+    /// endpoints must agree on every fixed atom up to the minimum image
+    /// (1e-10 per component); interior images take the first image's
+    /// fixed coordinates. Refused on a solid-state band.
+    pub fixed_atoms: Vec<bool>,
 }
 
 with_setters!(BandConfig {
@@ -330,7 +345,111 @@ with_setters!(BandConfig {
     with_min_mode => min_mode: opt MinModeRefine,
     with_exp_precon => exp_precon: opt ExpBandPrecon,
     with_zoom => zoom: opt ZoomConfig,
+    with_fixed_atoms => fixed_atoms: val Vec<bool>,
 });
+
+impl BandConfig {
+    /// Whether [`BandConfig::fixed_atoms`] holds any atom.
+    pub(crate) fn has_fixed(&self) -> bool {
+        self.fixed_atoms.iter().any(|&f| f)
+    }
+
+    /// The mean force is dropped only on a band with every atom free.
+    pub(crate) fn drops_translation(&self) -> bool {
+        self.remove_translation && !self.has_fixed()
+    }
+}
+
+/// Zero the coordinates of the atoms `fixed` holds in `v`, a flat run
+/// of whole images of `fixed.len()` atoms each.
+pub(crate) fn zero_fixed<S: DataMut<Elem = f64>>(fixed: &[bool], v: &mut ArrayBase<S, Ix1>) {
+    let n = fixed.len();
+    if n == 0 || !fixed.iter().any(|&f| f) {
+        return;
+    }
+    for (k, c) in v.iter_mut().enumerate() {
+        if fixed[(k / 3) % n] {
+            *c = 0.0;
+        }
+    }
+}
+
+/// A non-empty fixed mask has one entry per atom.
+pub(crate) fn check_fixed_len(config: &BandConfig, dof: usize) -> Result<(), SaddleError> {
+    let n = config.fixed_atoms.len();
+    if n != 0 && 3 * n != dof {
+        return Err(SaddleError::Shape(format!(
+            "fixed-atom mask has {n} entries for {} atoms",
+            dof / 3
+        )));
+    }
+    Ok(())
+}
+
+/// The fixed mask fits the band: one entry per atom, a free atom left,
+/// no cell block, and endpoints that agree on every fixed atom up to
+/// the minimum image.
+pub(crate) fn check_fixed(
+    config: &BandConfig,
+    positions: ArrayView2<f64>,
+) -> Result<(), SaddleError> {
+    check_fixed_len(config, positions.ncols())?;
+    if !config.has_fixed() {
+        return Ok(());
+    }
+    if config.solid.is_some() {
+        return Err(SaddleError::Invalid(
+            "a solid-state band moves every atom with its cell; fixed atoms are not supported"
+                .into(),
+        ));
+    }
+    if config.fixed_atoms.iter().all(|&f| f) {
+        return Err(SaddleError::Invalid(
+            "every atom is fixed; a band needs a free atom".into(),
+        ));
+    }
+    let last = positions.nrows() - 1;
+    let mut diff = &positions.row(last) - &positions.row(0);
+    if let Some(cell) = &config.cell {
+        cell.minimum_image(&mut diff);
+    }
+    for (atom, _) in config.fixed_atoms.iter().enumerate().filter(|(_, f)| **f) {
+        let gap = (0..3).fold(0.0_f64, |m, c| m.max(diff[3 * atom + c].abs()));
+        if gap > SAME_ROW_TOL {
+            return Err(SaddleError::Invalid(format!(
+                "fixed atom {atom} differs between the endpoints by {gap:e}; \
+                 a fixed atom must sit at the same place in every image"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Copy the first row's fixed coordinates into every interior row.
+pub(crate) fn pin_fixed_rows(fixed: &[bool], positions: &mut Array2<f64>) {
+    if fixed.is_empty() {
+        return;
+    }
+    let n_images = positions.nrows();
+    for (atom, _) in fixed.iter().enumerate().filter(|(_, f)| **f) {
+        for c in 3 * atom..3 * atom + 3 {
+            let held = positions[(0, c)];
+            for i in 1..n_images - 1 {
+                positions[(i, c)] = held;
+            }
+        }
+    }
+}
+
+/// Coordinate indices of the free atoms of one image.
+fn free_coordinates(fixed: &[bool]) -> Vec<usize> {
+    fixed
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| !**f)
+        .flat_map(|(a, _)| 3 * a..3 * a + 3)
+        .collect()
+}
 
 impl Default for BandConfig {
     fn default() -> Self {
@@ -352,6 +471,7 @@ impl Default for BandConfig {
             min_mode: Some(MinModeRefine::default()),
             exp_precon: None,
             zoom: None,
+            fixed_atoms: Vec::new(),
         }
     }
 }
@@ -427,6 +547,17 @@ struct ExpBandState {
     mu: Option<f64>,
     /// One matrix per interior image, empty until the first step.
     metrics: Vec<Exp>,
+    /// Coordinates the matrices act on when an atom is fixed; `None`
+    /// is every coordinate.
+    free: Option<Vec<usize>>,
+}
+
+/// The band metrics of one step: one matrix per interior image, on the
+/// coordinates `free` lists, or on all of them.
+#[derive(Clone, Copy)]
+struct BandMetrics<'a> {
+    per_image: &'a [Exp],
+    free: Option<&'a [usize]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -588,11 +719,15 @@ struct BandState {
     work: Mutex<BandWork>,
     /// Image threads ([`BandSession::set_image_threads`]).
     pool: Option<crate::autoneb::ImageEvalPool>,
+    /// The band's fixed mask, empty when every atom is free. Gradient
+    /// components of fixed atoms are zeroed as the surface answers.
+    fixed: Vec<bool>,
 }
 
 impl BandState {
     fn new() -> Self {
         Self {
+            fixed: Vec::new(),
             force_gate: ForceGate::LinfNorm,
             baseline: Mutex::new(None),
             atom_baseline: Mutex::new(None),
@@ -967,6 +1102,11 @@ fn fill_band(
         .all(|g| g.is_finite())
     {
         return Err(SaddleError::NonFinite("band gradients"));
+    }
+    if !state.fixed.is_empty() {
+        for mut row in next.gradients.outer_iter_mut() {
+            zero_fixed(&state.fixed, &mut row);
+        }
     }
     Ok(())
 }
@@ -1386,7 +1526,7 @@ fn image_force(
     x: ArrayView1<f64>,
     energies: &Array1<f64>,
     gradients: &Array2<f64>,
-    metric: Option<&Exp>,
+    metric: Option<(&Exp, Option<&[usize]>)>,
 ) -> Result<(Array1<f64>, Option<Array1<f64>>), SaddleError> {
     let dof = endpoint_first.len();
     let n_images = energies.len();
@@ -1406,6 +1546,8 @@ fn image_force(
         cell.minimum_image(&mut pos_diff_next);
         cell.minimum_image(&mut pos_diff_prev);
     }
+    zero_fixed(&config.fixed_atoms, &mut pos_diff_next);
+    zero_fixed(&config.fixed_atoms, &mut pos_diff_prev);
     let dist_next = pos_diff_next.dot(&pos_diff_next).sqrt();
     let dist_prev = pos_diff_prev.dot(&pos_diff_prev).sqrt();
     let tangent = compute_tangent(
@@ -1439,54 +1581,52 @@ fn image_force(
             .projection
             .project(force.view(), tangent.view(), &spring)
     };
-    if config.remove_translation {
+    zero_fixed(&config.fixed_atoms, &mut projected);
+    if config.drops_translation() {
         remove_net_translation(&mut projected);
     }
     let driving = match metric {
-        Some(p) => {
-            // Makri, Ortner and Kermode, Eq. (9) and (10): the gradient
-            // through P^{-1}, the tangent normalised in the P-norm, and
-            // the spring along that tangent with the P inner product.
-            let gradient = gradients.row(i);
-            let s = p.solve(gradient).ok_or(SaddleError::Invalid(
-                "exponential metric: the linear solve failed".into(),
-            ))?;
-            let pt = p.apply(tangent.view());
-            let norm_p = tangent.dot(&pt).sqrt();
-            if !(norm_p.is_finite() && norm_p > 0.0) {
-                return Err(SaddleError::NonFinite("P-norm of the tangent"));
-            }
-            let t_p = &tangent / norm_p;
-            let pt_p = &pt / norm_p;
-            let along = t_p.dot(&gradient);
+        Some((p, free)) => {
+            let curvature = &pos_diff_next - &pos_diff_prev;
+            let spring_k = match config.spring {
+                SpringKind::Uniform { k } => Some(k),
+                _ => None,
+            };
             let mut driving;
-            if climb {
-                // The climbing image reflects the preconditioned gradient
-                // in the P-metric, -(P^{-1} g - 2 t_P (t_P . g)), whose
-                // fixed point is g = 0; its residual is the P-image of
-                // that force, -(g - 2 P t_P (t_P . g)).
-                driving = -&s + &(&t_p * (2.0 * along));
-                projected = -&gradient + &(&pt_p * (2.0 * along));
-            } else {
-                driving = -(&s - &(&t_p * along));
-                if let SpringKind::Uniform { k } = config.spring {
-                    // The paper's spring constant is dimensionless, the
-                    // stiffness relative to the metric; `k` in
-                    // force-constant units keeps its meaning through the
-                    // metric's energy scale, kappa = k / mu.
-                    let curvature = &pos_diff_next - &pos_diff_prev;
-                    driving += &(&t_p * (k / p.mu() * curvature.dot(&pt_p)));
+            match free {
+                None => {
+                    (driving, projected) = metric_force(
+                        p,
+                        gradients.row(i),
+                        tangent.view(),
+                        curvature.view(),
+                        climb,
+                        spring_k,
+                    )?;
                 }
-                // The fixed point of the preconditioned projection is the
-                // path with the gradient along P t_P, the minimum energy
-                // path of the metric's geometry, where the Euclidean
-                // perpendicular force does not vanish. The band force that
-                // convergence and the report measure is the residual of
-                // Eq. (11), -P grad_perp V_P = -(g - P t_P (t_P . g)),
-                // zero on that path.
-                projected = -&gradient + &(&pt_p * along);
+                Some(free) => {
+                    // P acts on the free block; the fixed coordinates
+                    // carry no force in either vector.
+                    let gather = |v: ArrayView1<f64>| -> Array1<f64> {
+                        free.iter().map(|&c| v[c]).collect()
+                    };
+                    let (driving_free, projected_free) = metric_force(
+                        p,
+                        gather(gradients.row(i)).view(),
+                        gather(tangent.view()).view(),
+                        gather(curvature.view()).view(),
+                        climb,
+                        spring_k,
+                    )?;
+                    driving = Array1::zeros(dof);
+                    projected = Array1::zeros(dof);
+                    for (k, &c) in free.iter().enumerate() {
+                        driving[c] = driving_free[k];
+                        projected[c] = projected_free[k];
+                    }
+                }
             }
-            if config.remove_translation {
+            if config.drops_translation() {
                 remove_net_translation(&mut driving);
                 remove_net_translation(&mut projected);
             }
@@ -1498,6 +1638,61 @@ fn image_force(
         None => None,
     };
     Ok((projected, driving))
+}
+
+/// The preconditioned driving force of one image and the residual the
+/// band measures, on the coordinates `p` acts on. `curvature` is
+/// `d_next - d_prev`; `spring_k` is the uniform spring, if any.
+fn metric_force(
+    p: &Exp,
+    gradient: ArrayView1<f64>,
+    tangent: ArrayView1<f64>,
+    curvature: ArrayView1<f64>,
+    climb: bool,
+    spring_k: Option<f64>,
+) -> Result<(Array1<f64>, Array1<f64>), SaddleError> {
+    // Makri, Ortner and Kermode, Eq. (9) and (10): the gradient
+    // through P^{-1}, the tangent normalised in the P-norm, and
+    // the spring along that tangent with the P inner product.
+    let s = p.solve(gradient).ok_or(SaddleError::Invalid(
+        "exponential metric: the linear solve failed".into(),
+    ))?;
+    let pt = p.apply(tangent);
+    let norm_p = tangent.dot(&pt).sqrt();
+    if !(norm_p.is_finite() && norm_p > 0.0) {
+        return Err(SaddleError::NonFinite("P-norm of the tangent"));
+    }
+    let t_p = &tangent / norm_p;
+    let pt_p = &pt / norm_p;
+    let along = t_p.dot(&gradient);
+    let mut driving;
+    let projected;
+    if climb {
+        // The climbing image reflects the preconditioned gradient
+        // in the P-metric, -(P^{-1} g - 2 t_P (t_P . g)), whose
+        // fixed point is g = 0; its residual is the P-image of
+        // that force, -(g - 2 P t_P (t_P . g)).
+        driving = -&s + &(&t_p * (2.0 * along));
+        projected = -&gradient + &(&pt_p * (2.0 * along));
+    } else {
+        driving = -(&s - &(&t_p * along));
+        if let Some(k) = spring_k {
+            // The paper's spring constant is dimensionless, the
+            // stiffness relative to the metric; `k` in
+            // force-constant units keeps its meaning through the
+            // metric's energy scale, kappa = k / mu.
+            driving += &(&t_p * (k / p.mu() * curvature.dot(&pt_p)));
+        }
+        // The fixed point of the preconditioned projection is the
+        // path with the gradient along P t_P, the minimum energy
+        // path of the metric's geometry, where the Euclidean
+        // perpendicular force does not vanish. The band force that
+        // convergence and the report measure is the residual of
+        // Eq. (11), -P grad_perp V_P = -(g - P t_P (t_P . g)),
+        // zero on that path.
+        projected = -&gradient + &(&pt_p * along);
+    }
+    Ok((driving, projected))
 }
 
 /// The springs of one band evaluation. A kind whose constants or
@@ -1647,6 +1842,8 @@ fn image_force_into(
         cell.minimum_image_view(diff_next.view_mut());
         cell.minimum_image_view(diff_prev.view_mut());
     }
+    zero_fixed(&config.fixed_atoms, diff_next);
+    zero_fixed(&config.fixed_atoms, diff_prev);
     let dist_next = diff_next.dot(&*diff_next).sqrt();
     let dist_prev = diff_prev.dot(&*diff_prev).sqrt();
     let rule = match config.tangent {
@@ -1717,7 +1914,8 @@ fn image_force_into(
                 .for_each(|o, &s, &p, &d| *o = s + p + d),
         }
     }
-    if config.remove_translation {
+    zero_fixed(&config.fixed_atoms, &mut out);
+    if config.drops_translation() {
         remove_net_translation(&mut out);
     }
     Ok(())
@@ -1765,6 +1963,7 @@ pub fn climbing_image(
             "energies and gradients must match the band".into(),
         ));
     }
+    check_fixed_len(config, dof)?;
     let mut max_i = 1usize;
     for i in 2..n_images - 1 {
         if energies[i] > energies[max_i] {
@@ -1808,6 +2007,7 @@ fn climb_target(
         if let Some(cell) = &config.cell {
             cell.minimum_image(&mut along);
         }
+        zero_fixed(&config.fixed_atoms, &mut along);
         let length = along.dot(&along).sqrt();
         length > 0.0 && -gradients.row(end).dot(&along) / length > config.force_tol
     };
@@ -1856,7 +2056,7 @@ fn assemble_band_with(
     endpoint_first: ArrayView1<f64>,
     endpoint_last: ArrayView1<f64>,
     x: ArrayView1<f64>,
-    metrics: Option<&[Exp]>,
+    metrics: Option<BandMetrics<'_>>,
 ) -> Result<(f64, Array1<f64>, f64, Option<Array1<f64>>), SaddleError> {
     let mut work = state.work.lock().unwrap_or_else(|e| e.into_inner());
     let mut slot = evaluate_band(state, &mut work, surface, endpoint_first, endpoint_last, x)?;
@@ -1896,7 +2096,7 @@ fn assemble_band_with(
         None => Springs::Band(BandSpring::at(&config.spring, energies.view(), ks)),
     };
     let images = fit_images(images, n_images - 2, dof);
-    let metric_of = |i: usize| metrics.and_then(|m| m.get(i - 1));
+    let metric_of = |i: usize| metrics.and_then(|m| m.per_image.get(i - 1).map(|p| (p, m.free)));
     // An armed climbing image under the metric climbs in the P-metric,
     // so a metric slice carries every image.
     let mut projected = Array1::zeros((n_images - 2) * dof);
@@ -2242,6 +2442,7 @@ impl BandSession {
         if !initial.iter().all(|v| v.is_finite()) {
             return Err(SaddleError::NonFinite("band positions"));
         }
+        check_fixed(&config, initial.view())?;
         let method = if config.quickmin {
             Method::QuickMin
         } else {
@@ -2276,10 +2477,62 @@ impl BandSession {
             unmoved: 0,
             zoom: zoom::ZoomState::default(),
         };
+        if session.config.has_fixed() {
+            session.state.fixed = session.config.fixed_atoms.clone();
+            session.pin_fixed();
+        }
         if let Some(precon) = session.config.exp_precon {
             session.set_exp_precon(precon)?;
         }
         Ok(session)
+    }
+
+    /// Replace the fixed-atom mask ([`BandConfig::fixed_atoms`]) between
+    /// steps: one entry per atom, empty or all `false` for none. The
+    /// endpoints must agree on every fixed atom up to the minimum
+    /// image; the interior images take the first image's fixed
+    /// coordinates. Optimizer history, the climbing state, the
+    /// min-mode refinement and the last evaluation are dropped, the
+    /// endpoint energies kept, and an installed exponential metric is
+    /// rebuilt on the new free atoms at the next step. On an error the
+    /// session is unchanged.
+    pub fn set_fixed_atoms(&mut self, fixed: Vec<bool>) -> Result<(), SaddleError> {
+        let candidate = self.config.clone().with_fixed_atoms(fixed);
+        if self.solid.is_some() && candidate.has_fixed() {
+            return Err(SaddleError::Invalid(
+                "a solid-state band moves every atom with its cell; fixed atoms are not supported"
+                    .into(),
+            ));
+        }
+        check_fixed(&candidate, self.positions.view())?;
+        self.config.fixed_atoms = candidate.fixed_atoms;
+        self.state.fixed = if self.config.has_fixed() {
+            self.config.fixed_atoms.clone()
+        } else {
+            Vec::new()
+        };
+        self.pin_fixed();
+        if let Some(exp) = self.exp.as_mut() {
+            exp.free = self
+                .config
+                .has_fixed()
+                .then(|| free_coordinates(&self.config.fixed_atoms));
+            exp.metrics.clear();
+        }
+        self.state.drop_last();
+        self.restart();
+        Ok(())
+    }
+
+    /// The fixed-atom mask, empty when none was set.
+    #[must_use]
+    pub fn fixed_atoms(&self) -> &[bool] {
+        &self.config.fixed_atoms
+    }
+
+    /// Give every interior image the first image's fixed coordinates.
+    pub(crate) fn pin_fixed(&mut self) {
+        pin_fixed_rows(&self.state.fixed, &mut self.positions);
     }
 
     /// Install the per-image exponential metric on the band solver, or
@@ -2321,6 +2574,10 @@ impl BandSession {
             r_nn: 0.0,
             mu: precon.mu,
             metrics: Vec::new(),
+            free: self
+                .config
+                .has_fixed()
+                .then(|| free_coordinates(&self.config.fixed_atoms)),
         });
         Ok(())
     }
@@ -2342,7 +2599,26 @@ impl BandSession {
     /// Pair lists of the interior images, one per image with the atom
     /// indices of that image, and the largest per-atom nearest-neighbour
     /// distance over all of them. Distances are wrapped by the cell.
+    ///
+    /// With atoms fixed every atom still counts for `r_nn` and the
+    /// cutoff, as ASE's `Exp` does under `FixAtoms`; the lists index the
+    /// free atoms in order, and a bond from a free atom to a fixed one
+    /// is an anchor, which adds to the free atom's diagonal only.
     fn band_neighbours(&self, r_cut_factor: f64) -> (Vec<Neighbours>, f64) {
+        let fixed = &self.state.fixed;
+        let free_index: Vec<Option<usize>> = {
+            let mut next = 0;
+            (0..self.positions.ncols() / 3)
+                .map(|a| {
+                    if fixed.get(a).copied().unwrap_or(false) {
+                        None
+                    } else {
+                        next += 1;
+                        Some(next - 1)
+                    }
+                })
+                .collect()
+        };
         let n_images = self.positions.nrows();
         let n_atoms = self.positions.ncols() / 3;
         let mut per_image: Vec<Vec<(usize, usize, f64)>> = Vec::new();
@@ -2380,10 +2656,17 @@ impl BandSession {
             .map(|pairs| {
                 let mut neigh = Neighbours::default();
                 for (i, j, r) in pairs {
-                    if r < r_cut {
-                        neigh.i.push(i);
-                        neigh.j.push(j);
-                        neigh.r.push(r);
+                    if r >= r_cut {
+                        continue;
+                    }
+                    match (free_index[i], free_index[j]) {
+                        (Some(i), Some(j)) => {
+                            neigh.i.push(i);
+                            neigh.j.push(j);
+                            neigh.r.push(r);
+                        }
+                        (Some(a), None) | (None, Some(a)) => neigh.anchor.push((a, r)),
+                        (None, None) => {}
                     }
                 }
                 neigh
@@ -2414,19 +2697,55 @@ impl BandSession {
             .with_r_cut(None)
             .with_recalc_mu(false);
         let dof = self.positions.ncols();
-        let first = self.positions.row(1).to_owned();
+        let free = exp.free.clone();
+        // The metric reads the free coordinates of an image; the fixed
+        // ones stay where the image has them.
+        let gather = |row: ArrayView1<f64>| -> Array1<f64> {
+            match &free {
+                Some(free) => free.iter().map(|&c| row[c]).collect(),
+                None => row.to_owned(),
+            }
+        };
+        let first_row = self.positions.row(1).to_owned();
+        let first = gather(first_row.view());
+        // The sine probe of the mu estimate spans the whole image, fixed
+        // atoms included; spanning the free atoms alone could leave it
+        // flat, as for a single free atom.
+        let params = match &free {
+            Some(_) => {
+                let mut lo = [f64::INFINITY; 3];
+                let mut hi = [f64::NEG_INFINITY; 3];
+                for atom in first_row.exact_chunks(3) {
+                    for a in 0..3 {
+                        lo[a] = lo[a].min(atom[a]);
+                        hi[a] = hi[a].max(atom[a]);
+                    }
+                }
+                params.with_lengths([hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]])
+            }
+            None => params,
+        };
         let mu = match held_mu {
             Some(mu) => mu,
             None => {
                 let rows = &self.state.rows;
                 let grad = |p: ArrayView1<f64>| -> Array1<f64> {
-                    let geometry = p.to_shape((1, dof)).expect("one image").to_owned();
+                    let geometry = match &free {
+                        Some(free) => {
+                            let mut full = first_row.clone();
+                            for (k, &c) in free.iter().enumerate() {
+                                full[c] = p[k];
+                            }
+                            full.into_shape_with_order((1, dof)).expect("one image")
+                        }
+                        None => p.to_shape((1, dof)).expect("one image").to_owned(),
+                    };
                     let mut energies = Array1::zeros(1);
                     let mut gradients = Array2::zeros((1, dof));
                     rows.fetch_add(1, Ordering::Relaxed);
                     match surface.eval(geometry.view(), &mut energies, &mut gradients) {
-                        Ok(()) => gradients.row(0).to_owned(),
-                        Err(_) => Array1::from_elem(dof, f64::NAN),
+                        Ok(()) => gather(gradients.row(0)),
+                        Err(_) => Array1::from_elem(p.len(), f64::NAN),
                     }
                 };
                 rgmin::estimate_mu(first.view(), &lists[0], &params, grad)
@@ -2435,8 +2754,8 @@ impl BandSession {
         };
         let mut metrics = Vec::with_capacity(lists.len());
         for (k, neigh) in lists.iter().enumerate() {
-            let row = self.positions.row(k + 1);
-            let metric = Exp::assemble(row, neigh, &params, mu, r_nn)
+            let row = gather(self.positions.row(k + 1));
+            let metric = Exp::assemble(row.view(), neigh, &params, mu, r_nn)
                 .map_err(|e| SaddleError::Solver(format!("exponential metric: {e}")))?;
             metrics.push(metric);
         }
@@ -2609,14 +2928,19 @@ impl BandSession {
     /// moved endpoint drops the endpoint energies (the next evaluation
     /// carries the whole band); a moved interior image drops the last
     /// evaluation. Optimizer history survives; call
-    /// [`BandSession::restart`] to drop it as well.
-    pub fn set_positions(&mut self, positions: Array2<f64>) -> Result<(), SaddleError> {
+    /// [`BandSession::restart`] to drop it as well. With atoms fixed the
+    /// new endpoints must agree on each of them, as at
+    /// [`BandSession::new`], and the interior images take the first
+    /// image's fixed coordinates.
+    pub fn set_positions(&mut self, mut positions: Array2<f64>) -> Result<(), SaddleError> {
         if positions.dim() != self.positions.dim() {
             return Err(SaddleError::Shape("set_positions shape".into()));
         }
         if !positions.iter().all(|v| v.is_finite()) {
             return Err(SaddleError::NonFinite("band positions"));
         }
+        check_fixed(&self.config, positions.view())?;
+        pin_fixed_rows(&self.state.fixed, &mut positions);
         let n_images = positions.nrows();
         let mut moved = false;
         for (i, new_row) in positions.outer_iter().enumerate() {
@@ -2639,6 +2963,7 @@ impl BandSession {
             // any moved row retires it.
             moved = true;
         }
+        self.pin_fixed();
         if moved {
             self.state.drop_last();
             self.refine = min_mode::RefineState::default();
@@ -2766,6 +3091,7 @@ impl BandSession {
                 .row_mut(i)
                 .assign(&flat.slice(s![(i - 1) * dof..i * dof]));
         }
+        self.pin_fixed();
     }
 
     /// One solver step over the assembled band force. The host
@@ -2805,7 +3131,10 @@ impl BandSession {
         let endpoint_last = self.positions.row(n_images - 1).to_owned();
         let config = &self.config;
         let state = &self.state;
-        let metrics = self.exp.as_ref().map(|e| e.metrics.as_slice());
+        let metrics = self.exp.as_ref().map(|e| BandMetrics {
+            per_image: e.metrics.as_slice(),
+            free: e.free.as_deref(),
+        });
         let oracle =
             Oracle::unbounded(interior_dof, |x: ArrayView1<f64>| match assemble_band_with(
                 config,
@@ -3068,6 +3397,7 @@ impl BandSession {
             interior.view(),
         )?;
         self.positions.assign(&trial);
+        self.pin_fixed();
         self.iteration += 1;
         let max_force = self.state.last_max_force();
         let status = if max_force <= self.config.force_tol {

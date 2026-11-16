@@ -5,7 +5,7 @@
 
 Call ~reset~ when the surface changes. The session retains evaluated endpoints and the accepted band while the surface remains valid. A ~Cell~ supplies minimum-image differences for periodic configurations.
 
-The projected force of every image with two or more atoms loses its mean Cartesian part, as in eOn when every atom is free. A host with fixed atoms sets ~BandConfig::remove_translation~ to ~false~, or ~RGSADDLE_BAND_KEEP_TRANSLATION~ in the C band config flags, to keep the mean. An image with one atom keeps its force.
+The projected force of every image with two or more atoms loses its mean Cartesian part, as in eOn when every atom is free. ~BandConfig::remove_translation~ set to ~false~, or ~RGSADDLE_BAND_KEEP_TRANSLATION~ in the C band config flags, keeps the mean. A band with any fixed atom keeps it without either. An image with one atom keeps its force.
 
 The climbing image is the highest interior image.
 That follows Henkelman, Uberuaga and Jónsson (2000).
@@ -54,6 +54,20 @@ AutoNEB, the zoom, the exponential metric and the solid-state block refuse both 
 ~AutoNeb~ grows that band. The steps and the window are in =howto/autoneb=. The spring starts uniform and is rescaled inside the search. A weighted or Onsager-Machlup spring supplied by the host is refused until zoom-NEB recomputes it on insertion.
 
 ~BandConfig::solid~ adds the generalized solid-state block. The tangent and the spring act on one long vector: the minimum-image atomic displacement through the average of the two cells, then the averaged right strain of the Jacobian-scaled cell difference. The cell part of the force is minus the cell volume times the Cauchy stress plus a hydrostatic pressure times the identity, divided by the Jacobian, with the upper triangle cleared. The Jacobian is the cube root of the mean endpoint volume per atom times the square root of the atom count, times ~weight~, and it stays fixed for the run. Build it with ~SolidState::new(cells)~ and the ~with_pressure~ and ~with_weight~ setters. A surface that supplies the block implements ~BandSurface::eval_cells~ and returns the Cauchy stress, ~(1/V) dE/deps~ for the right strain ~h <- h (I + eps)~ at fixed fractional coordinates. From C, ~rgsaddle_band_create_solid~ builds the band, ~rgsaddle_band_step_solid~ steps it on an ~rgsaddle_solid_surface_fn~ whose request carries the cells in and the stresses out with the energies and gradients, and ~rgsaddle_band_cells~ and ~rgsaddle_band_solid_jacobian~ read it back. ~rgsaddle_band_step~ refuses a solid-state band. An equal-cell path with zero stress and zero pressure matches the atomic band. The doubly nudged term stays on the climbing image.
+
+* Fixed atoms
+
+~BandConfig::with_fixed_atoms~ takes one ~bool~ per atom, shared by every image; ~true~ fixes the atom. From C, ~rgsaddle_band_set_fixed_atoms~ (ABI minor 39) takes the same mask as one byte per atom, 0 or 1, on a band made by ~rgsaddle_band_create~, and ~BandSession::set_fixed_atoms~ is the Rust call between steps. The mask is for a slab with a frozen bottom layer, ASE's ~FixAtoms~, eOn's fixed atoms or a LAMMPS ~fix setforce 0~ group.
+
+A fixed atom never moves. The band reads its gradient as zero, so it carries no force in the FIRE, L-BFGS, quick-min, ODE12r or trust-region (RTR) step, in ~BandReport::max_force~, or in ~BandEvaluation~. Tangents, springs and the climbing direction are formed on the free coordinates, and the min-mode refinement estimates the mode and climbs on the free coordinates only. The session then copies the first image's fixed coordinates into every interior image after each move, so the frozen positions stay the same to the bit. With any atom fixed, the mean force stays.
+
+The endpoints must place every fixed atom at the same point, up to the minimum image and 1e-10 per component. A mismatch is refused with ~SaddleError::Invalid~ naming the atom, as is a mask that fixes every atom, a mask on a solid-state band, and a mask on ~SolidNeb::joint~. A mask of the wrong length is ~SaddleError::Shape~. Interior images take the first image's fixed coordinates when the session is built and on each ~set_positions~. A mask with no ~true~ entry leaves the band the same to the bit as one without a mask.
+
+Before minor 39, a host zeroed the frozen forces itself and kept the mean with ~RGSADDLE_BAND_KEEP_TRANSLATION~. That still works for the plain metric. It does not work with ~rgsaddle_band_set_exp_precon~: the exponential matrix couples every atom to its neighbours, so ~P^-1 g~ moves a frozen atom whose own gradient is zero. With the mask the matrix is built on the free atoms alone, so ~P^-1~ acts on the free block and the frozen atoms stay.
+
+* Preconditioning with fixed atoms
+
+~BandConfig::exp_precon~ (C ~rgsaddle_band_set_exp_precon~, ABI minor 22) is the exponential metric of Packwood et al., J. Chem. Phys. 144, 164109 (2016), applied inside the band projection as Makri, Ortner and Kermode, J. Chem. Phys. 150, 094109 (2019), apply it. On a band with fixed atoms each image's matrix has one block row per free atom. Fixed atoms still count as neighbours: they enter the nearest-neighbour distance ~r_nn~, and the pairs within ~r_cut_factor * r_nn~ are chosen over all atoms. A free atom's bond to a fixed atom adds its weight to that free atom's diagonal block only, and a bond between two fixed atoms drops out. That is the free block ASE's ~Exp~ preconditioner keeps under ~FixAtoms~. The metric force is formed on the free block and scattered back, and the frozen rows stay zero.
 
 * Image threads and repeated evaluations
 ~BandSession::set_image_threads(threads)~ evaluates the band on a pool

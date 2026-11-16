@@ -41,7 +41,7 @@ use ndarray::{Array1, ArrayView1, Axis, s};
 
 use super::climb::ModelClimb;
 use super::pair_model::rigid_basis;
-use super::{BandReport, BandSession, BandStatus, BandSurface, Cell};
+use super::{BandReport, BandSession, BandStatus, BandSurface, Cell, zero_fixed};
 use crate::error::SaddleError;
 use crate::minmode::{
     FiniteDifference, MinModeConfig, MinModeKind, MinModeSession, ModeEstimate, PointSurface,
@@ -263,9 +263,9 @@ impl Run {
         }
     }
 
-    /// The climb model fit to the estimate's block. Without a Krylov
-    /// block (a dimer estimate) one Hessian action along the force
-    /// perpendicular to the mode joins the mode.
+    /// The climb model fit to the estimate's block, off the `rigid`
+    /// directions. Without a Krylov block (a dimer estimate) one Hessian
+    /// action along the force perpendicular to the mode joins the mode.
     fn start_climb<P: PointSurface>(
         &mut self,
         surface: &P,
@@ -273,7 +273,7 @@ impl Run {
         dr: f64,
         max_move: f64,
         cell: Option<&Cell>,
-        remove_translation: bool,
+        rigid: Option<ndarray::Array2<f64>>,
     ) -> Result<(), SaddleError> {
         let mut block = self.block(estimate);
         if self.session.krylov_block().is_empty() {
@@ -288,7 +288,6 @@ impl Run {
                 block.push((d, (&gp - g) / dr));
             }
         }
-        let rigid = rigid_motions(&self.current.x, cell, remove_translation);
         self.climb = Some(ModelClimb::fitted(
             &self.current.x,
             cell,
@@ -315,12 +314,28 @@ impl Run {
 }
 
 /// The rigid motions a band without its mean force removes: the
-/// translations, and the rotations too when there is no cell.
+/// translations, and the rotations too when there is no cell. With
+/// atoms fixed they are the fixed coordinates instead, so the climb
+/// model, its steps and its secant pairs live on the free block.
 fn rigid_motions(
     x: &Array1<f64>,
     cell: Option<&Cell>,
     remove_translation: bool,
+    fixed: &[bool],
 ) -> Option<ndarray::Array2<f64>> {
+    if fixed.iter().any(|&f| f) {
+        let held: Vec<usize> = fixed
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| **f)
+            .flat_map(|(a, _)| 3 * a..3 * a + 3)
+            .collect();
+        let mut q = ndarray::Array2::zeros((x.len(), held.len()));
+        for (j, &c) in held.iter().enumerate() {
+            q[(c, j)] = 1.0;
+        }
+        return Some(q);
+    }
     remove_translation
         .then(|| rigid_basis(x, cell.is_none()))
         .flatten()
@@ -343,12 +358,14 @@ struct ImageSurface<'a, S: BandSurface + ?Sized> {
     surface: &'a S,
     image: usize,
     rows: &'a AtomicUsize,
+    /// The band's fixed mask; those gradient components read as zero.
+    fixed: &'a [bool],
 }
 
 impl<S: BandSurface + ?Sized> PointSurface for ImageSurface<'_, S> {
     fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
         self.rows.fetch_add(1, Ordering::Relaxed);
-        let (energy, gradient) = self.surface.eval_image(self.image, x)?;
+        let (energy, mut gradient) = self.surface.eval_image(self.image, x)?;
         if gradient.len() != x.len() {
             return Err(SaddleError::Shape(
                 "image gradient length does not match the position".into(),
@@ -357,6 +374,7 @@ impl<S: BandSurface + ?Sized> PointSurface for ImageSurface<'_, S> {
         if !energy.is_finite() || !gradient.iter().all(|v| v.is_finite()) {
             return Err(SaddleError::NonFinite("climbing image"));
         }
+        zero_fixed(self.fixed, &mut gradient);
         Ok((energy, gradient))
     }
 }
@@ -448,12 +466,14 @@ impl BandSession {
         let max_move = self.config.max_move;
         let force_gate = self.state.force_gate;
         let cell = self.config.cell;
-        let remove_translation = self.config.remove_translation;
+        let remove_translation = self.config.drops_translation();
         let run = self.refine.run.as_mut().expect("refinement run");
+        let fixed = self.state.fixed.as_slice();
         let image_surface = ImageSurface {
             surface,
             image: run.image,
             rows: &self.state.rows,
+            fixed,
         };
         let gate = force_gate.value(run.current.gradient.view());
         let mut measured = None;
@@ -469,6 +489,7 @@ impl BandSession {
                 &run.current.x,
                 cell.as_ref(),
                 remove_translation,
+                fixed,
             ));
             run.since_refresh += 1;
             climb.lowest()?;
@@ -543,7 +564,8 @@ impl BandSession {
                 curvature,
             )));
         }
-        let delta = climb.step(&run.current.gradient, run.current.energy, max_move)?;
+        let mut delta = climb.step(&run.current.gradient, run.current.energy, max_move)?;
+        zero_fixed(fixed, &mut delta);
         let next = &run.current.x + &delta;
         let (energy, gradient) = image_surface.eval(next.view())?;
         run.steps += 1;
@@ -571,12 +593,14 @@ impl BandSession {
         let force_tol = self.config.force_tol;
         let gate_of = self.state.force_gate;
         let cell = self.config.cell;
-        let remove_translation = self.config.remove_translation;
+        let remove_translation = self.config.drops_translation();
         let run = self.refine.run.as_mut().expect("refinement run");
+        let fixed = self.state.fixed.as_slice();
         let image_surface = ImageSurface {
             surface,
             image: run.image,
             rows: &self.state.rows,
+            fixed,
         };
         let estimate = run.estimate(&image_surface)?;
         let alignment = mode_alignment(estimate.mode.view(), run.tangent.view());
@@ -606,13 +630,14 @@ impl BandSession {
             self.refine.converged = true;
             return Ok(self.refine_stop(step, BandStatus::Converged, estimate.curvature));
         }
+        let rigid = rigid_motions(&run.current.x, cell.as_ref(), remove_translation, fixed);
         run.start_climb(
             &image_surface,
             &estimate,
             config.dr,
             max_move,
             cell.as_ref(),
-            remove_translation,
+            rigid,
         )?;
         Ok(self.refine_stop(step, BandStatus::Running, estimate.curvature))
     }
@@ -754,6 +779,7 @@ impl BandSession {
     /// last evaluation. The other rows keep their cached values.
     fn put_image(&mut self, image: usize, point: &Point, projected: ArrayView1<f64>) {
         self.positions.row_mut(image).assign(&point.x);
+        self.pin_fixed();
         let x = self.interior_flat();
         let dof = self.positions.ncols();
         let mut slot = self.state.last.lock().unwrap_or_else(|e| e.into_inner());
@@ -781,6 +807,8 @@ impl BandSession {
             cell.minimum_image(&mut next);
             cell.minimum_image(&mut prev);
         }
+        zero_fixed(&self.config.fixed_atoms, &mut next);
+        zero_fixed(&self.config.fixed_atoms, &mut prev);
         compute_tangent(
             self.config.tangent,
             next.view(),

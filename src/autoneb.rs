@@ -869,6 +869,9 @@ impl AutoNeb {
         let tuning = config.autoneb.clone().unwrap_or_default();
         tuning.validate(&config)?;
         check_initial(&initial, tuning.n_max)?;
+        let mut initial = initial;
+        crate::band::check_fixed(&config, initial.view())?;
+        crate::band::pin_fixed_rows(&config.fixed_atoms, &mut initial);
         let pool = if tuning.threads > 1 {
             Some(ImageEvalPool::new(tuning.threads)?)
         } else {
@@ -1147,7 +1150,7 @@ impl AutoNeb {
     }
 
     fn insert_one(&mut self, after: usize, rescale: bool) -> Result<(), SaddleError> {
-        let image = self
+        let mut image = self
             .interpolation
             .insert(self.positions.view(), &self.energies, after)?;
         let dof = self.positions.ncols();
@@ -1155,6 +1158,17 @@ impl AutoNeb {
             return Err(SaddleError::Shape(
                 "interpolation image length does not match the band".into(),
             ));
+        }
+        for (atom, _) in self
+            .band
+            .fixed_atoms
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| **f)
+        {
+            for c in 3 * atom..3 * atom + 3 {
+                image[c] = self.positions[(after, c)];
+            }
         }
         if !image.iter().all(|value| value.is_finite()) {
             return Err(SaddleError::NonFinite("interpolation"));

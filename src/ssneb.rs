@@ -233,8 +233,9 @@ impl SolidNeb {
     /// is the 2012 value.
     ///
     /// The atomic min-mode refinement, the zoom, the exponential
-    /// metric, AutoNEB and [`BandConfig::solid`] belong to the atomic
-    /// or absolute-cell band. A joint chart leaves them unset, and
+    /// metric, AutoNEB, [`BandConfig::solid`] and
+    /// [`BandConfig::fixed_atoms`] belong to the atomic or
+    /// absolute-cell band. A joint chart leaves them unset, and
     /// `min_mode` is `None`.
     pub fn joint(
         config: BandConfig,
@@ -251,9 +252,11 @@ impl SolidNeb {
             || config.exp_precon.is_some()
             || config.autoneb.is_some()
             || config.cell.is_some()
+            || config.has_fixed()
         {
             return Err(SaddleError::Invalid(
-                "a joint-chart NEB leaves solid, min_mode, zoom, exp_precon, autoneb and cell unset"
+                "a joint-chart NEB leaves solid, min_mode, zoom, exp_precon, autoneb, cell and \
+                 fixed_atoms unset"
                     .into(),
             ));
         }

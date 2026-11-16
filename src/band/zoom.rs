@@ -289,6 +289,7 @@ impl BandSession {
             zoom.cubic,
             self.config.cell.as_ref(),
         );
+        self.pin_fixed();
         self.state.set_endpoints(Some([energies[lo], energies[hi]]));
         self.state.drop_last();
         self.forget_optimizer();

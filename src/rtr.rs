@@ -26,7 +26,7 @@
 
 use ndarray::{Array1, Array2, ArrayView2, s};
 
-use crate::band::{BandConfig, BandSurface};
+use crate::band::{BandConfig, BandSurface, zero_fixed};
 use crate::error::SaddleError;
 use crate::force::ForceGate;
 use crate::projection::{ProjectionKind, climbing_image_force, dneb_component, force_perp};
@@ -54,7 +54,9 @@ pub struct BandForces {
 /// Assemble the NEB force of `positions` with the climbing image `ci` (an
 /// interior index, or none). Same projection and spring rules as
 /// [`crate::BandSession`], without the climbing state machine: the caller
-/// decides which image climbs.
+/// decides which image climbs. With [`BandConfig::fixed_atoms`] set the
+/// fixed rows of the force are zero, and endpoints that place a fixed
+/// atom differently are refused.
 pub fn band_forces<S: BandSurface + ?Sized>(
     config: &BandConfig,
     surface: &S,
@@ -78,11 +80,15 @@ fn band_forces_with_gate<S: BandSurface + ?Sized>(
             "a band needs at least 3 images of 3N coordinates; got {n_images} x {dof}"
         )));
     }
+    crate::band::check_fixed(config, positions)?;
     let mut energies = Array1::zeros(n_images);
     let mut gradients = Array2::zeros((n_images, dof));
     surface.eval(positions, &mut energies, &mut gradients)?;
     if !gradients.iter().all(|g| g.is_finite()) {
         return Err(SaddleError::NonFinite("band gradients"));
+    }
+    for mut row in gradients.outer_iter_mut() {
+        zero_fixed(&config.fixed_atoms, &mut row);
     }
     if !energies.iter().all(|e| e.is_finite()) {
         return Err(SaddleError::NonFinite("band energies"));
@@ -97,6 +103,8 @@ fn band_forces_with_gate<S: BandSurface + ?Sized>(
             cell.minimum_image(&mut pos_diff_next);
             cell.minimum_image(&mut pos_diff_prev);
         }
+        zero_fixed(&config.fixed_atoms, &mut pos_diff_next);
+        zero_fixed(&config.fixed_atoms, &mut pos_diff_prev);
         let dist_next = nrm2(pos_diff_next.view());
         let dist_prev = nrm2(pos_diff_prev.view());
         let tangent = compute_tangent(
@@ -129,7 +137,8 @@ fn band_forces_with_gate<S: BandSurface + ?Sized>(
                 .projection
                 .project(true_force.view(), tangent.view(), &spring)
         };
-        if config.remove_translation {
+        zero_fixed(&config.fixed_atoms, &mut image_force);
+        if config.drops_translation() {
             crate::band::remove_net_translation(&mut image_force);
         }
         force
@@ -547,6 +556,7 @@ impl BandRtr {
                 .slice_mut(s![(i - 1) * dof..i * dof])
                 .assign(&difference);
         }
+        zero_fixed(&band.fixed_atoms, &mut displacement);
         let length = nrm2(displacement.view());
         if length > self.radius.radius {
             displacement *= self.radius.radius / length;
