@@ -168,10 +168,7 @@ fn an_all_false_mask_is_bitwise_the_band_without_a_mask() {
                 60,
             );
             let b = steps(
-                clear
-                    .clone()
-                    .with_method(method)
-                    .with_exp_precon(precon),
+                clear.clone().with_method(method).with_exp_precon(precon),
                 &band,
                 60,
             );
