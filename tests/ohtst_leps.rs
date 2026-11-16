@@ -11,10 +11,10 @@
 
 use ndarray::array;
 use rgsaddle::{
-    Hyperplane, LangevinConfig, MinModeConfig, MinModeSession, MinModeStatus, PlaneIntegrator,
-    PlaneOptimizer, PlaneOptimizerConfig, ReversibleWorkConfig, ShootingConfig,
-    angular_scale_rad_s, exact_eigh, ohtst_rate, plane_transmission, reactant_density,
-    reversible_work, vineyard_prefactor,
+    BasinConfig, Hyperplane, LangevinConfig, MinModeConfig, MinModeSession, MinModeStatus,
+    PlaneIntegrator, PlaneOptimizer, PlaneOptimizerConfig, ReversibleWorkConfig, ShootingConfig,
+    angular_scale_rad_s, basin_density, exact_eigh, ohtst_rate, plane_transmission,
+    reactant_density, reversible_work, vineyard_prefactor,
 };
 
 include!(concat!(
@@ -324,6 +324,19 @@ fn leps_rate_against_quadrature_and_harmonic_tst() {
         "density {} ± {} against {density_exact}",
         density.density,
         density.density_error
+    );
+    let basin = basin_density(
+        &LepsHo,
+        reactant.view(),
+        start.normal(),
+        &BasinConfig::default().with_sampler(sampler(kt, 0.1).with_records(4000)),
+    )
+    .unwrap();
+    assert!(
+        (basin.density - density_exact).abs() < 4.0 * basin.density_error,
+        "parallel planes {} ± {} against {density_exact}",
+        basin.density,
+        basin.density_error
     );
 
     let nodes = 17;
