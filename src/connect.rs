@@ -67,8 +67,9 @@ type SurfaceFn<'a> = dyn FnMut(&[f64]) -> Result<(f64, Vec<f64>), SaddleError> +
 
 /// COMPASS and SQNM controls for one connect.
 ///
-/// Build with [`ConnectConfig::optbench`]. Fields are public so a host
-/// can replace one constant; the struct is non-exhaustive.
+/// Non-exhaustive: start from [`ConnectConfig::optbench`] or
+/// [`ConnectConfig::default`] and chain the `with_*` setters to replace
+/// one constant.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct ConnectConfig {
@@ -127,6 +128,40 @@ pub struct ConnectConfig {
     pub minmode_max_move: f64,
     /// L-BFGS memory of the min-mode translation.
     pub minmode_memory: usize,
+}
+
+with_setters!(ConnectConfig {
+    with_alpha0 => alpha0: val f64,
+    with_nhistx => nhistx: val usize,
+    with_trustradius => trustradius: val f64,
+    with_forcetol => forcetol: val f64,
+    with_forcetol_per_distance => forcetol_per_distance: val f64,
+    with_distance_step_max => distance_step_max: val f64,
+    with_distance_step_min => distance_step_min: val f64,
+    with_target_distance_saddle => target_distance_saddle: val f64,
+    with_target_distance_other => target_distance_other: val f64,
+    with_energy_difference_threshold => energy_difference_threshold: val f64,
+    with_trusted_force_difference => trusted_force_difference: val f64,
+    with_saddle_cosp => saddle_cosp: val f64,
+    with_nsteps => nsteps: val usize,
+    with_minimize_fmax => minimize_fmax: val f64,
+    with_minimize_nsteps => minimize_nsteps: val usize,
+    with_minimize_maxrise => minimize_maxrise: val f64,
+    with_n_loops => n_loops: val usize,
+    with_quench_nodes => quench_nodes: val bool,
+    with_band_images => band_images: val usize,
+    with_lanczos_rel_tol => lanczos_rel_tol: val f64,
+    with_lanczos_iterations => lanczos_iterations: val usize,
+    with_minmode_max_move => minmode_max_move: val f64,
+    with_minmode_memory => minmode_memory: val usize,
+});
+
+impl Default for ConnectConfig {
+    /// [`ConnectConfig::optbench`] with a cap of 250000, the
+    /// `max_calls` default of the Python `connect`.
+    fn default() -> Self {
+        Self::optbench(250_000)
+    }
 }
 
 impl ConnectConfig {

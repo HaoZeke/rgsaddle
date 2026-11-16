@@ -140,6 +140,14 @@ pub struct IndexKConfig {
     pub block: BlockEigenKind,
 }
 
+with_setters!(IndexKConfig {
+    with_k => k: val usize,
+    with_search => search: val MinModeConfig,
+    with_residual_tol => residual_tol: val f64,
+    with_max_block_iterations => max_block_iterations: val usize,
+    with_block => block: val BlockEigenKind,
+});
+
 impl IndexKConfig {
     /// `k` together with a one-mode configuration.
     ///

@@ -89,6 +89,17 @@ pub struct OcinebConfig {
     pub restore_unhelpful: bool,
 }
 
+with_setters!(OcinebConfig {
+    with_band => band: val BandConfig,
+    with_minmode => minmode: val MinModeConfig,
+    with_trigger_factor => trigger_factor: val f64,
+    with_trigger_force => trigger_force: val f64,
+    with_angle_tol => angle_tol: val f64,
+    with_stability_count => stability_count: val i64,
+    with_max_mmf_steps => max_mmf_steps: val usize,
+    with_restore_unhelpful => restore_unhelpful: val bool,
+});
+
 impl Default for OcinebConfig {
     fn default() -> Self {
         // The hand-off waits on a relative band force, the eOn

@@ -45,6 +45,18 @@ pub struct SellaMinConfig {
     pub restricted: crate::RestrictedKind,
 }
 
+with_setters!(SellaMinConfig {
+    with_delta => delta: val f64,
+    with_sigma_inc => sigma_inc: val f64,
+    with_sigma_dec => sigma_dec: val f64,
+    with_rho_inc => rho_inc: val f64,
+    with_rho_dec => rho_dec: val f64,
+    with_delta_min => delta_min: val f64,
+    with_force_tol => force_tol: val f64,
+    with_force_gate => force_gate: val crate::ForceGate,
+    with_restricted => restricted: val crate::RestrictedKind,
+});
+
 impl SellaMinConfig {
     fn schedule(&self) -> TrustSchedule {
         TrustSchedule {

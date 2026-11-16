@@ -241,6 +241,15 @@ pub struct RtrConfig {
     pub reparametrization: Reparametrization,
 }
 
+with_setters!(RtrConfig {
+    with_radius_max => radius_max: val f64,
+    with_theta => theta: val f64,
+    with_kappa => kappa: val f64,
+    with_max_cg => max_cg: val usize,
+    with_fd_step => fd_step: val f64,
+    with_reparametrization => reparametrization: val Reparametrization,
+});
+
 impl RtrConfig {
     pub(crate) fn validate(&self) -> Result<(), SaddleError> {
         if !(self.radius_max.is_finite()

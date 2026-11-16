@@ -26,6 +26,9 @@ use crate::spring::SpringKind;
 /// [`BandConfig::zoom`] or through [`BandSession::set_zoom`]. The
 /// defaults are the recommended settings: `alpha` 0.5, `stability` 5,
 /// and the zoom force at twice `force_tol`.
+///
+/// Non-exhaustive: start from [`ZoomConfig::default`] and chain the
+/// `with_*` setters.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct ZoomConfig {
@@ -44,6 +47,14 @@ pub struct ZoomConfig {
     /// Cubic Hermite placement; `false` places linearly.
     pub cubic: bool,
 }
+
+with_setters!(ZoomConfig {
+    with_alpha => alpha: val f64,
+    with_offset => offset: val usize,
+    with_after => after: val f64,
+    with_stability => stability: val usize,
+    with_cubic => cubic: val bool,
+});
 
 impl Default for ZoomConfig {
     fn default() -> Self {

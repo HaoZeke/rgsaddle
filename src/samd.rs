@@ -37,6 +37,12 @@ pub struct VelocitySofteningConfig {
     pub mixing: f64,
 }
 
+with_setters!(VelocitySofteningConfig {
+    with_steps => steps: val usize,
+    with_displacement => displacement: val f64,
+    with_mixing => mixing: val f64,
+});
+
 impl Default for VelocitySofteningConfig {
     fn default() -> Self {
         Self {
@@ -164,6 +170,15 @@ pub struct SamdConfig {
     /// The exponential.
     pub exponential: bool,
 }
+
+with_setters!(SamdConfig {
+    with_dt => dt: val f64,
+    with_tau => tau: val f64,
+    with_t0 => t0: val f64,
+    with_tf => tf: val f64,
+    with_ngen => ngen: val usize,
+    with_exponential => exponential: val bool,
+});
 
 impl Default for SamdConfig {
     fn default() -> Self {

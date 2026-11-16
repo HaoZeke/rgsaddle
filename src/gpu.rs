@@ -43,6 +43,11 @@ pub struct GpuPolicy {
     pub min_dim: usize,
 }
 
+with_setters!(GpuPolicy {
+    with_enabled => enabled: val bool,
+    with_min_dim => min_dim: val usize,
+});
+
 impl Default for GpuPolicy {
     fn default() -> Self {
         Self::from_env()

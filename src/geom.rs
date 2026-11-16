@@ -184,6 +184,21 @@ pub struct TrustSchedule {
     pub delta_min: f64,
 }
 
+with_setters!(TrustSchedule {
+    with_sigma_inc => sigma_inc: val f64,
+    with_sigma_dec => sigma_dec: val f64,
+    with_rho_inc => rho_inc: val f64,
+    with_rho_dec => rho_dec: val f64,
+    with_delta_min => delta_min: val f64,
+});
+
+impl Default for TrustSchedule {
+    /// [`TrustSchedule::minimum`].
+    fn default() -> Self {
+        Self::minimum()
+    }
+}
+
 impl TrustSchedule {
     /// `_default_kwargs['minimum']`.
     pub fn minimum() -> Self {

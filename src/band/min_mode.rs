@@ -65,6 +65,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// refinement. The Lanczos estimate keeps up to twenty actions, which
 /// fit the climb model, and stops when the lowest Ritz value changes by
 /// under 5%.
+///
+/// Non-exhaustive: start from [`MinModeRefine::default`] and chain the
+/// `with_*` setters.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub struct MinModeRefine {
@@ -118,6 +121,27 @@ pub struct MinModeRefine {
     /// Climb steps after an estimate before the next one.
     pub refresh_interval: usize,
 }
+
+with_setters!(MinModeRefine {
+    with_trigger_factor => trigger_factor: val f64,
+    with_trigger_force => trigger_force: val f64,
+    with_alignment_tol => alignment_tol: val f64,
+    with_climb_alignment => climb_alignment: val bool,
+    with_retry_factor => retry_factor: opt f64,
+    with_stable_steps => stable_steps: val usize,
+    with_max_steps => max_steps: val usize,
+    with_restore_unhelpful => restore_unhelpful: val bool,
+    with_kind => kind: val MinModeKind,
+    with_krylov_dim => krylov_dim: val usize,
+    with_lanczos_rel_tol => lanczos_rel_tol: val f64,
+    with_dr => dr: val f64,
+    with_difference => difference: val FiniteDifference,
+    with_rotation_tol => rotation_tol: val f64,
+    with_max_rotations => max_rotations: val usize,
+    with_curvature_retained => curvature_retained: val f64,
+    with_min_overlap => min_overlap: val f64,
+    with_refresh_interval => refresh_interval: val usize,
+});
 
 impl Default for MinModeRefine {
     fn default() -> Self {

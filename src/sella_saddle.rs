@@ -69,6 +69,26 @@ pub struct SellaSaddleConfig {
     pub small_system_atom_ceiling: bool,
 }
 
+with_setters!(SellaSaddleConfig {
+    with_delta => delta: val f64,
+    with_sigma_inc => sigma_inc: val f64,
+    with_sigma_dec => sigma_dec: val f64,
+    with_rho_inc => rho_inc: val f64,
+    with_rho_dec => rho_dec: val f64,
+    with_delta_min => delta_min: val f64,
+    with_force_tol => force_tol: val f64,
+    with_force_gate => force_gate: val crate::ForceGate,
+    with_order => order: val usize,
+    with_eig => eig: val bool,
+    with_nsteps_per_diag => nsteps_per_diag: val usize,
+    with_gamma => gamma: val f64,
+    with_eigen_device => eigen_device: val crate::EigenDevice,
+    with_expand => expand: val crate::ExpandKind,
+    with_restricted => restricted: val crate::RestrictedKind,
+    with_symmetrized_ritz => symmetrized_ritz: val bool,
+    with_small_system_atom_ceiling => small_system_atom_ceiling: val bool,
+});
+
 impl SellaSaddleConfig {
     fn schedule(&self) -> TrustSchedule {
         TrustSchedule {

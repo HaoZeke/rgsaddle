@@ -36,6 +36,13 @@ pub struct IdppConfig {
     pub memory: usize,
 }
 
+with_setters!(IdppConfig {
+    with_max_iterations => max_iterations: val usize,
+    with_grad_tol => grad_tol: val f64,
+    with_max_move => max_move: val f64,
+    with_memory => memory: val usize,
+});
+
 impl Default for IdppConfig {
     fn default() -> Self {
         Self {
@@ -153,6 +160,15 @@ pub struct SidppConfig {
     /// The max iterations.
     pub max_iterations: usize,
 }
+
+with_setters!(SidppConfig {
+    with_spring => spring: val f64,
+    with_force_tol => force_tol: val f64,
+    with_rms_tol => rms_tol: val f64,
+    with_time_step => time_step: val f64,
+    with_max_move => max_move: val f64,
+    with_max_iterations => max_iterations: val usize,
+});
 
 impl Default for SidppConfig {
     fn default() -> Self {

@@ -52,6 +52,19 @@ pub struct ShootingConfig {
     pub plateau_record: usize,
 }
 
+with_setters!(ShootingConfig {
+    with_thermal => thermal: val f64,
+    with_mass => mass: val f64,
+    with_friction => friction: val f64,
+    with_time_step => time_step: val f64,
+    with_steps => steps: val usize,
+    with_record_every => record_every: val usize,
+    with_shots => shots: val usize,
+    with_blocks => blocks: val usize,
+    with_seed => seed: val u64,
+    with_plateau_record => plateau_record: val usize,
+});
+
 impl Default for ShootingConfig {
     fn default() -> Self {
         Self {

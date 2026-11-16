@@ -537,6 +537,20 @@ pub struct AutoNebTuning {
     pub interpolant: AutoNebInterpolant,
 }
 
+with_setters!(AutoNebTuning {
+    with_n_simul => n_simul: val usize,
+    with_n_max => n_max: val usize,
+    with_local_force_tol => local_force_tol: val f64,
+    with_local_max_steps => local_max_steps: val usize,
+    with_climb_max_steps => climb_max_steps: val usize,
+    with_space_energy_ratio => space_energy_ratio: val f64,
+    with_climb => climb: val bool,
+    with_full_band => full_band: val bool,
+    with_threads => threads: val usize,
+    with_record_samples => record_samples: val bool,
+    with_interpolant => interpolant: val AutoNebInterpolant,
+});
+
 impl Default for AutoNebTuning {
     fn default() -> Self {
         Self {

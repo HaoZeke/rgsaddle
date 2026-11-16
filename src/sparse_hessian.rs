@@ -760,24 +760,28 @@ pub struct SparseHessianOpts {
 
 impl SparseHessianOpts {
     /// Finite-difference sides.
+    #[must_use]
     pub fn with_difference(mut self, difference: FiniteDifference) -> Self {
         self.difference = difference;
         self
     }
 
     /// Displacement `h`. See the struct docs for the truncation and roundoff.
+    #[must_use]
     pub fn with_step(mut self, step: f64) -> Self {
         self.step = step;
         self
     }
 
     /// Byte cap on one colour block's geometry and gradient buffers.
+    #[must_use]
     pub fn with_memory_budget(mut self, memory_budget: usize) -> Self {
         self.memory_budget = memory_budget;
         self
     }
 
     /// Extra pattern pad, combined with `2 * step` by [`Self::search_skin`].
+    #[must_use]
     pub fn with_skin(mut self, skin: f64) -> Self {
         self.skin = skin;
         self

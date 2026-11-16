@@ -13,6 +13,11 @@ pub struct KappaDimerConfig {
     pub eigen: EigenParams,
 }
 
+with_setters!(KappaDimerConfig {
+    with_beta => beta: val f64,
+    with_eigen => eigen: val EigenParams,
+});
+
 impl Default for KappaDimerConfig {
     fn default() -> Self {
         Self {

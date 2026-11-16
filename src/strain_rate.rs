@@ -283,6 +283,14 @@ pub struct TrustPolicy {
     pub floor: f64,
 }
 
+with_setters!(TrustPolicy {
+    with_radius => radius: opt f64,
+    with_quadratic => quadratic: opt f64,
+    with_error_tolerance => error_tolerance: val f64,
+    with_curvature => curvature: opt CurvatureBound,
+    with_floor => floor: val f64,
+});
+
 impl Default for TrustPolicy {
     fn default() -> Self {
         Self {
@@ -308,6 +316,24 @@ pub struct CurvatureBound {
     /// Fraction of `λ0` that `λ` must stay below.
     pub fraction: f64,
 }
+
+impl CurvatureBound {
+    /// The bound `λ(ε) = lambda0 + slope : ε`, trusted while `λ` stays
+    /// negative and at least as negative as `fraction * lambda0`.
+    pub const fn new(lambda0: f64, slope: M3, fraction: f64) -> Self {
+        Self {
+            lambda0,
+            slope,
+            fraction,
+        }
+    }
+}
+
+with_setters!(CurvatureBound {
+    with_lambda0 => lambda0: val f64,
+    with_slope => slope: val M3,
+    with_fraction => fraction: val f64,
+});
 
 /// Why [`StrainResponse::barrier`] refused the dipole line.
 #[derive(Clone, Debug, PartialEq)]

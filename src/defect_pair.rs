@@ -845,6 +845,33 @@ pub struct DefectPairConfig {
     pub zero_t_tol: f64,
 }
 
+with_setters!(DefectPairConfig {
+    with_dimer => dimer: val SolidDimerConfig,
+    with_cell_mode => cell_mode: val CellMode,
+    with_external_stress => external_stress: val M3,
+    with_bulk_stress => bulk_stress: val M3,
+    with_band => band: val BandConfig,
+    with_images => images: val usize,
+    with_max_dimer_steps => max_dimer_steps: val usize,
+    with_max_band_steps => max_band_steps: val usize,
+    with_relax => relax: val RelaxConfig,
+    with_seed_fraction => seed_fraction: val f64,
+    with_push => push: val f64,
+    with_connect_rmsd => connect_rmsd: val f64,
+    with_direction_tol => direction_tol: val f64,
+    with_pafi => pafi: val PafiConfig,
+    with_shooting => shooting: val ShootingConfig,
+    with_temperatures => temperatures: val Vec<f64>,
+    with_boltzmann => boltzmann: val f64,
+    with_mass => mass: val f64,
+    with_angular_scale => angular_scale: val f64,
+    with_harmonic_step => harmonic_step: val f64,
+    with_harmonic_atoms => harmonic_atoms: opt Vec<usize>,
+    with_planes => planes: val usize,
+    with_finite_temperature => finite_temperature: val bool,
+    with_zero_t_tol => zero_t_tol: val f64,
+});
+
 impl Default for DefectPairConfig {
     fn default() -> Self {
         Self {

@@ -45,6 +45,13 @@ pub struct ForceMatchOpts {
     pub tvecs: Vec<[f64; 3]>,
 }
 
+with_setters!(ForceMatchOpts {
+    with_kinds => kinds: val Vec<PairKind>,
+    with_bond_scale => bond_scale: val f64,
+    with_rcut_factor => rcut_factor: val f64,
+    with_tvecs => tvecs: val Vec<[f64; 3]>,
+});
+
 impl Default for ForceMatchOpts {
     fn default() -> Self {
         Self {

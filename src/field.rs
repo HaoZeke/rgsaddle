@@ -225,6 +225,12 @@ impl FmmSolver {
     }
 }
 
+with_setters!(FmmSolver {
+    with_green => green: val Kelvin,
+    with_theta => theta: val f64,
+    with_leaf => leaf: val usize,
+});
+
 impl FieldSolver for FmmSolver {
     fn fields(&self, defects: &[DefectSource]) -> Result<Vec<LocalField>, SaddleError> {
         if !(self.theta.is_finite() && self.theta > 0.0 && self.theta < 1.0) {

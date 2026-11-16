@@ -56,6 +56,21 @@ pub struct PafiConfig {
     pub max_rounds: usize,
 }
 
+with_setters!(PafiConfig {
+    with_thermal => thermal: val f64,
+    with_mobility => mobility: val f64,
+    with_time_step => time_step: val f64,
+    with_thermalize => thermalize: val usize,
+    with_stride => stride: val usize,
+    with_samples => samples: val usize,
+    with_blocks => blocks: val usize,
+    with_seed => seed: val u64,
+    with_fix_com => fix_com: val bool,
+    with_retain => retain: val usize,
+    with_target_error => target_error: opt f64,
+    with_max_rounds => max_rounds: val usize,
+});
+
 impl Default for PafiConfig {
     fn default() -> Self {
         Self {

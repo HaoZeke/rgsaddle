@@ -99,6 +99,17 @@ pub struct IrcConfig {
     pub kind: IrcKind,
 }
 
+with_setters!(IrcConfig {
+    with_dx => dx: val f64,
+    with_force_tol => force_tol: val f64,
+    with_force_gate => force_gate: val crate::ForceGate,
+    with_max_inner => max_inner: val usize,
+    with_dr => dr: val f64,
+    with_krylov_dim => krylov_dim: val usize,
+    with_eigen_kind => eigen_kind: val EigensolverKind,
+    with_kind => kind: val IrcKind,
+});
+
 impl Default for IrcConfig {
     fn default() -> Self {
         Self {

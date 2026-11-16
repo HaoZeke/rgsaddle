@@ -114,6 +114,13 @@ impl PermutationDistance {
         }
     }
 
+    /// Set [`Self::species`].
+    #[must_use]
+    pub fn with_species(mut self, species: Vec<usize>) -> Self {
+        self.species = species;
+        self
+    }
+
     /// Set [`Self::cell`].
     #[must_use]
     pub fn with_cell(mut self, cell: Cell) -> Self {
@@ -384,6 +391,20 @@ impl Basins {
             threshold: None,
             quench: QuenchConfig::default(),
         }
+    }
+
+    /// Set [`Self::reactants`].
+    #[must_use]
+    pub fn with_reactants(mut self, reactants: Vec<Array1<f64>>) -> Self {
+        self.reactants = reactants;
+        self
+    }
+
+    /// Set [`Self::products`].
+    #[must_use]
+    pub fn with_products(mut self, products: Vec<Array1<f64>>) -> Self {
+        self.products = products;
+        self
     }
 
     /// Set [`Self::distance`].

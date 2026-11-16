@@ -54,6 +54,13 @@ impl HarmonicReference {
         }
     }
 
+    /// Set [`Self::point`].
+    #[must_use]
+    pub fn with_point(mut self, point: Array1<f64>) -> Self {
+        self.point = point;
+        self
+    }
+
     /// Set [`Self::hvp_step`].
     #[must_use]
     pub fn with_hvp_step(mut self, hvp_step: f64) -> Self {

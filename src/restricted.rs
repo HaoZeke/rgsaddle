@@ -433,6 +433,14 @@ pub struct InternalWeights {
     pub other: f64,
 }
 
+with_setters!(InternalWeights {
+    with_translation => translation: val f64,
+    with_bond => bond: val f64,
+    with_angle => angle: val f64,
+    with_dihedral => dihedral: val f64,
+    with_other => other: val f64,
+});
+
 impl Default for InternalWeights {
     fn default() -> Self {
         Self {

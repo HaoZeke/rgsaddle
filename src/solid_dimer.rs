@@ -161,7 +161,15 @@ impl SolidDimerConfig {
         Self::new(search).with_mask(CellMask::frozen())
     }
 
+    /// Dimer or Lanczos search and its rgmin translator.
+    #[must_use]
+    pub fn with_search(mut self, search: MinModeConfig) -> Self {
+        self.search = search;
+        self
+    }
+
     /// Strains that move.
+    #[must_use]
     pub fn with_mask(mut self, mask: CellMask) -> Self {
         self.mask = mask;
         self
@@ -169,12 +177,14 @@ impl SolidDimerConfig {
 
     /// External load in the sign of a pressure, positive inward. The
     /// upper triangle is folded down.
+    #[must_use]
     pub fn with_external_stress(mut self, stress: M3) -> Self {
         self.external_stress = stress;
         self
     }
 
     /// Hydrostatic pressure. A positive value pushes the cell inward.
+    #[must_use]
     pub fn with_pressure(mut self, pressure: f64) -> Self {
         for (i, row) in self.external_stress.iter_mut().enumerate() {
             row[i] = pressure;
@@ -183,12 +193,22 @@ impl SolidDimerConfig {
     }
 
     /// Positive scale on the Jacobian.
+    #[must_use]
     pub fn with_weight(mut self, weight: f64) -> Self {
         self.weight = weight;
         self
     }
 
+    /// Set [`Self::index`]. A bare value is `Some`; `None` accepts the
+    /// minimum-mode test alone.
+    #[must_use]
+    pub fn with_index(mut self, index: impl Into<Option<IndexCheck>>) -> Self {
+        self.index = index.into();
+        self
+    }
+
     /// Require one negative projected eigenvalue at convergence.
+    #[must_use]
     pub fn with_index_check(mut self, index: IndexCheck) -> Self {
         self.index = Some(index);
         self
@@ -198,6 +218,7 @@ impl SolidDimerConfig {
     ///
     /// Zero restores the search tolerance. A non-positive value other
     /// than zero is refused by [`SolidDimer::new`].
+    #[must_use]
     pub fn with_flat(mut self, flat: f64) -> Self {
         self.flat = flat;
         self
@@ -206,6 +227,7 @@ impl SolidDimerConfig {
     /// Run [`check_cauchy_stress`] before the first step, and stop
     /// with [`SaddleError::Surface`] while the surface stress disagrees
     /// with its energy. A frozen cell reads no stress and skips it.
+    #[must_use]
     pub fn with_stress_check(mut self, check: StressCheck) -> Self {
         self.stress_check = Some(check);
         self
@@ -251,30 +273,35 @@ impl IndexCheck {
 
     /// How many lowest eigenvalues to resolve. Zero is refused by
     /// [`SolidDimer::new`] and [`index_at`].
+    #[must_use]
     pub const fn with_lowest(mut self, lowest: usize) -> Self {
         self.lowest = lowest;
         self
     }
 
     /// An eigenvalue below `negative` is a negative mode.
+    #[must_use]
     pub const fn with_negative(mut self, negative: f64) -> Self {
         self.negative = negative;
         self
     }
 
     /// Central-difference step.
+    #[must_use]
     pub const fn with_step(mut self, step: f64) -> Self {
         self.step = step;
         self
     }
 
     /// How many higher-index points may be left. Zero rejects at once.
+    #[must_use]
     pub const fn with_escapes(mut self, escapes: usize) -> Self {
         self.escapes = escapes;
         self
     }
 
     /// Displacement along the softest extra negative mode.
+    #[must_use]
     pub const fn with_escape(mut self, escape: f64) -> Self {
         self.escape = escape;
         self
@@ -674,13 +701,29 @@ impl StressCheck {
     }
 
     /// Strain increment of the finite difference.
+    #[must_use]
     pub const fn with_step(mut self, step: f64) -> Self {
         self.step = step;
         self
     }
 
+    /// Accepted difference as a fraction of the entry.
+    #[must_use]
+    pub const fn with_relative(mut self, relative: f64) -> Self {
+        self.relative = relative;
+        self
+    }
+
+    /// Accepted difference in energy per volume.
+    #[must_use]
+    pub const fn with_absolute(mut self, absolute: f64) -> Self {
+        self.absolute = absolute;
+        self
+    }
+
     /// Accepted difference per entry: `relative` of the entry plus
     /// `absolute`.
+    #[must_use]
     pub const fn with_tolerance(mut self, relative: f64, absolute: f64) -> Self {
         self.relative = relative;
         self.absolute = absolute;

@@ -76,36 +76,42 @@ pub struct Index1Config {
 
 impl Index1Config {
     /// Hessian update used after the seed step.
+    #[must_use]
     pub fn with_update(mut self, update: HessianUpdate) -> Self {
         self.update = update;
         self
     }
 
     /// Nichols target, index-1 by default.
+    #[must_use]
     pub fn with_mode(mut self, mode: NicholsMode) -> Self {
         self.mode = mode;
         self
     }
 
     /// Euclidean bound on the Cartesian step.
+    #[must_use]
     pub fn with_trust_radius(mut self, trust_radius: f64) -> Self {
         self.trust_radius = trust_radius;
         self
     }
 
     /// Stop when every gradient component is at or under this.
+    #[must_use]
     pub fn with_force_tol(mut self, force_tol: f64) -> Self {
         self.force_tol = force_tol;
         self
     }
 
     /// Central-difference width used when no Hessian was supplied.
+    #[must_use]
     pub fn with_fd_dr(mut self, fd_dr: f64) -> Self {
         self.fd_dr = fd_dr;
         self
     }
 
     /// Opt into the direct CPR seed. The default seed stays dense.
+    #[must_use]
     pub fn with_sparse_pattern(mut self, pattern: SparsityPattern) -> Self {
         self.sparse_pattern = Some(pattern);
         self

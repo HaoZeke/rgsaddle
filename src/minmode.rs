@@ -193,6 +193,20 @@ pub struct MinModeConfig {
     pub seed_curvature: bool,
 }
 
+with_setters!(MinModeConfig {
+    with_kind => kind: val MinModeKind,
+    with_dr => dr: val f64,
+    with_difference => difference: val FiniteDifference,
+    with_rotation_tol => rotation_tol: val f64,
+    with_rotation_angle_tol => rotation_angle_tol: val f64,
+    with_max_rotations => max_rotations: val usize,
+    with_krylov_dim => krylov_dim: val usize,
+    with_force_tol => force_tol: val f64,
+    with_max_move => max_move: val f64,
+    with_method => method: val Method,
+    with_seed_curvature => seed_curvature: val bool,
+});
+
 impl Default for MinModeConfig {
     fn default() -> Self {
         Self {

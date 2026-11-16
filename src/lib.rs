@@ -47,6 +47,9 @@
 
 #![deny(missing_docs)]
 
+#[macro_use]
+mod config;
+
 pub mod autoneb;
 pub mod band;
 pub mod bennett;

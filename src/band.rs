@@ -135,6 +135,11 @@ pub struct CiConfig {
     pub trigger_force: f64,
 }
 
+with_setters!(CiConfig {
+    with_trigger_factor => trigger_factor: val f64,
+    with_trigger_force => trigger_force: val f64,
+});
+
 impl CiConfig {
     /// Arm once the largest force component is under `force` (eOn
     /// `ci_after` with `ci_after_rel = 0`).
@@ -200,13 +205,22 @@ impl SolidState {
         }
     }
 
+    /// One cell per image, endpoints included.
+    #[must_use]
+    pub fn with_cells(mut self, cells: Vec<Cell>) -> Self {
+        self.cells = cells;
+        self
+    }
+
     /// Hydrostatic pressure, energy per length cubed.
+    #[must_use]
     pub fn with_pressure(mut self, pressure: f64) -> Self {
         self.pressure = pressure;
         self
     }
 
     /// Positive scale on the Jacobian.
+    #[must_use]
     pub fn with_weight(mut self, weight: f64) -> Self {
         self.weight = weight;
         self
@@ -215,6 +229,17 @@ impl SolidState {
 
 /// Band configuration. `force_tol` is on the max absolute component
 /// of the projected force over interior images.
+///
+/// ```
+/// use rgsaddle::{BandConfig, CiConfig};
+///
+/// let config = BandConfig::default()
+///     .with_force_tol(1e-4)
+///     .with_climbing(CiConfig::always())
+///     .with_min_mode(None);
+/// assert_eq!(config.force_tol, 1e-4);
+/// assert!(config.min_mode.is_none());
+/// ```
 #[derive(Clone, Debug)]
 pub struct BandConfig {
     /// How the path direction at an interior image is chosen.
@@ -278,6 +303,26 @@ pub struct BandConfig {
     pub zoom: Option<ZoomConfig>,
 }
 
+with_setters!(BandConfig {
+    with_tangent => tangent: val TangentKind,
+    with_spring => spring: val SpringKind,
+    with_projection => projection: val ProjectionKind,
+    with_climbing => climbing: opt CiConfig,
+    with_cell => cell: opt Cell,
+    with_force_tol => force_tol: val f64,
+    with_max_move => max_move: val f64,
+    with_remove_translation => remove_translation: val bool,
+    with_method => method: val Method,
+    with_solid => solid: opt SolidState,
+    with_quickmin => quickmin: val bool,
+    with_quickmin_options => quickmin_options: val rgmin::QuickMinOptions,
+    with_time_step => time_step: val f64,
+    with_autoneb => autoneb: opt crate::autoneb::AutoNebTuning,
+    with_min_mode => min_mode: opt MinModeRefine,
+    with_exp_precon => exp_precon: opt ExpBandPrecon,
+    with_zoom => zoom: opt ZoomConfig,
+});
+
 impl Default for BandConfig {
     fn default() -> Self {
         Self {
@@ -340,6 +385,13 @@ pub struct ExpBandPrecon {
     /// Cutoff as a multiple of `r_nn`.
     pub r_cut_factor: f64,
 }
+
+with_setters!(ExpBandPrecon {
+    with_a => a: val f64,
+    with_c_stab => c_stab: val f64,
+    with_mu => mu: opt f64,
+    with_r_cut_factor => r_cut_factor: val f64,
+});
 
 impl Default for ExpBandPrecon {
     fn default() -> Self {
