@@ -406,8 +406,72 @@ pub unsafe extern "C" fn rgsaddle_stencil_config_free(config: *mut c_void) {
     }));
 }
 
+/// Start a point stencil at `x` with the settings in `config`. NULL,
+/// with [`rgsaddle_last_error`] set, when they are refused.
+///
 /// # Safety
 /// `config` is live. `x` points at `rows * dof` values.
+///
+/// # Examples
+///
+/// The C builder from Rust: a dimer on the double well
+/// `(x² − 1)² + 2y² + 2z²`, one atom. The config is set key by key and
+/// freed once the stencil holds its own copy.
+///
+/// ```
+/// use std::ffi::c_void;
+/// use rgsaddle::Preset;
+/// use rgsaddle::capi::*;
+///
+/// unsafe extern "C" fn double_well(
+///     _user: *mut c_void,
+///     _rows: usize,
+///     dof: usize,
+///     _ids: *const u64,
+///     x: *const f64,
+///     e: *mut f64,
+///     g: *mut f64,
+/// ) -> i32 {
+///     let r = unsafe { std::slice::from_raw_parts(x, dof) };
+///     unsafe {
+///         *e = (r[0] * r[0] - 1.0).powi(2) + 2.0 * r[1] * r[1] + 2.0 * r[2] * r[2];
+///         std::slice::from_raw_parts_mut(g, dof)
+///             .copy_from_slice(&[4.0 * r[0] * (r[0] * r[0] - 1.0), 4.0 * r[1], 4.0 * r[2]]);
+///     }
+///     0
+/// }
+///
+/// let config = rgsaddle_stencil_config_new(Preset::Dimer.to_abi());
+/// let guess = [1.0, 0.5, 0.0];
+/// unsafe {
+///     rgsaddle_stencil_config_set_f64(config, RGSADDLE_STENCIL_KEY_FORCE_TOL, 1e-4);
+///     rgsaddle_stencil_config_set_f64(config, RGSADDLE_STENCIL_KEY_MAX_MOVE, 0.1);
+///     rgsaddle_stencil_config_set_array(config, RGSADDLE_STENCIL_KEY_MODE, guess.as_ptr(), 3);
+/// }
+/// let start = [0.3, 0.1, 0.0];
+/// let stencil = unsafe { rgsaddle_stencil_new(config, 1, 3, start.as_ptr()) };
+/// unsafe { rgsaddle_stencil_config_free(config) };
+/// assert!(!stencil.is_null());
+///
+/// let mut report = RgsaddleStencilReport {
+///     struct_size: 0,
+///     status: 0,
+///     reserved: 0,
+///     max_force: 0.0,
+///     curvature: 0.0,
+///     iteration: 0,
+///     evaluations: 0,
+/// };
+/// let rc = unsafe {
+///     rgsaddle_stencil_run(stencil, Some(double_well), std::ptr::null_mut(), 200, &mut report)
+/// };
+/// assert_eq!(rc, RGSADDLE_OK);
+/// assert_eq!(report.status, 1);
+/// let mut saddle = [0.0; 3];
+/// assert_eq!(unsafe { rgsaddle_stencil_positions(stencil, saddle.as_mut_ptr(), 3) }, RGSADDLE_OK);
+/// assert!(saddle.iter().all(|c| c.abs() < 1e-3));
+/// unsafe { rgsaddle_stencil_free(stencil) };
+/// ```
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rgsaddle_stencil_new(
     config: *const c_void,

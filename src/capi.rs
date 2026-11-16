@@ -3,6 +3,10 @@
 //! The host owns the loop here exactly as it does in Rust: create,
 //! step until the report says converged, reset at a surface-epoch
 //! boundary, free. No run-to-completion entry exists.
+//!
+//! [`rgsaddle_band_create`], [`rgsaddle_minmode_create`] and
+//! [`rgsaddle_stencil_new`] each open with that loop written in Rust
+//! against these exports.
 
 use std::ffi::c_void;
 use std::os::raw::c_char;
@@ -122,9 +126,9 @@ pub struct RgsaddleSurfaceRequest {
     pub n_images: i64,
     /// Number of atoms in one image.
     pub n_atoms: i64,
-    /// The f64.
+    /// Positions, `n_images` rows of `3 * n_atoms`, row-major.
     pub positions: *const f64,
-    /// The energies.
+    /// One energy per row of `positions`, written by the host.
     pub energies: *mut f64,
     /// Energy gradients, one row per image, in the same order as the positions.
     pub gradients: *mut f64,
@@ -150,15 +154,18 @@ pub struct RgsaddleBandConfig {
     pub projection: i32,
     /// Which rgmin stepper advances the assembled force.
     pub method: i32,
-    /// The spring k.
+    /// Spring constant of the uniform and Onsager-Machlup springs.
     pub spring_k: f64,
-    /// The f64.
+    /// Weighted springs: `n_images - 1` constants, else NULL.
     pub spring_ks: *const f64,
-    /// The ci trigger factor.
+    /// Climbing arms once the largest force component is under this
+    /// factor times the first evaluation's. Climbing is off when it is
+    /// not positive, unless [`RGSADDLE_BAND_CI_AFTER`] is set.
     pub ci_trigger_factor: f64,
-    /// The ci trigger force.
+    /// With [`RGSADDLE_BAND_CI_AFTER`], climbing also arms once the
+    /// largest force component is under this value.
     pub ci_trigger_force: f64,
-    /// The f64.
+    /// Row-major 3x3 cell for minimum-image differences; NULL for none.
     pub cell: *const f64,
     /// The search stops when the largest absolute force component falls under this value, in the host's force units.
     pub force_tol: f64,
@@ -221,7 +228,8 @@ pub struct RgsaddleReport {
     pub iteration: i64,
     /// Curvature along the mode, energy per length squared.
     pub curvature: f64,
-    /// The rotations.
+    /// Dimer rotations or Lanczos actions in the step's mode estimate;
+    /// 0 on a band step.
     pub rotations: i64,
 }
 
@@ -463,8 +471,77 @@ pub extern "C" fn rgsaddle_status_name(status: i32) -> *const c_char {
     s.as_ptr() as *const c_char
 }
 
+/// Open a band over `n_images` rows of `3 * n_atoms` positions.
+/// NULL when the config or the shape is refused.
+///
 /// # Safety
 /// `config` and `positions` must be valid for the declared shape.
+///
+/// # Examples
+///
+/// The C loop from Rust: a nudged elastic band on the double well
+/// `(x² − 1)² + 2y² + 2z²`, one atom, seven images bowed off the axis.
+/// The callback fills every row the request carries.
+///
+/// ```
+/// use std::ffi::c_void;
+/// use rgsaddle::capi::*;
+///
+/// extern "C" fn double_well(_user: *mut c_void, req: *mut RgsaddleSurfaceRequest) -> i32 {
+///     let req = unsafe { &mut *req };
+///     let rows = if req.flags & RGSADDLE_REQ_ONE_IMAGE != 0 { 1 } else { req.n_images as usize };
+///     let dof = 3 * req.n_atoms as usize;
+///     let x = unsafe { std::slice::from_raw_parts(req.positions, rows * dof) };
+///     let e = unsafe { std::slice::from_raw_parts_mut(req.energies, rows) };
+///     let g = unsafe { std::slice::from_raw_parts_mut(req.gradients, rows * dof) };
+///     for i in 0..rows {
+///         let r = &x[i * dof..(i + 1) * dof];
+///         e[i] = (r[0] * r[0] - 1.0).powi(2) + 2.0 * r[1] * r[1] + 2.0 * r[2] * r[2];
+///         g[i * dof..(i + 1) * dof]
+///             .copy_from_slice(&[4.0 * r[0] * (r[0] * r[0] - 1.0), 4.0 * r[1], 4.0 * r[2]]);
+///     }
+///     0
+/// }
+///
+/// let config = RgsaddleBandConfig {
+///     version: RgsaddleVersion { major: RGSADDLE_ABI_MAJOR, minor: RGSADDLE_ABI_MINOR },
+///     flags: 0,
+///     tangent: 1,    // RGSADDLE_TANGENT_IMPROVED
+///     spring: 0,     // RGSADDLE_SPRING_UNIFORM
+///     projection: 1, // RGSADDLE_PROJECTION_NEB
+///     method: 0,     // RGSADDLE_METHOD_FIRE
+///     spring_k: 5.0,
+///     spring_ks: std::ptr::null(),
+///     ci_trigger_factor: 0.5,
+///     ci_trigger_force: 0.0,
+///     cell: std::ptr::null(),
+///     force_tol: 1e-3,
+///     max_move: 0.1,
+///     memory: 0,
+/// };
+/// let mut positions = Vec::new();
+/// for i in 0..7 {
+///     let t = i as f64 / 6.0;
+///     positions.extend([2.0 * t - 1.0, 0.3 * (std::f64::consts::PI * t).sin(), 0.0]);
+/// }
+/// let band = unsafe { rgsaddle_band_create(&config, 7, 1, positions.as_ptr()) };
+/// assert!(!band.is_null());
+/// let mut out = std::mem::MaybeUninit::<RgsaddleReport>::uninit();
+/// let report = loop {
+///     let user = std::ptr::null_mut();
+///     let rc = unsafe { rgsaddle_band_step(band, Some(double_well), user, out.as_mut_ptr()) };
+///     assert_eq!(rc, RGSADDLE_OK);
+///     let report = unsafe { out.assume_init_ref() };
+///     if report.status == 1 || report.iteration >= 2000 {
+///         break report;
+///     }
+/// };
+/// assert_eq!(report.status, 1);
+/// unsafe { rgsaddle_band_positions(band, positions.as_mut_ptr()) };
+/// let ci = report.ci_index as usize;
+/// assert!(positions[3 * ci..3 * ci + 3].iter().all(|c| c.abs() < 1e-2));
+/// unsafe { rgsaddle_band_free(band) };
+/// ```
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rgsaddle_band_create(
     config: *const RgsaddleBandConfig,
@@ -933,8 +1010,68 @@ pub unsafe extern "C" fn rgsaddle_band_free(band: *mut RgsaddleBand) {
     }
 }
 
+/// Open a minimum-mode search at `position` with the mode guess
+/// `mode`. NULL when the config or the shape is refused.
+///
 /// # Safety
 /// `config`, `position`, and `mode` must be valid for `3 * n_atoms`.
+///
+/// # Examples
+///
+/// A dimer search from C, written in Rust: the double well
+/// `(x² − 1)² + 2y² + 2z²`, one atom, started off the saddle at the
+/// origin. The callback gets one geometry per request.
+///
+/// ```
+/// use std::ffi::c_void;
+/// use rgsaddle::capi::*;
+///
+/// extern "C" fn double_well(_user: *mut c_void, req: *mut RgsaddleSurfaceRequest) -> i32 {
+///     let req = unsafe { &mut *req };
+///     let r = unsafe { std::slice::from_raw_parts(req.positions, 3) };
+///     unsafe {
+///         *req.energies = (r[0] * r[0] - 1.0).powi(2) + 2.0 * r[1] * r[1] + 2.0 * r[2] * r[2];
+///         std::slice::from_raw_parts_mut(req.gradients, 3)
+///             .copy_from_slice(&[4.0 * r[0] * (r[0] * r[0] - 1.0), 4.0 * r[1], 4.0 * r[2]]);
+///     }
+///     0
+/// }
+///
+/// let config = RgsaddleMinModeConfig {
+///     version: RgsaddleVersion { major: RGSADDLE_ABI_MAJOR, minor: RGSADDLE_ABI_MINOR },
+///     flags: 0,
+///     kind: 0,   // RGSADDLE_MINMODE_DIMER
+///     method: 0, // RGSADDLE_METHOD_FIRE
+///     dr: 1e-3,
+///     rotation_tol: 1e-4,
+///     max_rotations: 20,
+///     krylov_dim: 12,
+///     force_tol: 1e-4,
+///     max_move: 0.1,
+///     rotation_angle_tol: 5f64.to_radians(),
+///     difference: 0, // forward
+///     reserved: 0,
+/// };
+/// let (start, guess) = ([0.3, 0.1, 0.0], [1.0, 0.5, 0.0]);
+/// let session = unsafe { rgsaddle_minmode_create(&config, 1, start.as_ptr(), guess.as_ptr()) };
+/// assert!(!session.is_null());
+/// let mut out = std::mem::MaybeUninit::<RgsaddleReport>::uninit();
+/// let report = loop {
+///     let user = std::ptr::null_mut();
+///     let rc = unsafe { rgsaddle_minmode_step(session, Some(double_well), user, out.as_mut_ptr()) };
+///     assert_eq!(rc, RGSADDLE_OK);
+///     let report = unsafe { out.assume_init_ref() };
+///     if report.status == 1 || report.iteration >= 500 {
+///         break report;
+///     }
+/// };
+/// assert_eq!(report.status, 1);
+/// assert!(report.curvature < 0.0);
+/// let mut saddle = [0.0; 3];
+/// unsafe { rgsaddle_minmode_position(session, saddle.as_mut_ptr()) };
+/// assert!(saddle.iter().all(|c| c.abs() < 1e-3));
+/// unsafe { rgsaddle_minmode_free(session) };
+/// ```
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rgsaddle_minmode_create(
     config: *const RgsaddleMinModeConfig,
