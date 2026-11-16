@@ -33,7 +33,7 @@ mod work;
 
 pub use optimize::{PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum, PlaneStep, PlaneTrace};
 pub use plane::{Hyperplane, MassWeighted};
-pub use rate::{OhTstRate, flux_mass, ohtst_rate};
+pub use rate::{OhTstRate, flux_mass, ohtst_rate, plane_transmission};
 pub use reactant::{ReactantDensity, reactant_density};
 pub use sample::{LangevinConfig, PlaneSample, sample_plane};
 pub use work::{ReversibleWork, ReversibleWorkConfig, WorkNode, reversible_work};

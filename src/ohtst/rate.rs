@@ -18,6 +18,10 @@
 //! the density of velocities along the ray `v n̂` instead, and the two
 //! agree only when the masses that `n̂` touches are equal.
 //!
+//! The recrossing factor `κ` of the optimal plane comes from short
+//! trajectories shot from the plane's own ensemble ([`plane_transmission`]),
+//! and [`OhTstRate::transmitted`] applies it.
+//!
 //! [`reactant_density`]: crate::ohtst::reactant_density
 //! [`reversible_work`]: crate::ohtst::reversible_work
 
@@ -25,9 +29,12 @@ use std::f64::consts::TAU;
 
 use ndarray::ArrayView1;
 
+use crate::bennett::{ShootingConfig, Transmission, bennett_chandler};
 use crate::error::SaddleError;
+use crate::minmode::PointSurface;
 use crate::ohtst::plane::Hyperplane;
 use crate::ohtst::reactant::ReactantDensity;
+use crate::ohtst::sample::PlaneSample;
 use crate::ohtst::work::ReversibleWork;
 
 /// The OH-TST rate and its parts, each with its standard error.
@@ -52,6 +59,16 @@ pub struct OhTstRate {
     pub free_energy: f64,
     /// Its standard error.
     pub free_energy_error: f64,
+}
+
+impl OhTstRate {
+    /// `κ k` and its first-order standard error.
+    pub fn transmitted(&self, transmission: &Transmission) -> (f64, f64) {
+        let kappa = transmission.kappa;
+        let error =
+            ((kappa * self.error).powi(2) + (self.rate * transmission.error).powi(2)).sqrt();
+        (kappa * self.rate, error)
+    }
 }
 
 fn same_plane(a: &Hyperplane, b: &Hyperplane) -> bool {
@@ -105,6 +122,35 @@ pub fn ohtst_rate(
         free_energy: work.work,
         free_energy_error: work.error,
     })
+}
+
+/// The Bennett–Chandler transmission coefficient of a sampled plane, shot
+/// along its normal from the configurations the sample retained (see
+/// [`LangevinConfig::retain`](crate::ohtst::LangevinConfig::retain)). The
+/// surface is the mass-weighted one the plane was sampled on, so every
+/// degree of freedom has unit mass.
+pub fn plane_transmission<S: PointSurface>(
+    surface: &S,
+    sample: &PlaneSample,
+    config: &ShootingConfig,
+) -> Result<Transmission, SaddleError> {
+    if config.mass != 1.0 {
+        return Err(SaddleError::Invalid(
+            "mass-weighted coordinates carry unit mass; set ShootingConfig::mass to 1".into(),
+        ));
+    }
+    if sample.retained.is_empty() {
+        return Err(SaddleError::Invalid(
+            "the plane sample kept no configurations; raise LangevinConfig::retain".into(),
+        ));
+    }
+    bennett_chandler(
+        surface,
+        &sample.retained,
+        sample.plane.point(),
+        sample.plane.normal(),
+        config,
+    )
 }
 
 /// The mass for flux along the Cartesian direction `normal`, normalized
@@ -188,6 +234,49 @@ mod tests {
         assert!((equal - 2.0).abs() < 1e-14);
     }
 
+    /// `V = -½ x² + y²`. It separates, so a trajectory that leaves the line
+    /// `x = 0` never returns and `κ = 1` there.
+    struct Barrier;
+
+    impl PointSurface for Barrier {
+        fn eval(&self, q: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+            Ok((-0.5 * q[0] * q[0] + q[1] * q[1], array![-q[0], 2.0 * q[1]]))
+        }
+    }
+
+    #[test]
+    fn transmission_is_one_on_the_separable_dividing_line() {
+        let kt = 0.2;
+        let config = LangevinConfig::default()
+            .with_thermal(kt)
+            .with_time_step(0.2)
+            .with_records(400)
+            .with_retain(64);
+        let shooting = ShootingConfig {
+            thermal: kt,
+            time_step: 0.02,
+            steps: 300,
+            record_every: 50,
+            shots: 256,
+            blocks: 8,
+            plateau_record: 5,
+            ..ShootingConfig::default()
+        };
+        let line = Hyperplane::new(array![0.0, 0.0], array![1.0, 0.0]).unwrap();
+        let sample = sample_plane(&Barrier, &line, None, &config).unwrap();
+        let kappa = plane_transmission(&Barrier, &sample, &shooting).unwrap();
+        assert!((kappa.kappa - 1.0).abs() < 1e-12 && kappa.error < 1e-12);
+        let tilted = Hyperplane::new(array![0.0, 0.0], array![0.5f64.cos(), 0.5f64.sin()]).unwrap();
+        let sample = sample_plane(&Barrier, &tilted, None, &config).unwrap();
+        let kappa = plane_transmission(&Barrier, &sample, &shooting).unwrap();
+        assert!(kappa.kappa < 1.0 - 4.0 * kappa.error, "{kappa:?}");
+        let heavy = ShootingConfig {
+            mass: 2.0,
+            ..shooting
+        };
+        assert!(plane_transmission(&Barrier, &sample, &heavy).is_err());
+    }
+
     struct Bowl;
 
     impl PointSurface for Bowl {
@@ -235,6 +324,17 @@ mod tests {
         };
         let rate = ohtst_rate(&density, &work).unwrap();
         let expected = (kt / TAU).sqrt() * 0.4 * (-3.0f64 / kt).exp();
+        let half = Transmission {
+            time: vec![1.0],
+            kappa_of_t: vec![0.5],
+            kappa: 0.5,
+            error: 0.05,
+            forward: 1,
+        };
+        let (transmitted, transmitted_error) = rate.transmitted(&half);
+        assert!((transmitted / expected - 0.5).abs() < 1e-12);
+        let relative = ((0.02f64 / 0.4).powi(2) + (0.1f64 / kt).powi(2) + 0.1f64.powi(2)).sqrt();
+        assert!((transmitted_error / transmitted - relative).abs() < 1e-12);
         assert!((rate.rate / expected - 1.0).abs() < 1e-12);
         let sigma = ((0.02f64 / 0.4).powi(2) + (0.1f64 / kt).powi(2)).sqrt();
         assert!((rate.log_rate_error - sigma).abs() < 1e-12);
