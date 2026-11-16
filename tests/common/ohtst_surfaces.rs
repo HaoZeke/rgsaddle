@@ -96,6 +96,39 @@ mod ohtst_surfaces {
         }
     }
 
+    /// Double well in a skewed valley whose stiffness rises toward the
+    /// product, so the optimal plane both shifts and turns with `kT`:
+    /// `(x² - 1)² + ½ k₀ (1 + α tanh 2x) (y - Cx)²` with `k₀ = 4`, `C = 1`,
+    /// `α = 0.8`. The reactant minimum is `(-1, -1)`, the product `(1, 1)`,
+    /// and the saddle the origin, one energy unit up.
+    pub struct SkewedWell;
+
+    pub const SKEWED_K0: f64 = 4.0;
+    pub const SKEWED_C: f64 = 1.0;
+    pub const SKEWED_ALPHA: f64 = 0.8;
+
+    impl SkewedWell {
+        pub fn energy(x: f64, y: f64) -> (f64, f64, f64) {
+            let well = x * x - 1.0;
+            let tanh = (2.0 * x).tanh();
+            let stiffness = SKEWED_K0 * (1.0 + SKEWED_ALPHA * tanh);
+            let valley = y - SKEWED_C * x;
+            let energy = well * well + 0.5 * stiffness * valley * valley;
+            let gx = 4.0 * x * well
+                + SKEWED_K0 * SKEWED_ALPHA * (1.0 - tanh * tanh) * valley * valley
+                - SKEWED_C * stiffness * valley;
+            let gy = stiffness * valley;
+            (energy, gx, gy)
+        }
+    }
+
+    impl PointSurface for SkewedWell {
+        fn eval(&self, q: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+            let (e, gx, gy) = Self::energy(q[0], q[1]);
+            Ok((e, array![gx, gy]))
+        }
+    }
+
     /// Adaptive Simpson on `[a, b]` to an absolute tolerance.
     pub fn simpson<F: Fn(f64) -> f64>(f: &F, a: f64, b: f64, tol: f64) -> f64 {
         fn rule<F: Fn(f64) -> f64>(
@@ -308,7 +341,11 @@ mod ohtst_surfaces {
 
     #[test]
     fn analytic_gradients_match_differences() {
-        for energy in [LepsHo::energy as fn(f64, f64) -> _, EckartHo::energy] {
+        for energy in [
+            LepsHo::energy as fn(f64, f64) -> _,
+            EckartHo::energy,
+            SkewedWell::energy,
+        ] {
             for (x, y) in [(0.9, 1.1), (2.0, -0.2), (2.6, -1.0), (0.1, 0.4)] {
                 let (_, gx, gy) = energy(x, y);
                 let h = 1.0e-6;
