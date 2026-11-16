@@ -138,8 +138,11 @@ impl Hyperplane {
         Self::new(self.point.clone(), normal)
     }
 
-    /// `[p; ν]`, length `2n`: the point of `R^n × S^{n-1}` the optimizer
-    /// moves.
+    /// `[p; ν]`, length `2n`: the layout of
+    /// [`PlaneSample::packed_gradient`](crate::ohtst::PlaneSample::packed_gradient)
+    /// and of the directions
+    /// [`PlaneSample::directional`](crate::ohtst::PlaneSample::directional)
+    /// takes.
     pub fn packed(&self) -> Array1<f64> {
         let n = self.dim();
         let mut x = Array1::zeros(2 * n);

@@ -5,8 +5,9 @@
 //! to the guideline plane through the minimum, the reversible work from
 //! that plane to the optimum, and the rate.
 //! The dimer runs once, outside the timed loop. The throughput criterion
-//! reports is force calls per second, and the force calls of one rate are
-//! printed before the run.
+//! reports is force calls per second, and the force calls of one rate,
+//! with the iterations of its plane optimization, are printed before the
+//! run.
 
 use std::time::Duration;
 
@@ -14,21 +15,16 @@ use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use ndarray::array;
 use rgsaddle::{
     BasinConfig, Hyperplane, LangevinConfig, MinModeConfig, MinModeSession, MinModeStatus,
-    OhTstRate, PlaneIntegrator, PlaneOptimizer, PlaneOptimizerConfig, ReversibleWorkConfig,
-    basin_density, ohtst_rate, reversible_work,
+    OhTstRate, PlaneIntegrator, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum,
+    ReversibleWorkConfig, basin_density, ohtst_rate, reversible_work,
 };
 
 include!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/common/ohtst_surfaces.rs"
 ));
-include!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/tests/common/plane_manifold.rs"
-));
 
 use ohtst_surfaces::{LepsHo, descend, stationary};
-use plane_manifold::PointSphereFixture;
 
 struct Problem {
     kt: f64,
@@ -69,15 +65,15 @@ fn sampler(kt: f64, time_step: f64, records: usize) -> LangevinConfig {
         .with_seed(5)
 }
 
-/// The rate and the force calls it took.
-fn converged_rate(problem: &Problem) -> (OhTstRate, usize) {
+/// The rate, the force calls it took, and the plane optimization.
+fn converged_rate(problem: &Problem) -> (OhTstRate, usize, PlaneOptimum) {
     let kt = problem.kt;
     let config = PlaneOptimizerConfig::default()
-        .with_sampler(sampler(kt, 0.3, 1000).with_integrator(PlaneIntegrator::Ghmc))
-        .with_time_step(1.0);
-    let mut optimizer =
-        PlaneOptimizer::new(PointSphereFixture::new(2), &problem.seed, config).unwrap();
-    let optimum = optimizer.run(&LepsHo).unwrap();
+        .with_sampler(sampler(kt, 0.3, 1000).with_integrator(PlaneIntegrator::Ghmc));
+    let optimum = PlaneOptimizer::new(&problem.seed, config)
+        .unwrap()
+        .run(&LepsHo)
+        .unwrap();
     let reactant = array![problem.reactant[0], problem.reactant[1]];
     let density = basin_density(
         &LepsHo,
@@ -91,24 +87,26 @@ fn converged_rate(problem: &Problem) -> (OhTstRate, usize) {
         .with_nodes(17);
     let work = reversible_work(
         &LepsHo,
-        &[density.plane.clone(), optimum.plane],
+        &[density.plane.clone(), optimum.plane.clone()],
         Some(reactant.view()),
         &config,
     )
     .unwrap();
     let rate = ohtst_rate(&density, &work).unwrap();
-    (
-        rate,
-        optimum.evaluations + density.evaluations + work.evaluations,
-    )
+    let calls = optimum.evaluations + density.evaluations + work.evaluations;
+    (rate, calls, optimum)
 }
 
 fn leps_rate(c: &mut Criterion) {
     let problem = problem();
-    let (rate, calls) = converged_rate(&problem);
+    let (rate, calls, optimum) = converged_rate(&problem);
     eprintln!(
         "one converged rate: {:.4e} ± {:.1e} with {calls} force calls",
         rate.rate, rate.error
+    );
+    eprintln!(
+        "plane optimization: {} outer and {} inner iterations, {} force calls",
+        optimum.iterations, optimum.inner_iterations, optimum.evaluations
     );
     let mut group = c.benchmark_group("ohtst_leps");
     group.sample_size(10);

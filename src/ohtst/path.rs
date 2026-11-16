@@ -60,8 +60,9 @@ impl PlanePath {
         Ok(Self { segments })
     }
 
-    /// Straight legs through the planes the optimizer sampled. Iterates
-    /// that did not move the plane, which includes a pivot recentred
+    /// Straight legs through the planes the optimizer accepted, its
+    /// [`PlaneOptimum::trace`](crate::ohtst::PlaneOptimum::trace).
+    /// Entries that did not move the plane, such as a pivot recentred
     /// within it, are dropped.
     pub fn trace(trace: &[PlaneTrace]) -> Result<Self, SaddleError> {
         let mut planes: Vec<Hyperplane> = Vec::with_capacity(trace.len());

@@ -18,13 +18,8 @@ include!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/common/ohtst_surfaces.rs"
 ));
-include!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/tests/common/plane_manifold.rs"
-));
 
 use ohtst_surfaces::{ECKART_V0, EckartHo, eigen2, hessian, line_draws, line_free_energy};
-use plane_manifold::PointSphereFixture;
 
 /// Golden-section search for the maximum of `f` on `[a, b]`.
 fn golden_max<F: Fn(f64) -> f64>(f: F, mut a: f64, mut b: f64, tol: f64) -> f64 {
@@ -99,23 +94,17 @@ fn eckart_sampler(kt: f64, time_step: f64) -> LangevinConfig {
 /// Turn a line about the saddle from `start` degrees to a maximum of its
 /// free energy. Returns the angle and its error from the last sample's
 /// torque error and the quadrature curvature.
-fn eckart_turn(
-    kt: f64,
-    start: f64,
-    time_step: f64,
-    quick_min_step: f64,
-    curvature: f64,
-) -> (f64, f64) {
+fn eckart_turn(kt: f64, start: f64, time_step: f64, curvature: f64) -> (f64, f64) {
     let config = PlaneOptimizerConfig::default()
         .with_sampler(eckart_sampler(kt, time_step))
         .with_translate(false)
-        .with_time_step(quick_min_step)
         .with_max_rotation(0.05)
         .with_max_records(16_000)
         .with_max_iterations(60);
-    let mut optimizer =
-        PlaneOptimizer::new(PointSphereFixture::new(2), &eckart_line(start), config).unwrap();
-    let optimum = optimizer.run(&EckartHo).unwrap();
+    let optimum = PlaneOptimizer::new(&eckart_line(start), config)
+        .unwrap()
+        .run(&EckartHo)
+        .unwrap();
     let last = optimum.trace.last().unwrap();
     let error = (last.rotation_error / kt / curvature.abs()).to_degrees();
     (degrees_of(&optimum.plane), error)
@@ -235,12 +224,12 @@ fn eckart_optimizer_finds_both_maxima() {
     let kt = 0.3 * ECKART_V0;
     let (low, low_curvature) = eckart_maximum(kt, 0.5, 3.0);
     let (high, high_curvature) = eckart_maximum(kt, 60.0, 88.0);
-    let (turned, error) = eckart_turn(kt, 60.0, 1.0, 15.0, high_curvature);
+    let (turned, error) = eckart_turn(kt, 60.0, 1.0, high_curvature);
     assert!(
         (turned - high).abs() < 4.0 * error,
         "{turned}° ± {error}° against {high}°"
     );
-    let (turned, error) = eckart_turn(kt, 4.0, 8.0, 0.5, low_curvature);
+    let (turned, error) = eckart_turn(kt, 4.0, 8.0, low_curvature);
     assert!(
         (turned - low).abs() < 4.0 * error,
         "{turned}° ± {error}° against {low}°"

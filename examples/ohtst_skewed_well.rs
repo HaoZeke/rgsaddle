@@ -14,9 +14,8 @@
 //! correction to harmonic TST and the control variates are printed beside
 //! it.
 //!
-//! The optimizer takes any `rgmin::manifold::Manifold`. The product
-//! manifold `Rⁿ × Sⁿ⁻¹` is to come from rgmin, so this example borrows the
-//! temporary test fixture that stands in for it.
+//! The plane optimizer is rgmin's Riemannian trust region on the product
+//! of the sphere of normals and the offset along the normal.
 
 use ndarray::{Array1, ArrayView1, array};
 use rgsaddle::{
@@ -25,13 +24,6 @@ use rgsaddle::{
     ReversibleWorkConfig, SaddleError, anharmonic_correction, basin_density, ohtst_rate,
     reversible_work, sample_plane,
 };
-
-include!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/tests/common/plane_manifold.rs"
-));
-
-use plane_manifold::PointSphereFixture;
 
 struct SkewedWell;
 
@@ -85,15 +77,14 @@ fn main() -> Result<(), SaddleError> {
         .with_seed(9);
     let config = PlaneOptimizerConfig::default()
         .with_sampler(sampler.clone().with_records(2000))
-        .with_time_step(0.5)
         .with_max_iterations(100);
-    let mut optimizer = PlaneOptimizer::new(PointSphereFixture::new(2), &seed, config)?;
-    let optimum = optimizer.run(&SkewedWell)?;
+    let optimum = PlaneOptimizer::new(&seed, config)?.run(&SkewedWell)?;
     let normal = optimum.plane.normal();
     let turn = (normal[1].atan2(normal[0]) - seed.normal()[1].atan2(seed.normal()[0])).to_degrees();
     println!(
-        "optimal plane after {} iterations and {} force calls: offset {:.4} along the normal, turned {turn:.2}°",
+        "optimal plane after {} trust-region iterations ({} inner) and {} force calls: offset {:.4} along the normal, turned {turn:.2}°",
         optimum.iterations,
+        optimum.inner_iterations,
         optimum.evaluations,
         optimum.plane.normal().dot(&optimum.plane.point())
     );

@@ -23,16 +23,11 @@ include!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/common/ohtst_surfaces.rs"
 ));
-include!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/tests/common/plane_manifold.rs"
-));
 
 use ohtst_surfaces::{
     LepsHo, descend, descent_path, eigen2, half_plane_integral, hessian, line_draws,
     line_free_energy, stationary,
 };
-use plane_manifold::PointSphereFixture;
 
 /// Stationary points of the surface and its barrier `E_A`.
 struct Geometry {
@@ -266,10 +261,11 @@ fn leps_optimizer_climbs_from_the_dimer_plane() {
     let (seed, _) = dimer_plane();
     let config = PlaneOptimizerConfig::default()
         .with_sampler(large_step_sampler(kt))
-        .with_time_step(1.0)
         .with_max_iterations(100);
-    let mut optimizer = PlaneOptimizer::new(PointSphereFixture::new(2), &seed, config).unwrap();
-    let optimum = optimizer.run(&LepsHo).unwrap();
+    let optimum = PlaneOptimizer::new(&seed, config)
+        .unwrap()
+        .run(&LepsHo)
+        .unwrap();
     let last = optimum.trace.last().unwrap();
     let found = angle_of(&optimum.plane);
     let shift = optimum
@@ -450,10 +446,11 @@ fn leps_fixed_orientation_barrier() {
         .with_sampler(large_step_sampler(kt))
         .with_rotate(false)
         .with_recenter(false)
-        .with_time_step(0.3)
         .with_max_iterations(100);
-    let mut optimizer = PlaneOptimizer::new(PointSphereFixture::new(2), &through, config).unwrap();
-    let optimum = optimizer.run(&LepsHo).unwrap();
+    let optimum = PlaneOptimizer::new(&through, config)
+        .unwrap()
+        .run(&LepsHo)
+        .unwrap();
     let found = optimum
         .plane
         .normal()

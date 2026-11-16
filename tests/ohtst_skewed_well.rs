@@ -28,16 +28,11 @@ include!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/common/ohtst_surfaces.rs"
 ));
-include!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/tests/common/plane_manifold.rs"
-));
 
 use ohtst_surfaces::{
     SKEWED_ALPHA, SKEWED_K0, SkewedWell, descend, descent_path, eigen2, half_plane_integral,
     hessian, line_draws, line_free_energy, line_integral, stationary,
 };
-use plane_manifold::PointSphereFixture;
 
 const REACTANT: [f64; 2] = [-1.0, -1.0];
 const SADDLE_ENERGY: f64 = 1.0;
@@ -256,9 +251,9 @@ fn skewed_well_first_order_correction() {
 /// from the saddle plane, and the sampled rate matches the quadrature
 /// rate of that line, `ln(k/k_HTST) = -0.0310`. The virial on the final
 /// plane is `kT`, one free direction. The work along the optimizer's own
-/// 23 steps, trapezoid on each, is 0.06487 ± 0.00455 by integration and
-/// 0.09183 ± 0.02243 by BAR, against 0.06200 by quadrature of its first
-/// and last lines.
+/// nine accepted steps, trapezoid on each, is 0.06295 ± 0.00392 by
+/// integration and 0.05682 ± 0.00753 by BAR, against 0.06199 by
+/// quadrature of its first and last lines.
 #[test]
 fn skewed_well_optimum_and_rate_at_high_temperature() {
     let kt = 0.4;
@@ -275,10 +270,11 @@ fn skewed_well_optimum_and_rate_at_high_temperature() {
     let (seed, _) = dimer_plane();
     let config = PlaneOptimizerConfig::default()
         .with_sampler(sampler(kt, 0.15).with_records(2000))
-        .with_time_step(0.5)
         .with_max_iterations(100);
-    let mut optimizer = PlaneOptimizer::new(PointSphereFixture::new(2), &seed, config).unwrap();
-    let optimum = optimizer.run(&SkewedWell).unwrap();
+    let optimum = PlaneOptimizer::new(&seed, config)
+        .unwrap()
+        .run(&SkewedWell)
+        .unwrap();
     let last = optimum.trace.last().unwrap();
     let found = angle_of(&optimum.plane);
     let shift = optimum.plane.normal().dot(&optimum.plane.point());

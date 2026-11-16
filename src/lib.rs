@@ -131,7 +131,7 @@ pub use ohtst::{
     AnharmonicConfig, AnharmonicCorrection, BasinConfig, BasinDensity, BasinEnd, Basins, Counting,
     EndState, Endpoint, FixedCell, GaussianTransport, HarmonicReference, Hyperplane,
     LangevinConfig, MassWeighted, OhTstRate, PermutationDistance, PlaneDensity, PlaneIntegrator,
-    PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum, PlanePath, PlaneSample, PlaneStep,
+    PlaneMetric, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum, PlanePath, PlaneSample,
     PlaneTrace, QuenchConfig, ReactantDensity, ReversibleWork, ReversibleWorkConfig, StateDistance,
     TransmissionCoefficient, TransmissionConfig, TransmissionEstimate, Transport, Uncontrolled,
     WorkEstimate, WorkNode, anharmonic_correction, basin_density, flux_mass, ohtst_rate,
