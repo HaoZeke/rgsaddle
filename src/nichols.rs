@@ -619,6 +619,55 @@ fn check_config(config: &Index1Config, n: usize) -> Result<(), SaddleError> {
 /// The trust radius shrinks when the rational-function model is a
 /// poor prediction and grows when the step sat on the sphere and
 /// the model agreed.
+///
+/// # Examples
+///
+/// The saddle between minima B and C of the Müller-Brown surface, from
+/// a start off the saddle. No Hessian is given, so the first step builds
+/// one by central differences.
+///
+/// ```
+/// use ndarray::{Array1, ArrayView1, array};
+/// use rgsaddle::{HessianUpdate, Index1Config, Index1Session, Index1Status, PointSurface, SaddleError};
+///
+/// # const A: [f64; 4] = [-200.0, -100.0, -170.0, 15.0];
+/// # const XX: [f64; 4] = [-1.0, -1.0, -6.5, 0.7];
+/// # const XY: [f64; 4] = [0.0, 0.0, 11.0, 0.6];
+/// # const YY: [f64; 4] = [-10.0, -10.0, -6.5, 0.7];
+/// # const X0: [f64; 4] = [1.0, 0.0, -0.5, -1.0];
+/// # const Y0: [f64; 4] = [0.0, 0.5, 1.5, 1.0];
+/// # fn muller_brown(x: f64, y: f64) -> (f64, f64, f64) {
+/// #     let (mut e, mut gx, mut gy) = (0.0, 0.0, 0.0);
+/// #     for i in 0..4 {
+/// #         let (dx, dy) = (x - X0[i], y - Y0[i]);
+/// #         let t = A[i] * (XX[i] * dx * dx + XY[i] * dx * dy + YY[i] * dy * dy).exp();
+/// #         e += t;
+/// #         gx += t * (2.0 * XX[i] * dx + XY[i] * dy);
+/// #         gy += t * (XY[i] * dx + 2.0 * YY[i] * dy);
+/// #     }
+/// #     (e, gx, gy)
+/// # }
+/// struct MullerBrown;
+///
+/// impl PointSurface for MullerBrown {
+///     fn eval(&self, r: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+///         let (e, gx, gy) = muller_brown(r[0], r[1]);
+///         Ok((e, array![gx, gy]))
+///     }
+/// }
+///
+/// let config = Index1Config::default()
+///     .with_update(HessianUpdate::Bofill)
+///     .with_trust_radius(0.05)
+///     .with_force_tol(1e-6);
+/// let mut session = Index1Session::new(config, array![0.25, 0.25], None, None)?;
+/// let report = session.run(&MullerBrown, 100)?;
+///
+/// assert_eq!(report.status, Index1Status::Converged);
+/// let saddle = session.position();
+/// assert!((saddle[0] - 0.21249).abs() < 1e-4 && (saddle[1] - 0.29299).abs() < 1e-4);
+/// # Ok::<(), SaddleError>(())
+/// ```
 pub struct Index1Session {
     config: Index1Config,
     x: Array1<f64>,

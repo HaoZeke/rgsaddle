@@ -24,7 +24,7 @@ use crate::stencil::{ascend, curvature_along};
 
 use super::control::{Action, ArtControl, Controller, Report as ControlReport, Role, StencilView};
 
-/// Band `Stencil::build` returns this until `feat/band-methods-zoom` lands.
+/// Error text [`BandBuilder::build`] returns until `feat/band-methods-zoom` lands.
 pub const BAND_PRESET_SEAM: &str = "band presets stay on feat/band-methods-zoom";
 
 /// Closed preset list. A band value is accepted by the builder and
@@ -262,13 +262,48 @@ pub struct BandBuilder {
 }
 
 /// A point stencil. Band construction returns [`BAND_PRESET_SEAM`].
+///
+/// # Examples
+///
+/// A dimer search on the double well `(x² − 1)² + 2y² + 2z²`, set up with
+/// the builder from [`Stencil::point`].
+///
+/// ```
+/// use ndarray::{Array1, ArrayView1, array};
+/// use rgsaddle::{PointSurface, Preset, SaddleError, Stencil, StencilStatus};
+///
+/// struct DoubleWell;
+///
+/// impl PointSurface for DoubleWell {
+///     fn eval(&self, r: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+///         let (x, y, z) = (r[0], r[1], r[2]);
+///         let energy = (x * x - 1.0).powi(2) + 2.0 * y * y + 2.0 * z * z;
+///         Ok((energy, array![4.0 * x * (x * x - 1.0), 4.0 * y, 4.0 * z]))
+///     }
+/// }
+///
+/// let mut stencil = Stencil::point(array![0.3, 0.1, 0.0])
+///     .preset(Preset::Dimer)
+///     .mode(array![1.0, 0.5, 0.0])
+///     .force_tol(1e-4)
+///     .max_move(0.1)
+///     .build()?;
+/// let report = stencil.run(&DoubleWell, 200)?;
+///
+/// assert_eq!(report.status, StencilStatus::Converged);
+/// assert!(stencil.curvature() < 0.0);
+/// assert!(stencil.position().iter().all(|c| c.abs() < 1e-3));
+/// # Ok::<(), SaddleError>(())
+/// ```
 pub struct Stencil {
     engine: Engine,
     threads: usize,
 }
 
 impl Stencil {
-    /// Point.
+    /// Start a point search at `x`, Cartesian length 3N. The defaults
+    /// are a dimer along the first coordinate axis, `force_tol` 1e-3 and
+    /// `max_move` 0.2; the [`PointBuilder`] setters change them.
     pub fn point(x: Array1<f64>) -> PointBuilder {
         PointBuilder {
             x,
@@ -290,7 +325,8 @@ impl Stencil {
         }
     }
 
-    /// Band.
+    /// Start a band search over the rows of `x`, one image per row.
+    /// [`BandBuilder::build`] returns [`BAND_PRESET_SEAM`] for now.
     pub fn band(x: Array2<f64>) -> BandBuilder {
         BandBuilder {
             rows: x.nrows(),
@@ -335,7 +371,7 @@ impl Stencil {
         }
     }
 
-    /// Index of the step inside its stage.
+    /// Take one step of the preset on `surface`.
     pub fn step<S: crate::minmode::PointSurface>(
         &mut self,
         surface: &S,
@@ -348,7 +384,7 @@ impl Stencil {
         }
     }
 
-    /// Run.
+    /// Loop [`Self::step`] until convergence or `max_steps`.
     pub fn run<S: crate::minmode::PointSurface>(
         &mut self,
         surface: &S,
@@ -366,7 +402,8 @@ impl Stencil {
 }
 
 impl PointBuilder {
-    /// Preset.
+    /// Search method. [`Preset::Dimer`] by default. A band preset is
+    /// rejected by [`Self::build`].
     pub fn preset(mut self, preset: Preset) -> Self {
         self.preset = preset;
         self
@@ -456,7 +493,7 @@ impl PointBuilder {
         self
     }
 
-    /// Build.
+    /// Check the settings and start the search.
     pub fn build(self) -> Result<Stencil, SaddleError> {
         validate_point(
             self.preset,
@@ -537,7 +574,7 @@ impl PointBuilder {
 }
 
 impl BandBuilder {
-    /// Preset.
+    /// Band method. Not read until band presets land.
     pub fn preset(self, _preset: Preset) -> Self {
         self
     }
@@ -548,7 +585,8 @@ impl BandBuilder {
         self
     }
 
-    /// Build.
+    /// Check the shape, the positions and the thread count, then return
+    /// [`BAND_PRESET_SEAM`] as [`SaddleError::Invalid`].
     pub fn build(self) -> Result<Stencil, SaddleError> {
         if self.rows == 0 || self.dof == 0 {
             return Err(SaddleError::Shape(

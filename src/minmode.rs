@@ -22,7 +22,7 @@ use crate::kappa::{Complement, KappaDimerConfig, kappa_dimer_force};
 
 /// The caller's surface for a single geometry.
 pub trait PointSurface: Sync {
-    /// Eval.
+    /// Energy and Cartesian gradient at `x`, in the host's units.
     fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError>;
 
     /// Optional analytic Cartesian Hessian action. None selects gradient differences.
