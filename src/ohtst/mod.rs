@@ -28,4 +28,4 @@ mod plane;
 mod sample;
 
 pub use plane::{Hyperplane, MassWeighted};
-pub use sample::{PlaneSample, SamplerConfig, sample_plane};
+pub use sample::{LangevinConfig, PlaneSample, sample_plane};

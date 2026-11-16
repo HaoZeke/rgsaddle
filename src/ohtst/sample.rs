@@ -6,7 +6,7 @@
 //! Boltzmann density needs no Fixman term: the motion, the friction and the
 //! noise are projected onto the tangent space of the plane. Each step is an
 //! Ornstein–Uhlenbeck refresh of the velocity followed by one
-//! velocity-Verlet proposal. With [`SamplerConfig::metropolis`] the
+//! velocity-Verlet proposal. With [`LangevinConfig::metropolis`] the
 //! proposal is accepted on the change of the total energy and a rejection
 //! reverses the velocity, which is generalized hybrid Monte Carlo and
 //! leaves the restricted density exact. Without it the step is the
@@ -30,7 +30,7 @@ const CHUNKS: usize = 256;
 /// Langevin sampling at constant temperature.
 #[non_exhaustive]
 #[derive(Clone, Debug)]
-pub struct SamplerConfig {
+pub struct LangevinConfig {
     /// `kT` in the energy unit of the surface.
     pub thermal: f64,
     /// Time step in the time unit of the mass-weighted surface (10.18 fs
@@ -58,7 +58,7 @@ pub struct SamplerConfig {
     pub hold_excluded: bool,
 }
 
-impl Default for SamplerConfig {
+impl Default for LangevinConfig {
     fn default() -> Self {
         Self {
             thermal: 0.02585,
@@ -76,7 +76,7 @@ impl Default for SamplerConfig {
     }
 }
 
-impl SamplerConfig {
+impl LangevinConfig {
     /// Set [`Self::thermal`].
     #[must_use]
     pub fn with_thermal(mut self, thermal: f64) -> Self {
@@ -209,7 +209,7 @@ impl<'a, S: PointSurface> Dynamics<'a, S> {
         start: Array1<f64>,
         held: Vec<Array1<f64>>,
         walls: &'a [Hyperplane],
-        config: &SamplerConfig,
+        config: &LangevinConfig,
         rng: Rng,
     ) -> Result<Self, SaddleError> {
         if walls.iter().any(|wall| wall.distance(start.view()) > 0.0) {
@@ -459,7 +459,7 @@ pub fn sample_plane<S: PointSurface>(
     surface: &S,
     plane: &Hyperplane,
     start: Option<ArrayView1<f64>>,
-    config: &SamplerConfig,
+    config: &LangevinConfig,
 ) -> Result<PlaneSample, SaddleError> {
     config.check()?;
     let n = plane.dim();
@@ -635,7 +635,7 @@ mod tests {
         let mut surface = bowl();
         surface.excluded = Some(array![0.0, 0.0, 1.0]);
         let plane = Hyperplane::new(array![0.2, 0.1, 0.4], array![1.0, 1.0, 0.0]).unwrap();
-        let config = SamplerConfig::default()
+        let config = LangevinConfig::default()
             .with_thermal(0.3)
             .with_time_step(0.2)
             .with_records(200)
@@ -658,7 +658,7 @@ mod tests {
     fn a_seed_fixes_the_stream() {
         let surface = bowl();
         let plane = Hyperplane::new(array![0.1, 0.0, 0.0], array![1.0, 0.0, 0.0]).unwrap();
-        let config = SamplerConfig::default()
+        let config = LangevinConfig::default()
             .with_thermal(0.2)
             .with_time_step(0.3)
             .with_records(100)
@@ -679,7 +679,7 @@ mod tests {
         let px = 0.6;
         let plane = Hyperplane::new(array![px, 0.0, 0.0], array![1.0, 0.0, 0.0]).unwrap();
         let kt = 0.4;
-        let config = SamplerConfig::default()
+        let config = LangevinConfig::default()
             .with_thermal(kt)
             .with_time_step(0.4)
             .with_friction(0.5)
