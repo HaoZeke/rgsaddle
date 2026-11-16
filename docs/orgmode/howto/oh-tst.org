@@ -1,0 +1,56 @@
+#+title: Optimal hyperplanar transition state theory
+#+options: toc:nil num:nil
+
+* What is computed
+OH-TST takes the dividing surface to be a hyperplane and moves it to the maximum of its free energy. By the variational principle of transition state theory that plane gives the smallest hyperplanar TST rate. Jóhannesson and Jónsson, J. Chem. Phys. 115, 9644 (2001), doi:10.1063/1.1415499, introduced the method; Bligaard and Jónsson, Comput. Phys. Commun. 169, 284 (2005), doi:10.1016/j.cpc.2005.03.064, follow the same optimum on two-dimensional surfaces where the free energy of a line is a single integral.
+
+The module =rgsaddle::ohtst= takes any =PointSurface=. It does not know what a vacancy or a molecule is. Coordinates are mass-weighted, =q = M^{1/2} x=; =MassWeighted= wraps a Cartesian surface with its masses. A plane is a point =p= and a unit normal =ν= pointing from the reactant to the product, and its free energy is
+
+: A(p, ν) = -kT ln ∫ δ(ν · (q - p)) exp(-V(q) / kT) dq
+
+The rate is
+
+: k = sqrt(kT / 2π) (Z_H / Z_R) exp(-(A‡ - A_H) / kT)
+
+with unit mass in mass-weighted coordinates. In Cartesian coordinates the flux mass along a normal =n= is =1 / Σ nᵢ²/mᵢ= (=flux_mass=). The paper's Eq. 24, =μ = Σ mᵢ nᵢ²=, agrees with it only for equal masses, which is one reason everything here is mass-weighted.
+
+* A rate in five calls
+#+begin_src rust
+let seed = Hyperplane::from_min_mode(&dimer)?.oriented_toward(product.view());
+let optimum = PlaneOptimizer::new(manifold, &seed, PlaneOptimizerConfig::default()
+    .with_sampler(sampler.clone()))?.run(&surface)?;
+let basin = basin_density(&surface, minimum.view(), normal.view(),
+    &BasinConfig::default().with_sampler(sampler.clone()))?;
+let work = reversible_work(&surface, &[basin.plane.clone(), optimum.plane.clone()],
+    Some(minimum.view()), &ReversibleWorkConfig::default().with_sampler(sampler))?;
+let rate = ohtst_rate(&basin, &work)?;
+#+end_src
+
+=examples/ohtst_skewed_well.rs= runs this on a two-dimensional double well whose valley stiffens toward the product, and prints the control-variate errors, the BAR check and the first-order correction beside the rate.
+
+The optimizer takes any =rgmin::manifold::Manifold= on the packing =[p; ν]= of =Rⁿ × Sⁿ⁻¹=. That product manifold is to come from rgmin, which derives the weighted product metric, the projection, the retraction and the transport; rgsaddle has no wrapper of its own. Until it lands the example and the tests use a temporary fixture under =tests/common=.
+
+* The pieces
+- *Plane sampler.* =sample_plane= runs Langevin dynamics restricted to the plane and to fixed values of the excluded modes. The default integrator is projected BAOAB (Leimkuhler and Matthews, Appl. Math. Res. Express (2012), doi:10.1093/amrx/abs010): it samples a harmonic plane exactly for any stable step, =ω h < 2=, and its error is =O(h²)= otherwise. =PlaneIntegrator::Ghmc= is generalized hybrid Monte Carlo, exact for any step, and the check on the BAOAB bias. A seed fixes the stream.
+- *Force and torque.* Each sample returns the Euclidean gradient blocks =∂A/∂p = ⟨ν · ∇V⟩ ν= and =∂A/∂ν = -⟨(ν · ∇V)(q - p)⟩=, the torque about the sample centroid =-Cov(ν · ∇V, q)=, and the in-plane virial =⟨P∇V · (q - p)⟩=, which is =(n - 1 - held) kT= on any plane without walls. Errors are block standard errors, with the block width at least twice the integrated autocorrelation time.
+- *Control variates.* =LangevinConfig::with_control(HarmonicReference::new(saddle))= adds the zero-variance control variates of Assaraf and Caffarel, Phys. Rev. Lett. 83, 4682 (1999), doi:10.1103/PhysRevLett.83.4682, as carried over to Markov chains by Mira, Solgi and Imparato, Stat. Comput. 23, 653 (2013), doi:10.1007/s11222-012-9344-6, built from the Hessian at the saddle by conjugate gradients on Hessian actions. They are unbiased for any reference. They remove the part of the fluctuations linear in the in-plane coordinates, so they pay on planes turned away from the saddle mode and not on the saddle plane itself, where =P H₀ ν= vanishes. The raw estimates stay in =PlaneSample::uncontrolled=.
+- *Optimizer.* =PlaneOptimizer= climbs =A= with rgmin's quick-min step, the point and the normal capped separately as in the 2001 paper (Eqs. 5–10), and pivots the turn on the previous centroid. The sample grows by the norm test of Byrd, Chin, Nocedal and Wu, Math. Program. 134, 127 (2012), doi:10.1007/s10107-012-0572-5, and the run stops when both gradient blocks have been within a confidence band of zero for a set number of samples.
+- *Reactant normalization.* =basin_density= samples planes parallel to a given normal out to four harmonic standard deviations around the minimum, fits the mean force with a weighted quintic and returns =Z_H(0)/Z_R = [∫ exp(-ΔA(ξ)/kT) dξ]⁻¹=. The planes must stay inside the basin. The crossing estimator of the 2001 paper, Eq. 22, kept as =ReactantDensity::crossing_density=, has infinite variance.
+- *Work.* =reversible_work= integrates =dA= along straight legs between planes by Simpson's rule (or the trapezoid rule), and checks the sum by Bennett's acceptance ratio, J. Comput. Phys. 22, 245 (1976), doi:10.1016/0021-9991(76)90078-4, between neighbouring nodes, with the rigid map that takes one plane onto the next.
+- *Recrossing.* =plane_transmission= shoots Bennett–Chandler trajectories from the configurations a sample retained, with unit masses.
+- *Harmonic limit.* =anharmonic_correction= gives the first-order correction to harmonic TST, =ln(k / k_HTST) = c₁ kT + O(kT²)=, and the first-order offset of the optimal plane, from Hessian actions and third and fourth directional derivatives at Gaussian probes. No full Hessian is formed.
+
+* Fixed volume per temperature
+A crystal at a fixed volume or lattice parameter for each temperature is a surface evaluated in that cell. Wrap it in =FixedCell= with the cell for the temperature, then in =MassWeighted=, and run the same five calls at each temperature. Nothing in the module reads a lattice constant.
+
+* What the tests check
+| Test file | Reference | Result |
+|---------------------------------+------------------------------------------------------------+--------------------------------------------------------------|
+| =tests/ohtst_estimators.rs= | closed forms on a Gaussian, line quadrature on LEPS | force, torque and centroid torque within errors; control variates exact on the Gaussian |
+| =tests/ohtst_bligaard_jonsson.rs= | the 2005 paper's Eckart model, line quadrature | the paper's angles 1.16°, 43° at 0.1182, 1.33° and 71.2° at 0.2266, 1.43° and 75.6° at 0.3 against quadrature; its 1.24° at 0.01 is 1.170° |
+| =tests/ohtst_skewed_well.rs= | two-dimensional quadrature | =Z_H/Z_R= 1.387 ± 0.013 against 1.3963 at =kT = 0.1=; =ΔA= 1.010 ± 0.015 (TI) and 0.978 ± 0.029 (BAR) against 1.0090 at =kT = 0.4= |
+| =tests/ohtst_coupled_modes.rs= | product quadrature, 48 dimensions | =Z_H/Z_R= 3.4691 ± 0.0024 against 3.4667; first-order coefficients within errors of the contractions |
+| =tests/ohtst_leps.rs= | line quadrature, harmonic TST | the dimer seed, the climb from it, the rate against quadrature, the approach to harmonic TST at low temperature |
+
+* Limits
+The optimizer is stochastic ascent with error-based stopping; an averaged, preconditioned or trust-region variant is not here. Recrossing end states are classified by the side of the plane, not by quenching. One reaction channel is assumed: a plane that cuts a second channel is not detected.
