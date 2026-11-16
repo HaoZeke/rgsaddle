@@ -31,6 +31,11 @@ jobs:
         run: cargo fmt --check
       - name: Public items are documented
         run: cargo rustdoc --features capi -- -D missing_docs
+      # Every CI feature set, then private items, with every rustdoc
+      # warning denied: broken, private and redundant links, bare URLs
+      # and unclosed HTML.
+      - name: Rustdoc builds without warnings
+        run: ci/check_rustdoc.sh
       - name: C index and machine-local paths
         run: |
           python3 docs/check_c_symbols.py
