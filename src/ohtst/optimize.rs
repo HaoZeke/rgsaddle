@@ -48,8 +48,13 @@ pub struct PlaneOptimizerConfig {
     pub max_records: usize,
     /// `θ` of the norm test. Zero keeps the sample size fixed.
     pub norm_test: f64,
-    /// Quick-min time step.
+    /// Quick-min time step, the first one when it adapts.
     pub time_step: f64,
+    /// Let rgmin's controller halve the time step after a step against the
+    /// force and grow it, up to 2.5 times the first, after a run of steps
+    /// along it. Near the optimum the noise turns the force often, so the
+    /// steps shrink there.
+    pub adapt_time_step: bool,
     /// Longest move of the point in one step, in mass-weighted length.
     pub max_translation: f64,
     /// Largest turn of the normal in one step, in radians.
@@ -83,6 +88,7 @@ impl Default for PlaneOptimizerConfig {
             max_records: 16_000,
             norm_test: 0.5,
             time_step: 0.3,
+            adapt_time_step: true,
             max_translation: 0.1,
             max_rotation: 0.05,
             translate: true,
@@ -129,6 +135,13 @@ impl PlaneOptimizerConfig {
     #[must_use]
     pub fn with_time_step(mut self, time_step: f64) -> Self {
         self.time_step = time_step;
+        self
+    }
+
+    /// Set [`Self::adapt_time_step`].
+    #[must_use]
+    pub fn with_adapt_time_step(mut self, adapt_time_step: bool) -> Self {
+        self.adapt_time_step = adapt_time_step;
         self
     }
 
@@ -323,7 +336,11 @@ impl<M: Manifold> PlaneOptimizer<M> {
                 2 * n
             ))
         })?;
-        let mut quickmin = QuickMinState::reference(2 * n, config.time_step);
+        let mut quickmin = if config.adapt_time_step {
+            QuickMinState::new(2 * n, config.time_step)
+        } else {
+            QuickMinState::reference(2 * n, config.time_step)
+        };
         quickmin.cell_at = Some(n);
         Ok(Self {
             manifold,
