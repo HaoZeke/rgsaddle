@@ -52,10 +52,31 @@ From C ABI minor 32 ~rgsaddle_minmode_set_torque_window~ does the same.
 eOn's improved dimer does that with its ~torque_min~ of 0.1.
 ~Some(true)~ adds the window to a tighter residual.
 ~None~, the default, infers the window from ~rotation_tol~.
-Lanczos reads the same window, from C ABI minor 39 as well.
+Lanczos reads the same window, from C ABI minor 41 as well.
 Its first two vectors span the plane of a steepest-descent dimer rotation, and their Ritz vector is that dimer turned to the lowest curvature in the plane (Zeng, Xiao, and Henkelman, J. Chem. Phys. 140, 044115 (2014), doi:10.1063/1.4862410), so the window ends both estimates on the same rotational force.
-~Some(false)~ runs a Lanczos estimate to its residual, as before minor 39.
+~Some(false)~ runs a Lanczos estimate to its residual, as before minor 41.
 Under a host relative tolerance (~set_lanczos_rel_tol~, which the climbing image of a band and the connection driver set), ~None~ leaves the window off and ~Some(true)~ adds it.
+
+~examples/minmode_calls.rs~ with ~RGSADDLE_BENCH_LANCZOS_WINDOW=1~ runs Lanczos from the twelve seeded starts of that benchmark with the window off and at the default, into ~validation/minmode_lanczos_window.csv~.
+The window-off searches are those of the estimate before minor 41, call for call.
+Calls are the median and interquartile range over the starts that converge in both arms, and steps and Hessian actions are summed over the same starts.
+
+| System | Translator | Converged off / on | Same saddle | Calls off → on | Steps off → on | Actions off → on |
+|---+---+---+---+---+---+---|
+| LJ13 | FIRE | 4 / 3 | 0 | 26726 → 15489 | 2149 → 1267 | 24513 → 14179 |
+| LJ13 | L-BFGS | 12 / 12 | 3 | 454 [411, 485] → 422 [358, 476] | 850 → 938 | 5453 → 4597 |
+| LJ38 | FIRE | 12 / 12 | 7 | 3316 [2860, 3680] → 3106 [2614, 3380] | 5196 → 6164 | 35313 → 32857 |
+| LJ38 | L-BFGS | 12 / 12 | 10 | 628 [607, 680] → 534 [506, 588] | 967 → 1004 | 7157 → 5564 |
+| vacancy, 255 atoms | FIRE | 12 / 12 | 5 | 992 [892, 1137] → 1190 [871, 1464] | 1631 → 2178 | 10894 → 17236 |
+| vacancy, 255 atoms | L-BFGS | 12 / 12 | 3 | 238 [129, 385] → 340 [150, 549] | 522 → 679 | 3153 → 4529 |
+| Müller-Brown | FIRE | 12 / 12 | 12 | 348 [322, 381] → 347 [321, 380] | 1584 → 1584 | 2349 → 2334 |
+| Müller-Brown | L-BFGS | 12 / 12 | 12 | 42 [39, 43] → 41 [38, 42] | 151 → 151 | 329 → 314 |
+
+One LJ13 FIRE start converges in both arms.
+Where both arms converge, the window takes fewer calls on the two clusters, though LJ13 FIRE converges from one start fewer, and about the same on Müller-Brown.
+On the vacancy it takes more, with more steps and more actions.
+The climbs follow a different mode, and most LJ13 and vacancy starts reach another saddle, against five of twelve on LJ38 with FIRE and two with L-BFGS.
+The window's constants are the dimer's, eOn's ~dimer_torque_max~ after one rotation; nothing is fitted to these systems or to the pt-island campaign below.
 
 ** Stop the rotation on the force error it leaves
 ~set_rotation_stop_length~ turns on the curvature-aware stop of Kästner and Sherwood (J. Chem. Phys. 128, 014106 (2008), doi:10.1063/1.2815812).
@@ -72,6 +93,7 @@ From C ABI minor 38 ~rgsaddle_minmode_set_rotation_stop_length~ does the same, t
 
 ~examples/minmode_calls.rs~ with ~RGSADDLE_BENCH_ROTATION_STOP=max_move~ runs every system and translator of that benchmark from 12 seeded starts with the stop off and on at \(L\) equal to ~max_move~ (0.2) and ~force_tol~ 1e-3.
 The sums below are over the starts where both arms reach the same saddle (energy within 1e-6, aligned RMSD within 1e-3).
+Their Lanczos rows predate the torque window of minor 41.
 
 | System | Estimator | Translator | Same saddle | Force calls off → on | Rotations off → on |
 |---+---+---+---+---+---|
@@ -145,7 +167,7 @@ FIRE 2.0 keeps timestep 1 through its initial delay (Guénolé, Nöhring, Vaid, 
 
 ~set_cg_translate~ replaces the translator with a Polak-Ribiere step perpendicular to the mode and a Newton step along it (Kästner and Sherwood, J. Chem. Phys. 128, 014106 (2008), doi:10.1063/1.2815812; Baker, J. Comput. Chem. 7, 385 (1986), doi:10.1002/jcc.540070402). ~set_lbfgs_project~ drops the component of each stored L-BFGS pair along the mode after a turn inside the 45 degree cone. Both are off.
 
-The table is twelve seeds from base 20261111, release, cap 0.2, from ~examples/minmode_calls.rs~. Force calls are counted as in Goswami, AIP Advances 15, 085210 (2025), doi:10.1063/5.0283639, without the energy read after the search. A pair is the same saddle when both searches converge, the energies agree to 1e-6, and the aligned root-mean-square distance is under 1e-3. The calls and the milliseconds are the median of the matched pairs, and the bracket is the interquartile range. ~validation/minmode_translator.csv~ is every seed.
+The table is twelve seeds from base 20261111, release, cap 0.2, from ~examples/minmode_calls.rs~. Force calls are counted as in Goswami, AIP Advances 15, 085210 (2025), doi:10.1063/5.0283639, without the energy read after the search. A pair is the same saddle when both searches converge, the energies agree to 1e-6, and the aligned root-mean-square distance is under 1e-3. The calls and the milliseconds are the median of the matched pairs, and the bracket is the interquartile range. ~validation/minmode_translator.csv~ is every seed. Its Lanczos rows predate the torque window of minor 41.
 
 | System | Kind | Method | Matched | Calls off | Calls on |
 |---+----+----+----+----+----|
@@ -197,6 +219,8 @@ parent at 38 atoms, 1.04 (1.03-1.04) at 128 and 1.01 (1.00-1.02) at 256,
 and the dimer 1.03, 1.02 and 1.02, with 8 to 11 of 12 pairs won.
 At 256 atoms both searches converge at step 108, as they do on the
 parent.
+These runs predate the torque window of minor 41, which changes the
+Lanczos searches.
 
 ** Read a pt-island campaign miss
 
@@ -294,6 +318,71 @@ from one generator seeded with the campaign seed.
 On the first 200 starts eOn's Lanczos repeats the 0.60 and 0.62 eV hops
 in 157 of its 171 connected repeats (=searches_eon_lanczos.csv=).
 
+The repeats came from where the estimate stopped, not from the mode it
+reached.
+=results/torque_window= runs the campaign again on 8bb8f88, before the
+torque window of minor 41, and on 3b67101, with it.
+~modes.py~ replays the first 300 climbs of a method through
+~rgsaddle_minmode_step~ and follows the session mode, here for stock
+Lanczos and the dimer on 8bb8f88 and for Lanczos in the window and a
+dimer without it on 3b67101.
+In all four every climb converges to a point of Hessian index 1, where
+the session mode overlaps the lowest eigenvector by 0.98 or more but
+for one saddle of the dimer without the window, at 0.92.
+After the first estimate the modes of stock Lanczos and of the dimer
+overlap the lowest eigenvector at the start by a median 0.60 and 0.59.
+Stock Lanczos then runs every estimate to its residual, a median 7.2
+surface calls per translation against the dimer's 3.3.
+Converged afresh at each step, the mode leads its climbs to negative
+curvature sooner and lower: at a median step 3, 1.37 eV over the
+reactant with no atom more than 0.53 A from it, against step 4, 1.85 eV
+and 0.75 A for the dimer.
+They end on the nearest saddles, with a median barrier of 0.62 eV
+against 1.20 eV.
+The dimer with ~rotation_tol~ 1e-6 (~dimer-lbfgs-tight.toml~), which
+leaves the window off and rotates up to its ~max_rotations~ of 20 at
+almost every step, climbs as stock Lanczos does: 22 calls per
+translation, step 3, 1.30 eV, 0.52 A and a 0.60 eV barrier.
+From 196 of 300 starts it reaches the saddle stock Lanczos reaches,
+where the stock dimer does from 94 (~same_saddle.py~).
+Lanczos in the window climbs as the dimer does: 3.2 calls per
+translation, step 4, 1.94 eV, 0.76 A and a 1.48 eV barrier, and it
+reaches the dimer's saddle from 134 of 300 starts.
+The translator, the start, the frozen atoms and the judging are the same
+in all four, so the climbs part where the estimates stop.
+
+| Code | Method | Searches | Connected | Disconnected | Over 1.5 eV | Duplicate | Wrong stationary | Unique | Force calls per search |
+|---+---+---+---+---+---+---+---+---+---|
+| 8bb8f88 | dimer L-BFGS | 300 | 16 | 106 | 50 | 128 | 0 | 42 | 461 |
+| 3b67101 | dimer L-BFGS, ~rotation_tol~ 1e-6 | 300 | 15 | 8 | 18 | 259 | 0 | 30 | 1762 |
+| 8bb8f88 | Lanczos L-BFGS | 300 | 11 | 12 | 22 | 255 | 0 | 25 | 621 |
+| 3b67101 | Lanczos L-BFGS | 300 | 16 | 140 | 50 | 94 | 0 | 36 | 465 |
+| both | dimer FIRE | 2000 | 21 | 615 | 326 | 1035 | 0 | 70 | 1018 |
+| both | dimer L-BFGS | 2000 | 22 | 729 | 359 | 888 | 2 | 86 | 459 |
+| both | rotation-skip | 2000 | 23 | 721 | 388 | 868 | 0 | 86 | 445 |
+| 8bb8f88 | Lanczos L-BFGS | 2000 | 17 | 63 | 177 | 1743 | 0 | 56 | 620 |
+| 3b67101 | Lanczos L-BFGS | 2000 | 21 | 944 | 364 | 671 | 0 | 74 | 463 |
+| 3b67101 | Lanczos L-BFGS | 18171 | 27 | 8430 | 3663 | 6046 | 3 | 145 | 465 |
+
+In the window Lanczos misses as the dimers do, on disconnected and
+over-barrier saddles, and in 2000 searches it finds 21 connected saddles
+where it found 17 and 74 distinct ones where it found 56, at 463 force
+calls a search instead of 620.
+Run on to the catalog's stop of 27 connected saddles or 20000
+searches, it finds its 26th at search 3776 and the 27th, a sixth
+1.49 eV saddle, at search 18171 (=saddles_lanczos_3b67101.csv=), in
+8445282 force calls.
+The dimer rows are those of both commits: their searches agree one for
+one (~searches_sha256~ in =summary.csv=).
+Three dimer FIRE searches and two of the long Lanczos run stop at the
+1000-step cap short of an index-1 point.
+Wall seconds in =summary.csv= are on one core each of a shared
+eight-core machine and are not compared.
+
 ~validation/benchmark/pt_island/campaign.py~ runs a method;
 ~OPTBENCH_ROOT~ names an optbench checkout (18fa13dca), ~RGSADDLE_LIB~
 the library and ~RGSADDLE_SRC~ its source.
+For =results/torque_window=, ~proxy.py~ wrote =summary.csv= at 300 and
+2000 searches and at the end of each run, and the saddles both Lanczos
+runs found, and ~same_saddle.py~ numbered the saddles of the four
+~modes.py~ replays (=same_saddle.csv=).

@@ -29,6 +29,14 @@
 //! curvature-aware rotation stop instead. Its value is the stop length:
 //! `max_move`, `dr`, or a number in the system's length unit. The rows
 //! give the matched force calls and the summed rotations, off then on.
+//!
+//! `RGSADDLE_BENCH_LANCZOS_WINDOW=1` runs Lanczos from the same starts
+//! with the torque window off (`set_torque_window(Some(false))`, the
+//! estimate before ABI minor 41) and at its default, with both
+//! translators. The rows give the converged searches, the searches that
+//! reach the same saddle, and the force calls, steps and Hessian actions
+//! of the searches that converge in both arms. A full run writes
+//! `validation/minmode_lanczos_window.csv`.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
@@ -57,9 +65,17 @@ fn main() {
     let translator = std::env::var("RGSADDLE_BENCH_TRANSLATOR").ok();
     let rotation_stop = std::env::var("RGSADDLE_BENCH_ROTATION_STOP").ok();
     let skip_off = std::env::var("RGSADDLE_BENCH_SKIP_OFF").ok().as_deref() == Some("1");
+    let lanczos_window = std::env::var("RGSADDLE_BENCH_LANCZOS_WINDOW")
+        .ok()
+        .as_deref()
+        == Some("1");
     let systems = systems();
     let mut csv = vec![
         "system,kind,method,seed,off_converged,on_converged,off_calls,on_calls,off_ms,on_ms,off_energy,on_energy,off_force,on_force,off_curvature,on_curvature,rmsd,matched"
+            .to_string(),
+    ];
+    let mut window_csv = vec![
+        "system,method,seed,off_converged,on_converged,off_calls,on_calls,off_steps,on_steps,off_actions,on_actions,off_energy,on_energy,rmsd,same_saddle"
             .to_string(),
     ];
     println!("seeds {seeds} base {BASE_SEED}");
@@ -77,6 +93,19 @@ fn main() {
             }
             if let Some(name) = &translator {
                 compare_translator(system, kind, name, seeds);
+                continue;
+            }
+            if lanczos_window {
+                if kind == MinModeKind::Lanczos {
+                    for method in [MethodKind::Fire, MethodKind::Lbfgs] {
+                        if only_method
+                            .as_ref()
+                            .is_none_or(|name| name == method.label())
+                        {
+                            compare_lanczos_window(system, method, seeds, &mut window_csv);
+                        }
+                    }
+                }
                 continue;
             }
             if let Some(spec) = &rotation_stop {
@@ -115,6 +144,7 @@ fn main() {
                             max_force: f64::NAN,
                             curvature: f64::NAN,
                             rotations: 0,
+                            steps: 0,
                         }
                     } else {
                         search(
@@ -225,19 +255,21 @@ fn main() {
             }
         }
     }
-    if translator.is_none()
-        && rotation_stop.is_none()
-        && only.is_none()
-        && only_kind.is_none()
-        && only_method.is_none()
-        && seeds == SEEDS
-        && !skip_off
-    {
+    let full = only.is_none() && only_kind.is_none() && only_method.is_none() && seeds == SEEDS;
+    if translator.is_none() && rotation_stop.is_none() && !lanczos_window && full && !skip_off {
         let path = format!(
             "{}/validation/minmode_translator.csv",
             env!("CARGO_MANIFEST_DIR")
         );
         std::fs::write(&path, csv.join("\n") + "\n").expect("write the csv");
+        println!("wrote {path}");
+    }
+    if translator.is_none() && rotation_stop.is_none() && lanczos_window && full {
+        let path = format!(
+            "{}/validation/minmode_lanczos_window.csv",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        std::fs::write(&path, window_csv.join("\n") + "\n").expect("write the csv");
         println!("wrote {path}");
     }
 }
@@ -338,6 +370,7 @@ struct Outcome {
     max_force: f64,
     curvature: f64,
     rotations: usize,
+    steps: usize,
 }
 
 struct Arm {
@@ -354,10 +387,11 @@ fn search(
     start: &Array1<f64>,
     mode: &Array1<f64>,
 ) -> Outcome {
-    search_stopped(system, kind, arm, start, mode, 0.0)
+    search_stopped(system, kind, arm, start, mode, 0.0, None)
 }
 
-/// [`search`] with the curvature-aware rotation stop at `stop_length`.
+/// [`search`] with the curvature-aware rotation stop at `stop_length`
+/// and the torque window `window`, where `None` is the default.
 fn search_stopped(
     system: &System,
     kind: MinModeKind,
@@ -365,6 +399,7 @@ fn search_stopped(
     start: &Array1<f64>,
     mode: &Array1<f64>,
     stop_length: f64,
+    window: Option<bool>,
 ) -> Outcome {
     let config = MinModeConfig::default()
         .with_kind(kind)
@@ -376,6 +411,7 @@ fn search_stopped(
     session.set_fire_curvature(arm.curvature);
     session.set_cg_translate(arm.cg);
     session.set_lbfgs_project(arm.project);
+    session.set_torque_window(window);
     session
         .set_rotation_stop_length(stop_length)
         .expect("rotation stop length");
@@ -388,6 +424,7 @@ fn search_stopped(
     let mut max_force = f64::NAN;
     let mut curvature = f64::NAN;
     let mut rotations = 0;
+    let mut steps = 0;
     for _ in 0..system.steps {
         let report = match session.step(&surface) {
             Ok(report) => report,
@@ -396,6 +433,7 @@ fn search_stopped(
                 break;
             }
         };
+        steps += 1;
         rotations += report.rotations;
         max_force = report.max_force;
         curvature = report.curvature;
@@ -421,7 +459,81 @@ fn search_stopped(
         max_force,
         curvature,
         rotations,
+        steps,
     }
+}
+
+/// Lanczos with the torque window off against its default, one
+/// translator. Each start adds a row to `csv`.
+fn compare_lanczos_window(
+    system: &System,
+    method: MethodKind,
+    seeds: usize,
+    csv: &mut Vec<String>,
+) {
+    let arm = || Arm {
+        method,
+        curvature: false,
+        cg: false,
+        project: false,
+    };
+    let kind = MinModeKind::Lanczos;
+    let (mut converged_off, mut converged_on, mut same_saddle) = (0usize, 0usize, 0usize);
+    let mut calls = (Vec::new(), Vec::new());
+    let mut steps = (0usize, 0usize);
+    let mut actions = (0usize, 0usize);
+    for index in 0..seeds {
+        let seed = mix_seed(index);
+        let (start, mode) = (system.start)(seed);
+        let off = search_stopped(system, kind, arm(), &start, &mode, 0.0, Some(false));
+        let on = search_stopped(system, kind, arm(), &start, &mode, 0.0, None);
+        let rmsd = aligned_rmsd(&off.position, &on.position, system.align);
+        let same = off.converged
+            && on.converged
+            && (off.energy - on.energy).abs() <= ENERGY_TOL
+            && rmsd <= RMSD_TOL;
+        csv.push(format!(
+            "{name},{method},{seed},{oc},{nc},{ocalls},{ncalls},{osteps},{nsteps},{orot},{nrot},{oe:.8},{ne:.8},{rmsd:.8},{same}",
+            name = system.name,
+            method = method.label(),
+            oc = off.converged,
+            nc = on.converged,
+            ocalls = off.calls,
+            ncalls = on.calls,
+            osteps = off.steps,
+            nsteps = on.steps,
+            orot = off.rotations,
+            nrot = on.rotations,
+            oe = off.energy,
+            ne = on.energy,
+        ));
+        converged_off += usize::from(off.converged);
+        converged_on += usize::from(on.converged);
+        same_saddle += usize::from(same);
+        if off.converged && on.converged {
+            calls.0.push(off.calls as f64);
+            calls.1.push(on.calls as f64);
+            steps.0 += off.steps;
+            steps.1 += on.steps;
+            actions.0 += off.rotations;
+            actions.1 += on.rotations;
+        }
+    }
+    let total = |values: &[f64]| values.iter().sum::<f64>();
+    println!(
+        "{}\tlanczos\t{}\twindow\tconverged {converged_off}/{converged_on} of {seeds}\tsame saddle {same_saddle}\tboth {}\tcalls {} -> {} (sum {:.0} -> {:.0})\tsteps {} -> {}\tactions {} -> {}",
+        system.name,
+        method.label(),
+        calls.0.len(),
+        band(&mut calls.0.clone(), true),
+        band(&mut calls.1.clone(), true),
+        total(&calls.0),
+        total(&calls.1),
+        steps.0,
+        steps.1,
+        actions.0,
+        actions.1,
+    );
 }
 
 /// The stock rotation against the curvature-aware stop at the length
@@ -452,8 +564,8 @@ fn compare_rotation_stop(
     for index in 0..seeds {
         let seed = mix_seed(index);
         let (start, mode) = (system.start)(seed);
-        let off = search_stopped(system, kind, arm(), &start, &mode, 0.0);
-        let on = search_stopped(system, kind, arm(), &start, &mode, length);
+        let off = search_stopped(system, kind, arm(), &start, &mode, 0.0, None);
+        let on = search_stopped(system, kind, arm(), &start, &mode, length, None);
         let rmsd = aligned_rmsd(&off.position, &on.position, system.align);
         let same = off.converged
             && on.converged
