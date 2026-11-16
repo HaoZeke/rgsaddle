@@ -17,9 +17,10 @@
 
 use ndarray::array;
 use rgsaddle::{
-    AnharmonicConfig, BasinConfig, BasinEnd, Hyperplane, LangevinConfig, MinModeConfig,
-    MinModeSession, MinModeStatus, PlaneOptimizer, PlaneOptimizerConfig, ReversibleWorkConfig,
-    anharmonic_correction, basin_density, ohtst_rate, reactant_density, reversible_work,
+    AnharmonicConfig, BasinConfig, BasinEnd, Basins, EndState, Hyperplane, LangevinConfig,
+    MinModeConfig, MinModeSession, MinModeStatus, PlaneOptimizer, PlaneOptimizerConfig,
+    ReversibleWorkConfig, TransmissionConfig, anharmonic_correction, basin_density, ohtst_rate,
+    reactant_density, reversible_work, transmission_coefficient,
 };
 
 include!(concat!(
@@ -32,7 +33,7 @@ include!(concat!(
 ));
 
 use ohtst_surfaces::{
-    SKEWED_ALPHA, SKEWED_K0, SkewedWell, descend, eigen2, half_plane_integral, hessian,
+    SKEWED_ALPHA, SKEWED_K0, SkewedWell, descend, eigen2, half_plane_integral, hessian, line_draws,
     line_free_energy, line_integral, stationary,
 };
 use plane_manifold::PointSphereFixture;
@@ -109,7 +110,11 @@ fn optimal_line(kt: f64) -> (f64, f64, [[f64; 2]; 2]) {
 /// `ln k` of a line by quadrature, `k = sqrt(kT/2π) Z / Z_R` with `Z_R`
 /// the integral behind it.
 fn log_rate(kt: f64, offset: f64, theta: f64) -> f64 {
-    let point = off_saddle(offset, theta);
+    log_line_rate(kt, off_saddle(offset, theta), theta)
+}
+
+/// `ln k` of the line through `point` with its normal at `theta`.
+fn log_line_rate(kt: f64, point: [f64; 2], theta: f64) -> f64 {
     let behind = half_plane_integral(
         SkewedWell::energy,
         point,
@@ -387,4 +392,72 @@ fn skewed_well_basin_density_against_quadrature() {
     let raw = result.uncontrolled_errors.as_ref().unwrap();
     let reduction = raw[centre] / result.slope_errors[centre];
     assert!(reduction > 4.0, "{reduction}");
+}
+
+/// `κ k_TST` does not depend on the dividing line. The barrier is 10 kT
+/// from both wells at `kT = 0.1`, so with unit friction `κ(t)` is flat
+/// from `t = 6` without commitment. Shots from exact draws on the optimal
+/// line and on the line turned by 0.6 rad about its summit, whose
+/// quadrature `ln k_TST` are -11.78081 and -10.32538, give `κ` = 0.71558 ±
+/// 0.00655 and 0.16309 ± 0.00540 at the first crossing, so
+/// `ln κ k_TST` = -12.11548 and -12.13886. End states from quenches into
+/// the two minima give the same `κ` to the last digit.
+#[test]
+fn skewed_well_transmission_times_tst_rate_is_line_independent() {
+    let kt = 0.1;
+    let (offset, theta, _) = optimal_line(kt);
+    let summit = off_saddle(offset, theta);
+    let shots = 4096;
+    let basins = Basins::new(vec![array![-1.0, -1.0]], vec![array![1.0, 1.0]]);
+    let mut balance = Vec::new();
+    for angle in [theta, theta + 0.6] {
+        let log_tst = log_line_rate(kt, summit, angle);
+        let starts = line_draws(
+            SkewedWell::energy,
+            summit,
+            unit(angle),
+            kt,
+            EXTENT,
+            shots,
+            13,
+        );
+        let plane = Hyperplane::new(
+            array![summit[0], summit[1]],
+            array![angle.cos(), angle.sin()],
+        )
+        .unwrap();
+        let run = |end_state: EndState| {
+            let config = TransmissionConfig::default()
+                .with_thermal(kt)
+                .with_friction(1.0)
+                .with_time_step(0.05)
+                .with_steps(400)
+                .with_check_every(40)
+                .with_shots(shots)
+                .with_blocks(32)
+                .with_end_state(end_state);
+            transmission_coefficient(&SkewedWell, &plane, &starts, &config).unwrap()
+        };
+        let side = run(EndState::Side);
+        let quench = run(basins.clone().into());
+        assert!(
+            (quench.kappa - side.kappa).abs() < 4.0 * quench.error,
+            "quench {} ± {} against side {} ± {}",
+            quench.kappa,
+            quench.error,
+            side.kappa,
+            side.error
+        );
+        assert_eq!(quench.unassigned, 0);
+        balance.push((side.kappa.ln() + log_tst, side.error / side.kappa));
+    }
+    let (a, b) = (balance[0], balance[1]);
+    assert!(
+        (a.0 - b.0).abs() < 4.0 * a.1.hypot(b.1),
+        "ln κ k_TST {} ± {} against {} ± {}",
+        a.0,
+        a.1,
+        b.0,
+        b.1
+    );
 }

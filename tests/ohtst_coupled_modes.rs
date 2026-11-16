@@ -17,7 +17,8 @@
 use ndarray::{Array1, ArrayView1};
 use rgsaddle::{
     AnharmonicConfig, BasinConfig, HarmonicReference, Hyperplane, LangevinConfig, PointSurface,
-    SaddleError, anharmonic_correction, basin_density, sample_plane,
+    SaddleError, TransmissionConfig, anharmonic_correction, basin_density, sample_plane,
+    transmission_coefficient,
 };
 
 include!(concat!(
@@ -428,4 +429,92 @@ fn coupled_modes_basin_density() {
     for (controlled, raw) in result.slope_errors.iter().zip(raw) {
         assert!((controlled / raw - 1.0).abs() < 1e-6);
     }
+}
+
+impl CoupledModes {
+    /// `count` independent draws from `exp(-V/kT)` on the plane `q₁ = s`:
+    /// every bath mode by inverting its trapezoid cumulative integral,
+    /// with uniforms from SplitMix64 seeded with `seed`.
+    fn plane_draws(&self, s: f64, kt: f64, count: usize, seed: u64) -> Vec<Array1<f64>> {
+        let grid = 4000;
+        let tables: Vec<(f64, f64, Vec<f64>)> = (0..N - 1)
+            .map(|j| {
+                let quadratic = 0.5 * self.omega2[j] + self.coupling[j] * s;
+                let half = 10.0 * (kt / (2.0 * quadratic)).sqrt();
+                let h = 2.0 * half / grid as f64;
+                let weight =
+                    |q: f64| (-(quadratic * q * q + 0.25 * QUARTIC * q.powi(4)) / kt).exp();
+                let mut cumulative = vec![0.0; grid + 1];
+                for i in 1..=grid {
+                    let (a, b) = (-half + h * (i - 1) as f64, -half + h * i as f64);
+                    cumulative[i] = cumulative[i - 1] + 0.5 * h * (weight(a) + weight(b));
+                }
+                (half, h, cumulative)
+            })
+            .collect();
+        let mut state = seed;
+        let mut uniform = move || {
+            state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            (((z ^ (z >> 31)) >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+        };
+        (0..count)
+            .map(|_| {
+                let mut q = Array1::zeros(N);
+                q[0] = s;
+                for (j, (half, h, cumulative)) in tables.iter().enumerate() {
+                    let target = uniform() * cumulative[grid];
+                    let i = cumulative.partition_point(|c| *c < target).clamp(1, grid);
+                    let within = (target - cumulative[i - 1]) / (cumulative[i] - cumulative[i - 1]);
+                    q[j + 1] = -half + h * ((i - 1) as f64 + within);
+                }
+                self.rotate(q)
+            })
+            .collect()
+    }
+}
+
+/// `Z_R` is common to the planes `q₁ = s`, so `κ Z(s)` is the same on
+/// all of them. At `kT = 0.2` with unit friction, shots from exact draws
+/// on the optimal plane, `s = 0.06887`, and on the plane 0.25 behind it
+/// give `κ` = 0.82275 ± 0.00702 and 0.22290 ± 0.00612, counted at the
+/// first crossing, and `ln κ + ln Z(s)` = -47.57538 ± 0.00853 and
+/// -47.63150 ± 0.02744 with the quadrature `ln Z`.
+#[test]
+fn coupled_modes_transmission_balances_the_plane_partition_function() {
+    let model = CoupledModes::new();
+    let kt = 0.2;
+    let axis = model.axis();
+    let optimum = model.optimal_offset(kt);
+    let shots = 4096;
+    let mut balance = Vec::new();
+    for s in [optimum, optimum - 0.25] {
+        let plane = Hyperplane::new(&axis * s, axis.clone()).unwrap();
+        let starts = model.plane_draws(s, kt, shots, 9);
+        let config = TransmissionConfig::default()
+            .with_thermal(kt)
+            .with_friction(1.0)
+            .with_time_step(0.05)
+            .with_steps(200)
+            .with_check_every(20)
+            .with_shots(shots)
+            .with_blocks(32);
+        let result = transmission_coefficient(&model, &plane, &starts, &config).unwrap();
+        assert_eq!(result.unassigned, 0);
+        balance.push((
+            result.kappa.ln() + model.log_plane(s, kt),
+            result.error / result.kappa,
+        ));
+    }
+    let (a, b) = (balance[0], balance[1]);
+    assert!(
+        (a.0 - b.0).abs() < 4.0 * a.1.hypot(b.1),
+        "ln κ Z {} ± {} against {} ± {}",
+        a.0,
+        a.1,
+        b.0,
+        b.1
+    );
 }

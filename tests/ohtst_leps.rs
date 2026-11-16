@@ -11,10 +11,11 @@
 
 use ndarray::array;
 use rgsaddle::{
-    BasinConfig, Hyperplane, LangevinConfig, MinModeConfig, MinModeSession, MinModeStatus,
-    PlaneIntegrator, PlaneOptimizer, PlaneOptimizerConfig, ReversibleWorkConfig, ShootingConfig,
-    angular_scale_rad_s, basin_density, exact_eigh, ohtst_rate, plane_transmission,
-    reactant_density, reversible_work, vineyard_prefactor,
+    BasinConfig, Basins, Counting, EndState, Hyperplane, LangevinConfig, MinModeConfig,
+    MinModeSession, MinModeStatus, PlaneIntegrator, PlaneOptimizer, PlaneOptimizerConfig,
+    ReversibleWorkConfig, ShootingConfig, TransmissionConfig, angular_scale_rad_s, basin_density,
+    exact_eigh, ohtst_rate, plane_transmission, reactant_density, reversible_work,
+    transmission_coefficient, vineyard_prefactor,
 };
 
 include!(concat!(
@@ -27,7 +28,7 @@ include!(concat!(
 ));
 
 use ohtst_surfaces::{
-    LepsHo, descend, eigen2, half_plane_integral, hessian, line_free_energy, stationary,
+    LepsHo, descend, eigen2, half_plane_integral, hessian, line_draws, line_free_energy, stationary,
 };
 use plane_manifold::PointSphereFixture;
 
@@ -135,7 +136,12 @@ fn optimal_line(geometry: &Geometry, kt: f64) -> (f64, f64, [[f64; 2]; 2]) {
 /// Quadrature OH-TST rate with unit masses, `sqrt(kT/2π) Z‡ / Q_R`, with
 /// `Q_R` the integral over the reactant side of the optimal line.
 fn quadrature_rate(geometry: &Geometry, kt: f64, offset: f64, theta: f64) -> f64 {
-    let point = geometry.off_saddle(offset, theta);
+    line_rate(geometry, kt, geometry.off_saddle(offset, theta), theta)
+}
+
+/// Quadrature TST rate with unit masses of the line through `point` with
+/// its normal at `theta`, `Q_R` the integral behind it.
+fn line_rate(geometry: &Geometry, kt: f64, point: [f64; 2], theta: f64) -> f64 {
     let reactant = half_plane_integral(
         LepsHo::energy,
         point,
@@ -533,6 +539,115 @@ fn leps_rate_approaches_harmonic_tst_at_low_temperature() {
             "rate {} ± {} against {name} {reference}",
             rate.rate,
             rate.error
+        );
+    }
+}
+
+/// `κ k_TST` does not depend on the dividing line. Unlike the reactant,
+/// the product well is shallow, 1.745 below the saddle against 3.634 from
+/// the reactant, so at `kT = 0.1 E_A` trajectories that have settled in it
+/// come back within the shooting time: without commitment `κ(t)` of the
+/// optimal line falls from 0.7715 at `t = 4` to 0.7217 ± 0.0071 at
+/// `t = 20`. A half that stays in one state for six checkpoints a time
+/// unit apart is committed, and `κ(t)` is then flat from `t = 6`. A
+/// window of three units also commits trajectories that linger at the
+/// barrier and come back: it gave 0.78589 ± 0.00734 on the optimal line,
+/// against 0.76294 for six and 0.76831 ± 0.00645 for ten.
+///
+/// With the sampler's friction and that commitment, shots from exact draws
+/// on the optimal line and on the line turned by 0.25 rad about its summit,
+/// whose quadrature TST rates are 3.8589e-5 and 7.1880e-5, give
+/// `κ` = 0.76294 ± 0.00660 and 0.40454 ± 0.00763 at the first crossing,
+/// so `κ k_TST` = 2.9441e-5 and 2.9078e-5; by Bennett–Chandler 0.75928 ±
+/// 0.00705 and 0.40137 ± 0.00751. Assigned by quench they are 0.76294 ±
+/// 0.00660 and 0.40454 ± 0.00766. The separatrix crosses the turned line
+/// at a slant, and after one time unit the quench is 0.035 above its
+/// plateau there against 0.091 for the side of the line.
+#[test]
+fn leps_transmission_times_tst_rate_is_line_independent() {
+    let geometry = geometry();
+    let kt = 0.1 * geometry.barrier;
+    let (offset, theta, _) = optimal_line(&geometry, kt);
+    let summit = geometry.off_saddle(offset, theta);
+    let shots = 4096;
+    let basins = Basins::new(
+        vec![array![geometry.reactant[0], geometry.reactant[1]]],
+        vec![array![geometry.product[0], geometry.product[1]]],
+    );
+    let shooting = TransmissionConfig::default()
+        .with_thermal(kt)
+        .with_friction(1.0)
+        .with_time_step(0.05)
+        .with_steps(400)
+        .with_check_every(20)
+        .with_shots(shots)
+        .with_blocks(32);
+    let optimal_starts = line_draws(LepsHo::energy, summit, unit(theta), kt, 8.0, shots, 5);
+    let free = transmission_coefficient(&LepsHo, &line(summit, theta), &optimal_starts, &shooting)
+        .unwrap();
+    let early = free.kappa_of_t[3];
+    assert!(
+        free.kappa < early - 4.0 * free.error,
+        "κ(t) {:?} ± {}",
+        free.kappa_of_t,
+        free.error
+    );
+
+    let committed = shooting.with_commit(6);
+    let mut products = Vec::new();
+    for angle in [theta, theta + 0.25] {
+        let rate = line_rate(&geometry, kt, summit, angle);
+        let starts = line_draws(LepsHo::energy, summit, unit(angle), kt, 8.0, shots, 5);
+        let plane = line(summit, angle);
+        let run = |counting: Counting, end_state: EndState| {
+            let config = committed
+                .clone()
+                .with_counting(counting)
+                .with_end_state(end_state);
+            transmission_coefficient(&LepsHo, &plane, &starts, &config).unwrap()
+        };
+        let first = run(Counting::FirstCrossing, EndState::Side);
+        let last = first.kappa_of_t.len() - 1;
+        assert!(
+            (first.kappa_of_t[7] - first.kappa).abs() < 0.2 * first.error,
+            "κ(t) {:?}",
+            first.kappa_of_t
+        );
+        let final_state = run(Counting::Final, EndState::Side);
+        let quench = run(Counting::FirstCrossing, basins.clone().into());
+        for other in [&final_state, &quench] {
+            assert!(
+                (other.kappa - first.kappa).abs() < 4.0 * other.error,
+                "{} ± {} against {} ± {}",
+                other.kappa,
+                other.error,
+                first.kappa,
+                first.error
+            );
+            assert_eq!(other.unassigned, 0);
+        }
+        if angle != theta {
+            assert!(
+                (quench.kappa_of_t[0] - quench.kappa_of_t[last]).abs()
+                    < 0.5 * (first.kappa_of_t[0] - first.kappa_of_t[last]).abs(),
+                "quench {:?}, side {:?}",
+                quench.kappa_of_t,
+                first.kappa_of_t
+            );
+        }
+        products.push((rate, first.kappa, first.error, quench.kappa, quench.error));
+    }
+    let (optimal, turned) = (products[0], products[1]);
+    assert!((turned.0 / optimal.0 - 1.86).abs() < 0.01);
+    for (a, b) in [
+        ((optimal.1, optimal.2), (turned.1, turned.2)),
+        ((optimal.3, optimal.4), (turned.3, turned.4)),
+    ] {
+        let (left, right) = (a.0 * optimal.0, b.0 * turned.0);
+        let error = (a.1 * optimal.0).hypot(b.1 * turned.0);
+        assert!(
+            (left - right).abs() < 4.0 * error,
+            "κ k_TST {left:e} against {right:e} ± {error:e}"
         );
     }
 }

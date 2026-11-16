@@ -214,6 +214,53 @@ mod ohtst_surfaces {
         -kt * line_integral(energy, point, normal, kt, shift, extent).ln()
     }
 
+    /// `count` independent draws from `exp(-V/kT)` on the line through
+    /// `point` normal to `normal`, out to `extent` either side, by
+    /// inverting the trapezoid cumulative integral on 20 000 intervals.
+    /// Uniforms come from SplitMix64 seeded with `seed`.
+    pub fn line_draws(
+        energy: fn(f64, f64) -> (f64, f64, f64),
+        point: [f64; 2],
+        normal: [f64; 2],
+        kt: f64,
+        extent: f64,
+        count: usize,
+        seed: u64,
+    ) -> Vec<Array1<f64>> {
+        let norm = normal[0].hypot(normal[1]);
+        let (dx, dy) = (-normal[1] / norm, normal[0] / norm);
+        let grid = 20_000;
+        let step = 2.0 * extent / grid as f64;
+        let energies: Vec<f64> = (0..=grid)
+            .map(|i| {
+                let t = -extent + step * i as f64;
+                energy(point[0] + t * dx, point[1] + t * dy).0
+            })
+            .collect();
+        let lowest = energies.iter().cloned().fold(f64::INFINITY, f64::min);
+        let mut cumulative = vec![0.0; grid + 1];
+        for i in 1..=grid {
+            let (a, b) = (energies[i - 1] - lowest, energies[i] - lowest);
+            cumulative[i] = cumulative[i - 1] + 0.5 * step * ((-a / kt).exp() + (-b / kt).exp());
+        }
+        let total = cumulative[grid];
+        let mut state = seed;
+        (0..count)
+            .map(|_| {
+                state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+                let mut z = state;
+                z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+                let u = (((z ^ (z >> 31)) >> 11) as f64 + 0.5) / (1u64 << 53) as f64;
+                let target = u * total;
+                let i = cumulative.partition_point(|c| *c < target).clamp(1, grid);
+                let within = (target - cumulative[i - 1]) / (cumulative[i] - cumulative[i - 1]);
+                let t = -extent + step * ((i - 1) as f64 + within);
+                array![point[0] + t * dx, point[1] + t * dy]
+            })
+            .collect()
+    }
+
     /// `∫ exp(-(V - shift) / kT)` over the half-plane behind the line, the
     /// side opposite to `normal`: lines at signed distance `ξ ≤ 0`.
     pub fn half_plane_integral(

@@ -11,7 +11,7 @@
 use ndarray::array;
 use rgsaddle::{
     Hyperplane, LangevinConfig, PlaneOptimizer, PlaneOptimizerConfig, ReversibleWorkConfig,
-    reversible_work,
+    TransmissionConfig, reversible_work, transmission_coefficient,
 };
 
 include!(concat!(
@@ -23,7 +23,7 @@ include!(concat!(
     "/tests/common/plane_manifold.rs"
 ));
 
-use ohtst_surfaces::{ECKART_V0, EckartHo, eigen2, hessian, line_free_energy};
+use ohtst_surfaces::{ECKART_V0, EckartHo, eigen2, hessian, line_draws, line_free_energy};
 use plane_manifold::PointSphereFixture;
 
 /// Golden-section search for the maximum of `f` on `[a, b]`.
@@ -282,4 +282,53 @@ fn eckart_reversible_work_between_the_maxima() {
         (value - layout).abs() < 4.0 * error,
         "{value} ± {error} kT against {layout}"
     );
+}
+
+/// The exact rate does not depend on the dividing line, so under the
+/// Newtonian dynamics of the surface `κ exp(-A/kT)` is the same on both
+/// maxima at `T = 0.3 E_a/k_B`: `κ(1.405°) / κ(75.6°) = exp(-0.467453) =
+/// 0.62660` by quadrature. Shots from exact draws on each line give
+/// 0.26624 ± 0.00473 and 0.41809 ± 0.00611 counted at the first crossing,
+/// a ratio of 0.63679 ± 0.01465. Nearly three in four trajectories recross
+/// the low line, which runs 7° off the valley, and the final-state count
+/// there flickers with the valley oscillation, so only first crossings are
+/// counted.
+#[test]
+fn eckart_transmission_balances_the_free_energy_gap() {
+    let kt = 0.3 * ECKART_V0;
+    let low = eckart_maximum(kt, 0.5, 3.0).0;
+    let high = eckart_maximum(kt, 60.0, 88.0).0;
+    let gap = eckart_free_energy(high, kt) - eckart_free_energy(low, kt);
+    assert!((gap - 0.467453).abs() < 1.0e-5);
+    let expected = (-gap).exp();
+    let shots = 8192;
+    let kappa = |degrees: f64| {
+        let theta = degrees.to_radians();
+        let starts = line_draws(
+            EckartHo::energy,
+            [0.0, 0.0],
+            [theta.cos(), theta.sin()],
+            kt,
+            60.0,
+            shots,
+            3,
+        );
+        let config = TransmissionConfig::default()
+            .with_thermal(kt)
+            .with_time_step(0.5)
+            .with_steps(1600)
+            .with_check_every(160)
+            .with_shots(shots)
+            .with_blocks(32);
+        transmission_coefficient(&EckartHo, &eckart_line(degrees), &starts, &config).unwrap()
+    };
+    let (a, b) = (kappa(low), kappa(high));
+    let ratio = a.kappa / b.kappa;
+    let error = ratio * ((a.error / a.kappa).powi(2) + (b.error / b.kappa).powi(2)).sqrt();
+    assert!(
+        (ratio - expected).abs() < 4.0 * error,
+        "{ratio} ± {error} against {expected}"
+    );
+    assert!(a.kappa < 1.0 && b.kappa < 1.0 && a.unassigned == 0);
+    assert!(4 * a.recrossed > 2 * shots);
 }
