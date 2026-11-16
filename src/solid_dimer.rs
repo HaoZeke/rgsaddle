@@ -216,7 +216,10 @@ impl SolidDimerConfig {
 /// The lowest eigenvalues are a Lanczos decomposition of central
 /// Hessian actions. Directions from [`PointSurface::excluded_modes`]
 /// are projected out of every action, so a rigid translation is not a
-/// negative mode. Build with [`IndexCheck::first_order`].
+/// negative mode.
+///
+/// Non-exhaustive: build it with [`IndexCheck::first_order`], which is
+/// also the default, and the `with_*` setters.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub struct IndexCheck {
@@ -245,6 +248,19 @@ impl IndexCheck {
         }
     }
 
+    /// How many lowest eigenvalues to resolve. Zero is refused by
+    /// [`SolidDimer::new`] and [`index_at`].
+    pub const fn with_lowest(mut self, lowest: usize) -> Self {
+        self.lowest = lowest;
+        self
+    }
+
+    /// An eigenvalue below `negative` is a negative mode.
+    pub const fn with_negative(mut self, negative: f64) -> Self {
+        self.negative = negative;
+        self
+    }
+
     /// Central-difference step.
     pub const fn with_step(mut self, step: f64) -> Self {
         self.step = step;
@@ -261,6 +277,12 @@ impl IndexCheck {
     pub const fn with_escape(mut self, escape: f64) -> Self {
         self.escape = escape;
         self
+    }
+}
+
+impl Default for IndexCheck {
+    fn default() -> Self {
+        Self::first_order()
     }
 }
 
