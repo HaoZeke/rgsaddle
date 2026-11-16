@@ -507,11 +507,11 @@ pub unsafe extern "C" fn rgsaddle_band_create_solid(
             n_images,
             n_atoms,
             positions,
-            Some(SolidState {
-                cells: parsed,
-                pressure,
-                weight,
-            }),
+            Some(
+                SolidState::new(parsed)
+                    .with_pressure(pressure)
+                    .with_weight(weight),
+            ),
         )
     }
 }
