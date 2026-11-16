@@ -45,7 +45,11 @@ use crate::spring::SpringKind;
 use crate::tangent::compute_tangent;
 
 /// One image of a joint-chart band, after the step that evaluated it.
+///
+/// Non-exhaustive. Read the fields. A later per-image quantity can be
+/// added without breaking a host.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct SolidImage {
     /// Cartesian positions.
     pub positions: Array1<f64>,
