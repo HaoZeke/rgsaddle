@@ -57,6 +57,7 @@ pub mod minmode;
 pub mod nichols;
 pub mod occupancy;
 pub mod ocineb;
+pub mod ohtst;
 pub mod pafi;
 pub mod pair_network;
 pub mod prfo;
@@ -126,6 +127,7 @@ pub use ocineb::{
     backoff_threshold, initial_threshold, mode_alignment, should_trigger, success_threshold,
     walk_helped,
 };
+pub use ohtst::{Hyperplane, MassWeighted};
 pub use pafi::{
     ArcPath, FreeEnergyProfile, HyperplaneAverage, PafiConfig, PathFrame, PathGeometry,
     average_hyperplane, integrate_profile, pafi_profile, zero_temperature_barrier,
