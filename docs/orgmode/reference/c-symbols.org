@@ -25,6 +25,7 @@ The narrative for a session is the C and C++ how-to, not this list.
 - =rgsaddle_band_evaluation=. Purpose: The last evaluation, when it was taken at the current band (after a step, it is the accepted point). Parameters: the declaration. Units: the caller's.
 - =rgsaddle_band_free=. Purpose: Declared in include/rgsaddle.h. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_band_project=. Purpose: Project an already evaluated band. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_band_project_fixed=. Purpose: rgsaddle_band_project with a per-atom fixed mask, ABI minor 39. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_minmode_create=. Purpose: Create a minimum-mode session at one geometry with an initial mode estimate; both are 3 * n_atoms doubles, copied in. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_minmode_step=. Purpose: Refresh the lowest mode, invert along it, take one step. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_minmode_estimate=. Purpose: Refresh the lowest mode without translating. Parameters: the declaration. Units: the caller's.
@@ -132,6 +133,7 @@ The narrative for a session is the C and C++ how-to, not this list.
 - =rgsaddle_minmode_set_torque_window=. Purpose: ABI minor 32. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_minmode_set_rotation_stop_length=. Purpose: ABI minor 38. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_band_set_exp_precon=. Purpose: Per-image exponential metric (Packwood et al. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_band_set_fixed_atoms=. Purpose: Per-atom fixed mask shared by every image, ABI minor 39. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_band_set_zoom=. Purpose: Zoom-NEB, eOn's zoom_* keys. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_last_error=. Purpose: Declared in include/rgsaddle.h. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_stencil_config_new=. Purpose: Declared in include/rgsaddle.h. Parameters: the declaration. Units: the caller's.

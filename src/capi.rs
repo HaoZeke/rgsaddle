@@ -35,14 +35,15 @@ use crate::tangent::TangentKind;
 /// The RGSADDLE ABI MAJOR.
 pub const RGSADDLE_ABI_MAJOR: u32 = 1;
 /// The RGSADDLE ABI MINOR.
-pub const RGSADDLE_ABI_MINOR: u32 = 38;
+pub const RGSADDLE_ABI_MINOR: u32 = 39;
 
 /// Band config bit 0. The C step calls the surface once per image
 /// carried by the evaluation: every image on the first evaluation
 /// after create or set_positions, the interior images afterwards.
 pub const RGSADDLE_BAND_PER_IMAGE: u64 = 1;
 /// Band config bit 1. The projected force keeps its mean Cartesian
-/// part; a host with fixed atoms sets it, as eOn does.
+/// part, as eOn does when any atom is fixed. From ABI minor 39 a band
+/// with a fixed-atom mask keeps it whether or not the bit is set.
 pub const RGSADDLE_BAND_KEEP_TRANSLATION: u64 = 2;
 /// Band config bit 2 (ABI minor 17). Climbing is on with the arming
 /// rule as given: it arms once the force is under `ci_trigger_force` or
@@ -749,6 +750,22 @@ impl BandSurface for GivenBand {
     }
 }
 
+/// A C fixed-atom mask, one byte per atom, as booleans; `None` when
+/// a byte is neither 0 nor 1.
+///
+/// # Safety
+/// `mask` addresses `n_atoms` bytes and `n_atoms` is positive.
+pub(super) unsafe fn fixed_mask(mask: *const u8, n_atoms: i64) -> Option<Vec<bool>> {
+    let raw = unsafe { slice::from_raw_parts(mask, n_atoms as usize) };
+    raw.iter()
+        .map(|&v| match v {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        })
+        .collect()
+}
+
 /// # Safety
 /// `config`, the input pointers and `forces` must address the lengths
 /// the header documents. `ci_index` may be null.
@@ -760,6 +777,54 @@ pub unsafe extern "C" fn rgsaddle_band_project(
     positions: *const f64,
     energies: *const f64,
     gradients: *const f64,
+    forces: *mut f64,
+    ci_index: *mut i64,
+) -> i32 {
+    unsafe {
+        project_band(
+            config, n_images, n_atoms, positions, energies, gradients, None, forces, ci_index,
+        )
+    }
+}
+
+/// [`rgsaddle_band_project`] with a per-atom fixed mask (ABI minor
+/// 39): `fixed` is null or `n_atoms` bytes, 1 for a fixed atom.
+///
+/// # Safety
+/// As [`rgsaddle_band_project`]; `fixed` is null or addresses
+/// `n_atoms` bytes.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn rgsaddle_band_project_fixed(
+    config: *const RgsaddleBandConfig,
+    n_images: i64,
+    n_atoms: i64,
+    positions: *const f64,
+    energies: *const f64,
+    gradients: *const f64,
+    fixed: *const u8,
+    forces: *mut f64,
+    ci_index: *mut i64,
+) -> i32 {
+    let mask = (!fixed.is_null()).then_some(fixed);
+    unsafe {
+        project_band(
+            config, n_images, n_atoms, positions, energies, gradients, mask, forces, ci_index,
+        )
+    }
+}
+
+/// # Safety
+/// As [`rgsaddle_band_project_fixed`].
+#[allow(clippy::too_many_arguments)]
+unsafe fn project_band(
+    config: *const RgsaddleBandConfig,
+    n_images: i64,
+    n_atoms: i64,
+    positions: *const f64,
+    energies: *const f64,
+    gradients: *const f64,
+    fixed: Option<*const u8>,
     forces: *mut f64,
     ci_index: *mut i64,
 ) -> i32 {
@@ -777,9 +842,15 @@ pub unsafe extern "C" fn rgsaddle_band_project(
     let dof = (3 * n_atoms) as usize;
     let rows = n_images as usize;
     let total = dof * rows;
-    let Some(parsed) = (unsafe { parse_band_config(cfg, n_images, dof, None) }) else {
+    let Some(mut parsed) = (unsafe { parse_band_config(cfg, n_images, dof, None) }) else {
         return RGSADDLE_INVALID_PARAMETER;
     };
+    if let Some(fixed) = fixed {
+        let Some(mask) = (unsafe { fixed_mask(fixed, n_atoms) }) else {
+            return RGSADDLE_INVALID_PARAMETER;
+        };
+        parsed.config.fixed_atoms = mask;
+    }
     let pos = match Array2::from_shape_vec(
         (rows, dof),
         unsafe { slice::from_raw_parts(positions, total) }.to_vec(),

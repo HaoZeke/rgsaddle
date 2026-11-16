@@ -5,7 +5,7 @@
 #include <stddef.h>
 
 _Static_assert(RGSADDLE_ABI_MAJOR == 1u, "main ABI major");
-_Static_assert(RGSADDLE_ABI_MINOR == 38u, "ABI minor");
+_Static_assert(RGSADDLE_ABI_MINOR == 39u, "ABI minor");
 _Static_assert(RGSADDLE_BAND_NO_MIN_MODE == (1ull << 3), "band flag bit 3");
 _Static_assert(RGSADDLE_BAND_SPLINE_REPARAM == (1ull << 4), "band flag bit 4");
 _Static_assert(RGSADDLE_REPARAM_LINEAR == 0, "rgsaddle_reparametrization_t LINEAR");
@@ -349,6 +349,16 @@ typedef rgsaddle_status_t (*abi38_signature_rgsaddle_reparametrize)(
     int64_t n_images, int64_t n_atoms, double *positions, int64_t anchor, const double *cell,
     int32_t scheme);
 _Static_assert(_Generic(&rgsaddle_reparametrize, abi38_signature_rgsaddle_reparametrize: 1, default: 0), "rgsaddle_reparametrize signature");
+
+typedef rgsaddle_status_t (*abi39_signature_rgsaddle_band_set_fixed_atoms)(
+    RgsaddleBand *band, const uint8_t *mask, int64_t n_atoms);
+_Static_assert(_Generic(&rgsaddle_band_set_fixed_atoms, abi39_signature_rgsaddle_band_set_fixed_atoms: 1, default: 0), "rgsaddle_band_set_fixed_atoms signature");
+
+typedef rgsaddle_status_t (*abi39_signature_rgsaddle_band_project_fixed)(
+    const rgsaddle_band_config_t *config, int64_t n_images, int64_t n_atoms,
+    const double *positions, const double *energies, const double *gradients,
+    const uint8_t *fixed, double *forces, int64_t *ci_index);
+_Static_assert(_Generic(&rgsaddle_band_project_fixed, abi39_signature_rgsaddle_band_project_fixed: 1, default: 0), "rgsaddle_band_project_fixed signature");
 
 typedef RgsaddleIndexK *(*abi35_signature_rgsaddle_indexk_create)(
     const rgsaddle_indexk_config_t *config, int64_t n_atoms, const double *position,

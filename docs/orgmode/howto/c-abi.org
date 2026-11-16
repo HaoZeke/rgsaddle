@@ -1,7 +1,7 @@
 #+TITLE: Use the C and C++ interfaces
 #+OPTIONS: toc:nil num:nil
 
-~include/rgsaddle.h~ declares the C application binary interface (ABI), major 1, minor 38. It preserves the main band, minimum-mode and index-1 layouts and adds intrinsic reaction coordinate (IRC), Sella, constraint and geometry controls. Include this header rather than duplicating its structures. Check ~rgsaddle_abi_stamp~ before constructing a session. A meson project takes the headers from the top-level ~meson.build~; see @@rst::doc:`the meson how-to <meson>`@@.
+~include/rgsaddle.h~ declares the C application binary interface (ABI), major 1, minor 39. It preserves the main band, minimum-mode and index-1 layouts and adds intrinsic reaction coordinate (IRC), Sella, constraint and geometry controls. Include this header rather than duplicating its structures. Check ~rgsaddle_abi_stamp~ before constructing a session. A meson project takes the headers from the top-level ~meson.build~; see @@rst::doc:`the meson how-to <meson>`@@.
 
 A surface callback returns ~rgsaddle_status_t~ and receives one ~rgsaddle_surface_request_t~. Positions and gradients are image-major Cartesian triples. The host supplies the energy and gradient arrays for every requested image; the library performs no Message Passing Interface (MPI) communication.
 
@@ -73,3 +73,12 @@ The C++ ~MinMode~ wrapper calls it as ~set_rotation_stop_length~, and Python tak
 A non-negative ~anchor~ names an interior image that stays, and a non-null ~cell~ makes the chords minimum images.
 Band config bit 4, ~RGSADDLE_BAND_SPLINE_REPARAM~, read from a config at minor 38 or newer, puts the trust-region band (~RGSADDLE_METHOD_RTR~) on the spline; ~rgsaddle_band_create~ and ~rgsaddle_ocineb_create~ read it.
 Python exposes the function as ~rgsaddle.reparametrize(positions, scheme, anchor, cell)~.
+
+~rgsaddle_band_set_fixed_atoms~ (ABI minor 39) takes ~n_atoms~ bytes, 1 for a fixed atom and 0 for a free one, shared by every image.
+Call it after ~rgsaddle_band_create~ and between steps; it drops the optimizer history and the last evaluation and keeps the endpoint energies.
+A null band returns ~RGSADDLE_NULL_BAND~, a null mask or an ~n_atoms~ other than the band's returns ~RGSADDLE_SHAPE~, and a byte other than 0 or 1, a mask that fixes every atom, endpoints that place a fixed atom differently, or a solid-state band returns ~RGSADDLE_INVALID_PARAMETER~ with the band unchanged.
+Fixed atoms never move, carry no force in the report, and leave the mean force in place whether or not ~RGSADDLE_BAND_KEEP_TRANSLATION~ is set.
+~rgsaddle_band_set_exp_precon~ then builds its matrices on the free atoms, so the exponential metric runs with fixed atoms.
+~rgsaddle_band_project_fixed~ is ~rgsaddle_band_project~ with the same mask, or ~NULL~ for none.
+A host that loads the library at run time checks ~rgsaddle_abi_version()~ for at least minor 39 before resolving either symbol.
+Python's ~project_band~ takes the mask as ~fixed~, and ~rgsaddle.ase.NEB~ reads it from ~FixAtoms~.

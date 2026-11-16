@@ -3286,6 +3286,35 @@ pub unsafe extern "C" fn rgsaddle_band_set_exp_precon(
     }
 }
 
+/// Per-atom fixed mask of a band (ABI minor 39): `n_atoms` bytes, 1
+/// for a fixed atom and 0 for a free one. See
+/// [`crate::BandSession::set_fixed_atoms`].
+///
+/// # Safety
+/// `band` is a live session or null. `mask` is null or addresses
+/// `n_atoms` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_band_set_fixed_atoms(
+    band: *mut RgsaddleBand,
+    mask: *const u8,
+    n_atoms: i64,
+) -> i32 {
+    if band.is_null() {
+        return RGSADDLE_NULL_BAND;
+    }
+    let band = unsafe { &mut *band };
+    if mask.is_null() || n_atoms != band.n_atoms {
+        return RGSADDLE_SHAPE;
+    }
+    let Some(fixed) = (unsafe { fixed_mask(mask, n_atoms) }) else {
+        return RGSADDLE_INVALID_PARAMETER;
+    };
+    match band.session.set_fixed_atoms(fixed) {
+        Ok(()) => RGSADDLE_OK,
+        Err(e) => status_of(&e),
+    }
+}
+
 /// Zoom-NEB on the band (ABI minor 31); `enabled` 0 clears it.
 ///
 /// # Safety

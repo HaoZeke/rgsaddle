@@ -28,7 +28,7 @@ extern "C" {
 #endif
 
 #define RGSADDLE_ABI_MAJOR 1u
-#define RGSADDLE_ABI_MINOR 38u
+#define RGSADDLE_ABI_MINOR 39u
 
 /**
  * Band config flags bit 0. When set, each evaluation calls the surface
@@ -44,8 +44,10 @@ extern "C" {
 /**
  * Band config flags bit 1. The projected force keeps its mean
  * Cartesian part. Without it every image with two or more atoms loses
- * that mean, as in eOn when every atom is free. Set it when any atom is
- * fixed.
+ * that mean, as in eOn when every atom is free. From ABI minor 39 a
+ * band with any atom fixed by rgsaddle_band_set_fixed_atoms keeps the
+ * mean whether or not the bit is set; before minor 39 a host with
+ * fixed atoms set it and zeroed their forces itself.
  */
 #define RGSADDLE_BAND_KEEP_TRANSLATION (1ull << 1)
 
@@ -472,6 +474,22 @@ rgsaddle_status_t rgsaddle_band_project(const rgsaddle_band_config_t *config,
                                         const double *energies,
                                         const double *gradients, double *forces,
                                         int64_t *ci_index);
+
+/**
+ * rgsaddle_band_project with a per-atom fixed mask, ABI minor 39.
+ * fixed is NULL, which is rgsaddle_band_project, or n_atoms bytes, 1
+ * for a fixed atom and 0 for a free one, as rgsaddle_band_set_fixed_atoms
+ * reads them. Fixed atoms get zero force rows and the mean force stays.
+ * Returns RGSADDLE_INVALID_PARAMETER for a byte other than 0 or 1, every
+ * atom fixed, or endpoints that differ on a fixed atom.
+ */
+rgsaddle_status_t rgsaddle_band_project_fixed(const rgsaddle_band_config_t *config,
+                                              int64_t n_images, int64_t n_atoms,
+                                              const double *positions,
+                                              const double *energies,
+                                              const double *gradients,
+                                              const uint8_t *fixed, double *forces,
+                                              int64_t *ci_index);
 
 /** Minimum-mode configuration. */
 typedef struct {
@@ -1240,11 +1258,48 @@ rgsaddle_status_t rgsaddle_minmode_set_rotation_stop_length(RgsaddleMinMode *ses
  * estimates the energy scale on the first step from one row of the
  * first interior image; a, c_stab and r_cut_factor at or below zero
  * take 3, 0.1 and 2. Refused on a solid-state band, on single-atom
- * images and with a non-uniform spring. ABI minor 22.
+ * images and with a non-uniform spring. ABI minor 22. On a band with
+ * fixed atoms (rgsaddle_band_set_fixed_atoms, minor 39) each matrix is
+ * built on the free atoms: fixed atoms still count for r_nn and the
+ * cutoff, and a free atom's bond to a fixed one adds to its diagonal
+ * only, as ASE's Exp does under FixAtoms. P^-1 then acts on the free
+ * block and the fixed atoms do not move.
  */
 rgsaddle_status_t rgsaddle_band_set_exp_precon(RgsaddleBand *band, double a,
                                                double c_stab, double mu,
                                                double r_cut_factor);
+
+/**
+ * Per-atom fixed mask shared by every image, ABI minor 39. mask holds
+ * n_atoms bytes, 1 for a fixed atom and 0 for a free one; all zeros
+ * clears the mask and leaves the band bitwise as one that never had
+ * it. A fixed atom never moves in any band stepper (FIRE, L-BFGS,
+ * quick-min, ODE12r, RTR): its gradient reads as zero, so it carries no
+ * force in the step, in max_force or in rgsaddle_band_evaluation.
+ * Tangents and springs are formed on the free coordinates, the
+ * climbing image and the min-mode refinement step the free block only,
+ * and the exponential metric of rgsaddle_band_set_exp_precon, Packwood
+ * et al. 2016 as Makri, Ortner and Kermode, J. Chem. Phys. 150, 094109
+ * (2019), apply it, is built on the free atoms. With any atom fixed the mean force stays, as if
+ * RGSADDLE_BAND_KEEP_TRANSLATION were set.
+ *
+ * Call it after rgsaddle_band_create and between steps. The endpoints
+ * must agree on every fixed atom up to the minimum image (1e-10 per
+ * component); the interior images take the first image's fixed
+ * coordinates, now and after each rgsaddle_band_set_positions, which
+ * applies the same endpoint check. Optimizer history, the climbing
+ * state and the last evaluation are dropped; the endpoint energies
+ * stay.
+ *
+ * Returns RGSADDLE_NULL_BAND for a null band, RGSADDLE_SHAPE for a
+ * null mask or n_atoms other than the band's, and
+ * RGSADDLE_INVALID_PARAMETER for a byte other than 0 or 1, every atom
+ * fixed, endpoints that differ on a fixed atom, or a solid-state band.
+ * On an error the band is unchanged.
+ */
+rgsaddle_status_t rgsaddle_band_set_fixed_atoms(RgsaddleBand *band,
+                                                const uint8_t *mask,
+                                                int64_t n_atoms);
 
 /**
  * Zoom-NEB, eOn's zoom_* keys. Once the climbing image has kept its
