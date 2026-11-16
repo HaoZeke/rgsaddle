@@ -40,6 +40,10 @@ use crate::stats::{Rng, block_mean};
 #[non_exhaustive]
 #[derive(Clone, Debug)]
 pub struct ReactantDensity {
+    /// The reference plane.
+    pub plane: Hyperplane,
+    /// The sampling temperature `kT`.
+    pub thermal: f64,
     /// `Q_Z / Q_R` per unit mass-weighted length along the normal, from
     /// the mean force.
     pub density: f64,
@@ -126,6 +130,8 @@ pub fn reactant_density<S: PointSurface>(
     let (mean, error, tau, _) = block_mean(&force, config.blocks);
     let (crossing_density, crossing_error, _, _) = block_mean(&crossing, config.blocks);
     Ok(ReactantDensity {
+        plane: plane.clone(),
+        thermal: config.thermal,
         density: -beta * mean,
         density_error: beta * error,
         crossing_density,

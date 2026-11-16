@@ -116,6 +116,8 @@ pub struct ReversibleWork {
     pub end: PlaneSample,
     /// Surface evaluations over all nodes.
     pub evaluations: usize,
+    /// The sampling temperature `kT`.
+    pub thermal: f64,
 }
 
 /// One leg of the path: the plane at `s` and its derivative in `s`.
@@ -300,6 +302,7 @@ pub fn reversible_work<S: PointSurface>(
         nodes,
         end,
         evaluations,
+        thermal: config.sampler.thermal,
     })
 }
 
