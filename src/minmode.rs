@@ -43,7 +43,14 @@ pub trait PointSurface: Sync {
 
     /// Energy and Cartesian gradient in a periodic cell, row-major 3x3.
     ///
-    /// Default ignores the cell and calls [`Self::eval`].
+    /// The energy must follow every entry of the cell, and so must
+    /// [`Self::cauchy_stress`]. Held diagonal strains with free shears
+    /// change only the tilts, at a fixed diagonal and volume, so a box
+    /// refreshed only when lx, ly, lz or the volume change never sees
+    /// that search move, and a frozen or fully free run does not reveal
+    /// it. The finite-difference stress passes general cells, not only
+    /// the lower-triangular ones a search steps through. Default
+    /// ignores the cell and calls [`Self::eval`].
     fn eval_in_cell(
         &self,
         x: ArrayView1<f64>,
@@ -77,9 +84,11 @@ pub trait PointSurface: Sync {
     /// every free strain uphill. The virial is `V σ`. `None` asks the
     /// solid-state searches to finite-difference
     /// [`Self::eval_in_cell`], and [`crate::check_cauchy_stress`]
-    /// compares a supplied tensor with that difference. A frozen cell
-    /// never calls this: that search is [`crate::MinModeSession`] on
-    /// [`Self::eval`].
+    /// compares a supplied tensor with that difference entry by entry.
+    /// Held diagonals with free shears read only `σ_yx`, `σ_zx` and
+    /// `σ_zy`, so agreement on the diagonal says nothing about that
+    /// search. A frozen cell never calls this: that search is
+    /// [`crate::MinModeSession`] on [`Self::eval`].
     fn cauchy_stress(
         &self,
         x: ArrayView1<f64>,
