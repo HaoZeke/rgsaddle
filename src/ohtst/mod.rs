@@ -26,8 +26,11 @@
 //! [`reversible_work`] gives `ΔA` from that plane to the optimum, by
 //! thermodynamic integration and by BAR. [`ohtst_rate`] returns
 //! `k = sqrt(kT / 2π) (Z_H / Z_R) exp(-ΔA / kT)`, with unit mass in these
-//! coordinates, and [`plane_transmission`] the Bennett–Chandler `κ`.
-//! Planes are sampled by projected BAOAB ([`PlaneIntegrator`]); a
+//! coordinates. [`transmission_coefficient`] gives `κ` from trajectories
+//! shot from the optimal plane, counted at the end or at the first
+//! crossing, with end states from the side of the plane or from a quench
+//! into the basins; [`plane_transmission`] is the plain Bennett–Chandler
+//! `κ`. Planes are sampled by projected BAOAB ([`PlaneIntegrator`]); a
 //! [`HarmonicReference`] adds Stein control variates; and
 //! [`anharmonic_correction`] gives the first-order correction to harmonic
 //! TST from Hessian actions alone. No full Hessian is formed anywhere.
@@ -47,6 +50,7 @@ mod rate;
 mod reactant;
 mod sample;
 mod spline;
+mod transmission;
 mod work;
 
 pub use anharmonic::{AnharmonicConfig, AnharmonicCorrection, anharmonic_correction};
@@ -57,4 +61,8 @@ pub use plane::{FixedCell, Hyperplane, MassWeighted};
 pub use rate::{OhTstRate, PlaneDensity, flux_mass, ohtst_rate, plane_transmission};
 pub use reactant::{ReactantDensity, reactant_density};
 pub use sample::{LangevinConfig, PlaneIntegrator, PlaneSample, Uncontrolled, sample_plane};
+pub use transmission::{
+    Basins, Counting, EndState, Endpoint, PermutationDistance, QuenchConfig, StateDistance,
+    TransmissionCoefficient, TransmissionConfig, TransmissionEstimate, transmission_coefficient,
+};
 pub use work::{ReversibleWork, ReversibleWorkConfig, WorkNode, reversible_work};

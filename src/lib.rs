@@ -128,12 +128,14 @@ pub use ocineb::{
     walk_helped,
 };
 pub use ohtst::{
-    AnharmonicConfig, AnharmonicCorrection, BasinConfig, BasinDensity, BasinEnd, FixedCell,
-    HarmonicReference, Hyperplane, LangevinConfig, MassWeighted, OhTstRate, PlaneDensity,
-    PlaneIntegrator, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum, PlaneSample, PlaneStep,
-    PlaneTrace, ReactantDensity, ReversibleWork, ReversibleWorkConfig, Uncontrolled, WorkNode,
-    anharmonic_correction, basin_density, flux_mass, ohtst_rate, plane_transmission,
-    reactant_density, reversible_work, sample_plane,
+    AnharmonicConfig, AnharmonicCorrection, BasinConfig, BasinDensity, BasinEnd, Basins, Counting,
+    EndState, Endpoint, FixedCell, HarmonicReference, Hyperplane, LangevinConfig, MassWeighted,
+    OhTstRate, PermutationDistance, PlaneDensity, PlaneIntegrator, PlaneOptimizer,
+    PlaneOptimizerConfig, PlaneOptimum, PlaneSample, PlaneStep, PlaneTrace, QuenchConfig,
+    ReactantDensity, ReversibleWork, ReversibleWorkConfig, StateDistance, TransmissionCoefficient,
+    TransmissionConfig, TransmissionEstimate, Uncontrolled, WorkNode, anharmonic_correction,
+    basin_density, flux_mass, ohtst_rate, plane_transmission, reactant_density, reversible_work,
+    sample_plane, transmission_coefficient,
 };
 pub use pafi::{
     ArcPath, FreeEnergyProfile, HyperplaneAverage, PafiConfig, PathFrame, PathGeometry,

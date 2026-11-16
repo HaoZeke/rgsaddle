@@ -24,12 +24,16 @@
 //! agree only when the masses that `n̂` touches are equal.
 //!
 //! The recrossing factor `κ` of the optimal plane comes from short
-//! trajectories shot from the plane's own ensemble ([`plane_transmission`]),
-//! and [`OhTstRate::transmitted`] applies it.
+//! trajectories shot from the plane's own ensemble, and
+//! [`OhTstRate::transmitted`] applies it. [`transmission_coefficient`]
+//! counts first crossings or final states, assigns end states by side of
+//! the plane or by quench, and shoots with masses on Cartesian surfaces;
+//! [`plane_transmission`] is the plain Bennett–Chandler estimate.
 //!
 //! [`basin_density`]: crate::ohtst::basin_density
 //! [`reactant_density`]: crate::ohtst::reactant_density
 //! [`reversible_work`]: crate::ohtst::reversible_work
+//! [`transmission_coefficient`]: crate::ohtst::transmission_coefficient
 
 use std::f64::consts::TAU;
 
@@ -41,6 +45,7 @@ use crate::minmode::PointSurface;
 use crate::ohtst::plane::Hyperplane;
 use crate::ohtst::reactant::ReactantDensity;
 use crate::ohtst::sample::PlaneSample;
+use crate::ohtst::transmission::TransmissionEstimate;
 use crate::ohtst::work::ReversibleWork;
 
 /// The OH-TST rate and its parts, each with its standard error.
@@ -69,10 +74,9 @@ pub struct OhTstRate {
 
 impl OhTstRate {
     /// `κ k` and its first-order standard error.
-    pub fn transmitted(&self, transmission: &Transmission) -> (f64, f64) {
-        let kappa = transmission.kappa;
-        let error =
-            ((kappa * self.error).powi(2) + (self.rate * transmission.error).powi(2)).sqrt();
+    pub fn transmitted<T: TransmissionEstimate + ?Sized>(&self, transmission: &T) -> (f64, f64) {
+        let (kappa, kappa_error) = transmission.kappa();
+        let error = ((kappa * self.error).powi(2) + (self.rate * kappa_error).powi(2)).sqrt();
         (kappa * self.rate, error)
     }
 }
