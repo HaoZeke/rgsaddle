@@ -1012,4 +1012,33 @@ mod tests {
         let miss = (result.density / exact).ln().abs();
         assert!(miss < 1e-5, "{miss}");
     }
+
+    /// Either refinement threshold may be zero, `-0.0` included, and is
+    /// refused when it is NaN, negative or infinite.
+    #[test]
+    fn refinement_thresholds_must_be_finite_and_non_negative() {
+        let cases = [
+            (0.5, true),
+            (0.0, true),
+            (-0.0, true),
+            (f64::NAN, false),
+            (-1.0, false),
+            (-f64::MIN_POSITIVE, false),
+            (f64::INFINITY, false),
+            (f64::NEG_INFINITY, false),
+        ];
+        for (refine, refine_ok) in cases {
+            for (resolution, resolution_ok) in cases {
+                let checked = BasinConfig::default()
+                    .with_refine(refine)
+                    .with_resolution(resolution)
+                    .check();
+                assert_eq!(
+                    checked.is_ok(),
+                    refine_ok && resolution_ok,
+                    "refine {refine}, resolution {resolution}: {checked:?}"
+                );
+            }
+        }
+    }
 }
