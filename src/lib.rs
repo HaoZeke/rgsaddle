@@ -81,6 +81,7 @@ mod kani_proofs;
 mod differential;
 
 mod sqnm;
+mod stats;
 pub use autoneb::{AutoNeb, AutoNebInterpolant, AutoNebReport, AutoNebTuning};
 pub use band::{
     BandConfig, BandEvaluation, BandReport, BandSession, BandStatus, BandSurface, Cell, CiConfig,

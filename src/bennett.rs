@@ -25,6 +25,7 @@ use ndarray::{Array1, ArrayView1};
 
 use crate::error::SaddleError;
 use crate::minmode::PointSurface;
+use crate::stats::Rng;
 
 /// Inertial shooting from one dividing surface.
 #[derive(Clone, Debug)]
@@ -251,44 +252,4 @@ fn force_of<S: PointSurface>(surface: &S, x: ArrayView1<f64>) -> Result<Array1<f
         ));
     }
     Ok(-gradient)
-}
-
-struct Rng {
-    s: [u64; 4],
-}
-
-impl Rng {
-    fn new(seed: u64) -> Self {
-        let mut z = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut s = [0; 4];
-        for slot in &mut s {
-            z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
-            let mut mixed = z;
-            mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-            mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-            *slot = mixed ^ (mixed >> 31);
-        }
-        Self { s }
-    }
-
-    fn u64(&mut self) -> u64 {
-        let result = self.s[0]
-            .wrapping_add(self.s[3])
-            .rotate_left(23)
-            .wrapping_add(self.s[0]);
-        let t = self.s[1] << 17;
-        self.s[2] ^= self.s[0];
-        self.s[3] ^= self.s[1];
-        self.s[1] ^= self.s[2];
-        self.s[0] ^= self.s[3];
-        self.s[2] ^= t;
-        self.s[3] = self.s[3].rotate_left(45);
-        result
-    }
-
-    fn normal(&mut self) -> f64 {
-        let u1 = ((self.u64() >> 11) as f64 * (1.0 / ((1u64 << 53) as f64))).max(1.0e-16);
-        let u2 = (self.u64() >> 11) as f64 * (1.0 / ((1u64 << 53) as f64));
-        (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos()
-    }
 }
