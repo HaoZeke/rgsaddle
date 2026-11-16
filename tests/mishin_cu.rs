@@ -1042,24 +1042,57 @@ impl PointSurface for AsPressure<'_> {
     }
 }
 
-/// A vacancy hop at its fixed-cell saddle, in a cell stretched and
-/// tilted the way a 700 K snapshot leaves it. Diagonal strains held
-/// with the shears free keep the volume exactly, and the search
-/// converges once the shear stress of the snapshot has relaxed. The
-/// opposite mask contracts the cell and converges as well. The same
-/// surface with its stress reported as a pressure is stopped before
-/// the first step.
-#[test]
-fn vacancy_hop_relaxes_free_shears_at_fixed_volume() {
-    let copper = Copper::new();
+/// [`Held`] with its box refreshed only when an extent lx, ly or lz of
+/// the cell changes, the way a driver that tracks the extents would.
+struct ByExtents<'a> {
+    copper: &'a Copper,
+    cell: [[f64; 3]; 3],
+    held: Mutex<Option<[f64; 9]>>,
+}
+
+impl ByExtents<'_> {
+    fn held_box(&self, cell: &[f64; 9]) -> [[f64; 3]; 3] {
+        let mut held = self.held.lock().unwrap();
+        if held.is_none_or(|old| [0, 4, 8].iter().any(|&k| old[k] != cell[k])) {
+            *held = Some(*cell);
+        }
+        unflat(&held.expect("refreshed"))
+    }
+}
+
+impl PointSurface for ByExtents<'_> {
+    fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+        let (energy, gradient, _) = self.copper.evaluate(x, self.cell);
+        Ok((energy, gradient))
+    }
+
+    fn eval_in_cell(
+        &self,
+        x: ArrayView1<f64>,
+        cell: &[f64; 9],
+    ) -> Result<(f64, Array1<f64>), SaddleError> {
+        let (energy, gradient, _) = self.copper.evaluate(x, self.held_box(cell));
+        Ok((energy, gradient))
+    }
+
+    fn cauchy_stress(
+        &self,
+        x: ArrayView1<f64>,
+        cell: &[f64; 9],
+    ) -> Result<Option<[f64; 9]>, SaddleError> {
+        let (_, _, stress) = self.copper.evaluate(x, self.held_box(cell));
+        Ok(Some(flat(stress)))
+    }
+}
+
+/// A 4×4×4 copper cell stretched 1.2%, its rows `shape` in units of a
+/// side, with the first site vacant and its [110] neighbour at the bond
+/// centre. Returns the cell, the positions, and the hop direction.
+fn vacancy_hop(shape: [[f64; 3]; 3]) -> ([[f64; 3]; 3], Array1<f64>, Array1<f64>) {
     let repeats = 4;
     let (perfect, cube) = fcc(repeats, 3.615 * 1.012);
     let side = cube[0][0];
-    let cell = [
-        [1.0021 * side, 0.0, 0.0],
-        [0.004 * side, 0.9987 * side, 0.0],
-        [-0.003 * side, 0.002 * side, 1.0008 * side],
-    ];
+    let cell = shape.map(|row| row.map(|v| v * side));
     let mut sites: Vec<[f64; 3]> = perfect
         .as_slice()
         .unwrap()
@@ -1082,6 +1115,24 @@ fn vacancy_hop_relaxes_free_shears_at_fixed_volume() {
     let mut hop = Array1::zeros(start.len());
     hop[3 * hopper] = std::f64::consts::FRAC_1_SQRT_2;
     hop[3 * hopper + 1] = std::f64::consts::FRAC_1_SQRT_2;
+    (cell, start, hop)
+}
+
+/// A vacancy hop at its fixed-cell saddle, in a cell stretched and
+/// tilted the way a 700 K snapshot leaves it. Diagonal strains held
+/// with the shears free keep the volume exactly, and the search
+/// converges once the shear stress of the snapshot has relaxed. The
+/// opposite mask contracts the cell and converges as well. The same
+/// surface with its stress reported as a pressure is stopped before
+/// the first step.
+#[test]
+fn vacancy_hop_relaxes_free_shears_at_fixed_volume() {
+    let copper = Copper::new();
+    let (cell, start, hop) = vacancy_hop([
+        [1.0021, 0.0, 0.0],
+        [0.004, 0.9987, 0.0],
+        [-0.003, 0.002, 1.0008],
+    ]);
     let held = Held {
         copper: &copper,
         cell,
@@ -1174,6 +1225,72 @@ fn vacancy_hop_relaxes_free_shears_at_fixed_volume() {
             assert!(dimer.volume() < volume);
         }
     }
+}
+
+/// The hop at its fixed-cell saddle in an untilted cell under the
+/// tension of a hot snapshot, where the only shear stress is the
+/// defect's, under one percent of the tension. Held diagonals with
+/// free shears change the cell at a fixed lx, ly, lz and volume, so a
+/// box refreshed only when those change never sees the search. The
+/// stress check stops it before the first step and passes the surface
+/// that follows every entry.
+#[test]
+fn stress_check_stops_a_box_keyed_on_its_extents() {
+    let copper = Copper::new();
+    let (cell, start, hop) =
+        vacancy_hop([[1.0021, 0.0, 0.0], [0.0, 0.9987, 0.0], [0.0, 0.0, 1.0008]]);
+    let held = Held {
+        copper: &copper,
+        cell,
+    };
+    let mut fixed = SolidDimer::new(
+        SolidDimerConfig::frozen(MinModeConfig::default()),
+        start,
+        cell,
+        hop,
+    )
+    .unwrap();
+    let fixed_report = fixed.run(&held, 200).unwrap();
+    assert_eq!(fixed_report.status, MinModeStatus::Converged);
+    let (_, _, stress) = copper.evaluate(fixed.positions(), cell);
+    let tension = (0..3).map(|k| stress[k][k]).fold(f64::INFINITY, f64::min);
+    eprintln!(
+        "KEYED_BOX fixed_steps={} tension={:.4e} shear_yx={:.4e}",
+        fixed_report.iteration, tension, stress[1][0]
+    );
+    assert!(
+        stress[1][0].abs() > 1e-5 && stress[1][0].abs() < 0.01 * tension,
+        "{stress:?}"
+    );
+
+    let config = SolidDimerConfig::new(MinModeConfig::default())
+        .with_pressure(0.0)
+        .with_mask(CellMask::voigt([false, false, false, true, true, true]))
+        .with_stress_check(StressCheck::new());
+    let restart = || {
+        SolidDimer::new(
+            config.clone(),
+            fixed.positions().to_owned(),
+            cell,
+            fixed.mode().to_owned(),
+        )
+        .unwrap()
+    };
+    let keyed = ByExtents {
+        copper: &copper,
+        cell,
+        held: Mutex::new(None),
+    };
+    let mut dimer = restart();
+    let before = dimer.generalized().to_owned();
+    match dimer.step(&keyed) {
+        Err(SaddleError::Surface(message)) => {
+            assert!(message.contains("every diagonal entry agrees"), "{message}");
+        }
+        other => panic!("a box keyed on its extents passed the stress check: {other:?}"),
+    }
+    assert_eq!(dimer.generalized(), before.view());
+    restart().step(&held).unwrap();
 }
 
 #[test]
