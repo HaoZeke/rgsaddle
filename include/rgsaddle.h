@@ -330,9 +330,10 @@ RgsaddleBand *rgsaddle_band_create_solid(const rgsaddle_band_config_t *config,
  * positions and a row-major lower-triangular 3x3 cell, and writes the
  * energy, the 3 * n_atoms gradient and the row-major Cauchy stress
  * sigma = (1/V) dE/deps for the right strain h <- h (I + eps) at fixed
- * fractional coordinates (energy per length cubed, the rgpot and eOn
- * convention). One call answers all three, so a potential that
- * returns its stress with its force costs one evaluation per image.
+ * fractional coordinates (energy per length cubed, positive in tension
+ * and so minus a pressure tensor, the rgpot and eOn convention). One
+ * call answers all three, so a potential that returns its stress with
+ * its force costs one evaluation per image.
  */
 typedef struct {
   rgsaddle_version_t version;

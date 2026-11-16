@@ -24,6 +24,10 @@
 //! right strain. A frozen cell drops the strain block and calls
 //! [`PointSurface::eval`], so the step is the fixed-cell dimer.
 //!
+//! `σ` is [`PointSurface::cauchy_stress`], positive in tension. A
+//! pressure tensor in its place turns every free strain uphill: the
+//! cell runs away while the same atoms converge in a frozen cell.
+//!
 //! [`IndexCheck`] is optional. When it is set, a point that meets the
 //! force tolerance is accepted only if the projected Hessian has one
 //! negative eigenvalue. The three rigid translations, and any other
@@ -109,9 +113,11 @@ pub struct SolidDimerConfig {
     pub search: MinModeConfig,
     /// Strains that enter the generalized vector.
     pub mask: CellMask,
-    /// External Cauchy stress, added to the cell force. A positive
-    /// diagonal entry pushes the cell inward, the same sign as
-    /// [`crate::SolidState::pressure`]. The upper triangle is folded
+    /// External load, added to the cell force with the sign of a
+    /// pressure: a positive diagonal entry pushes the cell inward, as
+    /// [`crate::SolidState::pressure`] does. It is the negative of an
+    /// applied Cauchy stress, not the tension-positive tensor of
+    /// [`PointSurface::cauchy_stress`]. The upper triangle is folded
     /// onto the lower one.
     pub external_stress: M3,
     /// Positive scale on the Jacobian. 1 is the 2012 value.
@@ -151,7 +157,8 @@ impl SolidDimerConfig {
         self
     }
 
-    /// External Cauchy stress. The upper triangle is folded down.
+    /// External load in the sign of a pressure, positive inward. The
+    /// upper triangle is folded down.
     pub fn with_external_stress(mut self, stress: M3) -> Self {
         self.external_stress = stress;
         self

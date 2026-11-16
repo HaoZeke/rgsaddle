@@ -791,7 +791,9 @@ pub struct DefectPairConfig {
     pub dimer: SolidDimerConfig,
     /// Frozen or variable cell.
     pub cell_mode: CellMode,
-    /// Applied stress. Nonzero makes barriers enthalpies.
+    /// Applied load with the sign of a pressure, positive inward, as
+    /// [`SolidDimerConfig::external_stress`]. Nonzero makes barriers
+    /// enthalpies.
     pub external_stress: M3,
     /// Subtracted in `P = -V (σ - σ_bulk)`. Zero if the perfect cell is unstressed.
     pub bulk_stress: M3,

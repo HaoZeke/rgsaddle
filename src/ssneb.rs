@@ -164,9 +164,10 @@ impl SolidNeb {
     /// `positions` and `cells` are the Cartesian geometry of each
     /// image, endpoints included, already unwrapped into that chart:
     /// the joint vector is `r_0` then `J ε`, with no minimum image
-    /// applied inside the step. `external` is the Cauchy stress in the
-    /// enthalpy `E + V_0 σ_ext : ε`. `weight` scales `J`; 1 is the
-    /// 2012 value.
+    /// applied inside the step. `external` is `σ_ext` in the enthalpy
+    /// `E + V_0 σ_ext : ε`, with the sign of a pressure: positive
+    /// inward, minus an applied Cauchy stress. `weight` scales `J`; 1
+    /// is the 2012 value.
     ///
     /// The atomic min-mode refinement, the zoom, the exponential
     /// metric, AutoNEB and [`BandConfig::solid`] belong to the atomic

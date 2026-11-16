@@ -66,10 +66,18 @@ pub trait PointSurface: Sync {
     /// Cauchy stress, row-major 3×3.
     ///
     /// `σ = (1/V) ∂E/∂ε` for the right strain `h ← h (I + ε)` at fixed
-    /// fractional coordinates. The virial is `V σ`. `None` asks the
-    /// solid-state dimer to finite-difference [`Self::eval_in_cell`].
-    /// A frozen cell never calls this: that search is
-    /// [`crate::MinModeSession`] on [`Self::eval`].
+    /// fractional coordinates, in the energy and length units of
+    /// [`Self::eval_in_cell`]. It is positive in tension, so a
+    /// stretched cell has a positive trace and a pressure tensor is
+    /// `-σ`. LAMMPS reports `pxx pyy pzz pxy pxz pyz`, a pressure in
+    /// bar under `units metal`, so `σ_ab = -p_ab / nktv2p` with
+    /// `nktv2p = 1.6021765e6`, and its off-diagonal order is not the
+    /// xx, yy, zz, yz, xz, xy of [`crate::STRAIN_VOIGT`]. The
+    /// generalized cell force is `-(V/J) σ`: a flipped sign walks
+    /// every free strain uphill. The virial is `V σ`. `None` asks the
+    /// solid-state searches to finite-difference
+    /// [`Self::eval_in_cell`]. A frozen cell never calls this: that
+    /// search is [`crate::MinModeSession`] on [`Self::eval`].
     fn cauchy_stress(
         &self,
         x: ArrayView1<f64>,
