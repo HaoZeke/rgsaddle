@@ -62,8 +62,13 @@ rug = { version = "1.27", optional = true }
 
 [dev-dependencies]
 approx = "0.5"
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 faer = { version = "0.24.4", default-features = false, features = ["std", "linalg"] }
 sha2 = "0.10"
+
+[[bench]]
+name = "ohtst"
+harness = false
 
 [profile.dev.package.faer]
 opt-level = 3
