@@ -28,7 +28,7 @@ The table below lists the main types.
 | =MassWeighted=                 | =q = M^{1/2} x= over a Cartesian =PointSurface=; =FixedCell= holds the cell of a crystal fixed per temperature. =flux_mass= is =1 / Σ nᵢ²/mᵢ=, not the 2001 Eq. 24 |
 | =sample_plane=                 | Plane-restricted Langevin sampling at =kT= by projected BAOAB or GHMC (=PlaneIntegrator=), reproducible from a seed. =PlaneSample= holds the Euclidean gradient blocks, the centroid torque and the virial, each with a block standard error; =HarmonicReference= adds Stein control variates |
 | =PlaneOptimizer=               | Stochastic ascent of the plane free energy on any =rgmin::manifold::Manifold=, quick-min steps capped per block, norm-test sample growth, error-based stop |
-| =basin_density=                | =Z_H/Z_R= on a plane through a minimum from the mean force on parallel planes, with a delta-method error. =reactant_density= keeps the 2001 crossing estimator, whose variance is infinite |
+| =basin_density=                | =Z_H/Z_R= on a plane through a minimum from the mean force on parallel planes, with a delta-method error; planes are sampled outward from warm starts and a side ends past =BasinConfig::cap= kT. =reactant_density= keeps the 2001 crossing estimator, whose variance is infinite |
 | =reversible_work=              | =ΔA= between planes by integrating =dA= along straight legs, with the BAR estimate on rigid maps between neighbouring nodes as a check |
 | =ohtst_rate=                   | =k = sqrt(kT/2π) (Z_H/Z_R) exp(-ΔA/kT)= with unit mass in mass-weighted coordinates, and its error. =plane_transmission= is the Bennett–Chandler =κ= from a plane sample |
 | =anharmonic_correction=        | First-order correction to harmonic TST and the first-order offset of the optimal plane, from Hessian actions only |
@@ -185,7 +185,7 @@ The importable package is =rgsaddle=. =rgsaddle._core= is the nanobind extension
 - =tests/defect_pair_rates.rs= — direction labels, equal toward/away rates on a flat control, and the catalogue round trip
 - =tests/ohtst_estimators.rs= — OH-TST force, torque and centroid torque against closed forms on a Gaussian and line quadrature on LEPS; control variates exact on the Gaussian and unbiased on LEPS
 - =tests/ohtst_bligaard_jonsson.rs= — the Eckart angles of Bligaard and Jónsson against line quadrature, the optimizer at both maxima, and the work between them
-- =tests/ohtst_leps.rs= — the dimer-seeded plane, the climb, the rate against quadrature and harmonic TST, and the approach to harmonic TST at low temperature
+- =tests/ohtst_leps.rs= — the dimer-seeded plane, the climb, =Z_H/Z_R= by parallel planes and by crossings, the rate against quadrature and harmonic TST, and the approach to harmonic TST at low temperature
 - =tests/ohtst_skewed_well.rs= — the first-order correction, the optimum and rate at high temperature, and =Z_H/Z_R= against two-dimensional quadrature
 - =tests/ohtst_coupled_modes.rs= — 48 coupled modes against product quadrature: the gradient frame, the first-order coefficients, plane free energies, control variates, and =Z_H/Z_R=
 - =validation/= — sympy and sollya checks of the dimer rotation, the Lanczos residual bound, and the finite-difference curvature; =bain_lj_reference.py= (numpy, scipy) scans the relaxed Bain path that =tests/c/solid_bain_lj.c= checks against, and =ssneb_bain_cell.py= (sympy) checks its strain parametrisation and Jacobian
