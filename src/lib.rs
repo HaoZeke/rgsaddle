@@ -37,8 +37,12 @@
 //! colouring and one batched gradient difference per colour and
 //! Cartesian axis.
 //!
-//! [`BandSession`] and [`MinModeSession`] each open with a runnable
-//! example. The guides and tutorials are at
+//! Each entry point opens with a runnable example on a small analytic
+//! surface: [`BandSession`], [`AutoNeb`], [`OcinebSession`],
+//! [`MinModeSession`], [`Index1Session`], [`SolidDimer`], [`SolidNeb`],
+//! [`Stencil`], and the [`ohtst`] module. With the `capi` feature the C
+//! band, min-mode and stencil handles have the same examples in `capi`.
+//! The guides and tutorials are at
 //! <https://omnipotentrpc.github.io/rgsaddle/>.
 
 #![deny(missing_docs)]
