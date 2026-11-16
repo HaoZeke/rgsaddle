@@ -715,6 +715,17 @@ pub(crate) fn held_directions<S: PointSurface>(
     Ok(held)
 }
 
+/// The estimates that the control variates of [`LangevinConfig::control`]
+/// correct.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Controlled {
+    /// The normal force and the torques.
+    All,
+    /// The normal force only, which spares the linear solve per block that
+    /// the torques need. The torques stay uncontrolled.
+    NormalForce,
+}
+
 /// Sample the plane at `config.thermal` and average the gradient blocks
 /// of its free energy.
 ///
@@ -725,6 +736,17 @@ pub fn sample_plane<S: PointSurface>(
     plane: &Hyperplane,
     start: Option<ArrayView1<f64>>,
     config: &LangevinConfig,
+) -> Result<PlaneSample, SaddleError> {
+    sample_plane_controlled(surface, plane, start, config, Controlled::All)
+}
+
+/// [`sample_plane`] with the control variates restricted to `controlled`.
+pub(crate) fn sample_plane_controlled<S: PointSurface>(
+    surface: &S,
+    plane: &Hyperplane,
+    start: Option<ArrayView1<f64>>,
+    config: &LangevinConfig,
+    controlled: Controlled,
 ) -> Result<PlaneSample, SaddleError> {
     config.check()?;
     let n = plane.dim();
@@ -869,16 +891,24 @@ pub fn sample_plane<S: PointSurface>(
         let mut rows = block_gradients.clone();
         for (block, sums) in block_controls.iter().enumerate() {
             let gradient = sums.slice(s![..n]).to_owned();
-            let weighted = sums.slice(s![n..]).to_owned();
-            let Some(correction) = control.solve(&weighted)? else {
-                break;
+            let correction = match controlled {
+                Controlled::All => {
+                    let weighted = sums.slice(s![n..]).to_owned();
+                    let Some(correction) = control.solve(&weighted)? else {
+                        break;
+                    };
+                    Some(correction)
+                }
+                Controlled::NormalForce => None,
             };
             let d = -normal_force[block] - control.coefficient.dot(&gradient);
             let mut row = rows.row_mut(block);
             row.slice_mut(s![..n]).assign(&(&normal * d));
-            let mut torque = row.slice_mut(s![n..]);
-            torque += &correction;
-            torque.scaled_add(-config.thermal, &control.coefficient);
+            if let Some(correction) = correction {
+                let mut torque = row.slice_mut(s![n..]);
+                torque += &correction;
+                torque.scaled_add(-config.thermal, &control.coefficient);
+            }
             forces.push(-d);
         }
         if forces.len() == n_blocks {
