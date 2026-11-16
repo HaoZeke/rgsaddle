@@ -1847,6 +1847,115 @@ mod tests {
         chart.enthalpy(energy, q).unwrap()
     }
 
+    /// Two atoms tied to fractional sites of a cell with a metric
+    /// spring: `E = k/2 |h hᵀ - G0|² + Σ w/2 |d|² + c (d·u)³` with
+    /// `d = r - s h`. Every cell entry moves the energy, the cubic term
+    /// leaves the stress unsymmetric, and the stress is analytic.
+    struct Tethered;
+
+    const SITES: [[f64; 3]; 2] = [[0.1, 0.2, 0.3], [0.6, 0.5, 0.75]];
+    const TILT: [f64; 3] = [0.48, 0.6, 0.64];
+
+    impl Tethered {
+        fn evaluate(r: ArrayView1<f64>, h: M3) -> (f64, Array1<f64>, M3) {
+            let reference = [[4.0, 0.0, 0.0], [0.2, 4.4, 0.0], [-0.1, 0.3, 4.8]];
+            let (k, w, c) = (0.02, 1.3, 0.4);
+            let metric = m3_mul(h, transpose(h));
+            let metric0 = m3_mul(reference, transpose(reference));
+            let strain = add(metric, scale(-1.0, metric0));
+            let mut energy = 0.5 * k * strain.iter().flatten().map(|v| v * v).sum::<f64>();
+            let mut d_cell = scale(2.0 * k, m3_mul(strain, h));
+            let mut gradient = Array1::zeros(6);
+            for (atom, site) in SITES.iter().enumerate() {
+                let anchor = row_mul(*site, h);
+                let d: [f64; 3] = std::array::from_fn(|a| r[3 * atom + a] - anchor[a]);
+                let along = dot3(d, TILT);
+                energy += 0.5 * w * dot3(d, d) + c * along.powi(3);
+                for a in 0..3 {
+                    let g = w * d[a] + 3.0 * c * along * along * TILT[a];
+                    gradient[3 * atom + a] = g;
+                    for (row, &s) in d_cell.iter_mut().zip(site) {
+                        row[a] -= s * g;
+                    }
+                }
+            }
+            let volume = m3_det(h).abs();
+            let sigma: M3 = std::array::from_fn(|p| {
+                std::array::from_fn(|q| {
+                    let atoms: f64 = (0..2).map(|i| r[3 * i + p] * gradient[3 * i + q]).sum();
+                    let cell: f64 = (0..3).map(|row| h[row][p] * d_cell[row][q]).sum();
+                    (atoms + cell) / volume
+                })
+            });
+            (energy, gradient, sigma)
+        }
+    }
+
+    impl PointSurface for Tethered {
+        fn eval(&self, r: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+            let (energy, gradient, _) =
+                Self::evaluate(r, [[4.0, 0.0, 0.0], [0.2, 4.4, 0.0], [-0.1, 0.3, 4.8]]);
+            Ok((energy, gradient))
+        }
+
+        fn eval_in_cell(
+            &self,
+            r: ArrayView1<f64>,
+            cell: &[f64; 9],
+        ) -> Result<(f64, Array1<f64>), SaddleError> {
+            let (energy, gradient, _) = Self::evaluate(r, m3_from_row9(*cell));
+            Ok((energy, gradient))
+        }
+
+        fn cauchy_stress(
+            &self,
+            r: ArrayView1<f64>,
+            cell: &[f64; 9],
+        ) -> Result<Option<[f64; 9]>, SaddleError> {
+            Ok(Some(m3_to_row9(Self::evaluate(r, m3_from_row9(*cell)).2)))
+        }
+    }
+
+    #[test]
+    fn analytic_cell_force_matches_finite_differences_for_every_mask() {
+        let cell = [[4.3, 0.0, 0.0], [0.35, 4.6, 0.0], [-0.25, 0.4, 5.0]];
+        let external = [[0.07, 0.0, 0.0], [-0.02, 0.05, 0.0], [0.03, 0.01, -0.04]];
+        let atoms = array![0.6, 1.1, 1.4, 2.9, 2.6, 4.0];
+        for bits in 1..64_u32 {
+            let mask = CellMask::voigt(std::array::from_fn(|k| bits & (1 << k) != 0));
+            let chart = JointChart::new(cell, 2, mask, external, 1.7).unwrap();
+            assert_eq!(chart.n_strain(), bits.count_ones() as usize);
+            let mut q = Array1::zeros(chart.dimension());
+            q.slice_mut(s![..6]).assign(&atoms);
+            for k in 0..chart.n_strain() {
+                q[6 + k] = (0.04 - 0.017 * k as f64) * chart.jacobian();
+            }
+            let (r, h) = chart.geometry(q.view()).unwrap();
+            let (_, g_cart, sigma) = Tethered::evaluate(r.view(), h);
+            let gradient = chart.gradient(q.view(), g_cart.view(), sigma).unwrap();
+            let enthalpy = |q: &Array1<f64>| {
+                let (r, h) = chart.geometry(q.view()).unwrap();
+                chart
+                    .enthalpy(Tethered::evaluate(r.view(), h).0, q.view())
+                    .unwrap()
+            };
+            let step = 1e-6;
+            for k in 0..q.len() {
+                let mut plus = q.clone();
+                let mut minus = q.clone();
+                plus[k] += step;
+                minus[k] -= step;
+                let fd = (enthalpy(&plus) - enthalpy(&minus)) / (2.0 * step);
+                assert!(
+                    (gradient[k] - fd).abs() < 1e-7 * (1.0 + fd.abs()),
+                    "mask {:?} component {k}: analytic {} finite difference {fd}",
+                    mask.flags(),
+                    gradient[k]
+                );
+            }
+        }
+    }
+
     /// Quadratic saddle in x, wells in y and z, and a cell term on h_00.
     struct QuadraticCell;
 
