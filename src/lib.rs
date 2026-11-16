@@ -127,7 +127,11 @@ pub use ocineb::{
     backoff_threshold, initial_threshold, mode_alignment, should_trigger, success_threshold,
     walk_helped,
 };
-pub use ohtst::{Hyperplane, LangevinConfig, MassWeighted, PlaneSample, sample_plane};
+pub use ohtst::{
+    Hyperplane, LangevinConfig, MassWeighted, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum,
+    PlaneSample, PlaneStep, PlaneTrace, ReversibleWork, ReversibleWorkConfig, WorkNode,
+    reversible_work, sample_plane,
+};
 pub use pafi::{
     ArcPath, FreeEnergyProfile, HyperplaneAverage, PafiConfig, PathFrame, PathGeometry,
     average_hyperplane, integrate_profile, pafi_profile, zero_temperature_barrier,
