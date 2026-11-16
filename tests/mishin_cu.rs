@@ -23,8 +23,8 @@ use rgmin::{Control, FireKind, Method, Oracle, Solver};
 use rgsaddle::{
     BOLTZMANN_EV_PER_K, CellMask, DefectSource, ElasticDipole, ElasticMultipole, FieldSolver,
     FmmSolver, IndexCheck, Kelvin, LINEAR_FOLD_EV, MinModeConfig, MinModeStatus, PointSurface,
-    SaddleError, SaddleSeed, SolidDimer, SolidDimerConfig, Strain, StrainResponse, Trust,
-    TrustPolicy, cubic_rotations, index_at,
+    SaddleError, SaddleSeed, SolidDimer, SolidDimerConfig, Strain, StrainResponse, StressCheck,
+    Trust, TrustPolicy, cubic_rotations, index_at,
 };
 
 include!(concat!(
@@ -1007,6 +1007,173 @@ fn mishin_crystal_matches_the_cohesive_energy_and_the_stress() {
         "stress fd {fd_stress} analytic {}",
         analytic_stress[0][0]
     );
+}
+
+/// [`Held`] with its stress handed back as a pressure tensor, `-σ`: a
+/// LAMMPS `pxx ... pyz` with only its unit converted.
+struct AsPressure<'a>(Held<'a>);
+
+impl PointSurface for AsPressure<'_> {
+    fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+        self.0.eval(x)
+    }
+
+    fn eval_in_cell(
+        &self,
+        x: ArrayView1<f64>,
+        cell: &[f64; 9],
+    ) -> Result<(f64, Array1<f64>), SaddleError> {
+        self.0.eval_in_cell(x, cell)
+    }
+
+    fn cauchy_stress(
+        &self,
+        x: ArrayView1<f64>,
+        cell: &[f64; 9],
+    ) -> Result<Option<[f64; 9]>, SaddleError> {
+        Ok(self
+            .0
+            .cauchy_stress(x, cell)?
+            .map(|sigma| sigma.map(|v| -v)))
+    }
+
+    fn excluded_modes(&self, x: ArrayView1<f64>) -> Result<Array2<f64>, SaddleError> {
+        self.0.excluded_modes(x)
+    }
+}
+
+/// A vacancy hop at its fixed-cell saddle, in a cell stretched and
+/// tilted the way a 700 K snapshot leaves it. Diagonal strains held
+/// with the shears free keep the volume exactly, and the search
+/// converges once the shear stress of the snapshot has relaxed. The
+/// opposite mask contracts the cell and converges as well. The same
+/// surface with its stress reported as a pressure is stopped before
+/// the first step.
+#[test]
+fn vacancy_hop_relaxes_free_shears_at_fixed_volume() {
+    let copper = Copper::new();
+    let repeats = 4;
+    let (perfect, cube) = fcc(repeats, 3.615 * 1.012);
+    let side = cube[0][0];
+    let cell = [
+        [1.0021 * side, 0.0, 0.0],
+        [0.004 * side, 0.9987 * side, 0.0],
+        [-0.003 * side, 0.002 * side, 1.0008 * side],
+    ];
+    let mut sites: Vec<[f64; 3]> = perfect
+        .as_slice()
+        .unwrap()
+        .chunks(3)
+        .skip(1)
+        .map(|r| [r[0] / side, r[1] / side, r[2] / side])
+        .collect();
+    let neighbour = 0.5 / repeats as f64;
+    let hopper = sites
+        .iter()
+        .position(|s| s == &[neighbour, neighbour, 0.0])
+        .expect("a nearest neighbour of the vacancy");
+    sites[hopper] = [0.5 * neighbour, 0.5 * neighbour, 0.0];
+    let start: Array1<f64> = sites
+        .iter()
+        .flat_map(|s| {
+            (0..3).map(move |c| s[0] * cell[0][c] + s[1] * cell[1][c] + s[2] * cell[2][c])
+        })
+        .collect();
+    let mut hop = Array1::zeros(start.len());
+    hop[3 * hopper] = std::f64::consts::FRAC_1_SQRT_2;
+    hop[3 * hopper + 1] = std::f64::consts::FRAC_1_SQRT_2;
+    let held = Held {
+        copper: &copper,
+        cell,
+    };
+    let mut fixed = SolidDimer::new(
+        SolidDimerConfig::frozen(MinModeConfig::default()),
+        start,
+        cell,
+        hop,
+    )
+    .unwrap();
+    let fixed_report = fixed.run(&held, 200).unwrap();
+    assert_eq!(fixed_report.status, MinModeStatus::Converged);
+    let saddle_energy = copper.evaluate(fixed.positions(), cell).0;
+
+    let restart = |mask: CellMask| {
+        let config = SolidDimerConfig::new(MinModeConfig::default())
+            .with_pressure(0.0)
+            .with_weight(1.0)
+            .with_index_check(IndexCheck::first_order())
+            .with_mask(mask)
+            .with_stress_check(StressCheck::new());
+        SolidDimer::new(
+            config,
+            fixed.positions().to_owned(),
+            cell,
+            fixed.mode().to_owned(),
+        )
+        .unwrap()
+    };
+    let shears = CellMask::voigt([false, false, false, true, true, true]);
+    let diagonals = CellMask::voigt([true, true, true, false, false, false]);
+
+    let pressure = AsPressure(Held {
+        copper: &copper,
+        cell,
+    });
+    match restart(shears).step(&pressure) {
+        Err(SaddleError::Surface(message)) => {
+            assert!(
+                message.contains("-1.0000 times the derivative"),
+                "{message}"
+            );
+        }
+        other => panic!("a pressure tensor passed the stress check: {other:?}"),
+    }
+
+    for mask in [shears, diagonals] {
+        let mut dimer = restart(mask);
+        let volume = dimer.volume();
+        let report = dimer.run(&held, 80).unwrap();
+        let relaxed = dimer.cell();
+        let energy = copper.evaluate(dimer.positions(), relaxed).0;
+        eprintln!(
+            "VACANCY_HOP free={:?} fixed_steps={} steps={} max_force={:.2e} curvature={:.4} energy_drop_eV={:.5} volume_change={:.3e} tilt_change={:.4} {:.4} {:.4}",
+            mask.flags(),
+            fixed_report.iteration,
+            report.iteration,
+            report.max_force,
+            report.curvature,
+            saddle_energy - energy,
+            dimer.volume() / volume - 1.0,
+            relaxed[1][0] - cell[1][0],
+            relaxed[2][0] - cell[2][0],
+            relaxed[2][1] - cell[2][1],
+        );
+        assert_eq!(
+            report.status,
+            MinModeStatus::Converged,
+            "{:?}: max force {} after {} steps",
+            mask.flags(),
+            report.max_force,
+            report.iteration
+        );
+        assert!(!report.rejected);
+        assert_eq!(report.negative_modes, Some(1));
+        if mask == shears {
+            for axis in 0..3 {
+                assert_eq!(relaxed[axis][axis], cell[axis][axis]);
+            }
+            assert_eq!(dimer.volume(), volume);
+            assert!((relaxed[1][0] - cell[1][0]).abs() > 1e-2, "{relaxed:?}");
+            assert!(energy < saddle_energy, "{energy} {saddle_energy}");
+        } else {
+            // A held shear leaves each tilt in proportion to its column.
+            for (row, col) in [(1, 0), (2, 0), (2, 1)] {
+                let kept = relaxed[row][col] / relaxed[col][col];
+                assert!((kept - cell[row][col] / cell[col][col]).abs() < 1e-12);
+            }
+            assert!(dimer.volume() < volume);
+        }
+    }
 }
 
 #[test]
