@@ -502,6 +502,16 @@ impl PlaneSample {
         g
     }
 
+    /// [`Self::packed_gradient`] with the plane anchored at
+    /// [`Self::centroid`]: `[∂A/∂p; centroid torque]`.
+    pub fn centroid_packed_gradient(&self) -> Array1<f64> {
+        let n = self.grad_point.len();
+        let mut g = Array1::zeros(2 * n);
+        g.slice_mut(s![..n]).assign(&self.grad_point);
+        g.slice_mut(s![n..]).assign(&self.centroid_torque);
+        g
+    }
+
     /// The derivative of `A` along a packed direction `[δp; δν]`, and its
     /// block standard error.
     pub fn directional(&self, direction: ArrayView1<f64>) -> Result<(f64, f64), SaddleError> {

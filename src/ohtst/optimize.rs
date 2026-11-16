@@ -64,9 +64,11 @@ pub struct PlaneOptimizerConfig {
     /// Turn the normal. Without translation the plane turns about its
     /// point.
     pub rotate: bool,
-    /// After each step slide the point inside the new plane to the
-    /// projection of the last sample's centroid, so the next turn pivots
-    /// there. Applies only when [`Self::translate`] is set.
+    /// Turn each plane about the centroid of its sample: anchor the plane at
+    /// the centroid, step on [`PlaneSample::centroid_torque`], and slide the
+    /// point of the new plane to the projection of the centroid. Applies
+    /// only when [`Self::translate`] is set, because a plane that cannot
+    /// move turns about its point.
     pub recenter: bool,
     /// Standard errors within which a gradient block counts as zero.
     pub confidence: f64,
@@ -395,9 +397,22 @@ impl<M: Manifold> PlaneOptimizer<M> {
         )?;
         self.evaluations += sample.evaluations;
         let n = self.n;
-        let gradient = self.riemannian(&sample.packed_gradient());
-        let rows: Vec<Array1<f64>> = sample
-            .block_gradients
+        let pivot = self.config.recenter && self.config.translate;
+        let (packed, blocks) = if pivot {
+            let centred = plane.recentered(sample.centroid.view()).packed();
+            self.quickmin.vel = self
+                .manifold
+                .transport(&self.x, &centred, &self.quickmin.vel);
+            self.x = centred;
+            (
+                sample.centroid_packed_gradient(),
+                &sample.centroid_block_gradients,
+            )
+        } else {
+            (sample.packed_gradient(), &sample.block_gradients)
+        };
+        let gradient = self.riemannian(&packed);
+        let rows: Vec<Array1<f64>> = blocks
             .rows()
             .into_iter()
             .map(|row| self.riemannian(&row.to_owned()))
