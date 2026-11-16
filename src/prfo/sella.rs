@@ -4,7 +4,7 @@
 //! modes and the downhill complement, then runs
 //! [`rgmin::rfo_get_s`] in each block. The restricted companion is
 //! [`rgmin::prfo_restricted`]. Sella inherits the RFO alpha
-//! contract: \(\alpha\in[0,1]\), slope \(+1\), `newton_safe` false.
+//! contract: \(\alpha\in\[0,1\]\), slope \(+1\), `newton_safe` false.
 //! Distinct from [`crate::rfo::RationalFunctionOptimization`] (one
 //! Banerjee eigenproblem on the full space) and from
 //! [`rgmin::NewtonKind::Rfo`].

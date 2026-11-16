@@ -555,7 +555,8 @@ struct RotationStop {
 /// Kästner and Sherwood, J. Chem. Phys. 128, 014106 (2008),
 /// doi:10.1063/1.2815812, estimate the remaining rotation angle from
 /// the rotational force `F` and the curvature `C` as
-/// `ω = atan(F / |C|) / 2`, the trial angle [`rotate_dimer`] uses. A
+/// `ω = atan(F / |C|) / 2`, the trial angle the [`MinModeKind::Dimer`]
+/// rotation uses. A
 /// translation of length `L` along a mode that is `ω` off moves by
 /// `L |sin ω|` across the true mode, which a curvature of magnitude
 /// `|C|` turns into a force error `|C| L |sin ω|`. The magnitude is the

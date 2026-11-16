@@ -87,7 +87,7 @@ impl ExpandKind {
     }
 }
 
-/// Dense `H v` for [`lowest_mode`].
+/// Dense `H v` for [`lowest_mode()`].
 struct DenseApply<'a>(&'a Array2<f64>);
 
 impl ApplyHessian for DenseApply<'_> {

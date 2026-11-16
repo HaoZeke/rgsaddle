@@ -1,6 +1,6 @@
 //! One builder for a point stencil.
 //!
-//! Dimer and Lanczos construct a [`MinModeSession`](crate::minmode::MinModeSession),
+//! Dimer and Lanczos construct a [`MinModeSession`],
 //! so a preset with the same settings repeats that session's positions.
 //! Band presets stay on `feat/band-methods-zoom`.
 //! Goswami, Gunde, and Jónsson, Front. Chem. (2026),
