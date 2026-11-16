@@ -285,13 +285,14 @@ fn leps_optimizer_climbs_from_the_dimer_plane() {
 }
 
 /// The OH-TST rate at `kT = 0.1 E_A`. The density of the reactant
-/// distribution at `Z_R`, behind a wall at the optimal plane, matches
-/// quadrature (0.6509); the reversible work from `Z_R` to the optimal
-/// plane matches quadrature (8.3081 kT; Simpson's rule on its slopes at
-/// the same nodes is within 0.01 kT of that); and their rate matches the
-/// quadrature rate, 3.8589e-5 in the surface's time unit, all within four
-/// standard errors. Harmonic TST from the Vineyard prefactor gives
-/// 4.0410e-5, a ratio of 0.955.
+/// distribution at `Z_R`, the guideline plane through the minimum, matches
+/// quadrature (0.6509) both from crossings behind a wall at the optimal
+/// plane and from parallel planes; the reversible work from `Z_R` to the
+/// optimal plane matches quadrature (8.3081 kT; Simpson's rule on its
+/// slopes at the same nodes is within 0.01 kT of that); and their rate
+/// matches the quadrature rate, 3.8589e-5 in the surface's time unit, all
+/// within four standard errors. Harmonic TST from the Vineyard prefactor
+/// gives 4.0410e-5, a ratio of 0.955.
 ///
 /// The transmission coefficient shot from the optimal plane with the
 /// sampler's friction is a probability.
