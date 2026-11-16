@@ -12,7 +12,11 @@
 //! velocity projection of Jóhannesson and Jónsson, Eqs. 5–10, and each
 //! block is capped as there, by a translation length and a rotation angle.
 //! The force given to quick-min is the Riemannian gradient of `A`, so the
-//! plane climbs to the maximum of `A`, the minimum of `-A`.
+//! plane climbs to the maximum of `A`, the minimum of `-A`. In terms of
+//! `F = -∇V` the point moves along `-⟨ν · F⟩ ν` and the normal along
+//! `⟨(ν · F)(q - c)⟩` off `ν`, the ascent sign of Sec. 3.8 of the OH-TST
+//! design survey; with [`PlaneOptimizerConfig::recenter`] the pivot `c` is
+//! the centroid of the previous sample.
 //!
 //! A sample counts as converged when the translational and the rotational
 //! blocks of that gradient are both within [`PlaneOptimizerConfig::confidence`]

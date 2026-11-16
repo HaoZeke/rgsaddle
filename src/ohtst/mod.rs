@@ -20,6 +20,19 @@
 //! `A` depends on `p` only through `ν · p`, so the `n - 1` in-plane moves
 //! of `p` are a gauge.
 //!
+//! A rate takes five calls. [`Hyperplane::from_min_mode`] seeds the plane
+//! from a converged dimer. [`PlaneOptimizer`] climbs `A`. [`basin_density`]
+//! gives `Z_H / Z_R` on a plane through the minimum from parallel planes.
+//! [`reversible_work`] gives `ΔA` from that plane to the optimum, by
+//! thermodynamic integration and by BAR. [`ohtst_rate`] returns
+//! `k = sqrt(kT / 2π) (Z_H / Z_R) exp(-ΔA / kT)`, with unit mass in these
+//! coordinates, and [`plane_transmission`] the Bennett–Chandler `κ`.
+//! Planes are sampled by projected BAOAB ([`PlaneIntegrator`]); a
+//! [`HarmonicReference`] adds Stein control variates; and
+//! [`anharmonic_correction`] gives the first-order correction to harmonic
+//! TST from Hessian actions alone. No full Hessian is formed anywhere.
+//! These follow the decisions of Sec. 2 of the OH-TST design survey.
+//!
 //! Nothing here names a system. A crystal at a fixed volume or lattice
 //! parameter for each temperature is a surface evaluated in that cell:
 //! wrap it in [`FixedCell`] with the cell for the temperature, then in
