@@ -76,8 +76,10 @@ pub trait PointSurface: Sync {
     /// generalized cell force is `-(V/J) σ`: a flipped sign walks
     /// every free strain uphill. The virial is `V σ`. `None` asks the
     /// solid-state searches to finite-difference
-    /// [`Self::eval_in_cell`]. A frozen cell never calls this: that
-    /// search is [`crate::MinModeSession`] on [`Self::eval`].
+    /// [`Self::eval_in_cell`], and [`crate::check_cauchy_stress`]
+    /// compares a supplied tensor with that difference. A frozen cell
+    /// never calls this: that search is [`crate::MinModeSession`] on
+    /// [`Self::eval`].
     fn cauchy_stress(
         &self,
         x: ArrayView1<f64>,

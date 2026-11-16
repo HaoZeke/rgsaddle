@@ -141,7 +141,8 @@ pub use relax::{
 };
 pub use solid_dimer::{
     CellMask, IndexCheck, IndexReport, JointChart, STRAIN_VOIGT, SolidDimer, SolidDimerConfig,
-    SolidDimerReport, finite_difference_cauchy_stress, index_at, virial,
+    SolidDimerReport, StressCheck, check_cauchy_stress, finite_difference_cauchy_stress, index_at,
+    virial,
 };
 pub use spring::SpringKind;
 pub use ssneb::{SolidImage, SolidNeb, joint_coordinate};

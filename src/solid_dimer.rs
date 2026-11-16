@@ -27,6 +27,8 @@
 //! `σ` is [`PointSurface::cauchy_stress`], positive in tension. A
 //! pressure tensor in its place turns every free strain uphill: the
 //! cell runs away while the same atoms converge in a frozen cell.
+//! [`StressCheck`] compares the tensor with finite differences of the
+//! energy before the first step.
 //!
 //! [`IndexCheck`] is optional. When it is set, a point that meets the
 //! force tolerance is accepted only if the projected Hessian has one
@@ -131,6 +133,9 @@ pub struct SolidDimerConfig {
     /// harmonic residual along the mode is then about `flat` when the
     /// force sits on the mode.
     pub flat: f64,
+    /// Compare [`PointSurface::cauchy_stress`] with the energy before
+    /// the first step of a free cell. `None` trusts the surface.
+    pub stress_check: Option<StressCheck>,
 }
 
 impl SolidDimerConfig {
@@ -143,6 +148,7 @@ impl SolidDimerConfig {
             weight: 1.0,
             index: None,
             flat: 0.0,
+            stress_check: None,
         }
     }
 
@@ -190,6 +196,14 @@ impl SolidDimerConfig {
     /// than zero is refused by [`SolidDimer::new`].
     pub fn with_flat(mut self, flat: f64) -> Self {
         self.flat = flat;
+        self
+    }
+
+    /// Run [`check_cauchy_stress`] before the first step, and stop
+    /// with [`SaddleError::Surface`] while the surface stress disagrees
+    /// with its energy. A frozen cell reads no stress and skips it.
+    pub fn with_stress_check(mut self, check: StressCheck) -> Self {
+        self.stress_check = Some(check);
         self
     }
 }
@@ -594,6 +608,158 @@ pub fn virial(volume: f64, stress: M3) -> M3 {
     scale(volume, stress)
 }
 
+/// How [`check_cauchy_stress`] compares a supplied stress with the
+/// energy it belongs to.
+///
+/// The supplied tensor passes when no entry differs from
+/// [`finite_difference_cauchy_stress`] by more than
+/// `absolute + relative s`, with `s` the largest entry of either
+/// tensor. Build with [`StressCheck::new`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct StressCheck {
+    /// Strain increment of the finite difference.
+    pub step: f64,
+    /// Accepted difference as a fraction of the larger tensor.
+    pub relative: f64,
+    /// Accepted difference in energy per volume, so a cell near zero
+    /// stress is not judged on finite-difference noise.
+    pub absolute: f64,
+}
+
+impl StressCheck {
+    /// Strain step 1e-5, one percent of the larger tensor plus 1e-6.
+    pub const fn new() -> Self {
+        Self {
+            step: 1.0e-5,
+            relative: 1.0e-2,
+            absolute: 1.0e-6,
+        }
+    }
+
+    /// Strain increment of the finite difference.
+    pub const fn with_step(mut self, step: f64) -> Self {
+        self.step = step;
+        self
+    }
+
+    /// Accepted difference: `relative` of the larger tensor plus
+    /// `absolute`.
+    pub const fn with_tolerance(mut self, relative: f64, absolute: f64) -> Self {
+        self.relative = relative;
+        self.absolute = absolute;
+        self
+    }
+
+    fn validate(self) -> Result<Self, SaddleError> {
+        let finite = |value: f64| value.is_finite() && value >= 0.0;
+        if !(self.step.is_finite() && self.step > 0.0) {
+            return Err(SaddleError::Invalid(
+                "stress check needs a positive strain step".into(),
+            ));
+        }
+        if !(finite(self.relative) && finite(self.absolute)) {
+            return Err(SaddleError::Invalid(
+                "stress check tolerances must be finite and non-negative".into(),
+            ));
+        }
+        Ok(self)
+    }
+}
+
+impl Default for StressCheck {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Compare [`PointSurface::cauchy_stress`] with the strain derivative
+/// of [`PointSurface::eval_in_cell`] at one geometry.
+///
+/// The derivative is [`finite_difference_cauchy_stress`], eighteen
+/// energies. A surface that returns no stress passes without them,
+/// since the solid-state searches difference its energy already. A
+/// disagreement is [`SaddleError::Surface`] naming the worst entry and,
+/// when one exists, the factor `c` with `σ = c σ_fd`. `c = -1` is a
+/// pressure tensor in place of the stress. `c ≈ 1.602e6` is a stress
+/// in bar against energies in eV and lengths in Å, and `c ≈ -1.602e6`
+/// is a LAMMPS `metal` pressure passed through unchanged. Without such
+/// a factor the components are permuted or in another frame.
+pub fn check_cauchy_stress<S: PointSurface>(
+    surface: &S,
+    positions: ArrayView1<f64>,
+    cell: M3,
+    check: StressCheck,
+) -> Result<(), SaddleError> {
+    let check = check.validate()?;
+    let Some(packed) = surface.cauchy_stress(positions, &m3_to_row9(cell))? else {
+        return Ok(());
+    };
+    if !packed.iter().all(|v| v.is_finite()) {
+        return Err(SaddleError::NonFinite("solid-state stress"));
+    }
+    let reported = m3_from_row9(packed);
+    let derived = finite_difference_cauchy_stress(surface, positions, cell, check.step)?;
+    let agrees = |model: &M3| {
+        let size = largest_entry(&reported).max(largest_entry(model));
+        largest_gap(&reported, model).2 <= check.absolute + check.relative * size
+    };
+    if agrees(&derived) {
+        return Ok(());
+    }
+    const AXES: [char; 3] = ['x', 'y', 'z'];
+    let (i, j, _) = largest_gap(&reported, &derived);
+    let mut message = format!(
+        "cauchy_stress {}{} is {:.6e} where the strain derivative of the energy is {:.6e}",
+        AXES[i], AXES[j], reported[i][j], derived[i][j]
+    );
+    let norm: f64 = derived.iter().flatten().map(|v| v * v).sum();
+    if norm > 0.0 {
+        let overlap: f64 = reported
+            .iter()
+            .flatten()
+            .zip(derived.iter().flatten())
+            .map(|(a, b)| a * b)
+            .sum();
+        let factor = overlap / norm;
+        if agrees(&scale(factor, derived)) {
+            let shown = if (1.0e-3..1.0e4).contains(&factor.abs()) {
+                format!("{factor:.4}")
+            } else {
+                format!("{factor:.4e}")
+            };
+            message.push_str(&format!(
+                ", and the whole tensor is {shown} times the derivative"
+            ));
+        } else {
+            message.push_str(
+                ", and no single factor relates the two: the components are permuted or in another frame",
+            );
+        }
+    }
+    message.push_str(
+        ". The stress is (1/V) dE/deps: positive in tension, minus a pressure tensor, in energy per volume",
+    );
+    Err(SaddleError::Surface(message))
+}
+
+fn largest_entry(a: &M3) -> f64 {
+    a.iter().flatten().fold(0.0, |acc: f64, v| acc.max(v.abs()))
+}
+
+fn largest_gap(a: &M3, b: &M3) -> (usize, usize, f64) {
+    let mut worst = (0, 0, 0.0);
+    for i in 0..3 {
+        for j in 0..3 {
+            let gap = (a[i][j] - b[i][j]).abs();
+            if gap > worst.2 {
+                worst = (i, j, gap);
+            }
+        }
+    }
+    worst
+}
+
 /// Solid-state dimer.
 ///
 /// A frozen mask runs [`MinModeSession`] on the atomic coordinates and
@@ -615,6 +781,7 @@ pub struct SolidDimer {
     escape_step: f64,
     rejected_at: Vec<Array1<f64>>,
     index_calls: usize,
+    stress_check: Option<StressCheck>,
 }
 
 #[derive(Clone, Debug)]
@@ -676,6 +843,7 @@ impl SolidDimer {
                 "flat-saddle length must be finite and non-negative".into(),
             ));
         }
+        let stress_check = config.stress_check.map(StressCheck::validate).transpose()?;
         let index = config.index;
         let flat = config.flat;
         let escapes_left = index.map(|check| check.escapes).unwrap_or(0);
@@ -710,6 +878,7 @@ impl SolidDimer {
                 escape_step,
                 rejected_at: Vec::new(),
                 index_calls: 0,
+                stress_check: None,
             });
         }
         let mode_slice = mode.as_slice_mut().expect("mode buffer");
@@ -752,6 +921,7 @@ impl SolidDimer {
             escape_step,
             rejected_at: Vec::new(),
             index_calls: 0,
+            stress_check,
         })
     }
 
@@ -826,6 +996,11 @@ impl SolidDimer {
             return self.adjudicate(surface, report);
         }
         let chart = self.chart.clone().expect("joint chart");
+        if let Some(check) = self.stress_check {
+            let (r, h) = chart.geometry(self.inner.position())?;
+            check_cauchy_stress(surface, r.view(), h, check)?;
+            self.stress_check = None;
+        }
         let snapshot = std::mem::take(&mut self.snapshot);
         let result = {
             let adapter = JointSurface {
@@ -1954,6 +2129,156 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// [`Tethered`] with its stress passed through a boundary mistake.
+    struct Misreported {
+        factor: f64,
+        swap: bool,
+        calls: AtomicUsize,
+    }
+
+    impl Misreported {
+        fn new(factor: f64, swap: bool) -> Self {
+            Self {
+                factor,
+                swap,
+                calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl PointSurface for Misreported {
+        fn eval(&self, r: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+            Tethered.eval(r)
+        }
+
+        fn eval_in_cell(
+            &self,
+            r: ArrayView1<f64>,
+            cell: &[f64; 9],
+        ) -> Result<(f64, Array1<f64>), SaddleError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Tethered.eval_in_cell(r, cell)
+        }
+
+        fn cauchy_stress(
+            &self,
+            r: ArrayView1<f64>,
+            cell: &[f64; 9],
+        ) -> Result<Option<[f64; 9]>, SaddleError> {
+            let mut sigma = Tethered.cauchy_stress(r, cell)?.expect("analytic stress");
+            if self.swap {
+                sigma.swap(1, 5);
+                sigma.swap(3, 7);
+            }
+            Ok(Some(sigma.map(|v| self.factor * v)))
+        }
+    }
+
+    fn check_message(surface: &Misreported) -> Option<String> {
+        let cell = [[4.3, 0.0, 0.0], [0.35, 4.6, 0.0], [-0.25, 0.4, 5.0]];
+        let atoms = array![0.6, 1.1, 1.4, 2.9, 2.6, 4.0];
+        match check_cauchy_stress(surface, atoms.view(), cell, StressCheck::new()) {
+            Ok(()) => None,
+            Err(SaddleError::Surface(message)) => Some(message),
+            Err(other) => panic!("unexpected {other}"),
+        }
+    }
+
+    #[test]
+    fn stress_check_names_a_flipped_sign_a_unit_and_a_permutation() {
+        assert_eq!(check_message(&Misreported::new(1.0, false)), None);
+        let flipped = check_message(&Misreported::new(-1.0, false)).expect("sign");
+        assert!(
+            flipped.contains("is -1.0000 times the derivative"),
+            "{flipped}"
+        );
+        assert!(flipped.contains("positive in tension"), "{flipped}");
+        let bar = check_message(&Misreported::new(1.6021765e6, false)).expect("bar");
+        assert!(bar.contains("is 1.6022e6 times"), "{bar}");
+        let lammps = check_message(&Misreported::new(-1.6021765e6, false)).expect("pressure");
+        assert!(lammps.contains("is -1.6022e6 times"), "{lammps}");
+        let order = check_message(&Misreported::new(1.0, true)).expect("order");
+        assert!(order.contains("no single factor"), "{order}");
+
+        struct EnergyOnly(AtomicUsize);
+        impl PointSurface for EnergyOnly {
+            fn eval(&self, r: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                Tethered.eval(r)
+            }
+        }
+        let quiet = EnergyOnly(AtomicUsize::new(0));
+        let atoms = array![0.6, 1.1, 1.4, 2.9, 2.6, 4.0];
+        check_cauchy_stress(
+            &quiet,
+            atoms.view(),
+            diagonal(4.0, 4.0, 4.0),
+            StressCheck::new(),
+        )
+        .unwrap();
+        assert_eq!(quiet.0.load(Ordering::Relaxed), 0);
+        assert!(matches!(
+            check_cauchy_stress(
+                &quiet,
+                atoms.view(),
+                diagonal(4.0, 4.0, 4.0),
+                StressCheck::new().with_tolerance(-1.0, 0.0)
+            ),
+            Err(SaddleError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn stress_check_stops_a_free_cell_before_its_first_step() {
+        let search = MinModeConfig {
+            max_move: 0.05,
+            ..MinModeConfig::default()
+        };
+        let cell = [[4.3, 0.0, 0.0], [0.35, 4.6, 0.0], [-0.25, 0.4, 5.0]];
+        let atoms = array![0.6, 1.1, 1.4, 2.9, 2.6, 4.0];
+        let mode = array![1.0, 0.0, 0.0, -1.0, 0.0, 0.0];
+        let held = CellMask::voigt([false, false, false, true, true, true]);
+        let plain_config = SolidDimerConfig::new(search).with_mask(held);
+        let config = plain_config.clone().with_stress_check(StressCheck::new());
+        let flipped = Misreported::new(-1.0, false);
+        let mut dimer = SolidDimer::new(config.clone(), atoms.clone(), cell, mode.clone()).unwrap();
+        let start = dimer.generalized().to_owned();
+        for _ in 0..2 {
+            let refused = dimer.step(&flipped);
+            assert!(
+                matches!(refused, Err(SaddleError::Surface(_))),
+                "{refused:?}"
+            );
+            assert_eq!(dimer.generalized(), start.view());
+        }
+
+        let honest = Misreported::new(1.0, false);
+        let mut checked = SolidDimer::new(config, atoms.clone(), cell, mode.clone()).unwrap();
+        let mut plain = SolidDimer::new(plain_config, atoms.clone(), cell, mode.clone()).unwrap();
+        checked.step(&honest).unwrap();
+        let first = honest.calls.swap(0, Ordering::Relaxed);
+        let reference = Misreported::new(1.0, false);
+        plain.step(&reference).unwrap();
+        assert_eq!(first, reference.calls.swap(0, Ordering::Relaxed) + 18);
+        checked.step(&honest).unwrap();
+        plain.step(&reference).unwrap();
+        assert_eq!(
+            honest.calls.load(Ordering::Relaxed),
+            reference.calls.load(Ordering::Relaxed)
+        );
+        assert_eq!(checked.generalized(), plain.generalized());
+
+        let mut frozen = SolidDimer::new(
+            SolidDimerConfig::frozen(MinModeConfig::default())
+                .with_stress_check(StressCheck::new()),
+            atoms,
+            cell,
+            mode,
+        )
+        .unwrap();
+        frozen.step(&flipped).unwrap();
     }
 
     /// Quadratic saddle in x, wells in y and z, and a cell term on h_00.
