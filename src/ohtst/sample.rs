@@ -223,7 +223,7 @@ pub(crate) struct Dynamics<'a, S> {
     pub(crate) gradient: Array1<f64>,
     energy: f64,
     v: Array1<f64>,
-    force: Array1<f64>,
+    pub(crate) force: Array1<f64>,
     trial: Array1<f64>,
     trial_v: Array1<f64>,
     trial_force: Array1<f64>,
@@ -451,6 +451,31 @@ pub struct PlaneSample {
     /// Block means of the packed gradient `[∂A/∂p; ∂A/∂ν]`, one row per
     /// block, for the standard error of any linear functional.
     pub block_gradients: Array2<f64>,
+    /// `∂A/∂ν` with the plane turning about [`Self::centroid`] instead of
+    /// its point: `-Cov(ν · ∇V, q)` off the normal and the held modes, which
+    /// is `grad_normal + ⟨ν · ∇V⟩ (c - p)`.
+    pub centroid_torque: Array1<f64>,
+    /// Block standard error of each entry of [`Self::centroid_torque`].
+    pub centroid_torque_error: Array1<f64>,
+    /// [`Self::block_gradients`] with the torque about the centroid. Both
+    /// factors of the covariance are centred in every block, so the rows
+    /// leave out the noise of the lever arm `c - p`.
+    pub centroid_block_gradients: Array2<f64>,
+    /// Virial `⟨(P∇V) · (q - p)⟩`, `P` the projector onto the free
+    /// directions of the plane. At equilibrium on the plane it is
+    /// `free_dimensions · kT`, so a departure flags a run that has not
+    /// equilibrated or a time step that biases the sampling.
+    pub virial: f64,
+    /// Block standard error of [`Self::virial`].
+    pub virial_error: f64,
+    /// Directions free in the plane: the dimension less the normal and the
+    /// held modes.
+    pub free_dimensions: usize,
+    /// `kT` of the sampler.
+    pub thermal: f64,
+    /// Independent records behind [`Self::normal_force`]: the variance of
+    /// `ν · ∇V` over the records divided by the squared block error.
+    pub effective_samples: f64,
     /// Largest integrated autocorrelation time of the monitored series, in
     /// records.
     pub tau: f64,
@@ -588,6 +613,7 @@ pub fn sample_plane<S: PointSurface>(
         }
     }
     let excluded = held[1..].to_vec();
+    let free_dimensions = n - held.len();
     let walls: [Hyperplane; 0] = [];
     let mut dynamics = Dynamics::new(surface, start, held, &walls, config, rng)?;
     for _ in 0..config.burn_in {
@@ -595,7 +621,7 @@ pub fn sample_plane<S: PointSurface>(
     }
     let chunk = config.records.div_ceil(CHUNKS).max(1);
     let mut chunk_sums: Vec<Array1<f64>> = Vec::with_capacity(config.records.div_ceil(chunk));
-    let mut sum = Array1::zeros(2 * n + 1);
+    let mut sum = Array1::zeros(2 * n + 2);
     let mut series = vec![Vec::with_capacity(config.records); 1 + probes.len()];
     let retain_every = config
         .records
@@ -615,13 +641,14 @@ pub fn sample_plane<S: PointSurface>(
         let total = slice_mut(&mut sum);
         total[0] += d;
         axpy(&mut total[1..=n], d, &arm);
-        axpy(&mut total[n + 1..], 1.0, q);
+        axpy(&mut total[n + 1..=2 * n], 1.0, q);
+        total[2 * n + 1] -= dot(slice(&dynamics.force), &arm);
         series[0].push(d);
         for (j, probe) in probes.iter().enumerate() {
             series[1 + j].push(d * dot(slice(probe), &arm));
         }
         if (record + 1) % chunk == 0 || record + 1 == config.records {
-            chunk_sums.push(std::mem::replace(&mut sum, Array1::zeros(2 * n + 1)));
+            chunk_sums.push(std::mem::replace(&mut sum, Array1::zeros(2 * n + 2)));
         }
         if retained.len() < config.retain && record % retain_every == retain_every - 1 {
             retained.push(dynamics.q.clone());
@@ -643,41 +670,71 @@ pub fn sample_plane<S: PointSurface>(
         )));
     }
     let per_block = (width * chunk) as f64;
+    let project = |v: &mut Array1<f64>| {
+        let c = normal.dot(v);
+        v.scaled_add(-c, &normal);
+        for t in &excluded {
+            let c = t.dot(v);
+            v.scaled_add(-c, t);
+        }
+    };
     let mut block_gradients = Array2::zeros((n_blocks, 2 * n));
+    let mut block_centroids = Array2::zeros((n_blocks, n));
     let mut centroid = Array1::zeros(n);
     let mut normal_force = Vec::with_capacity(n_blocks);
+    let mut virials = Vec::with_capacity(n_blocks);
     for block in 0..n_blocks {
-        let mut total = Array1::zeros(2 * n + 1);
+        let mut total = Array1::zeros(2 * n + 2);
         for part in &chunk_sums[block * width..(block + 1) * width] {
             total += part;
         }
         total /= per_block;
         let d = total[0];
         normal_force.push(-d);
+        virials.push(total[2 * n + 1]);
         let mut torque = -total.slice(s![1..=n]).to_owned();
-        let c = normal.dot(&torque);
-        torque.scaled_add(-c, &normal);
-        for t in &excluded {
-            let c = t.dot(&torque);
-            torque.scaled_add(-c, t);
-        }
+        project(&mut torque);
         let mut row = block_gradients.row_mut(block);
         row.slice_mut(s![..n]).assign(&(&normal * d));
         row.slice_mut(s![n..]).assign(&torque);
-        centroid.scaled_add(1.0 / n_blocks as f64, &total.slice(s![n + 1..]));
+        let mean = total.slice(s![n + 1..=2 * n]);
+        block_centroids.row_mut(block).assign(&mean);
+        centroid.scaled_add(1.0 / n_blocks as f64, &mean);
     }
     let (force, force_error) = mean_and_error(&normal_force);
-    let mut grad_point = Array1::zeros(n);
-    let mut grad_normal = Array1::zeros(n);
-    let mut grad_normal_error = Array1::zeros(n);
-    for i in 0..n {
-        let column: Vec<f64> = block_gradients.column(i).to_vec();
-        grad_point[i] = mean_and_error(&column).0;
-        let column: Vec<f64> = block_gradients.column(n + i).to_vec();
-        let (mean, error) = mean_and_error(&column);
-        grad_normal[i] = mean;
-        grad_normal_error[i] = error;
+    let mut lever = &centroid - &point;
+    project(&mut lever);
+    let mut centroid_block_gradients = block_gradients.clone();
+    for (block, mut row) in centroid_block_gradients.rows_mut().into_iter().enumerate() {
+        let mut shift = &block_centroids.row(block) - &centroid;
+        project(&mut shift);
+        let mut torque = row.slice_mut(s![n..]);
+        torque.scaled_add(-normal_force[block], &lever);
+        torque.scaled_add(-force, &shift);
     }
+    let column_means = |rows: &Array2<f64>, offset: usize| {
+        let mut means = Array1::zeros(n);
+        let mut errors = Array1::zeros(n);
+        for i in 0..n {
+            let column: Vec<f64> = rows.column(offset + i).to_vec();
+            (means[i], errors[i]) = mean_and_error(&column);
+        }
+        (means, errors)
+    };
+    let (grad_point, _) = column_means(&block_gradients, 0);
+    let (grad_normal, grad_normal_error) = column_means(&block_gradients, n);
+    let (centroid_torque, centroid_torque_error) = column_means(&centroid_block_gradients, n);
+    let (virial, virial_error) = mean_and_error(&virials);
+    let records = n_blocks * width * chunk;
+    let forces = &series[0][..records];
+    let mean = forces.iter().sum::<f64>() / records as f64;
+    let variance =
+        forces.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / (records - 1).max(1) as f64;
+    let effective_samples = if force_error > 0.0 {
+        variance / force_error.powi(2)
+    } else {
+        records as f64
+    };
     Ok(PlaneSample {
         plane: plane.clone(),
         normal_force: force,
@@ -687,8 +744,16 @@ pub fn sample_plane<S: PointSurface>(
         grad_normal_error,
         centroid,
         block_gradients,
+        centroid_torque,
+        centroid_torque_error,
+        centroid_block_gradients,
+        virial,
+        virial_error,
+        free_dimensions,
+        thermal: config.thermal,
+        effective_samples,
         tau,
-        records: n_blocks * width * chunk,
+        records,
         evaluations: dynamics.evaluations,
         acceptance: dynamics.acceptance(),
         last: dynamics.q.clone(),
@@ -747,6 +812,9 @@ mod tests {
         }
         assert!(sample.grad_normal[2].abs() < 1e-15);
         assert!(sample.grad_normal.dot(&plane.normal()).abs() < 1e-12);
+        assert!(sample.centroid_torque[2].abs() < 1e-15);
+        assert!(sample.centroid_torque.dot(&plane.normal()).abs() < 1e-12);
+        assert_eq!(sample.free_dimensions, 1);
         assert!(sample.acceptance > 0.9);
         let tilted = Hyperplane::new(array![0.0, 0.0, 0.0], array![0.0, 0.0, 1.0]).unwrap();
         assert!(sample_plane(&surface, &tilted, None, &config).is_err());
@@ -793,5 +861,24 @@ mod tests {
         assert!(sample.normal_force_error < 0.02);
         assert!((sample.centroid[1] - mean[0]).abs() < 0.05);
         assert!((sample.centroid[2] - mean[1]).abs() < 0.05);
+        // On the plane ⟨(P∇V) ⊗ (q - p)⟩ = kT P, whose trace is 2 kT here.
+        assert_eq!(sample.free_dimensions, 2);
+        assert_eq!(sample.thermal, kt);
+        assert!(
+            (sample.virial - 2.0 * kt).abs() < 4.0 * sample.virial_error,
+            "virial {} ± {}",
+            sample.virial,
+            sample.virial_error
+        );
+        assert!(sample.virial_error < 0.03);
+        assert!(sample.effective_samples > 100.0);
+        assert!(sample.effective_samples < 2.0 * sample.records as f64);
+        let mut lever = &sample.centroid - &plane.point();
+        lever[0] = 0.0;
+        let shifted = &sample.grad_normal - &(&lever * sample.normal_force);
+        for (a, b) in sample.centroid_torque.iter().zip(&shifted) {
+            assert!((a - b).abs() < 1e-12);
+        }
+        assert!(sample.centroid_torque[0].abs() < 1e-15);
     }
 }

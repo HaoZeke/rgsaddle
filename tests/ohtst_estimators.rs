@@ -88,6 +88,28 @@ fn packed(dp: &Array1<f64>, dn: &Array1<f64>) -> Array1<f64> {
     v
 }
 
+/// Mean and standard error of `row · direction` over block rows.
+fn blocked(rows: &Array2<f64>, direction: &Array1<f64>) -> (f64, f64) {
+    let values: Vec<f64> = rows.rows().into_iter().map(|r| r.dot(direction)).collect();
+    let m = values.len() as f64;
+    let mean = values.iter().sum::<f64>() / m;
+    let variance = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (m - 1.0);
+    (mean, (variance / m).sqrt())
+}
+
+/// Unit vectors `w₁, w₂` completing `ν` to an orthonormal frame.
+fn frame(nu: &Array1<f64>) -> (Array1<f64>, Array1<f64>) {
+    let v = array![0.0, 1.0, 0.0];
+    let v = &v - &(nu * nu.dot(&v));
+    let w1 = &v / v.dot(&v).sqrt();
+    let w2 = array![
+        nu[1] * w1[2] - nu[2] * w1[1],
+        nu[2] * w1[0] - nu[0] * w1[2],
+        nu[0] * w1[1] - nu[1] * w1[0]
+    ];
+    (w1, w2)
+}
+
 #[test]
 fn gaussian_force_and_torque_match_the_closed_form() {
     let surface = Gaussian::new();
@@ -103,16 +125,7 @@ fn gaussian_force_and_torque_match_the_closed_form() {
     let plane = Hyperplane::new(array![0.4, -0.2, 0.1], array![1.0, 0.5, -0.3]).unwrap();
     let sample = sample_plane(&surface, &plane, None, &config).unwrap();
     let nu = plane.normal().to_owned();
-    let w1 = {
-        let v = array![0.0, 1.0, 0.0];
-        let v = &v - &(&nu * nu.dot(&v));
-        &v / v.dot(&v).sqrt()
-    };
-    let w2 = array![
-        nu[1] * w1[2] - nu[2] * w1[1],
-        nu[2] * w1[0] - nu[0] * w1[2],
-        nu[0] * w1[1] - nu[1] * w1[0]
-    ];
+    let (w1, w2) = frame(&nu);
     let zero = Array1::zeros(3);
     let directions = [
         packed(&nu, &zero),
@@ -181,4 +194,57 @@ fn leps_force_and_torque_match_line_quadrature() {
             assert!(error < 0.05 * (0.1 + exact.abs()));
         }
     }
+}
+
+#[test]
+fn gaussian_centroid_torque_matches_the_closed_form() {
+    // The plane ν · q = σ cuts the Gaussian at the mean c = σ K⁻¹ν / νᵀK⁻¹ν,
+    // and turning about c is the closed form with c held.
+    let surface = Gaussian::new();
+    let kt = 0.5;
+    let config = LangevinConfig::default()
+        .with_thermal(kt)
+        .with_time_step(0.4)
+        .with_friction(0.5)
+        .with_burn_in(200)
+        .with_stride(4)
+        .with_records(6000)
+        .with_seed(1);
+    let normal: Array1<f64> = array![1.0, 0.5, -0.3];
+    let nu = &normal / normal.dot(&normal).sqrt();
+    let (w1, w2) = frame(&nu);
+    let sigma = 0.35;
+    let k_inv_nu = surface.k_inv.dot(&nu);
+    let mean = &k_inv_nu * (sigma / nu.dot(&k_inv_nu));
+    let about_mean = Hyperplane::new(mean.clone(), nu.clone()).unwrap();
+    let far = Hyperplane::new(&mean + &(&w1 * 6.0) - &(&w2 * 4.0), nu.clone()).unwrap();
+    let sample = sample_plane(&surface, &far, None, &config).unwrap();
+    let zero = Array1::zeros(3);
+    for w in [&w1, &w2] {
+        let direction = packed(&zero, w);
+        let exact = packed_difference(
+            |p, n| surface.free_energy(p, n, kt),
+            &about_mean,
+            &direction,
+            1.0e-4,
+        );
+        let (value, error) = blocked(&sample.centroid_block_gradients, &direction);
+        assert!((value - sample.centroid_torque.dot(w)).abs() < 1e-12);
+        assert!(
+            (value - exact).abs() < 4.0 * error + 1.0e-7,
+            "centroid torque {value} ± {error}, closed form {exact}"
+        );
+        // Over seeds 1 to 12 the ratio stayed within 0.08 to 0.41.
+        let (_, pivot_error) = sample.directional(direction.view()).unwrap();
+        assert!(
+            error < 0.6 * pivot_error,
+            "centroid error {error} against {pivot_error} about the far point"
+        );
+    }
+    assert!(
+        (sample.virial - 2.0 * kt).abs() < 4.0 * sample.virial_error,
+        "virial {} ± {}",
+        sample.virial,
+        sample.virial_error
+    );
 }
