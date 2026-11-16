@@ -26,8 +26,11 @@
 //!
 //! `σ` is [`PointSurface::cauchy_stress`], positive in tension. A
 //! pressure tensor in its place turns every free strain uphill: the
-//! cell runs away while the same atoms converge in a frozen cell.
-//! [`StressCheck`] compares the tensor with finite differences of the
+//! cell runs away while the same atoms converge in a frozen cell. Held
+//! diagonals with free shears read only the shear entries and move the
+//! cell at a fixed diagonal and volume, so an energy that misses those
+//! tilts runs the cell away under that mask alone. [`StressCheck`]
+//! compares each entry of the tensor with finite differences of the
 //! energy before the first step.
 //!
 //! [`IndexCheck`] is optional. When it is set, a point that meets the
@@ -611,24 +614,29 @@ pub fn virial(volume: f64, stress: M3) -> M3 {
 /// How [`check_cauchy_stress`] compares a supplied stress with the
 /// energy it belongs to.
 ///
-/// The supplied tensor passes when no entry differs from
-/// [`finite_difference_cauchy_stress`] by more than
-/// `absolute + relative s`, with `s` the largest entry of either
-/// tensor. Build with [`StressCheck::new`].
+/// Entry `ij` passes when it is within `absolute + relative s_ij` of
+/// [`finite_difference_cauchy_stress`], with `s_ij` the larger
+/// magnitude of that entry in the two tensors. Each entry is judged on
+/// its own scale because the tension of a hot cell would otherwise
+/// hide a wrong shear stress, and the shears are all that a search
+/// with held diagonals reads. A stress error `δσ` moves the
+/// generalized cell force by `(V/J) δσ`. An energy with noise `δE`
+/// needs `absolute` above `δE / (step V)`. Build with
+/// [`StressCheck::new`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct StressCheck {
     /// Strain increment of the finite difference.
     pub step: f64,
-    /// Accepted difference as a fraction of the larger tensor.
+    /// Accepted difference as a fraction of the entry.
     pub relative: f64,
-    /// Accepted difference in energy per volume, so a cell near zero
-    /// stress is not judged on finite-difference noise.
+    /// Accepted difference in energy per volume, so an entry near zero
+    /// is not judged on finite-difference noise.
     pub absolute: f64,
 }
 
 impl StressCheck {
-    /// Strain step 1e-5, one percent of the larger tensor plus 1e-6.
+    /// Strain step 1e-5, one percent of each entry plus 1e-6.
     pub const fn new() -> Self {
         Self {
             step: 1.0e-5,
@@ -643,7 +651,7 @@ impl StressCheck {
         self
     }
 
-    /// Accepted difference: `relative` of the larger tensor plus
+    /// Accepted difference per entry: `relative` of the entry plus
     /// `absolute`.
     pub const fn with_tolerance(mut self, relative: f64, absolute: f64) -> Self {
         self.relative = relative;
@@ -684,7 +692,10 @@ impl Default for StressCheck {
 /// pressure tensor in place of the stress. `c ≈ 1.602e6` is a stress
 /// in bar against energies in eV and lengths in Å, and `c ≈ -1.602e6`
 /// is a LAMMPS `metal` pressure passed through unchanged. Without such
-/// a factor the components are permuted or in another frame.
+/// a factor the components are permuted or in another frame. When
+/// every diagonal entry agrees, the message says so: the shear entries
+/// are in another order or sign, or the energy misses a change of tilt
+/// that keeps the diagonal of the cell and its volume.
 pub fn check_cauchy_stress<S: PointSurface>(
     surface: &S,
     positions: ArrayView1<f64>,
@@ -700,64 +711,57 @@ pub fn check_cauchy_stress<S: PointSurface>(
     }
     let reported = m3_from_row9(packed);
     let derived = finite_difference_cauchy_stress(surface, positions, cell, check.step)?;
-    let agrees = |model: &M3| {
-        let size = largest_entry(&reported).max(largest_entry(model));
-        largest_gap(&reported, model).2 <= check.absolute + check.relative * size
+    // Positive where entry ij of the reported stress and `factor σ_fd`
+    // disagree. The finite-difference noise scales with the factor.
+    let excess = |factor: f64, (i, j): (usize, usize)| {
+        let model = factor * derived[i][j];
+        let size = reported[i][j].abs().max(model.abs());
+        (reported[i][j] - model).abs() - factor.abs() * check.absolute - check.relative * size
     };
-    if agrees(&derived) {
+    let entries = || (0..3).flat_map(|i| (0..3).map(move |j| (i, j)));
+    if entries().all(|entry| excess(1.0, entry) <= 0.0) {
         return Ok(());
     }
     const AXES: [char; 3] = ['x', 'y', 'z'];
-    let (i, j, _) = largest_gap(&reported, &derived);
+    let (i, j) = entries()
+        .max_by(|&a, &b| excess(1.0, a).total_cmp(&excess(1.0, b)))
+        .unwrap_or_default();
     let mut message = format!(
         "cauchy_stress {}{} is {:.6e} where the strain derivative of the energy is {:.6e}",
         AXES[i], AXES[j], reported[i][j], derived[i][j]
     );
     let norm: f64 = derived.iter().flatten().map(|v| v * v).sum();
-    if norm > 0.0 {
-        let overlap: f64 = reported
-            .iter()
-            .flatten()
-            .zip(derived.iter().flatten())
-            .map(|(a, b)| a * b)
-            .sum();
-        let factor = overlap / norm;
-        if agrees(&scale(factor, derived)) {
-            let shown = if (1.0e-3..1.0e4).contains(&factor.abs()) {
-                format!("{factor:.4}")
-            } else {
-                format!("{factor:.4e}")
-            };
-            message.push_str(&format!(
-                ", and the whole tensor is {shown} times the derivative"
-            ));
+    let overlap: f64 = reported
+        .iter()
+        .flatten()
+        .zip(derived.iter().flatten())
+        .map(|(a, b)| a * b)
+        .sum();
+    let factor = (norm > 0.0)
+        .then(|| overlap / norm)
+        .filter(|&factor| entries().all(|entry| excess(factor, entry) <= 0.0));
+    if let Some(factor) = factor {
+        let shown = if (1.0e-3..1.0e4).contains(&factor.abs()) {
+            format!("{factor:.4}")
         } else {
-            message.push_str(
-                ", and no single factor relates the two: the components are permuted or in another frame",
-            );
-        }
+            format!("{factor:.4e}")
+        };
+        message.push_str(&format!(
+            ", and the whole tensor is {shown} times the derivative"
+        ));
+    } else if (0..3).all(|k| excess(1.0, (k, k)) <= 0.0) {
+        message.push_str(
+            ", and every diagonal entry agrees: the shear entries are in another order or sign, or the energy misses a tilt that keeps the diagonal of the cell and its volume, as a box refreshed only when lx, ly, lz or V change does. Held diagonals with free shears move the cell by such tilts alone",
+        );
+    } else {
+        message.push_str(
+            ", and no single factor relates the two: the components are permuted or in another frame",
+        );
     }
     message.push_str(
         ". The stress is (1/V) dE/deps: positive in tension, minus a pressure tensor, in energy per volume",
     );
     Err(SaddleError::Surface(message))
-}
-
-fn largest_entry(a: &M3) -> f64 {
-    a.iter().flatten().fold(0.0, |acc: f64, v| acc.max(v.abs()))
-}
-
-fn largest_gap(a: &M3, b: &M3) -> (usize, usize, f64) {
-    let mut worst = (0, 0, 0.0);
-    for i in 0..3 {
-        for j in 0..3 {
-            let gap = (a[i][j] - b[i][j]).abs();
-            if gap > worst.2 {
-                worst = (i, j, gap);
-            }
-        }
-    }
-    worst
 }
 
 /// Solid-state dimer.
@@ -2135,6 +2139,7 @@ mod tests {
     struct Misreported {
         factor: f64,
         swap: bool,
+        turn: bool,
         calls: AtomicUsize,
     }
 
@@ -2143,8 +2148,15 @@ mod tests {
             Self {
                 factor,
                 swap,
+                turn: false,
                 calls: AtomicUsize::new(0),
             }
+        }
+
+        /// Report the stress with the x and y axes turned a quarter.
+        fn rotated(mut self) -> Self {
+            self.turn = true;
+            self
         }
     }
 
@@ -2171,6 +2183,11 @@ mod tests {
             if self.swap {
                 sigma.swap(1, 5);
                 sigma.swap(3, 7);
+            }
+            if self.turn {
+                let turn = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+                let turned = m3_mul(m3_mul(turn, m3_from_row9(sigma)), transpose(turn));
+                sigma = m3_to_row9(turned);
             }
             Ok(Some(sigma.map(|v| self.factor * v)))
         }
@@ -2200,7 +2217,9 @@ mod tests {
         let lammps = check_message(&Misreported::new(-1.6021765e6, false)).expect("pressure");
         assert!(lammps.contains("is -1.6022e6 times"), "{lammps}");
         let order = check_message(&Misreported::new(1.0, true)).expect("order");
-        assert!(order.contains("no single factor"), "{order}");
+        assert!(order.contains("every diagonal entry agrees"), "{order}");
+        let frame = check_message(&Misreported::new(1.0, false).rotated()).expect("frame");
+        assert!(frame.contains("no single factor"), "{frame}");
 
         struct EnergyOnly(AtomicUsize);
         impl PointSurface for EnergyOnly {
@@ -2228,6 +2247,107 @@ mod tests {
             ),
             Err(SaddleError::Invalid(_))
         ));
+    }
+
+    /// [`Tethered`] under a tension `p V`, with its box refreshed only
+    /// when a diagonal entry of the cell changes, as a driver keyed on
+    /// lx, ly and lz would.
+    struct Extents {
+        tension: f64,
+        keyed: bool,
+        held: Mutex<Option<[f64; 9]>>,
+    }
+
+    impl Extents {
+        fn new(tension: f64, keyed: bool) -> Self {
+            Self {
+                tension,
+                keyed,
+                held: Mutex::new(None),
+            }
+        }
+
+        fn evaluate(&self, r: ArrayView1<f64>, cell: &[f64; 9]) -> (f64, Array1<f64>, M3) {
+            let mut held = self.held.lock().unwrap();
+            let refresh =
+                !self.keyed || held.is_none_or(|old| [0, 4, 8].iter().any(|&k| old[k] != cell[k]));
+            if refresh {
+                *held = Some(*cell);
+            }
+            let h = m3_from_row9(held.expect("refreshed"));
+            let (energy, gradient, sigma) = Tethered::evaluate(r, h);
+            let p = self.tension;
+            (
+                energy + p * m3_det(h).abs(),
+                gradient,
+                add(sigma, diagonal(p, p, p)),
+            )
+        }
+    }
+
+    impl PointSurface for Extents {
+        fn eval(&self, r: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+            Tethered.eval(r)
+        }
+
+        fn eval_in_cell(
+            &self,
+            r: ArrayView1<f64>,
+            cell: &[f64; 9],
+        ) -> Result<(f64, Array1<f64>), SaddleError> {
+            let (energy, gradient, _) = self.evaluate(r, cell);
+            Ok((energy, gradient))
+        }
+
+        fn cauchy_stress(
+            &self,
+            r: ArrayView1<f64>,
+            cell: &[f64; 9],
+        ) -> Result<Option<[f64; 9]>, SaddleError> {
+            Ok(Some(m3_to_row9(self.evaluate(r, cell).2)))
+        }
+    }
+
+    #[test]
+    fn stress_check_finds_a_box_that_misses_tilt_under_tension() {
+        let cell = diagonal(4.3, 4.6, 5.0);
+        let atoms = array![0.6, 1.1, 1.4, 2.9, 2.6, 4.0];
+        let tension = 5.0;
+        check_cauchy_stress(
+            &Extents::new(tension, false),
+            atoms.view(),
+            cell,
+            StressCheck::new(),
+        )
+        .unwrap();
+        let keyed = Extents::new(tension, true);
+        let message = match check_cauchy_stress(&keyed, atoms.view(), cell, StressCheck::new()) {
+            Err(SaddleError::Surface(message)) => message,
+            other => panic!("a box keyed on its extents passed: {other:?}"),
+        };
+        assert!(message.contains("every diagonal entry agrees"), "{message}");
+        for axis in ["xx", "yy", "zz"] {
+            assert!(
+                !message.starts_with(&format!("cauchy_stress {axis}")),
+                "{message}"
+            );
+        }
+
+        // Each shear error is under one percent of the tension, so a
+        // tolerance scaled by the largest entry would pass this box.
+        let honest = Extents::new(tension, false)
+            .cauchy_stress(atoms.view(), &m3_to_row9(cell))
+            .unwrap()
+            .unwrap();
+        let derived =
+            finite_difference_cauchy_stress(&Extents::new(tension, true), atoms.view(), cell, 1e-5)
+                .unwrap();
+        let worst = largest(&add(m3_from_row9(honest), scale(-1.0, derived)));
+        assert!(worst > 1e-5 && worst < 0.01 * tension, "{worst}");
+    }
+
+    fn largest(a: &M3) -> f64 {
+        a.iter().flatten().fold(0.0, |acc: f64, v| acc.max(v.abs()))
     }
 
     #[test]
