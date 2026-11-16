@@ -129,8 +129,8 @@ pub use ocineb::{
 };
 pub use ohtst::{
     AnharmonicConfig, AnharmonicCorrection, FixedCell, Hyperplane, LangevinConfig, MassWeighted,
-    OhTstRate, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum, PlaneSample, PlaneStep,
-    PlaneTrace, ReactantDensity, ReversibleWork, ReversibleWorkConfig, WorkNode,
+    OhTstRate, PlaneIntegrator, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum, PlaneSample,
+    PlaneStep, PlaneTrace, ReactantDensity, ReversibleWork, ReversibleWorkConfig, WorkNode,
     anharmonic_correction, flux_mass, ohtst_rate, plane_transmission, reactant_density,
     reversible_work, sample_plane,
 };

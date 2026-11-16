@@ -13,8 +13,8 @@ use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use ndarray::array;
 use rgsaddle::{
     Hyperplane, LangevinConfig, MinModeConfig, MinModeSession, MinModeStatus, OhTstRate,
-    PlaneOptimizer, PlaneOptimizerConfig, ReversibleWorkConfig, ohtst_rate, reactant_density,
-    reversible_work,
+    PlaneIntegrator, PlaneOptimizer, PlaneOptimizerConfig, ReversibleWorkConfig, ohtst_rate,
+    reactant_density, reversible_work,
 };
 
 include!(concat!(
@@ -72,7 +72,7 @@ fn sampler(kt: f64, time_step: f64, records: usize) -> LangevinConfig {
 fn converged_rate(problem: &Problem) -> (OhTstRate, usize) {
     let kt = problem.kt;
     let config = PlaneOptimizerConfig::default()
-        .with_sampler(sampler(kt, 0.3, 1000))
+        .with_sampler(sampler(kt, 0.3, 1000).with_integrator(PlaneIntegrator::Ghmc))
         .with_time_step(1.0);
     let mut optimizer =
         PlaneOptimizer::new(PointSphereFixture::new(2), &problem.seed, config).unwrap();

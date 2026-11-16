@@ -11,9 +11,10 @@
 
 use ndarray::array;
 use rgsaddle::{
-    Hyperplane, LangevinConfig, MinModeConfig, MinModeSession, MinModeStatus, PlaneOptimizer,
-    PlaneOptimizerConfig, ReversibleWorkConfig, ShootingConfig, angular_scale_rad_s, exact_eigh,
-    ohtst_rate, plane_transmission, reactant_density, reversible_work, vineyard_prefactor,
+    Hyperplane, LangevinConfig, MinModeConfig, MinModeSession, MinModeStatus, PlaneIntegrator,
+    PlaneOptimizer, PlaneOptimizerConfig, ReversibleWorkConfig, ShootingConfig,
+    angular_scale_rad_s, exact_eigh, ohtst_rate, plane_transmission, reactant_density,
+    reversible_work, vineyard_prefactor,
 };
 
 include!(concat!(
@@ -189,6 +190,15 @@ fn sampler(kt: f64, time_step: f64) -> LangevinConfig {
         .with_seed(5)
 }
 
+/// A step of 0.3 is past the BAOAB stability limit at the repulsive
+/// walls, so these runs use the exact GHMC integrator instead.
+fn large_step_sampler(kt: f64) -> LangevinConfig {
+    sampler(kt, 0.3)
+        .with_integrator(PlaneIntegrator::Ghmc)
+        .with_records(1000)
+        .with_seed(11)
+}
+
 /// Simpson's rule on quadrature `dA/ds` at the nodes of a reversible-work
 /// leg from `(p0, θ0)` to `(p1, θ1)`, with the point linear in `s` and the
 /// normal turning at a constant rate, in units of `kT`.
@@ -247,7 +257,7 @@ fn leps_optimizer_climbs_from_the_dimer_plane() {
     let (offset, theta, curvature) = optimal_line(&geometry, kt);
     let (seed, _) = dimer_plane();
     let config = PlaneOptimizerConfig::default()
-        .with_sampler(sampler(kt, 0.3).with_records(1000).with_seed(11))
+        .with_sampler(large_step_sampler(kt))
         .with_time_step(1.0)
         .with_max_iterations(100);
     let mut optimizer = PlaneOptimizer::new(PointSphereFixture::new(2), &seed, config).unwrap();
@@ -408,7 +418,7 @@ fn leps_fixed_orientation_barrier() {
         theta,
     );
     let config = PlaneOptimizerConfig::default()
-        .with_sampler(sampler(kt, 0.3).with_records(1000).with_seed(11))
+        .with_sampler(large_step_sampler(kt))
         .with_rotate(false)
         .with_recenter(false)
         .with_time_step(0.3)

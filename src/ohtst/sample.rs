@@ -4,13 +4,16 @@
 //! restricted to the plane and, optionally, to fixed values of the
 //! surface's excluded modes. The constraint is linear, so the restricted
 //! Boltzmann density needs no Fixman term: the motion, the friction and the
-//! noise are projected onto the tangent space of the plane. Each step is an
-//! Ornstein–Uhlenbeck refresh of the velocity followed by one
-//! velocity-Verlet proposal. With [`LangevinConfig::metropolis`] the
-//! proposal is accepted on the change of the total energy and a rejection
-//! reverses the velocity, which is generalized hybrid Monte Carlo and
-//! leaves the restricted density exact. Without it the step is the
-//! second-order OBABO splitting.
+//! noise are projected onto the tangent space of the plane, and positions
+//! are projected back onto the plane after every drift.
+//! [`PlaneIntegrator::Baoab`] is the unadjusted BAOAB splitting of
+//! Leimkuhler and Matthews: it samples a harmonic plane exactly for any
+//! stable step, `ω h < 2`, and its configurational error is `O(h²)`
+//! otherwise. Walls reflect the drift specularly, which keeps that.
+//! [`PlaneIntegrator::Ghmc`] refreshes the velocity, proposes one
+//! velocity-Verlet step and accepts it on the change of the total energy,
+//! reversing the velocity on a rejection or at a wall. That is generalized
+//! hybrid Monte Carlo, exact for any step, and the check on the BAOAB bias.
 
 use ndarray::{Array1, Array2, ArrayView1, s};
 
@@ -27,6 +30,22 @@ const PROJECTIONS: usize = 3;
 /// with the number of records.
 const CHUNKS: usize = 256;
 
+/// Reflection passes per drift, for a step that crosses several walls.
+const REFLECTIONS: usize = 8;
+
+/// How [`sample_plane`] and [`reactant_density`](crate::ohtst::reactant_density)
+/// integrate the restricted Langevin dynamics.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PlaneIntegrator {
+    /// Unadjusted projected BAOAB, one force call per step.
+    #[default]
+    Baoab,
+    /// Generalized hybrid Monte Carlo: exact, one force call per step and
+    /// a rejection rate that grows with the step.
+    Ghmc,
+}
+
 /// Langevin sampling at constant temperature.
 #[non_exhaustive]
 #[derive(Clone, Debug)]
@@ -38,8 +57,9 @@ pub struct LangevinConfig {
     pub time_step: f64,
     /// Langevin friction `γ` in inverse time. Must be positive.
     pub friction: f64,
-    /// Accept or reject each step on the change of the total energy.
-    pub metropolis: bool,
+    /// The integrator. BAOAB needs `h` below `2/ω` for the stiffest
+    /// in-plane frequency `ω`, and its bias falls as `h²`.
+    pub integrator: PlaneIntegrator,
     /// Steps discarded before the first record.
     pub burn_in: usize,
     /// Steps between records.
@@ -64,7 +84,7 @@ impl Default for LangevinConfig {
             thermal: 0.02585,
             time_step: 0.05,
             friction: 1.0,
-            metropolis: true,
+            integrator: PlaneIntegrator::Baoab,
             burn_in: 500,
             stride: 5,
             records: 2000,
@@ -98,10 +118,10 @@ impl LangevinConfig {
         self
     }
 
-    /// Set [`Self::metropolis`].
+    /// Set [`Self::integrator`].
     #[must_use]
-    pub fn with_metropolis(mut self, metropolis: bool) -> Self {
-        self.metropolis = metropolis;
+    pub fn with_integrator(mut self, integrator: PlaneIntegrator) -> Self {
+        self.integrator = integrator;
         self
     }
 
@@ -209,16 +229,24 @@ fn slice_mut(a: &mut Array1<f64>) -> &mut [f64] {
 /// test. Positions keep `anchor`'s component along every `held` direction,
 /// and a proposal on the positive side of a wall is rejected. The step
 /// works in place on contiguous buffers.
+/// A wall `normal · q ≤ offset`, and its unit normal within the plane.
+struct Wall {
+    normal: Array1<f64>,
+    offset: f64,
+    tangent: Array1<f64>,
+    scale: f64,
+}
+
 pub(crate) struct Dynamics<'a, S> {
     surface: &'a S,
     held: Vec<Array1<f64>>,
     anchor: Vec<f64>,
-    walls: Vec<(Array1<f64>, f64)>,
+    walls: Vec<Wall>,
     kt: f64,
     h: f64,
     decay: f64,
     kick: f64,
-    metropolis: bool,
+    integrator: PlaneIntegrator,
     pub(crate) q: Array1<f64>,
     pub(crate) gradient: Array1<f64>,
     energy: f64,
@@ -251,26 +279,18 @@ impl<'a, S: PointSurface> Dynamics<'a, S> {
         let start = contiguous(start);
         let held: Vec<Array1<f64>> = held.into_iter().map(contiguous).collect();
         let anchor = held.iter().map(|t| dot(slice(t), slice(&start))).collect();
-        let walls = walls
-            .iter()
-            .map(|wall| {
-                let normal = wall.normal().to_owned();
-                let offset = normal.dot(&wall.point());
-                (normal, offset)
-            })
-            .collect();
         let n = start.len();
         let decay = (-config.friction * config.time_step).exp();
         let mut dynamics = Self {
             surface,
             held,
             anchor,
-            walls,
+            walls: Vec::new(),
             kt: config.thermal,
             h: config.time_step,
             decay,
             kick: (config.thermal * (1.0 - decay * decay)).sqrt(),
-            metropolis: config.metropolis,
+            integrator: config.integrator,
             q: start,
             gradient: Array1::zeros(n),
             energy: 0.0,
@@ -285,6 +305,25 @@ impl<'a, S: PointSurface> Dynamics<'a, S> {
             accepted: 0,
             wall_hits: 0,
         };
+        dynamics.walls = walls
+            .iter()
+            .map(|wall| {
+                let normal = contiguous(wall.normal().to_owned());
+                let offset = normal.dot(&wall.point());
+                let mut inward = normal.clone();
+                dynamics.tangent(slice_mut(&mut inward));
+                let scale = inward.dot(&inward).sqrt();
+                if scale > 0.0 {
+                    inward /= scale;
+                }
+                Wall {
+                    normal,
+                    offset,
+                    tangent: inward,
+                    scale,
+                }
+            })
+            .collect();
         let q0 = dynamics.q.clone();
         let (energy, gradient) = dynamics.evaluate(q0.view())?;
         dynamics.energy = energy;
@@ -343,6 +382,68 @@ impl<'a, S: PointSurface> Dynamics<'a, S> {
 
     /// Advance one step. Returns whether the proposal was accepted.
     pub(crate) fn step(&mut self) -> Result<bool, SaddleError> {
+        match self.integrator {
+            PlaneIntegrator::Baoab => self.baoab(),
+            PlaneIntegrator::Ghmc => self.ghmc(),
+        }
+    }
+
+    /// Move `q` by `a v` in the plane, reflecting `q` and `v` at the walls.
+    fn drift(&mut self, q: &mut [f64], v: &mut [f64], a: f64) {
+        axpy(q, a, v);
+        self.constrain(q);
+        let mut hits = 0;
+        for _ in 0..REFLECTIONS {
+            let mut reflected = false;
+            for wall in self.walls.iter().filter(|wall| wall.scale > 0.0) {
+                let excess = (dot(slice(&wall.normal), q) - wall.offset) / wall.scale;
+                if excess > 0.0 {
+                    let u = slice(&wall.tangent);
+                    axpy(q, -2.0 * excess, u);
+                    let c = dot(u, v);
+                    axpy(v, -2.0 * c, u);
+                    reflected = true;
+                    hits += 1;
+                }
+            }
+            if !reflected {
+                break;
+            }
+        }
+        self.wall_hits += hits;
+    }
+
+    fn baoab(&mut self) -> Result<bool, SaddleError> {
+        let (decay, kick, h) = (self.decay, self.kick, self.h);
+        let mut v = std::mem::take(&mut self.v);
+        let mut q = std::mem::take(&mut self.q);
+        axpy(slice_mut(&mut v), 0.5 * h, slice(&self.force));
+        self.drift(slice_mut(&mut q), slice_mut(&mut v), 0.5 * h);
+        for value in slice_mut(&mut v) {
+            *value = decay * *value + kick * self.rng.normal();
+        }
+        self.tangent(slice_mut(&mut v));
+        self.drift(slice_mut(&mut q), slice_mut(&mut v), 0.5 * h);
+        self.proposed += 1;
+        let evaluated = self.evaluate(q.view());
+        self.q = q;
+        match evaluated {
+            Ok((energy, gradient)) => {
+                self.energy = energy;
+                self.set_force(gradient);
+                axpy(slice_mut(&mut v), 0.5 * h, slice(&self.force));
+                self.v = v;
+                self.accepted += 1;
+                Ok(true)
+            }
+            Err(error) => {
+                self.v = v;
+                Err(error)
+            }
+        }
+    }
+
+    fn ghmc(&mut self) -> Result<bool, SaddleError> {
         let (decay, kick, h) = (self.decay, self.kick, self.h);
         let mut v = std::mem::take(&mut self.v);
         for value in slice_mut(&mut v) {
@@ -365,7 +466,7 @@ impl<'a, S: PointSurface> Dynamics<'a, S> {
         let blocked = self
             .walls
             .iter()
-            .any(|(normal, offset)| dot(slice(normal), slice(&trial)) > *offset);
+            .any(|wall| dot(slice(&wall.normal), slice(&trial)) > wall.offset);
         if blocked {
             self.wall_hits += 1;
             v.mapv_inplace(|x| -x);
@@ -392,13 +493,9 @@ impl<'a, S: PointSurface> Dynamics<'a, S> {
             self.tangent(f1);
             axpy(slice_mut(&mut trial_v), 0.5 * h, f1);
         }
-        let accept = if self.metropolis {
-            let kinetic1 = 0.5 * dot(slice(&trial_v), slice(&trial_v));
-            let delta = energy1 + kinetic1 - self.energy - kinetic0;
-            delta <= 0.0 || self.rng.uniform() < (-delta / self.kt).exp()
-        } else {
-            true
-        };
+        let kinetic1 = 0.5 * dot(slice(&trial_v), slice(&trial_v));
+        let delta = energy1 + kinetic1 - self.energy - kinetic0;
+        let accept = delta <= 0.0 || self.rng.uniform() < (-delta / self.kt).exp();
         if accept {
             std::mem::swap(&mut self.q, &mut trial);
             std::mem::swap(&mut v, &mut trial_v);
@@ -890,5 +987,39 @@ mod tests {
             assert!((a - b).abs() < 1e-12);
         }
         assert!(sample.centroid_torque[0].abs() < 1e-15);
+    }
+
+    /// `K = diag(1, 100, 4)` cut by `q₀ = 0` leaves in-plane frequencies 10
+    /// and 2. At `h = 0.15`, `ω h = 1.5`, and both integrators still give
+    /// the exact virial `2 kT`. An OBABO splitting would give
+    /// `kT Σ (1 - ω² h² / 4)⁻¹ ≈ 3.3 kT`.
+    #[test]
+    fn both_integrators_sample_a_stiff_harmonic_plane_exactly() {
+        let surface = Bowl {
+            k: Array2::from_diag(&array![1.0, 100.0, 4.0]),
+            excluded: None,
+        };
+        let plane = Hyperplane::new(array![0.0, 0.0, 0.0], array![1.0, 0.0, 0.0]).unwrap();
+        for integrator in [PlaneIntegrator::Baoab, PlaneIntegrator::Ghmc] {
+            let config = LangevinConfig::default()
+                .with_thermal(0.5)
+                .with_time_step(0.15)
+                .with_friction(2.0)
+                .with_records(4000)
+                .with_integrator(integrator);
+            let sample = sample_plane(&surface, &plane, None, &config).unwrap();
+            assert_eq!(sample.free_dimensions, 2);
+            assert!(
+                (sample.virial - 1.0).abs() < 4.0 * sample.virial_error,
+                "{integrator:?}: virial {} ± {}",
+                sample.virial,
+                sample.virial_error
+            );
+            assert!(sample.virial_error < 0.05, "{}", sample.virial_error);
+            match integrator {
+                PlaneIntegrator::Baoab => assert_eq!(sample.acceptance, 1.0),
+                _ => assert!(sample.acceptance < 1.0),
+            }
+        }
     }
 }
