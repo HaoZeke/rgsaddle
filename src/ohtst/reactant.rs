@@ -49,9 +49,15 @@ pub struct ReactantDensity {
     pub density: f64,
     /// Block standard error of [`Self::density`].
     pub density_error: f64,
-    /// The crossing estimate of the same density.
+    /// The crossing estimate of the same density, Jóhannesson and Jónsson
+    /// (2001), Eq. 22. Each crossing carries the weight `1/|ξ̇|`, whose
+    /// second moment under the flux-weighted velocities diverges
+    /// logarithmically, so its variance is infinite. Use
+    /// [`basin_density`](crate::ohtst::basin_density) or
+    /// [`Self::density`] instead.
     pub crossing_density: f64,
-    /// Block standard error of [`Self::crossing_density`]; a guide only.
+    /// Block standard error of [`Self::crossing_density`]; a guide only,
+    /// since the variance it estimates is infinite.
     pub crossing_error: f64,
     /// Fraction of records behind the plane.
     pub behind: f64,

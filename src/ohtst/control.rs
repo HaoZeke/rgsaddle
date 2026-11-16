@@ -147,39 +147,81 @@ impl<'a, S: PointSurface> PlaneControl<'a, S> {
         )
     }
 
-    /// `H_∥⁻¹ b` for `b` in the plane, by conjugate gradients. `None` when
-    /// a search direction meets non-positive curvature.
+    /// `H_∥⁻¹ b` for `b` in the plane. `None` when a search direction meets
+    /// non-positive curvature.
     pub(crate) fn solve(&mut self, b: &Array1<f64>) -> Result<Option<Array1<f64>>, SaddleError> {
-        let n = b.len();
-        let mut r = b.clone();
-        self.project(&mut r);
-        let target = self.reference.tolerance * r.dot(&r).sqrt();
-        let mut x = Array1::zeros(n);
-        if target == 0.0 {
-            return Ok(Some(x));
-        }
-        let mut p = r.clone();
-        let mut rr = r.dot(&r);
-        let free = n - self.held.len();
-        for _ in 0..2 * free + 10 {
-            let mut ap = self.apply(&p)?;
-            self.project(&mut ap);
-            let curvature = p.dot(&ap);
-            if curvature.is_nan() || curvature <= 0.0 {
-                return Ok(None);
-            }
-            let step = rr / curvature;
-            x.scaled_add(step, &p);
-            r.scaled_add(-step, &ap);
-            let next = r.dot(&r);
-            if next.sqrt() <= target {
-                break;
-            }
-            p *= next / rr;
-            p += &r;
-            rr = next;
-        }
-        self.project(&mut x);
-        Ok(Some(x))
+        let (surface, reference) = (self.surface, self.reference);
+        let held = std::mem::take(&mut self.held);
+        let mut evaluations = 0;
+        let solution = conjugate_gradients(
+            |v| {
+                hessian_action(
+                    surface,
+                    reference.point.view(),
+                    v,
+                    reference.hvp_step,
+                    &mut evaluations,
+                )
+            },
+            b,
+            &held,
+            reference.tolerance,
+        );
+        self.held = held;
+        self.evaluations += evaluations;
+        solution
     }
+}
+
+/// Solve `P H P x = P b` on the complement of the orthonormal `held`
+/// directions by conjugate gradients, for `H` given by its action. Stops
+/// at a relative residual of `tolerance` or after `2 m + 10` steps, `m`
+/// the free dimension. `None` when a search direction meets non-positive
+/// curvature.
+pub(crate) fn conjugate_gradients<F>(
+    mut apply: F,
+    b: &Array1<f64>,
+    held: &[Array1<f64>],
+    tolerance: f64,
+) -> Result<Option<Array1<f64>>, SaddleError>
+where
+    F: FnMut(&Array1<f64>) -> Result<Array1<f64>, SaddleError>,
+{
+    let project = |v: &mut Array1<f64>| {
+        for direction in held {
+            let c = direction.dot(v);
+            v.scaled_add(-c, direction);
+        }
+    };
+    let n = b.len();
+    let mut r = b.clone();
+    project(&mut r);
+    let target = tolerance * r.dot(&r).sqrt();
+    let mut x = Array1::zeros(n);
+    if target == 0.0 {
+        return Ok(Some(x));
+    }
+    let mut p = r.clone();
+    let mut rr = r.dot(&r);
+    let free = n.saturating_sub(held.len());
+    for _ in 0..2 * free + 10 {
+        let mut ap = apply(&p)?;
+        project(&mut ap);
+        let curvature = p.dot(&ap);
+        if curvature.is_nan() || curvature <= 0.0 {
+            return Ok(None);
+        }
+        let step = rr / curvature;
+        x.scaled_add(step, &p);
+        r.scaled_add(-step, &ap);
+        let next = r.dot(&r);
+        if next.sqrt() <= target {
+            break;
+        }
+        p *= next / rr;
+        p += &r;
+        rr = next;
+    }
+    project(&mut x);
+    Ok(Some(x))
 }

@@ -26,6 +26,7 @@
 //! [`MassWeighted`].
 
 mod anharmonic;
+mod basin;
 mod control;
 mod optimize;
 mod plane;
@@ -35,10 +36,11 @@ mod sample;
 mod work;
 
 pub use anharmonic::{AnharmonicConfig, AnharmonicCorrection, anharmonic_correction};
+pub use basin::{BasinConfig, BasinDensity, basin_density};
 pub use control::HarmonicReference;
 pub use optimize::{PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum, PlaneStep, PlaneTrace};
 pub use plane::{FixedCell, Hyperplane, MassWeighted};
-pub use rate::{OhTstRate, flux_mass, ohtst_rate, plane_transmission};
+pub use rate::{OhTstRate, PlaneDensity, flux_mass, ohtst_rate, plane_transmission};
 pub use reactant::{ReactantDensity, reactant_density};
 pub use sample::{LangevinConfig, PlaneIntegrator, PlaneSample, Uncontrolled, sample_plane};
 pub use work::{ReversibleWork, ReversibleWorkConfig, WorkNode, reversible_work};

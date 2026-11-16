@@ -78,14 +78,43 @@ fn same_plane(a: &Hyperplane, b: &Hyperplane) -> bool {
         && a.distance(b.point()).abs() <= 1.0e-9 * scale
 }
 
+/// An estimate of `Z_H / Z_R` per unit mass-weighted length along the
+/// normal of a plane in the reactant basin, the factor [`ohtst_rate`]
+/// takes.
+pub trait PlaneDensity {
+    /// The plane.
+    fn plane(&self) -> &Hyperplane;
+    /// The sampling temperature `kT`.
+    fn thermal(&self) -> f64;
+    /// The density and its standard error.
+    fn density(&self) -> (f64, f64);
+}
+
+impl PlaneDensity for ReactantDensity {
+    fn plane(&self) -> &Hyperplane {
+        &self.plane
+    }
+
+    fn thermal(&self) -> f64 {
+        self.thermal
+    }
+
+    fn density(&self) -> (f64, f64) {
+        (self.density, self.density_error)
+    }
+}
+
 /// Combine the reactant density on a reference plane with the work from
 /// that plane to the optimal one. Both must come from the same `kT`, and
-/// the work path must start at the density's plane.
-pub fn ohtst_rate(
-    density: &ReactantDensity,
+/// the work path must start at the density's plane. The density is either
+/// [`BasinDensity`](crate::ohtst::BasinDensity), from parallel planes, or
+/// [`ReactantDensity`], from one sampled basin.
+pub fn ohtst_rate<D: PlaneDensity + ?Sized>(
+    density: &D,
     work: &ReversibleWork,
 ) -> Result<OhTstRate, SaddleError> {
-    let kt = density.thermal;
+    let kt = density.thermal();
+    let (value, value_error) = density.density();
     if (work.thermal - kt).abs() > 1.0e-12 * kt {
         return Err(SaddleError::Invalid(
             "the reactant density and the work come from different temperatures".into(),
@@ -95,21 +124,19 @@ pub fn ohtst_rate(
         .nodes
         .first()
         .ok_or_else(|| SaddleError::Invalid("the work path has no nodes".into()))?;
-    if !same_plane(&start.plane, &density.plane) {
+    if !same_plane(&start.plane, density.plane()) {
         return Err(SaddleError::Invalid(
             "the work path does not start at the plane of the reactant density".into(),
         ));
     }
-    if !(density.density.is_finite() && density.density > 0.0) {
+    if !(value.is_finite() && value > 0.0) {
         return Err(SaddleError::Invalid(format!(
-            "the reactant density {} ± {} is not positive; sample longer or move the plane toward the minimum",
-            density.density, density.density_error
+            "the reactant density {value} ± {value_error} is not positive; sample longer or move the plane toward the minimum"
         )));
     }
     let flux = (kt / TAU).sqrt();
-    let log_rate = flux.ln() + density.density.ln() - work.work / kt;
-    let log_rate_error =
-        ((density.density_error / density.density).powi(2) + (work.error / kt).powi(2)).sqrt();
+    let log_rate = flux.ln() + value.ln() - work.work / kt;
+    let log_rate_error = ((value_error / value).powi(2) + (work.error / kt).powi(2)).sqrt();
     let rate = log_rate.exp();
     Ok(OhTstRate {
         rate,
@@ -117,8 +144,8 @@ pub fn ohtst_rate(
         log_rate,
         log_rate_error,
         flux,
-        density: density.density,
-        density_error: density.density_error,
+        density: value,
+        density_error: value_error,
         free_energy: work.work,
         free_energy_error: work.error,
     })
