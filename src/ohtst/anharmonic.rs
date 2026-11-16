@@ -199,10 +199,12 @@ impl AnharmonicCorrection {
 /// plane, as the module documentation defines them.
 ///
 /// `saddle` is the plane through the saddle with the unstable mode as its
-/// normal, for example [`Hyperplane::from_min_mode`]. Coordinates are
-/// mass-weighted, as for the rest of OH-TST. The surface's excluded modes
-/// are left out of both subspaces, and the Hessian must be positive on
-/// what remains.
+/// normal, for example [`Hyperplane::from_min_mode`]. `A‡` and `S` change
+/// at first order with that normal, through the third and fourth
+/// derivatives along the plane, so the mode should be converged well
+/// beyond what locating the saddle needs. Coordinates are mass-weighted,
+/// as for the rest of OH-TST. The surface's excluded modes are left out
+/// of both subspaces, and the Hessian must be positive on what remains.
 pub fn anharmonic_correction<S: PointSurface>(
     surface: &S,
     minimum: ArrayView1<f64>,
