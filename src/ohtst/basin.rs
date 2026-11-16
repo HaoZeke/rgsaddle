@@ -195,9 +195,7 @@ impl BasinConfig {
                 "the basin cap must be finite and positive".into(),
             ));
         }
-        if !(self.refine.is_finite() && self.refine >= 0.0)
-            || !(self.resolution.is_finite() && self.resolution >= 0.0)
-        {
+        if !(nonneg_finite(self.refine) && nonneg_finite(self.resolution)) {
             return Err(SaddleError::Invalid(
                 "the basin refinement thresholds must be finite and non-negative".into(),
             ));
@@ -214,6 +212,10 @@ impl BasinConfig {
         }
         Ok(())
     }
+}
+
+fn nonneg_finite(x: f64) -> bool {
+    x.is_finite() && x >= 0.0
 }
 
 /// How a side of the basin window ended.
