@@ -2135,6 +2135,61 @@ mod tests {
         }
     }
 
+    /// [`Tethered`] with `offset` added to the diagonal of its stress.
+    struct DiagonalOffset(f64);
+
+    impl PointSurface for DiagonalOffset {
+        fn eval(&self, r: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+            Tethered.eval(r)
+        }
+
+        fn eval_in_cell(
+            &self,
+            r: ArrayView1<f64>,
+            cell: &[f64; 9],
+        ) -> Result<(f64, Array1<f64>), SaddleError> {
+            Tethered.eval_in_cell(r, cell)
+        }
+
+        fn cauchy_stress(
+            &self,
+            r: ArrayView1<f64>,
+            cell: &[f64; 9],
+        ) -> Result<Option<[f64; 9]>, SaddleError> {
+            let mut sigma = Tethered.cauchy_stress(r, cell)?.expect("analytic stress");
+            for k in [0, 4, 8] {
+                sigma[k] += self.0;
+            }
+            Ok(Some(sigma))
+        }
+    }
+
+    #[test]
+    fn held_diagonals_never_read_the_diagonal_stress() {
+        let search = MinModeConfig {
+            max_move: 0.05,
+            ..MinModeConfig::default()
+        };
+        let cell = [[4.3, 0.0, 0.0], [0.35, 4.6, 0.0], [-0.25, 0.4, 5.0]];
+        let atoms = array![0.6, 1.1, 1.4, 2.9, 2.6, 4.0];
+        let mode = array![1.0, 0.0, 0.0, -1.0, 0.0, 0.0];
+        let shears = CellMask::voigt([false, false, false, true, true, true]);
+        let config = SolidDimerConfig::new(search).with_mask(shears);
+        let mut exact = SolidDimer::new(config.clone(), atoms.clone(), cell, mode.clone()).unwrap();
+        let mut offset = SolidDimer::new(config, atoms, cell, mode).unwrap();
+        for _ in 0..12 {
+            exact.step(&DiagonalOffset(0.0)).unwrap();
+            offset.step(&DiagonalOffset(0.37)).unwrap();
+            assert_eq!(exact.generalized(), offset.generalized());
+            assert_eq!(exact.mode(), offset.mode());
+        }
+        let moved = exact.cell();
+        for axis in 0..3 {
+            assert_eq!(moved[axis][axis], cell[axis][axis]);
+        }
+        assert!((moved[1][0] - cell[1][0]).abs() > 1e-4, "{moved:?}");
+    }
+
     /// [`Tethered`] with its stress passed through a boundary mistake.
     struct Misreported {
         factor: f64,
