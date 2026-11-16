@@ -1,8 +1,9 @@
 //! Wall time and force calls of one converged OH-TST rate on the LEPS plus
 //! harmonic oscillator surface of Jóhannesson and Jónsson, J. Chem. Phys.
 //! 115, 9644 (2001), Appendix B, at `kT = 0.1 E_A`: the plane optimizer
-//! from the dimer's plane, the reactant density at `Z_R` behind the plane
-//! it finds, the reversible work from `Z_R` to that plane, and the rate.
+//! from the dimer's plane, the reactant normalization over planes parallel
+//! to the guideline plane through the minimum, the reversible work from
+//! that plane to the optimum, and the rate.
 //! The dimer runs once, outside the timed loop. The throughput criterion
 //! reports is force calls per second, and the force calls of one rate are
 //! printed before the run.
@@ -12,9 +13,9 @@ use std::time::Duration;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use ndarray::array;
 use rgsaddle::{
-    Hyperplane, LangevinConfig, MinModeConfig, MinModeSession, MinModeStatus, OhTstRate,
-    PlaneIntegrator, PlaneOptimizer, PlaneOptimizerConfig, ReversibleWorkConfig, ohtst_rate,
-    reactant_density, reversible_work,
+    BasinConfig, Hyperplane, LangevinConfig, MinModeConfig, MinModeSession, MinModeStatus,
+    OhTstRate, PlaneIntegrator, PlaneOptimizer, PlaneOptimizerConfig, ReversibleWorkConfig,
+    basin_density, ohtst_rate, reversible_work,
 };
 
 include!(concat!(
@@ -78,12 +79,11 @@ fn converged_rate(problem: &Problem) -> (OhTstRate, usize) {
         PlaneOptimizer::new(PointSphereFixture::new(2), &problem.seed, config).unwrap();
     let optimum = optimizer.run(&LepsHo).unwrap();
     let reactant = array![problem.reactant[0], problem.reactant[1]];
-    let density = reactant_density(
+    let density = basin_density(
         &LepsHo,
-        &problem.start,
         reactant.view(),
-        std::slice::from_ref(&optimum.plane),
-        &sampler(kt, 0.1, 16_000),
+        problem.start.normal(),
+        &BasinConfig::default().with_sampler(sampler(kt, 0.1, 4000)),
     )
     .unwrap();
     let config = ReversibleWorkConfig::default()
@@ -91,7 +91,7 @@ fn converged_rate(problem: &Problem) -> (OhTstRate, usize) {
         .with_nodes(17);
     let work = reversible_work(
         &LepsHo,
-        &[problem.start.clone(), optimum.plane],
+        &[density.plane.clone(), optimum.plane],
         Some(reactant.view()),
         &config,
     )
