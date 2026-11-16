@@ -16,8 +16,8 @@
 
 use ndarray::{Array1, ArrayView1};
 use rgsaddle::{
-    AnharmonicConfig, Hyperplane, LangevinConfig, PointSurface, SaddleError, anharmonic_correction,
-    sample_plane,
+    AnharmonicConfig, HarmonicReference, Hyperplane, LangevinConfig, PointSurface, SaddleError,
+    anharmonic_correction, sample_plane,
 };
 
 include!(concat!(
@@ -314,4 +314,73 @@ fn coupled_modes_planes_against_quadrature() {
         sample.normal_force_error
     );
     assert!(sample.normal_force_error < 0.1 * exact.abs());
+}
+
+/// Control variates from the saddle Hessian on planes turned off the
+/// symmetric ones. On the saddle plane itself `h = P H₀ ν` vanishes and
+/// they change nothing. Turned by 0.3 rad they remove the part of the
+/// fluctuations linear in the in-plane coordinates: the force error falls
+/// to the floor of the untilted plane, set by the bath terms quadratic in
+/// `q_j`, and the torque errors fall several times over. Both estimates
+/// stay within the errors of the uncontrolled ones.
+#[test]
+fn coupled_modes_control_variates() {
+    let model = CoupledModes::new();
+    let kt = 0.2;
+    let axis = model.axis();
+    let config = LangevinConfig::default()
+        .with_thermal(kt)
+        .with_time_step(0.1)
+        .with_burn_in(300)
+        .with_stride(5)
+        .with_records(4000)
+        .with_seed(4)
+        .with_control(HarmonicReference::new(Array1::zeros(N)));
+    let mut e = Array1::zeros(N);
+    e[1] = 1.0;
+    let across = model.rotate(e);
+    let flat = sample_plane(
+        &model,
+        &Hyperplane::new(Array1::zeros(N), axis.clone()).unwrap(),
+        None,
+        &config,
+    )
+    .unwrap();
+    let raw = flat.uncontrolled.as_ref().unwrap();
+    assert!((flat.normal_force - raw.normal_force).abs() < 1.0e-9);
+
+    let tilt: f64 = 0.3;
+    let normal = &axis * tilt.cos() + &across * tilt.sin();
+    let tilted = sample_plane(
+        &model,
+        &Hyperplane::new(Array1::zeros(N), normal).unwrap(),
+        None,
+        &config,
+    )
+    .unwrap();
+    let raw = tilted.uncontrolled.as_ref().unwrap();
+    assert!(
+        (tilted.normal_force - raw.normal_force).abs() < 4.0 * raw.normal_force_error,
+        "force {} against {} ± {}",
+        tilted.normal_force,
+        raw.normal_force,
+        raw.normal_force_error
+    );
+    assert!(
+        tilted.normal_force_error < 0.6 * raw.normal_force_error,
+        "force error {} against {}",
+        tilted.normal_force_error,
+        raw.normal_force_error
+    );
+    assert!(tilted.normal_force_error < 1.5 * flat.normal_force_error);
+    let worst = tilted
+        .centroid_torque
+        .iter()
+        .zip(&raw.centroid_torque)
+        .zip(&raw.centroid_torque_error)
+        .map(|((c, r), e)| (c - r).abs() / e)
+        .fold(0.0, f64::max);
+    assert!(worst < 4.5, "torque {worst} errors off");
+    let ratio = tilted.centroid_torque_error.sum() / raw.centroid_torque_error.sum();
+    assert!(ratio < 0.3, "torque error ratio {ratio}");
 }
