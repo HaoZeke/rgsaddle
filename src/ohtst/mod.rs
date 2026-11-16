@@ -25,6 +25,7 @@
 //! wrap it in [`FixedCell`] with the cell for the temperature, then in
 //! [`MassWeighted`].
 
+mod anharmonic;
 mod optimize;
 mod plane;
 mod rate;
@@ -32,6 +33,7 @@ mod reactant;
 mod sample;
 mod work;
 
+pub use anharmonic::{AnharmonicConfig, AnharmonicCorrection, anharmonic_correction};
 pub use optimize::{PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum, PlaneStep, PlaneTrace};
 pub use plane::{FixedCell, Hyperplane, MassWeighted};
 pub use rate::{OhTstRate, flux_mass, ohtst_rate, plane_transmission};

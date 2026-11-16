@@ -128,10 +128,10 @@ pub use ocineb::{
     walk_helped,
 };
 pub use ohtst::{
-    FixedCell, Hyperplane, LangevinConfig, MassWeighted, OhTstRate, PlaneOptimizer,
-    PlaneOptimizerConfig, PlaneOptimum, PlaneSample, PlaneStep, PlaneTrace, ReactantDensity,
-    ReversibleWork, ReversibleWorkConfig, WorkNode, flux_mass, ohtst_rate, plane_transmission,
-    reactant_density, reversible_work, sample_plane,
+    AnharmonicConfig, AnharmonicCorrection, FixedCell, Hyperplane, LangevinConfig, MassWeighted,
+    OhTstRate, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum, PlaneSample, PlaneStep,
+    PlaneTrace, ReactantDensity, ReversibleWork, ReversibleWorkConfig, WorkNode, flux_mass,
+    ohtst_rate, plane_transmission, reactant_density, reversible_work, sample_plane,
 };
 pub use pafi::{
     ArcPath, FreeEnergyProfile, HyperplaneAverage, PafiConfig, PathFrame, PathGeometry,
