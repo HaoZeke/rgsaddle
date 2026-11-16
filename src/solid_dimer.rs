@@ -289,6 +289,7 @@ impl Default for IndexCheck {
 /// Projected spectrum at one geometry.
 ///
 /// Eigenvalues ascend. Eigenvectors are columns of `vectors`.
+/// Non-exhaustive. Read the fields.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct IndexReport {
@@ -356,7 +357,11 @@ impl Default for SolidDimerConfig {
 }
 
 /// One solid-state dimer step.
+///
+/// Non-exhaustive. Read the fields. A later diagnostic of the step can
+/// be added without breaking a host.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct SolidDimerReport {
     /// Whether the search is still running or has converged.
     pub status: MinModeStatus,
