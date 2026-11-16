@@ -5,8 +5,8 @@
 
 use ndarray::{Array1, ArrayView1};
 use rgsaddle::{
-    ArcPath, PafiConfig, PointSurface, SaddleError, average_hyperplane, pafi_profile,
-    zero_temperature_barrier,
+    ArcPath, PafiConfig, PointSurface, SaddleError, average_hyperplane, integrate_profile,
+    pafi_profile, zero_temperature_barrier,
 };
 
 struct AlongX;
@@ -122,6 +122,21 @@ fn transverse_width_shifts_the_free_energy() {
         profile.barrier,
         profile.barrier_error
     );
+}
+
+#[test]
+fn reverse_barrier_runs_from_the_last_plane() {
+    let profile = integrate_profile(
+        &[0.0, 1.0, 2.0, 3.0],
+        &[0.0, 2.0, -1.0, -3.0],
+        &[0.1, 0.1, 0.2, 0.2],
+    )
+    .expect("profile");
+    assert_eq!(profile.dividing, 2);
+    assert!((profile.barrier - 1.5).abs() < 1.0e-12);
+    let (barrier, error) = profile.reverse_barrier();
+    assert!((barrier - 2.0).abs() < 1.0e-12, "reverse {barrier}");
+    assert!((error - 0.02_f64.sqrt()).abs() < 1.0e-12, "error {error}");
 }
 
 #[test]
