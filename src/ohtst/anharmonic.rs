@@ -231,7 +231,7 @@ pub fn anharmonic_correction<S: PointSurface>(
     let point = saddle.point();
     let unstable = saddle.normal().to_owned();
     let held = held_directions(surface, point, Some(unstable.view()), true)?;
-    let hu = action(surface, point, &unstable, config, &mut evaluations)?;
+    let hu = hessian_action(surface, point, &unstable, config.hvp_step, &mut evaluations)?;
     let curvature = -unstable.dot(&hu);
     if curvature.is_nan() || curvature <= 0.0 {
         return Err(SaddleError::Invalid(
@@ -309,7 +309,7 @@ fn probe<S: PointSurface>(
         xi /= radius;
         let z = inverse_sqrt(
             |v| {
-                let mut hv = action(surface, x0, v, config, evaluations)?;
+                let mut hv = hessian_action(surface, x0, v, config.hvp_step, evaluations)?;
                 project(&mut hv);
                 Ok(hv)
             },
@@ -343,7 +343,7 @@ fn probe<S: PointSurface>(
     Ok((terms, slopes))
 }
 
-fn evaluate<S: PointSurface>(
+pub(crate) fn evaluate<S: PointSurface>(
     surface: &S,
     x: ArrayView1<f64>,
     evaluations: &mut usize,
@@ -365,11 +365,13 @@ fn evaluate<S: PointSurface>(
 
 /// `H v`, analytic when the surface has it, else central differences of
 /// the gradient.
-fn action<S: PointSurface>(
+/// `H(x) v`, analytic when the surface has it and otherwise a central
+/// gradient difference with step `step` along `v`.
+pub(crate) fn hessian_action<S: PointSurface>(
     surface: &S,
     x: ArrayView1<f64>,
     v: &Array1<f64>,
-    config: &AnharmonicConfig,
+    step: f64,
     evaluations: &mut usize,
 ) -> Result<Array1<f64>, SaddleError> {
     if let Some(hv) = surface.hessian_vector(x, v.view())? {
@@ -382,7 +384,7 @@ fn action<S: PointSurface>(
     if norm == 0.0 {
         return Ok(Array1::zeros(x.len()));
     }
-    let h = config.hvp_step / norm;
+    let h = step / norm;
     let mut plus = x.to_owned();
     plus.scaled_add(h, v);
     let mut minus = x.to_owned();

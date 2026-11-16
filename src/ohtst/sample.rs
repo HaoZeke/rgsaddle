@@ -19,6 +19,7 @@ use ndarray::{Array1, Array2, ArrayView1, s};
 
 use crate::error::SaddleError;
 use crate::minmode::PointSurface;
+use crate::ohtst::control::{HarmonicReference, PlaneControl};
 use crate::ohtst::plane::{Hyperplane, orthonormal_rows};
 use crate::stats::{Rng, autocorr_time};
 
@@ -60,6 +61,10 @@ pub struct LangevinConfig {
     /// The integrator. BAOAB needs `h` below `2/ω` for the stiffest
     /// in-plane frequency `ω`, and its bias falls as `h²`.
     pub integrator: PlaneIntegrator,
+    /// Stein control variates from a fixed Hessian, applied by
+    /// [`sample_plane`] to the normal force and the torques. `None` turns
+    /// them off.
+    pub control: Option<HarmonicReference>,
     /// Steps discarded before the first record.
     pub burn_in: usize,
     /// Steps between records.
@@ -85,6 +90,7 @@ impl Default for LangevinConfig {
             time_step: 0.05,
             friction: 1.0,
             integrator: PlaneIntegrator::Baoab,
+            control: None,
             burn_in: 500,
             stride: 5,
             records: 2000,
@@ -115,6 +121,13 @@ impl LangevinConfig {
     #[must_use]
     pub fn with_friction(mut self, friction: f64) -> Self {
         self.friction = friction;
+        self
+    }
+
+    /// Set [`Self::control`] to `reference`.
+    #[must_use]
+    pub fn with_control(mut self, reference: HarmonicReference) -> Self {
+        self.control = Some(reference);
         self
     }
 
@@ -194,6 +207,9 @@ impl LangevinConfig {
             return Err(SaddleError::Invalid(
                 "sampler needs a positive stride, two blocks, and two records per block".into(),
             ));
+        }
+        if let Some(reference) = &self.control {
+            reference.check()?;
         }
         Ok(())
     }
@@ -587,6 +603,29 @@ pub struct PlaneSample {
     pub last: Array1<f64>,
     /// Configurations kept from the records, evenly spaced.
     pub retained: Vec<Array1<f64>>,
+    /// The estimates before the control variates of
+    /// [`LangevinConfig::control`], when they were applied. The fields
+    /// above are then the controlled ones; [`Self::effective_samples`]
+    /// stays uncontrolled.
+    pub uncontrolled: Option<Uncontrolled>,
+}
+
+/// Plane estimates without control variates.
+#[non_exhaustive]
+#[derive(Clone, Debug)]
+pub struct Uncontrolled {
+    /// Mean force along the normal.
+    pub normal_force: f64,
+    /// Block standard error of [`Self::normal_force`].
+    pub normal_force_error: f64,
+    /// `∂A/∂ν`.
+    pub grad_normal: Array1<f64>,
+    /// Block standard errors of [`Self::grad_normal`].
+    pub grad_normal_error: Array1<f64>,
+    /// The torque about the sample centroid.
+    pub centroid_torque: Array1<f64>,
+    /// Block standard errors of [`Self::centroid_torque`].
+    pub centroid_torque_error: Array1<f64>,
 }
 
 impl PlaneSample {
@@ -721,6 +760,11 @@ pub fn sample_plane<S: PointSurface>(
     }
     let excluded = held[1..].to_vec();
     let free_dimensions = n - held.len();
+    let mut control = match &config.control {
+        Some(reference) => PlaneControl::new(surface, reference, &held)?,
+        None => None,
+    };
+    let columns = 2 * n + 2 + if control.is_some() { 2 * n } else { 0 };
     let walls: [Hyperplane; 0] = [];
     let mut dynamics = Dynamics::new(surface, start, held, &walls, config, rng)?;
     for _ in 0..config.burn_in {
@@ -728,7 +772,7 @@ pub fn sample_plane<S: PointSurface>(
     }
     let chunk = config.records.div_ceil(CHUNKS).max(1);
     let mut chunk_sums: Vec<Array1<f64>> = Vec::with_capacity(config.records.div_ceil(chunk));
-    let mut sum = Array1::zeros(2 * n + 2);
+    let mut sum = Array1::zeros(columns);
     let mut series = vec![Vec::with_capacity(config.records); 1 + probes.len()];
     let retain_every = config
         .records
@@ -750,12 +794,19 @@ pub fn sample_plane<S: PointSurface>(
         axpy(&mut total[1..=n], d, &arm);
         axpy(&mut total[n + 1..=2 * n], 1.0, q);
         total[2 * n + 1] -= dot(slice(&dynamics.force), &arm);
+        if let Some(control) = &control {
+            let lever = dot(slice(&control.coupling), &arm);
+            let force = slice(&dynamics.force);
+            let (gradient, weighted) = total[2 * n + 2..].split_at_mut(n);
+            axpy(gradient, -1.0, force);
+            axpy(weighted, -lever, force);
+        }
         series[0].push(d);
         for (j, probe) in probes.iter().enumerate() {
             series[1 + j].push(d * dot(slice(probe), &arm));
         }
         if (record + 1) % chunk == 0 || record + 1 == config.records {
-            chunk_sums.push(std::mem::replace(&mut sum, Array1::zeros(2 * n + 2)));
+            chunk_sums.push(std::mem::replace(&mut sum, Array1::zeros(columns)));
         }
         if retained.len() < config.retain && record % retain_every == retain_every - 1 {
             retained.push(dynamics.q.clone());
@@ -790,8 +841,9 @@ pub fn sample_plane<S: PointSurface>(
     let mut centroid = Array1::zeros(n);
     let mut normal_force = Vec::with_capacity(n_blocks);
     let mut virials = Vec::with_capacity(n_blocks);
+    let mut block_controls = Vec::with_capacity(n_blocks);
     for block in 0..n_blocks {
-        let mut total = Array1::zeros(2 * n + 2);
+        let mut total = Array1::zeros(columns);
         for part in &chunk_sums[block * width..(block + 1) * width] {
             total += part;
         }
@@ -807,18 +859,52 @@ pub fn sample_plane<S: PointSurface>(
         let mean = total.slice(s![n + 1..=2 * n]);
         block_centroids.row_mut(block).assign(&mean);
         centroid.scaled_add(1.0 / n_blocks as f64, &mean);
+        if columns > 2 * n + 2 {
+            block_controls.push(total.slice(s![2 * n + 2..]).to_owned());
+        }
     }
-    let (force, force_error) = mean_and_error(&normal_force);
+    let mut raw_blocks = None;
+    if let Some(control) = control.as_mut() {
+        let mut forces = Vec::with_capacity(n_blocks);
+        let mut rows = block_gradients.clone();
+        for (block, sums) in block_controls.iter().enumerate() {
+            let gradient = sums.slice(s![..n]).to_owned();
+            let weighted = sums.slice(s![n..]).to_owned();
+            let Some(correction) = control.solve(&weighted)? else {
+                break;
+            };
+            let d = -normal_force[block] - control.coefficient.dot(&gradient);
+            let mut row = rows.row_mut(block);
+            row.slice_mut(s![..n]).assign(&(&normal * d));
+            let mut torque = row.slice_mut(s![n..]);
+            torque += &correction;
+            torque.scaled_add(-config.thermal, &control.coefficient);
+            forces.push(-d);
+        }
+        if forces.len() == n_blocks {
+            raw_blocks = Some((
+                std::mem::replace(&mut normal_force, forces),
+                std::mem::replace(&mut block_gradients, rows),
+            ));
+        }
+    }
+    let control_evaluations = control.as_ref().map_or(0, |control| control.evaluations);
     let mut lever = &centroid - &point;
     project(&mut lever);
-    let mut centroid_block_gradients = block_gradients.clone();
-    for (block, mut row) in centroid_block_gradients.rows_mut().into_iter().enumerate() {
-        let mut shift = &block_centroids.row(block) - &centroid;
-        project(&mut shift);
-        let mut torque = row.slice_mut(s![n..]);
-        torque.scaled_add(-normal_force[block], &lever);
-        torque.scaled_add(-force, &shift);
-    }
+    let centroid_rows = |gradients: &Array2<f64>, forces: &[f64]| {
+        let (force, _) = mean_and_error(forces);
+        let mut rows = gradients.clone();
+        for (block, mut row) in rows.rows_mut().into_iter().enumerate() {
+            let mut shift = &block_centroids.row(block) - &centroid;
+            project(&mut shift);
+            let mut torque = row.slice_mut(s![n..]);
+            torque.scaled_add(-forces[block], &lever);
+            torque.scaled_add(-force, &shift);
+        }
+        rows
+    };
+    let (force, force_error) = mean_and_error(&normal_force);
+    let centroid_block_gradients = centroid_rows(&block_gradients, &normal_force);
     let column_means = |rows: &Array2<f64>, offset: usize| {
         let mut means = Array1::zeros(n);
         let mut errors = Array1::zeros(n);
@@ -832,13 +918,30 @@ pub fn sample_plane<S: PointSurface>(
     let (grad_normal, grad_normal_error) = column_means(&block_gradients, n);
     let (centroid_torque, centroid_torque_error) = column_means(&centroid_block_gradients, n);
     let (virial, virial_error) = mean_and_error(&virials);
+    let uncontrolled = raw_blocks.map(|(forces, gradients)| {
+        let (normal_force, normal_force_error) = mean_and_error(&forces);
+        let (grad_normal, grad_normal_error) = column_means(&gradients, n);
+        let (centroid_torque, centroid_torque_error) =
+            column_means(&centroid_rows(&gradients, &forces), n);
+        Uncontrolled {
+            normal_force,
+            normal_force_error,
+            grad_normal,
+            grad_normal_error,
+            centroid_torque,
+            centroid_torque_error,
+        }
+    });
+    let raw_force_error = uncontrolled
+        .as_ref()
+        .map_or(force_error, |raw| raw.normal_force_error);
     let records = n_blocks * width * chunk;
     let forces = &series[0][..records];
     let mean = forces.iter().sum::<f64>() / records as f64;
     let variance =
         forces.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / (records - 1).max(1) as f64;
-    let effective_samples = if force_error > 0.0 {
-        variance / force_error.powi(2)
+    let effective_samples = if raw_force_error > 0.0 {
+        variance / raw_force_error.powi(2)
     } else {
         records as f64
     };
@@ -861,10 +964,11 @@ pub fn sample_plane<S: PointSurface>(
         effective_samples,
         tau,
         records,
-        evaluations: dynamics.evaluations,
+        evaluations: dynamics.evaluations + control_evaluations,
         acceptance: dynamics.acceptance(),
         last: dynamics.q.clone(),
         retained,
+        uncontrolled,
     })
 }
 

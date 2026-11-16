@@ -3,7 +3,9 @@
 //! line free energy on the LEPS plus harmonic oscillator surface.
 
 use ndarray::{Array1, Array2, ArrayView1, array, s};
-use rgsaddle::{Hyperplane, LangevinConfig, PointSurface, SaddleError, sample_plane};
+use rgsaddle::{
+    HarmonicReference, Hyperplane, LangevinConfig, PointSurface, SaddleError, sample_plane,
+};
 
 include!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -247,4 +249,103 @@ fn gaussian_centroid_torque_matches_the_closed_form() {
         sample.virial,
         sample.virial_error
     );
+}
+
+/// With the reference Hessian equal to `K`, the control variates leave no
+/// variance in the normal force, and on a plane through its in-plane mean
+/// none in the centroid torque. The values are the closed forms
+/// `⟨ν · ∇V⟩ = s / S` and `-Cov(ν · ∇V, q)_⊥ = (kT / S) P K⁻¹ ν`, with
+/// `S = νᵀK⁻¹ν` and the plane at `ν · q = s`.
+#[test]
+fn control_variates_are_exact_on_a_gaussian() {
+    let model = Gaussian::new();
+    let kt = 0.4;
+    let nu: Array1<f64> = array![0.6, -0.3, 0.74];
+    let nu = &nu / nu.dot(&nu).sqrt();
+    let k_inv_nu = model.k_inv.dot(&nu);
+    let spread = nu.dot(&k_inv_nu);
+    let offset = 0.3;
+    let plane = Hyperplane::new(&k_inv_nu * (offset / spread), nu.clone()).unwrap();
+    let reference = HarmonicReference::new(Array1::zeros(3)).with_tolerance(1.0e-12);
+    let config = LangevinConfig::default()
+        .with_thermal(kt)
+        .with_time_step(0.1)
+        .with_records(2000)
+        .with_seed(8)
+        .with_control(reference);
+    let sample = sample_plane(&model, &plane, None, &config).unwrap();
+    let raw = sample.uncontrolled.as_ref().unwrap();
+    let force = -offset / spread;
+    assert!((sample.normal_force - force).abs() < 1.0e-8);
+    assert!(sample.normal_force_error < 1.0e-9);
+    assert!((raw.normal_force - force).abs() < 4.0 * raw.normal_force_error);
+    assert!(raw.normal_force_error > 1.0e-3);
+    let mut torque = &k_inv_nu * (kt / spread);
+    let along = torque.dot(&nu);
+    torque.scaled_add(-along, &nu);
+    for i in 0..3 {
+        let (value, error) = (sample.centroid_torque[i], sample.centroid_torque_error[i]);
+        assert!(
+            (value - torque[i]).abs() < 1.0e-8,
+            "{value} against {}",
+            torque[i]
+        );
+        assert!(error < 1.0e-9, "{error}");
+        let (value, error) = (raw.centroid_torque[i], raw.centroid_torque_error[i]);
+        assert!((value - torque[i]).abs() < 4.0 * error + 1.0e-12);
+    }
+}
+
+/// On the LEPS surface, control variates from the saddle Hessian stay
+/// unbiased against line quadrature. They do not pay here: on these two
+/// planes they changed the force error by factors of 1.27 and 0.85 and the
+/// torque error by 1.74 and 1.18, since the in-plane fluctuations reach
+/// well past the harmonic region of the saddle.
+#[test]
+fn control_variates_stay_unbiased_on_leps() {
+    let saddle = stationary(LepsHo::energy, [2.02, -0.17]);
+    let minimum = ohtst_surfaces::descend(LepsHo::energy, [0.75, 1.3]);
+    let barrier = LepsHo::energy(saddle[0], saddle[1]).0 - LepsHo::energy(minimum[0], minimum[1]).0;
+    let kt = 0.1 * barrier;
+    let (_, _, mode) = eigen2(hessian(LepsHo::energy, saddle));
+    let base = mode[1].atan2(mode[0]);
+    let config = LangevinConfig::default()
+        .with_thermal(kt)
+        .with_time_step(0.1)
+        .with_friction(1.0)
+        .with_burn_in(500)
+        .with_stride(5)
+        .with_records(8000)
+        .with_seed(3)
+        .with_control(HarmonicReference::new(array![saddle[0], saddle[1]]));
+    for (offset, tilt) in [(0.1, 0.25), (-0.15, -0.1)] {
+        let angle = base + tilt;
+        let normal = [angle.cos(), angle.sin()];
+        let point = [
+            saddle[0] + offset * normal[0],
+            saddle[1] + offset * normal[1],
+        ];
+        let plane =
+            Hyperplane::new(array![point[0], point[1]], array![normal[0], normal[1]]).unwrap();
+        let sample = sample_plane(&LepsHo, &plane, None, &config).unwrap();
+        let raw = sample.uncontrolled.as_ref().unwrap();
+        let free_energy = |p: &Array1<f64>, n: &Array1<f64>| {
+            line_free_energy(LepsHo::energy, [p[0], p[1]], [n[0], n[1]], kt, 0.0, 6.0)
+        };
+        let nu = array![normal[0], normal[1]];
+        let turn = array![-normal[1], normal[0]];
+        let zero = Array1::zeros(2);
+        for direction in [packed(&nu, &zero), packed(&zero, &turn)] {
+            let exact = packed_difference(free_energy, &plane, &direction, 1.0e-4);
+            let (value, error) = sample.directional(direction.view()).unwrap();
+            assert!(
+                (value - exact).abs() < 4.0 * error + 1.0e-6,
+                "derivative {value} ± {error}, quadrature {exact}"
+            );
+        }
+        assert!(
+            (sample.normal_force - raw.normal_force).abs()
+                < 4.0 * sample.normal_force_error.max(raw.normal_force_error)
+        );
+    }
 }
