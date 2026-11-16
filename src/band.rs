@@ -2139,7 +2139,7 @@ fn build_solver(config: &BandConfig, method: &Method, interior_dof: usize) -> So
 ///     let t = i as f64 / 8.0;
 ///     [2.0 * t - 1.0, 0.3 * (std::f64::consts::PI * t).sin(), 0.0][k]
 /// });
-/// let config = BandConfig { force_tol: 1e-3, max_move: 0.1, ..BandConfig::default() };
+/// let config = BandConfig::default().with_force_tol(1e-3).with_max_move(0.1);
 /// let mut session = BandSession::new(config, initial)?;
 /// let mut report = session.step(&DoubleWell)?;
 /// while report.status == BandStatus::Running {
@@ -3157,13 +3157,11 @@ mod tests {
     }
 
     fn infinite_climb() -> BandConfig {
-        BandConfig {
-            climbing: Some(CiConfig {
-                trigger_factor: 1.0,
-                trigger_force: f64::INFINITY,
-            }),
-            ..BandConfig::default()
-        }
+        BandConfig::default().with_climbing(
+            CiConfig::default()
+                .with_trigger_factor(1.0)
+                .with_trigger_force(f64::INFINITY),
+        )
     }
 
     /// Two atoms, three images at equal spacing; the tangent lies along
@@ -3247,10 +3245,7 @@ mod tests {
     #[test]
     fn keep_translation_leaves_the_mean_in_the_force() {
         let (positions, gradient) = two_atom_band();
-        let config = BandConfig {
-            remove_translation: false,
-            ..BandConfig::default()
-        };
+        let config = BandConfig::default().with_remove_translation(false);
         let (projected, _) = assemble(&config, vec![0.0, 1.0, 5.0], &positions, gradient);
         assert_force(&projected, &[0.0, 3.0, 0.0, 5.0, 1.0, 0.0]);
     }

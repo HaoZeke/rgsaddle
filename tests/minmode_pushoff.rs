@@ -79,13 +79,11 @@ fn pushes_off_into_both_basins(kind: MinModeKind, method: Method) {
         tilted[0].abs() < 0.9,
         "the start's soft mode is tilted: {tilted:?}"
     );
-    let config = MinModeConfig {
-        kind,
-        method: method.clone(),
-        force_tol: 1e-6,
-        max_move: 0.1,
-        ..MinModeConfig::default()
-    };
+    let config = MinModeConfig::default()
+        .with_kind(kind)
+        .with_method(method.clone())
+        .with_force_tol(1e-6)
+        .with_max_move(0.1);
     let mut session = MinModeSession::new(config, start, seed).unwrap();
     let report = session.run(&CurvedValley, 5000).unwrap();
     assert_eq!(

@@ -10,9 +10,9 @@ pub fn trust_region(region: rgmin::TrustRegion) -> rgsaddle::trust::TrustRegion 
 }
 
 pub fn quickmin(options: rgmin::QuickMinOptions) -> rgmin::QuickMinOptions {
-    let mut config = rgsaddle::band::BandConfig::default();
-    config.quickmin_options = options;
-    config.quickmin_options
+    rgsaddle::band::BandConfig::default()
+        .with_quickmin_options(options)
+        .quickmin_options
 }
 
 pub fn cell(cell: linkcell::Cell) -> rgsaddle::mic::Cell {

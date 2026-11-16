@@ -44,10 +44,7 @@ fn main() -> Result<(), SaddleError> {
     let kt = 0.1;
     let reactant = array![-1.0, -1.0];
 
-    let config = MinModeConfig {
-        force_tol: 1.0e-8,
-        ..Default::default()
-    };
+    let config = MinModeConfig::default().with_force_tol(1.0e-8);
     let mut session = MinModeSession::new(config, array![0.1, -0.05], array![1.0, 0.3])?;
     let mut converged = false;
     for _ in 0..2000 {

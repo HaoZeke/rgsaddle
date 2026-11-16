@@ -142,14 +142,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let initial = linear_path(minimum_a.view(), minimum_b.view(), 11, None)?;
     write_band(&out.join("initial_band.csv"), initial.view())?;
 
-    let oci_neb = BandConfig {
-        max_move: 0.05,
-        ..BandConfig::default()
-    };
-    let ci_neb = BandConfig {
-        min_mode: None,
-        ..oci_neb.clone()
-    };
+    let oci_neb = BandConfig::default().with_max_move(0.05);
+    let ci_neb = oci_neb.clone().with_min_mode(None);
     run("ci-neb", ci_neb, &initial, out)?;
     run("oci-neb", oci_neb, &initial, out)?;
     Ok(())

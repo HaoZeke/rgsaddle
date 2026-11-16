@@ -54,31 +54,32 @@ fn minmode_config_from(cfg: &RgsaddleMinModeConfig) -> Option<MinModeConfig> {
     if cfg.version.major != RGSADDLE_ABI_MAJOR || cfg.method == 3 {
         return None;
     }
-    Some(MinModeConfig {
-        kind: if cfg.kind == 1 {
-            MinModeKind::Lanczos
-        } else {
-            MinModeKind::Dimer
-        },
-        dr: cfg.dr,
-        difference: if cfg.version.minor >= 5 && cfg.difference == 1 {
-            FiniteDifference::Central
-        } else {
-            FiniteDifference::Forward
-        },
-        rotation_tol: cfg.rotation_tol,
-        rotation_angle_tol: if cfg.version.minor >= 5 {
-            cfg.rotation_angle_tol
-        } else {
-            0.0
-        },
-        max_rotations: cfg.max_rotations as usize,
-        krylov_dim: cfg.krylov_dim as usize,
-        force_tol: cfg.force_tol,
-        max_move: cfg.max_move,
-        method: super::method_of(cfg.method, 0),
-        seed_curvature: false,
-    })
+    Some(
+        MinModeConfig::default()
+            .with_kind(if cfg.kind == 1 {
+                MinModeKind::Lanczos
+            } else {
+                MinModeKind::Dimer
+            })
+            .with_dr(cfg.dr)
+            .with_difference(if cfg.version.minor >= 5 && cfg.difference == 1 {
+                FiniteDifference::Central
+            } else {
+                FiniteDifference::Forward
+            })
+            .with_rotation_tol(cfg.rotation_tol)
+            .with_rotation_angle_tol(if cfg.version.minor >= 5 {
+                cfg.rotation_angle_tol
+            } else {
+                0.0
+            })
+            .with_max_rotations(cfg.max_rotations as usize)
+            .with_krylov_dim(cfg.krylov_dim as usize)
+            .with_force_tol(cfg.force_tol)
+            .with_max_move(cfg.max_move)
+            .with_method(super::method_of(cfg.method, 0))
+            .with_seed_curvature(false),
+    )
 }
 
 fn stamp(out: &mut RgsaddleOcinebReport) {
@@ -128,26 +129,25 @@ pub unsafe extern "C" fn rgsaddle_ocineb_create(
     let per_image = parsed.per_image;
     let method = parsed.method;
     let max_move = parsed.config.max_move;
-    let ocineb = OcinebConfig {
-        band: parsed.config,
-        minmode: minmode_config,
-        trigger_factor: config.trigger_factor,
-        trigger_force: config.trigger_force,
-        angle_tol: config.angle_tol,
-        stability_count: config.stability_count,
-        max_mmf_steps: config.max_mmf_steps as usize,
-        restore_unhelpful: config.restore_unhelpful != 0,
-    };
+    let ocineb = OcinebConfig::default()
+        .with_band(parsed.config)
+        .with_minmode(minmode_config)
+        .with_trigger_factor(config.trigger_factor)
+        .with_trigger_force(config.trigger_force)
+        .with_angle_tol(config.angle_tol)
+        .with_stability_count(config.stability_count)
+        .with_max_mmf_steps(config.max_mmf_steps as usize)
+        .with_restore_unhelpful(config.restore_unhelpful != 0);
     let Ok(mut session) = OcinebSession::new(ocineb, initial) else {
         return std::ptr::null_mut();
     };
     if method == 2
         && session
-            .set_rtr(Some(crate::rtr::RtrConfig {
-                radius_max: max_move * ((n_images - 2) as f64).sqrt(),
-                reparametrization: super::rtr_reparametrization(band),
-                ..crate::rtr::RtrConfig::default()
-            }))
+            .set_rtr(Some(
+                crate::rtr::RtrConfig::default()
+                    .with_radius_max(max_move * ((n_images - 2) as f64).sqrt())
+                    .with_reparametrization(super::rtr_reparametrization(band)),
+            ))
             .is_err()
     {
         return std::ptr::null_mut();

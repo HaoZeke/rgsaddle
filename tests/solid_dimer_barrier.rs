@@ -194,15 +194,13 @@ impl BandSurface for Model {
 }
 
 fn search(mask: CellMask, start: Array1<f64>, cell: [[f64; 3]; 3]) -> SolidDimer {
-    let config = MinModeConfig {
-        method: Method::lbfgs_with_memory(12),
-        force_tol: 1e-7,
-        max_move: 0.15,
-        dr: 1e-5,
-        rotation_tol: 1e-7,
-        max_rotations: 16,
-        ..MinModeConfig::default()
-    };
+    let config = MinModeConfig::default()
+        .with_method(Method::lbfgs_with_memory(12))
+        .with_force_tol(1e-7)
+        .with_max_move(0.15)
+        .with_dr(1e-5)
+        .with_rotation_tol(1e-7)
+        .with_max_rotations(16);
     SolidDimer::new(
         SolidDimerConfig::new(config).with_mask(mask),
         start,
@@ -292,16 +290,14 @@ fn variable_cell_dimer_matches_the_solid_state_band() {
         cells.push(Cell(h));
     }
     let mut band = BandSession::new(
-        BandConfig {
-            climbing: Some(CiConfig::always()),
-            force_tol: 5e-4,
-            max_move: 0.2,
-            remove_translation: false,
-            method: Method::lbfgs_with_memory(20),
-            solid: Some(SolidState::new(cells)),
-            min_mode: None,
-            ..BandConfig::default()
-        },
+        BandConfig::default()
+            .with_climbing(CiConfig::always())
+            .with_force_tol(5e-4)
+            .with_max_move(0.2)
+            .with_remove_translation(false)
+            .with_method(Method::lbfgs_with_memory(20))
+            .with_solid(SolidState::new(cells))
+            .with_min_mode(None),
         positions,
     )
     .unwrap();

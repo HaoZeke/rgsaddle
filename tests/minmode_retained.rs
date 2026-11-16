@@ -19,12 +19,10 @@ impl PointSurface for QuadraticSaddle {
 }
 
 fn converges(kind: MinModeKind) {
-    let config = MinModeConfig {
-        kind,
-        force_tol: 1e-4,
-        max_move: 0.1,
-        ..MinModeConfig::default()
-    };
+    let config = MinModeConfig::default()
+        .with_kind(kind)
+        .with_force_tol(1e-4)
+        .with_max_move(0.1);
     let start = array![0.35, 0.4, -0.3];
     let seed = array![0.8, 0.5, 0.1];
     let mut session = MinModeSession::new(config, start, seed).unwrap();
@@ -74,13 +72,11 @@ impl PointSurface for FailOnShift {
 }
 
 fn rotation_fails_closed(kind: MinModeKind) {
-    let config = MinModeConfig {
-        kind,
-        force_tol: 1e-8,
-        max_move: 0.1,
-        dr: 1e-3,
-        ..MinModeConfig::default()
-    };
+    let config = MinModeConfig::default()
+        .with_kind(kind)
+        .with_force_tol(1e-8)
+        .with_max_move(0.1)
+        .with_dr(1e-3);
     let start = array![0.0, 0.0, 0.0];
     let seed = array![1.0, 0.0, 0.0];
     let mut session = MinModeSession::new(config, start, seed).unwrap();
@@ -108,12 +104,10 @@ fn lanczos_rotation_fails_closed_on_oracle_error() {
 
 #[test]
 fn kappa_lbfgs_finds_the_saddle() {
-    let config = MinModeConfig {
-        method: rgmin::Method::lbfgs_with_memory(20),
-        force_tol: 1e-4,
-        max_move: 0.05,
-        ..MinModeConfig::default()
-    };
+    let config = MinModeConfig::default()
+        .with_method(rgmin::Method::lbfgs_with_memory(20))
+        .with_force_tol(1e-4)
+        .with_max_move(0.05);
     let mut session =
         MinModeSession::new(config, array![0.35, 0.4, -0.3], array![0.8, 0.5, 0.1]).unwrap();
     session
@@ -150,11 +144,9 @@ impl PointSurface for HarmonicWithRigidMode {
 
 #[test]
 fn both_dimer_rotations_exclude_rigid_zero_modes() {
-    let config = MinModeConfig {
-        max_move: 0.05,
-        method: rgmin::Method::lbfgs_with_memory(20),
-        ..Default::default()
-    };
+    let config = MinModeConfig::default()
+        .with_max_move(0.05)
+        .with_method(rgmin::Method::lbfgs_with_memory(20));
     let mut session =
         MinModeSession::new(config, array![0.35, 0.4, 0.], array![0.1, 0.1, 1.]).unwrap();
     session

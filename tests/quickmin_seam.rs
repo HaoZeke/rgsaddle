@@ -45,13 +45,11 @@ impl BandSurface for Valley {
 fn quickmin_steps_the_perpendicular_force() {
     let band = array![[0.0, 0.0, 0.0], [1.0, 0.5, 0.0], [2.0, 0.0, 0.0]];
     let built = BandSession::new(
-        BandConfig {
-            quickmin: true,
-            climbing: None,
-            spring: SpringKind::Uniform { k: 0.0 },
-            max_move: 0.2,
-            ..BandConfig::default()
-        },
+        BandConfig::default()
+            .with_quickmin(true)
+            .with_climbing(None)
+            .with_spring(SpringKind::Uniform { k: 0.0 })
+            .with_max_move(0.2),
         band.clone(),
     );
     let Ok(mut session) = built else {

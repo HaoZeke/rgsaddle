@@ -46,17 +46,8 @@ fn rtr_band_relaxes_onto_the_path_and_climbs_to_the_saddle() {
     let mut band = initial_band(n);
     let first = band.row(0).to_owned();
     let last = band.row(n - 1).to_owned();
-    let config = BandConfig {
-        force_tol: 1e-6,
-        ..BandConfig::default()
-    };
-    let mut rtr = BandRtr::new(
-        RtrConfig {
-            radius_max: 0.5,
-            ..RtrConfig::default()
-        },
-        true,
-    );
+    let config = BandConfig::default().with_force_tol(1e-6);
+    let mut rtr = BandRtr::new(RtrConfig::default().with_radius_max(0.5), true);
     let mut converged = false;
     let mut accepted = 0;
     for _ in 0..400 {
@@ -98,13 +89,7 @@ fn rejected_steps_shrink_the_radius_and_accepted_boundary_steps_grow_it() {
     let n = 5;
     let mut band = initial_band(n);
     let config = BandConfig::default();
-    let mut rtr = BandRtr::new(
-        RtrConfig {
-            radius_max: 4.0,
-            ..RtrConfig::default()
-        },
-        false,
-    );
+    let mut rtr = BandRtr::new(RtrConfig::default().with_radius_max(4.0), false);
     let r0 = rtr.radius.radius;
     let report = rtr.step(&config, &DoubleWell, &mut band).expect("step");
     if report.accepted {
@@ -119,17 +104,12 @@ fn rejected_steps_shrink_the_radius_and_accepted_boundary_steps_grow_it() {
 fn band_session_steps_by_rtr_when_configured() {
     let n = 7;
     let band = initial_band(n);
-    let config = BandConfig {
-        force_tol: 1e-5,
-        min_mode: None,
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default()
+        .with_force_tol(1e-5)
+        .with_min_mode(None);
     let mut session = BandSession::new(config, band).expect("session");
     session
-        .set_rtr(Some(RtrConfig {
-            radius_max: 0.5,
-            ..RtrConfig::default()
-        }))
+        .set_rtr(Some(RtrConfig::default().with_radius_max(0.5)))
         .expect("RTR configuration");
     let mut converged = false;
     for _ in 0..400 {
@@ -155,16 +135,10 @@ fn band_session_steps_by_rtr_when_configured() {
 #[test]
 fn refined_rtr_band_converges_on_the_saddle() {
     let n = 7;
-    let config = BandConfig {
-        force_tol: 1e-5,
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default().with_force_tol(1e-5);
     let mut session = BandSession::new(config, initial_band(n)).expect("session");
     session
-        .set_rtr(Some(RtrConfig {
-            radius_max: 0.5,
-            ..RtrConfig::default()
-        }))
+        .set_rtr(Some(RtrConfig::default().with_radius_max(0.5)))
         .expect("RTR configuration");
     let mut last = None;
     let mut refined = false;

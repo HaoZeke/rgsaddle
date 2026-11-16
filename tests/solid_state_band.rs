@@ -54,25 +54,19 @@ fn equal_cells_and_zero_stress_match_the_atomic_band() {
         stress_xx: 0.0,
     };
     let mut atomic_session = BandSession::new(
-        BandConfig {
-            climbing: None,
-            max_move: 0.2,
-            ..BandConfig::default()
-        },
+        BandConfig::default().with_climbing(None).with_max_move(0.2),
         positions.clone(),
     )
     .unwrap();
     let mut solid_session = BandSession::new(
-        BandConfig {
-            climbing: None,
-            max_move: 0.2,
-            solid: Some(SolidState::new(vec![
+        BandConfig::default()
+            .with_climbing(None)
+            .with_max_move(0.2)
+            .with_solid(SolidState::new(vec![
                 diagonal(5.0),
                 diagonal(5.0),
                 diagonal(5.0),
             ])),
-            ..BandConfig::default()
-        },
         positions,
     )
     .unwrap();
@@ -95,14 +89,12 @@ fn equal_cells_and_zero_stress_match_the_atomic_band() {
 
 #[test]
 fn positive_pressure_shrinks_the_interior_cell() {
-    let config = BandConfig {
-        climbing: None,
-        max_move: 0.05,
-        solid: Some(
+    let config = BandConfig::default()
+        .with_climbing(None)
+        .with_max_move(0.05)
+        .with_solid(
             SolidState::new(vec![diagonal(5.0), diagonal(5.0), diagonal(5.0)]).with_pressure(0.02),
-        ),
-        ..BandConfig::default()
-    };
+        );
     let mut session = BandSession::new(
         config,
         array![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
@@ -125,16 +117,14 @@ fn positive_pressure_shrinks_the_interior_cell() {
 
 #[test]
 fn a_longer_product_cell_pulls_the_middle_cell_out() {
-    let config = BandConfig {
-        climbing: None,
-        max_move: 0.2,
-        solid: Some(SolidState::new(vec![
+    let config = BandConfig::default()
+        .with_climbing(None)
+        .with_max_move(0.2)
+        .with_solid(SolidState::new(vec![
             diagonal(4.0),
             diagonal(4.0),
             diagonal(6.0),
-        ])),
-        ..BandConfig::default()
-    };
+        ]));
     // Matching fractional coordinates, so the atomic block of the
     // displacement is zero and only the strain remains.
     let mut session = BandSession::new(

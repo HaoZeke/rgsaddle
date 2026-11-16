@@ -27,10 +27,7 @@ fn the_climbing_image_arms_once_the_band_settles() {
             Ok(())
         }
     }
-    let config = BandConfig {
-        force_tol: 1e-8,
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default().with_force_tol(1e-8);
     assert_eq!(config.climbing.map(|c| c.trigger_force), Some(0.5));
     let mut steep = BandSession::new(config.clone(), band.clone()).unwrap();
     assert_eq!(steep.step(&Peak(2.0)).unwrap().ci_index, None);

@@ -91,13 +91,12 @@ with_setters!(SellaSaddleConfig {
 
 impl SellaSaddleConfig {
     fn schedule(&self) -> TrustSchedule {
-        TrustSchedule {
-            sigma_inc: self.sigma_inc,
-            sigma_dec: self.sigma_dec,
-            rho_inc: self.rho_inc,
-            rho_dec: self.rho_dec,
-            delta_min: self.delta_min,
-        }
+        TrustSchedule::default()
+            .with_sigma_inc(self.sigma_inc)
+            .with_sigma_dec(self.sigma_dec)
+            .with_rho_inc(self.rho_inc)
+            .with_rho_dec(self.rho_dec)
+            .with_delta_min(self.delta_min)
     }
 }
 
@@ -1361,12 +1360,10 @@ mod tests {
         let mut x = Array1::zeros(6);
         x[0] = 0.2;
         let mut sess = SellaSaddleSession::new(
-            SellaSaddleConfig {
-                eig: true,
-                nsteps_per_diag: 1,
-                gamma: 0.1,
-                ..SellaSaddleConfig::default()
-            },
+            SellaSaddleConfig::default()
+                .with_eig(true)
+                .with_nsteps_per_diag(1)
+                .with_gamma(0.1),
             x,
             Array1::from(vec![1.0, 1.0]),
         )

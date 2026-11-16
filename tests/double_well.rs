@@ -42,12 +42,10 @@ fn initial_band(n_images: usize) -> Array2<f64> {
 #[test]
 fn band_converges_to_the_double_well_saddle() {
     let n_images = 9;
-    let config = BandConfig {
-        force_tol: 1e-3,
-        max_move: 0.1,
-        min_mode: None,
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default()
+        .with_force_tol(1e-3)
+        .with_max_move(0.1)
+        .with_min_mode(None);
     let mut session = BandSession::new(config, initial_band(n_images)).unwrap();
     let mut report = session.step(&DoubleWell).unwrap();
     for k in 0..3000 {
@@ -172,10 +170,7 @@ impl BandSurface for Counting {
 fn endpoints_are_evaluated_once_and_each_step_costs_one_interior_eval() {
     let n_images = 7;
     let interior = n_images - 2;
-    let config = BandConfig {
-        min_mode: None,
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default().with_min_mode(None);
     let mut session = BandSession::new(config, initial_band(n_images)).unwrap();
     let surface = Counting::new();
 
@@ -243,15 +238,13 @@ fn wrapped_resync_keeps_the_cached_band() {
     // back; the rows differ by lattice vectors only.
     let n_images = 7;
     let interior = n_images - 2;
-    let config = BandConfig {
-        cell: Some(rgsaddle::band::Cell([
+    let config = BandConfig::default()
+        .with_cell(rgsaddle::band::Cell([
             [3.0, 0.0, 0.0],
             [0.0, 3.0, 0.0],
             [0.0, 0.0, 3.0],
-        ])),
-        min_mode: None,
-        ..BandConfig::default()
-    };
+        ]))
+        .with_min_mode(None);
     let mut session = BandSession::new(config, initial_band(n_images)).unwrap();
     let surface = Counting::new();
     for _ in 0..3 {
@@ -317,13 +310,11 @@ fn reset_clears_history_and_stepping_resumes() {
 fn lbfgs_band_steps_once_per_evaluation_and_converges() {
     let n_images = 9;
     let interior = n_images - 2;
-    let config = BandConfig {
-        force_tol: 1e-3,
-        max_move: 0.1,
-        method: rgmin::Method::lbfgs_with_memory(10),
-        min_mode: None,
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default()
+        .with_force_tol(1e-3)
+        .with_max_move(0.1)
+        .with_method(rgmin::Method::lbfgs_with_memory(10))
+        .with_min_mode(None);
     let mut session = BandSession::new(config, initial_band(n_images)).unwrap();
     let surface = Counting::new();
     let mut report = session.step(&surface).unwrap();
@@ -349,11 +340,9 @@ fn lbfgs_band_opens_with_the_neb_scale() {
     // step is the force itself, clipped at max_move.
     let n_images = 9;
     let max_move = 0.1;
-    let config = BandConfig {
-        max_move,
-        method: rgmin::Method::lbfgs_with_memory(10),
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default()
+        .with_max_move(max_move)
+        .with_method(rgmin::Method::lbfgs_with_memory(10));
     let start = initial_band(n_images);
     let mut session = BandSession::new(config, start.clone()).unwrap();
     session.step(&DoubleWell).unwrap();
@@ -370,10 +359,7 @@ fn lbfgs_band_opens_with_the_neb_scale() {
 #[test]
 fn value_testing_methods_are_refused() {
     for method in [rgmin::Method::Bfgs, rgmin::Method::Steepest] {
-        let config = BandConfig {
-            method: method.clone(),
-            ..BandConfig::default()
-        };
+        let config = BandConfig::default().with_method(method.clone());
         let err = BandSession::new(config, initial_band(7))
             .err()
             .expect("refused");

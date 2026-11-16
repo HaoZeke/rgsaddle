@@ -166,28 +166,27 @@ fn through_seven(three: &Array2<f64>) -> Array2<f64> {
 }
 
 fn config(force_tol: f64, full_band: bool) -> BandConfig {
-    BandConfig {
-        force_tol,
-        max_move: 0.1,
-        method: rgmin::Method::lbfgs_with_memory(10),
+    BandConfig::default()
+        .with_force_tol(force_tol)
+        .with_max_move(0.1)
+        .with_method(rgmin::Method::lbfgs_with_memory(10))
         // The band's default arming: climb once the largest component is
         // under 0.5.
-        climbing: Some(CiConfig::default()),
-        autoneb: Some(AutoNebTuning {
-            n_simul: 3,
-            n_max: 7,
-            local_force_tol: 1e-1,
-            local_max_steps: 100_000,
-            climb_max_steps: 100_000,
-            space_energy_ratio: 0.5,
-            climb: true,
-            full_band,
-            threads: 1,
-            record_samples: false,
-            interpolant: AutoNebInterpolant::Linear,
-        }),
-        ..BandConfig::default()
-    }
+        .with_climbing(CiConfig::default())
+        .with_autoneb(
+            AutoNebTuning::default()
+                .with_n_simul(3)
+                .with_n_max(7)
+                .with_local_force_tol(1e-1)
+                .with_local_max_steps(100_000)
+                .with_climb_max_steps(100_000)
+                .with_space_energy_ratio(0.5)
+                .with_climb(true)
+                .with_full_band(full_band)
+                .with_threads(1)
+                .with_record_samples(false)
+                .with_interpolant(AutoNebInterpolant::Linear),
+        )
 }
 
 struct Outcome {
@@ -272,8 +271,7 @@ fn run_cineb<S: BandSurface + Copy>(
     budget: usize,
     saddles: &[[f64; 2]],
 ) -> Outcome {
-    let mut band = config(force_tol, false);
-    band.autoneb = None;
+    let band = config(force_tol, false).with_autoneb(None);
     let mut session = BandSession::new(band, seven.clone()).unwrap();
     let counted = Budget::new(surface, budget);
     let mut censored = false;
@@ -681,16 +679,20 @@ fn old_seed_two() {
     for (k, index) in [0, 3, 6].into_iter().enumerate() {
         three.row_mut(k).assign(&band.row(index));
     }
-    let mut cfg = config(1e-2, true);
-    cfg.climbing = Some(CiConfig {
-        trigger_factor: 0.5,
-        trigger_force: 0.0,
+    let cfg = config(1e-2, true);
+    let tuning = cfg.autoneb.clone().map(|tuning| {
+        tuning
+            .with_local_max_steps(40)
+            .with_climb_max_steps(800)
+            .with_local_force_tol(1e-1)
     });
-    if let Some(tuning) = cfg.autoneb.as_mut() {
-        tuning.local_max_steps = 40;
-        tuning.climb_max_steps = 800;
-        tuning.local_force_tol = 1e-1;
-    }
+    let cfg = cfg
+        .with_climbing(
+            CiConfig::default()
+                .with_trigger_factor(0.5)
+                .with_trigger_force(0.0),
+        )
+        .with_autoneb(tuning);
     let mut search = AutoNeb::new(cfg, three).unwrap();
     let report = search.run(&MullerBrown).unwrap();
     eprintln!(
@@ -853,14 +855,16 @@ fn hash_band<S: BandSurface + Copy>(
     force_tol: f64,
     threads: usize,
 ) -> String {
-    let mut cfg = config(force_tol, false);
-    if let Some(tuning) = cfg.autoneb.as_mut() {
-        tuning.threads = threads;
-        tuning.n_max = 6;
-        tuning.local_max_steps = 12;
-        tuning.climb_max_steps = 20;
-        tuning.record_samples = true;
-    }
+    let cfg = config(force_tol, false);
+    let tuning = cfg.autoneb.clone().map(|tuning| {
+        tuning
+            .with_threads(threads)
+            .with_n_max(6)
+            .with_local_max_steps(12)
+            .with_climb_max_steps(20)
+            .with_record_samples(true)
+    });
+    let cfg = cfg.with_autoneb(tuning);
     let initial = Array2::from_shape_vec((3, 3), points.into_iter().flatten().collect()).unwrap();
     let mut search = AutoNeb::new(cfg, initial).unwrap();
     let report = search.run(&surface).unwrap();

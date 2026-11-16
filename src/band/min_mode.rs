@@ -652,17 +652,15 @@ impl BandSession {
             .clone()
             .unwrap_or_else(|| tangent.clone());
         let position = self.positions.row(image).to_owned();
-        let mode_config = MinModeConfig {
-            kind: config.kind,
-            dr: config.dr,
-            difference: config.difference,
-            rotation_tol: config.rotation_tol,
-            max_rotations: config.max_rotations,
-            krylov_dim: config.krylov_dim,
-            force_tol: self.config.force_tol,
-            max_move: self.config.max_move,
-            ..MinModeConfig::default()
-        };
+        let mode_config = MinModeConfig::default()
+            .with_kind(config.kind)
+            .with_dr(config.dr)
+            .with_difference(config.difference)
+            .with_rotation_tol(config.rotation_tol)
+            .with_max_rotations(config.max_rotations)
+            .with_krylov_dim(config.krylov_dim)
+            .with_force_tol(self.config.force_tol)
+            .with_max_move(self.config.max_move);
         let mut session = MinModeSession::new(mode_config, position.clone(), seed)?;
         if config.kind == MinModeKind::Lanczos {
             session.set_lanczos_rel_tol(Some(config.lanczos_rel_tol))?;

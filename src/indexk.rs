@@ -336,10 +336,8 @@ pub fn indexk_step<S: PointSurface>(
 /// }
 ///
 /// let start = array![0.25, -0.2, 0.15];
-/// let mut config = IndexKConfig::new(2, MinModeConfig::default());
-/// config.search.force_tol = 1e-6;
-/// config.search.max_move = 0.1;
-/// config.residual_tol = 1e-8;
+/// let search = MinModeConfig::default().with_force_tol(1e-6).with_max_move(0.1);
+/// let config = IndexKConfig::new(2, search).with_residual_tol(1e-8);
 /// let mut session = IndexKSession::new(config, start, None)?;
 /// let report = session.run(&IndexTwo, 400)?;
 /// assert_eq!(report.status, MinModeStatus::Converged);

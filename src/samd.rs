@@ -565,11 +565,10 @@ mod tests {
         };
         let center = Array1::zeros(2);
         let seed = Array1::from(vec![1.0, 1.0]);
-        let config = VelocitySofteningConfig {
-            steps: 20,
-            displacement: 0.1,
-            mixing: 0.15,
-        };
+        let config = VelocitySofteningConfig::default()
+            .with_steps(20)
+            .with_displacement(0.1)
+            .with_mixing(0.15);
 
         let report = soften_velocity_on(
             &ManifoldKind::Euclidean,

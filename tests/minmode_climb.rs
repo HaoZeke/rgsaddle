@@ -45,18 +45,16 @@ impl PointSurface for Counting {
 /// Harness values, not [`MinModeConfig::default`]: the lbfgs, fire, and
 /// Lanczos templates pass an explicit angle tolerance of zero.
 fn harness(kind: MinModeKind, method: rgmin::Method) -> MinModeConfig {
-    MinModeConfig {
-        kind,
-        method,
-        dr: 1e-3,
-        rotation_tol: 1e-4,
-        rotation_angle_tol: 0.0,
-        max_rotations: 20,
-        krylov_dim: 12,
-        force_tol: 1e-3,
-        max_move: 0.2,
-        ..MinModeConfig::default()
-    }
+    MinModeConfig::default()
+        .with_kind(kind)
+        .with_method(method)
+        .with_dr(1e-3)
+        .with_rotation_tol(1e-4)
+        .with_rotation_angle_tol(0.0)
+        .with_max_rotations(20)
+        .with_krylov_dim(12)
+        .with_force_tol(1e-3)
+        .with_max_move(0.2)
 }
 
 fn climb(kind: MinModeKind, method: rgmin::Method) {

@@ -115,10 +115,7 @@ fn trust_report_uses_the_entire_reparameterized_displacement() {
         calls: AtomicUsize::new(0),
         fail_at: None,
     };
-    let options = RtrConfig {
-        radius_max: 0.5,
-        ..RtrConfig::default()
-    };
+    let options = RtrConfig::default().with_radius_max(0.5);
     let mut session = BandRtr::new(options, false);
     let radius = session.radius.radius;
     let mut positions = initial.clone();

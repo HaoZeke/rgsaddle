@@ -612,16 +612,14 @@ fn saddle_from_minimum(
     max_steps: usize,
 ) -> SearchRow {
     let before = copper.calls();
-    let search = MinModeConfig {
-        method: Method::fire(FireKind::V2),
-        force_tol: 2e-3,
-        max_move: 0.004,
-        dr: 1e-3,
-        rotation_tol: 1e-3,
-        max_rotations: 12,
-        seed_curvature: false,
-        ..MinModeConfig::default()
-    };
+    let search = MinModeConfig::default()
+        .with_method(Method::fire(FireKind::V2))
+        .with_force_tol(2e-3)
+        .with_max_move(0.004)
+        .with_dr(1e-3)
+        .with_rotation_tol(1e-3)
+        .with_max_rotations(12)
+        .with_seed_curvature(false);
     let mut dimer = SolidDimer::new(
         SolidDimerConfig::new(search)
             .with_mask(mask)
@@ -696,13 +694,10 @@ fn reactant_negative(
 ) -> (usize, f64, usize) {
     let before = copper.calls();
     let dimer = SolidDimer::new(
-        SolidDimerConfig::new(MinModeConfig {
-            force_tol: 2e-3,
-            ..MinModeConfig::default()
-        })
-        .with_mask(mask)
-        .with_external_stress(external)
-        .with_index_check(IndexCheck::first_order()),
+        SolidDimerConfig::new(MinModeConfig::default().with_force_tol(2e-3))
+            .with_mask(mask)
+            .with_external_stress(external)
+            .with_index_check(IndexCheck::first_order()),
         minimum.clone(),
         cell,
         Array1::ones(minimum.len()),
@@ -842,16 +837,14 @@ impl PointSurface for HeldCell<'_> {
 }
 
 fn neb_config(force_tol: f64) -> BandConfig {
-    BandConfig {
-        climbing: Some(CiConfig::always()),
-        force_tol,
-        max_move: 0.08,
-        remove_translation: true,
-        method: Method::lbfgs_with_memory(20),
-        min_mode: None,
-        spring: rgsaddle::SpringKind::Uniform { k: 1.0 },
-        ..BandConfig::default()
-    }
+    BandConfig::default()
+        .with_climbing(CiConfig::always())
+        .with_force_tol(force_tol)
+        .with_max_move(0.08)
+        .with_remove_translation(true)
+        .with_method(Method::lbfgs_with_memory(20))
+        .with_min_mode(None)
+        .with_spring(rgsaddle::SpringKind::Uniform { k: 1.0 })
 }
 
 fn run_neb(
@@ -994,16 +987,14 @@ fn dimer_stay(
     cell: [[f64; 3]; 3],
     mode: &Array1<f64>,
 ) -> (MinModeStatus, f64, f64, f64, f64, usize) {
-    let search = MinModeConfig {
-        method: Method::fire(FireKind::V2),
-        force_tol: 2e-3,
-        max_move: 0.008,
-        dr: 1e-3,
-        rotation_tol: 1e-3,
-        max_rotations: 12,
-        seed_curvature: false,
-        ..MinModeConfig::default()
-    };
+    let search = MinModeConfig::default()
+        .with_method(Method::fire(FireKind::V2))
+        .with_force_tol(2e-3)
+        .with_max_move(0.008)
+        .with_dr(1e-3)
+        .with_rotation_tol(1e-3)
+        .with_max_rotations(12)
+        .with_seed_curvature(false);
     let mask = if frozen {
         CellMask::frozen()
     } else {

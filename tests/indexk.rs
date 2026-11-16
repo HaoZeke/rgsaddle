@@ -78,12 +78,10 @@ fn one_matches<S: PointSurface>(
     seed: Array1<f64>,
     steps: usize,
 ) {
-    let config = MinModeConfig {
-        kind,
-        force_tol: 1e-12,
-        max_move: 0.1,
-        ..MinModeConfig::default()
-    };
+    let config = MinModeConfig::default()
+        .with_kind(kind)
+        .with_force_tol(1e-12)
+        .with_max_move(0.1);
     let mut one = MinModeSession::new(config.clone(), start.clone(), seed.clone()).unwrap();
     let mut many = IndexKSession::new(
         IndexKConfig::new(1, config),
@@ -138,12 +136,10 @@ fn one_shot_with_the_host_force_matches_set_position() {
     let start = array![0.35, 0.4, -0.3];
     let seed = array![0.8, 0.5, 0.1];
     let (_, force) = surface.eval(start.view()).unwrap();
-    let config = MinModeConfig {
-        kind: MinModeKind::Lanczos,
-        force_tol: 1e-12,
-        max_move: 0.1,
-        ..MinModeConfig::default()
-    };
+    let config = MinModeConfig::default()
+        .with_kind(MinModeKind::Lanczos)
+        .with_force_tol(1e-12)
+        .with_max_move(0.1);
     let mut one = MinModeSession::new(config.clone(), start.clone(), seed.clone()).unwrap();
     one.set_position(start.clone(), Some(force.clone()))
         .unwrap();
@@ -174,10 +170,10 @@ fn one_shot_with_the_host_force_matches_set_position() {
 
 #[test]
 fn index_two_quadratic_converges_from_nearby() {
-    let mut config = IndexKConfig::new(2, MinModeConfig::default());
-    config.search.force_tol = 1e-6;
-    config.search.max_move = 0.1;
-    config.residual_tol = 1e-8;
+    let search = MinModeConfig::default()
+        .with_force_tol(1e-6)
+        .with_max_move(0.1);
+    let config = IndexKConfig::new(2, search).with_residual_tol(1e-8);
     let mut session = IndexKSession::new(config, array![0.3, -0.25, 0.2], None).unwrap();
     let report = session.run(&IndexTwo, 400).unwrap();
     assert_eq!(report.status, MinModeStatus::Converged);

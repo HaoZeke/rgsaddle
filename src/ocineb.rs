@@ -105,15 +105,10 @@ impl Default for OcinebConfig {
         // The hand-off waits on a relative band force, the eOn
         // ci_after_rel rule. BandConfig::default climbs under an
         // absolute force of 0.5, which is a different arming point.
-        let band = BandConfig {
-            climbing: Some(CiConfig::after_rel(0.5)),
-            ..BandConfig::default()
-        };
-        let minmode = MinModeConfig {
-            force_tol: band.force_tol,
-            max_move: band.max_move,
-            ..MinModeConfig::default()
-        };
+        let band = BandConfig::default().with_climbing(CiConfig::after_rel(0.5));
+        let minmode = MinModeConfig::default()
+            .with_force_tol(band.force_tol)
+            .with_max_move(band.max_move);
         Self {
             band,
             minmode,
@@ -233,23 +228,21 @@ pub fn should_trigger(
 impl OcinebConfig {
     /// The band's refinement controls for this hand-off.
     pub fn refine(&self) -> MinModeRefine {
-        MinModeRefine {
-            trigger_factor: self.trigger_factor,
-            trigger_force: self.trigger_force,
-            alignment_tol: self.angle_tol,
-            climb_alignment: true,
-            retry_factor: None,
-            stable_steps: usize::try_from(self.stability_count).unwrap_or(0) + 1,
-            max_steps: self.max_mmf_steps,
-            restore_unhelpful: self.restore_unhelpful,
-            kind: self.minmode.kind,
-            krylov_dim: self.minmode.krylov_dim,
-            dr: self.minmode.dr,
-            difference: self.minmode.difference,
-            rotation_tol: self.minmode.rotation_tol,
-            max_rotations: self.minmode.max_rotations,
-            ..MinModeRefine::default()
-        }
+        MinModeRefine::default()
+            .with_trigger_factor(self.trigger_factor)
+            .with_trigger_force(self.trigger_force)
+            .with_alignment_tol(self.angle_tol)
+            .with_climb_alignment(true)
+            .with_retry_factor(None)
+            .with_stable_steps(usize::try_from(self.stability_count).unwrap_or(0) + 1)
+            .with_max_steps(self.max_mmf_steps)
+            .with_restore_unhelpful(self.restore_unhelpful)
+            .with_kind(self.minmode.kind)
+            .with_krylov_dim(self.minmode.krylov_dim)
+            .with_dr(self.minmode.dr)
+            .with_difference(self.minmode.difference)
+            .with_rotation_tol(self.minmode.rotation_tol)
+            .with_max_rotations(self.minmode.max_rotations)
     }
 }
 
@@ -336,9 +329,9 @@ impl<S: BandSurface + PointSurface> BandSurface for Handoff<'_, S> {
 ///
 /// let b = array![-0.050011, 0.466694, 0.0];
 /// let c = array![0.623499, 0.028038, 0.0];
-/// let mut config = OcinebConfig::default();
-/// config.band.max_move = 0.05;
-/// config.band.force_tol = 1e-2;
+/// let config = OcinebConfig::default();
+/// let band = config.band.clone().with_max_move(0.05).with_force_tol(1e-2);
+/// let config = config.with_band(band);
 /// let mut session = OcinebSession::new(config, linear_path(b.view(), c.view(), 7, None)?)?;
 /// let report = session.run(&MullerBrown, 2000)?;
 ///
@@ -361,10 +354,7 @@ impl OcinebSession {
             ));
         }
         let refine = config.refine();
-        let band = BandConfig {
-            min_mode: Some(refine),
-            ..config.band
-        };
+        let band = config.band.with_min_mode(refine);
         Ok(Self {
             band: BandSession::new(band, initial)?,
         })
@@ -599,23 +589,12 @@ mod tests {
 
     #[test]
     fn angle_below_the_cone_is_rejected() {
-        let low = OcinebConfig {
-            angle_tol: 0.5,
-            ..OcinebConfig::default()
-        };
+        let low = OcinebConfig::default().with_angle_tol(0.5);
         assert!(validate(&low).is_err());
-        let edge = OcinebConfig {
-            angle_tol: MIN_ALIGNMENT,
-            ..OcinebConfig::default()
-        };
+        let edge = OcinebConfig::default().with_angle_tol(MIN_ALIGNMENT);
         assert!(validate(&edge).is_ok());
-        let no_climb = OcinebConfig {
-            band: crate::band::BandConfig {
-                climbing: None,
-                ..edge.band.clone()
-            },
-            ..edge
-        };
+        let band = edge.band.clone().with_climbing(None);
+        let no_climb = edge.with_band(band);
         assert!(validate(&no_climb).is_err());
     }
 
@@ -626,8 +605,11 @@ mod tests {
         assert_eq!(climbing.trigger_factor, 0.5);
         assert_eq!(climbing.trigger_force, 0.0);
         assert!(validate(&config).is_ok());
-        let mut solid = config.clone();
-        solid.band.solid = Some(crate::band::SolidState::new(Vec::new()));
+        let band = config
+            .band
+            .clone()
+            .with_solid(crate::band::SolidState::new(Vec::new()));
+        let solid = config.clone().with_band(band);
         match validate(&solid) {
             Err(crate::error::SaddleError::Invalid(msg)) => {
                 assert!(msg.contains("solid-state"), "{msg}");

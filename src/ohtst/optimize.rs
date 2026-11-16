@@ -768,8 +768,7 @@ struct Climb<'a, S> {
 impl<S: PointSurface> Climb<'_, S> {
     fn sample(&mut self, x: &Array1<f64>) -> Result<Iterate, SaddleError> {
         let plane = self.layout.plane(&self.pivot, x)?;
-        let mut sampler = self.config.sampler.clone();
-        sampler.records = self.records;
+        let sampler = self.config.sampler.clone().with_records(self.records);
         let sample = sample_plane(self.surface, &plane, Some(self.start.view()), &sampler)?;
         self.samples += 1;
         self.evaluations += sample.evaluations;

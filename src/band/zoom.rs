@@ -307,11 +307,7 @@ mod tests {
     use approx::assert_abs_diff_eq;
 
     fn manual(offset: usize) -> ZoomConfig {
-        ZoomConfig {
-            alpha: 0.0,
-            offset,
-            ..ZoomConfig::default()
-        }
+        ZoomConfig::default().with_alpha(0.0).with_offset(offset)
     }
 
     #[test]

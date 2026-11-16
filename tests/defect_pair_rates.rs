@@ -54,68 +54,66 @@ impl PointSurface for Cosine {
 }
 
 fn control_config() -> DefectPairConfig {
-    let search = MinModeConfig {
-        force_tol: 1.0e-4,
-        max_move: 0.04,
-        dr: 1.0e-3,
-        max_rotations: 8,
-        ..MinModeConfig::default()
-    };
-    DefectPairConfig {
-        dimer: SolidDimerConfig::frozen(search).with_index_check(IndexCheck::first_order()),
-        band: BandConfig {
-            force_tol: 1.0e-3,
-            max_move: 0.05,
-            time_step: 0.05,
-            climbing: Some(CiConfig::always()),
-            min_mode: None,
-            autoneb: None,
-            zoom: None,
-            ..BandConfig::default()
-        },
-        images: 5,
-        max_dimer_steps: 40,
-        max_band_steps: 30,
-        relax: rgsaddle::RelaxConfig::default()
-            .with_method(rgmin::Method::Ode12r)
-            .with_force_tol(1.0e-4)
-            .with_initial_step(0.05)
-            .with_max_atom_move(0.05),
-        seed_fraction: 0.35,
-        push: 0.2,
-        connect_rmsd: 0.15,
-        direction_tol: 0.05,
-        pafi: rgsaddle::PafiConfig {
-            thermalize: 20,
-            stride: 2,
-            samples: 40,
-            blocks: 4,
-            time_step: 0.01,
-            mobility: 1.0,
-            seed: 5,
-            fix_com: false,
-            retain: 8,
-            ..rgsaddle::PafiConfig::default()
-        },
-        shooting: rgsaddle::ShootingConfig {
-            friction: 0.0,
-            time_step: 0.01,
-            steps: 30,
-            record_every: 10,
-            shots: 24,
-            blocks: 4,
-            seed: 9,
-            plateau_record: 1,
-            ..rgsaddle::ShootingConfig::default()
-        },
-        temperatures: vec![0.05],
-        boltzmann: 1.0,
-        mass: 1.0,
-        angular_scale: 1.0,
-        harmonic_step: 1.0e-4,
-        planes: 17,
-        ..DefectPairConfig::default()
-    }
+    let search = MinModeConfig::default()
+        .with_force_tol(1.0e-4)
+        .with_max_move(0.04)
+        .with_dr(1.0e-3)
+        .with_max_rotations(8);
+    DefectPairConfig::default()
+        .with_dimer(SolidDimerConfig::frozen(search).with_index_check(IndexCheck::first_order()))
+        .with_band(
+            BandConfig::default()
+                .with_force_tol(1.0e-3)
+                .with_max_move(0.05)
+                .with_time_step(0.05)
+                .with_climbing(CiConfig::always())
+                .with_min_mode(None)
+                .with_autoneb(None)
+                .with_zoom(None),
+        )
+        .with_images(5)
+        .with_max_dimer_steps(40)
+        .with_max_band_steps(30)
+        .with_relax(
+            rgsaddle::RelaxConfig::default()
+                .with_method(rgmin::Method::Ode12r)
+                .with_force_tol(1.0e-4)
+                .with_initial_step(0.05)
+                .with_max_atom_move(0.05),
+        )
+        .with_seed_fraction(0.35)
+        .with_push(0.2)
+        .with_connect_rmsd(0.15)
+        .with_direction_tol(0.05)
+        .with_pafi(
+            rgsaddle::PafiConfig::default()
+                .with_thermalize(20)
+                .with_stride(2)
+                .with_samples(40)
+                .with_blocks(4)
+                .with_time_step(0.01)
+                .with_mobility(1.0)
+                .with_seed(5)
+                .with_fix_com(false)
+                .with_retain(8),
+        )
+        .with_shooting(
+            rgsaddle::ShootingConfig::default()
+                .with_friction(0.0)
+                .with_time_step(0.01)
+                .with_steps(30)
+                .with_record_every(10)
+                .with_shots(24)
+                .with_blocks(4)
+                .with_seed(9)
+                .with_plateau_record(1),
+        )
+        .with_temperatures(vec![0.05])
+        .with_boltzmann(1.0)
+        .with_mass(1.0)
+        .with_angular_scale(1.0)
+        .with_harmonic_step(1.0e-4)
+        .with_planes(17)
 }
 
 #[test]
@@ -127,18 +125,16 @@ fn cosine_pafi_barrier_is_one_half() {
         })
         .collect();
     let path = rgsaddle::ArcPath::from_positions(&frames).unwrap();
-    let config = rgsaddle::PafiConfig {
-        thermal: 0.05,
-        thermalize: 2,
-        stride: 1,
-        samples: 4,
-        blocks: 2,
-        time_step: 0.01,
-        fix_com: false,
-        retain: 1,
-        seed: 1,
-        ..rgsaddle::PafiConfig::default()
-    };
+    let config = rgsaddle::PafiConfig::default()
+        .with_thermal(0.05)
+        .with_thermalize(2)
+        .with_stride(1)
+        .with_samples(4)
+        .with_blocks(2)
+        .with_time_step(0.01)
+        .with_fix_com(false)
+        .with_retain(1)
+        .with_seed(1);
     let (profile, _) = rgsaddle::pafi_profile(&Cosine, &path, &path.arcs(), &config).unwrap();
     assert!((profile.barrier - 0.5).abs() < 0.03, "{}", profile.barrier);
 }

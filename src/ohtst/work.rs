@@ -358,12 +358,17 @@ pub fn reversible_work_along<S: PointSurface>(
                     work += value;
                     variance += error * error;
                 }
-                let mut sampler = config.sampler.clone();
-                sampler.seed = sampler.seed.wrapping_add(sampled);
-                sampler.retain = sampler.retain.max(retain);
-                if sampled > 0 {
-                    sampler.burn_in = config.warm_burn_in;
-                }
+                let burn_in = if sampled > 0 {
+                    config.warm_burn_in
+                } else {
+                    config.sampler.burn_in
+                };
+                let sampler = config
+                    .sampler
+                    .clone()
+                    .with_seed(config.sampler.seed.wrapping_add(sampled))
+                    .with_retain(config.sampler.retain.max(retain))
+                    .with_burn_in(burn_in);
                 let plane = path.plane(k, s)?;
                 let sample = sample_plane(
                     surface,

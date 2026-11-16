@@ -36,15 +36,13 @@ fn translated_stationary_point(
     coefficient: f64,
     expected_status: MinModeStatus,
 ) {
-    let config = MinModeConfig {
-        kind,
-        method: rgmin::Method::lbfgs_with_memory(4),
-        dr: 1e-3,
-        rotation_tol: 1e-8,
-        force_tol: 1e-10,
-        max_move: 2.0,
-        ..MinModeConfig::default()
-    };
+    let config = MinModeConfig::default()
+        .with_kind(kind)
+        .with_method(rgmin::Method::lbfgs_with_memory(4))
+        .with_dr(1e-3)
+        .with_rotation_tol(1e-8)
+        .with_force_tol(1e-10)
+        .with_max_move(2.0);
     let surface = Cubic {
         coefficient,
         fail_accepted_probe: false,
@@ -97,15 +95,13 @@ fn lanczos_translation_to_a_saddle_uses_its_negative_curvature() {
 }
 
 fn failed_confirmation_preserves_position(kind: MinModeKind) {
-    let config = MinModeConfig {
-        kind,
-        method: rgmin::Method::lbfgs_with_memory(4),
-        dr: 1e-3,
-        rotation_tol: 1e-8,
-        force_tol: 1e-10,
-        max_move: 2.0,
-        ..MinModeConfig::default()
-    };
+    let config = MinModeConfig::default()
+        .with_kind(kind)
+        .with_method(rgmin::Method::lbfgs_with_memory(4))
+        .with_dr(1e-3)
+        .with_rotation_tol(1e-8)
+        .with_force_tol(1e-10)
+        .with_max_move(2.0);
     let surface = Cubic {
         coefficient: 1.0,
         fail_accepted_probe: true,

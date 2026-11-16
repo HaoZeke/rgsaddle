@@ -59,13 +59,12 @@ with_setters!(SellaMinConfig {
 
 impl SellaMinConfig {
     fn schedule(&self) -> TrustSchedule {
-        TrustSchedule {
-            sigma_inc: self.sigma_inc,
-            sigma_dec: self.sigma_dec,
-            rho_inc: self.rho_inc,
-            rho_dec: self.rho_dec,
-            delta_min: self.delta_min,
-        }
+        TrustSchedule::default()
+            .with_sigma_inc(self.sigma_inc)
+            .with_sigma_dec(self.sigma_dec)
+            .with_rho_inc(self.rho_inc)
+            .with_rho_dec(self.rho_dec)
+            .with_delta_min(self.delta_min)
     }
 }
 
@@ -704,11 +703,9 @@ mod tests {
         let mut x = Array1::zeros(6);
         x[0] = 0.2;
         let mut sess = SellaMinSession::new(
-            SellaMinConfig {
-                delta: 0.2,
-                force_tol: 0.05,
-                ..SellaMinConfig::default()
-            },
+            SellaMinConfig::default()
+                .with_delta(0.2)
+                .with_force_tol(0.05),
             x,
             Array1::from(vec![1.0, 1.0]),
         )
@@ -728,21 +725,17 @@ mod tests {
         x[8] = 1.0;
         let masses = Array1::from(vec![1.0, 1.0, 1.0]);
         let mut tr = SellaMinSession::new(
-            SellaMinConfig {
-                delta: 0.01,
-                restricted: crate::RestrictedKind::TrustRegion,
-                ..SellaMinConfig::default()
-            },
+            SellaMinConfig::default()
+                .with_delta(0.01)
+                .with_restricted(crate::RestrictedKind::TrustRegion),
             x.clone(),
             masses.clone(),
         )
         .unwrap();
         let mut ras = SellaMinSession::new(
-            SellaMinConfig {
-                delta: 0.01,
-                restricted: crate::RestrictedKind::RestrictedAtomicStep,
-                ..SellaMinConfig::default()
-            },
+            SellaMinConfig::default()
+                .with_delta(0.01)
+                .with_restricted(crate::RestrictedKind::RestrictedAtomicStep),
             x,
             masses,
         )
@@ -789,11 +782,9 @@ mod tests {
         x[4] = 1.0;
         x[8] = 1.0;
         let mut sess = SellaMinSession::new(
-            SellaMinConfig {
-                delta: 0.05,
-                restricted: crate::RestrictedKind::RestrictedAtomicStep,
-                ..SellaMinConfig::default()
-            },
+            SellaMinConfig::default()
+                .with_delta(0.05)
+                .with_restricted(crate::RestrictedKind::RestrictedAtomicStep),
             x,
             Array1::from(vec![1.0, 1.0, 1.0]),
         )
@@ -819,12 +810,10 @@ mod tests {
         let x = Array1::zeros(9);
         let masses = Array1::from(vec![1.0, 1.0, 1.0]);
         let mut sess = SellaMinSession::on(
-            SellaMinConfig {
-                delta: 0.1 / 9.0,
-                restricted: crate::RestrictedKind::RestrictedAtomicStep,
-                force_tol: 1e-12,
-                ..SellaMinConfig::default()
-            },
+            SellaMinConfig::default()
+                .with_delta(0.1 / 9.0)
+                .with_restricted(crate::RestrictedKind::RestrictedAtomicStep)
+                .with_force_tol(1e-12),
             x,
             masses,
             SellaGeom::Kind(ManifoldKind::Euclidean),
@@ -864,10 +853,7 @@ mod tests {
         x[4] = 1.0;
         x[8] = 1.0;
         let mut sess = SellaMinSession::new(
-            SellaMinConfig {
-                restricted: crate::RestrictedKind::RestrictedAtomicStep,
-                ..SellaMinConfig::default()
-            },
+            SellaMinConfig::default().with_restricted(crate::RestrictedKind::RestrictedAtomicStep),
             x,
             Array1::from(vec![1.0, 1.0, 1.0]),
         )
@@ -929,11 +915,9 @@ mod tests {
         let mut x = Array1::zeros(6);
         x[0] = 0.2;
         let mut sess = SellaMinSession::new(
-            SellaMinConfig {
-                delta: 0.2,
-                force_tol: 0.05,
-                ..SellaMinConfig::default()
-            },
+            SellaMinConfig::default()
+                .with_delta(0.2)
+                .with_force_tol(0.05),
             x,
             Array1::from(vec![1.0, 16.0]),
         )
@@ -947,10 +931,7 @@ mod tests {
     fn trust_radius_starts_at_delta0_times_n_free() {
         let x = Array1::zeros(9);
         let sess = SellaMinSession::new(
-            SellaMinConfig {
-                delta: 0.1,
-                ..SellaMinConfig::default()
-            },
+            SellaMinConfig::default().with_delta(0.1),
             x,
             Array1::from(vec![1.0, 1.0, 1.0]),
         )
@@ -996,11 +977,9 @@ mod tests {
             )
             .unwrap();
         let mut sess = SellaMinSession::on_internal(
-            SellaMinConfig {
-                delta: 0.2,
-                force_tol: 0.05,
-                ..SellaMinConfig::default()
-            },
+            SellaMinConfig::default()
+                .with_delta(0.2)
+                .with_force_tol(0.05),
             x,
             Array1::from(vec![1.0, 1.0]),
             chart,
@@ -1058,11 +1037,9 @@ mod tests {
         let mut mask = [false; 9];
         mask[0] = true;
         let mut sess = SellaMinSession::on_cell(
-            SellaMinConfig {
-                delta: 0.2,
-                force_tol: 0.05,
-                ..SellaMinConfig::default()
-            },
+            SellaMinConfig::default()
+                .with_delta(0.2)
+                .with_force_tol(0.05),
             x,
             Array1::from(vec![1.0, 1.0]),
             cell,
@@ -1089,11 +1066,9 @@ mod tests {
         let mut mask = [false; 9];
         mask[0] = true;
         let mut sess = SellaMinSession::on_cell_log(
-            SellaMinConfig {
-                delta: 0.2,
-                force_tol: 0.05,
-                ..SellaMinConfig::default()
-            },
+            SellaMinConfig::default()
+                .with_delta(0.2)
+                .with_force_tol(0.05),
             x,
             Array1::from(vec![1.0, 1.0]),
             cell,
@@ -1129,11 +1104,9 @@ mod tests {
         let mut mask = [false; 9];
         mask[0] = true;
         let mut sess = SellaMinSession::on_cell_internal(
-            SellaMinConfig {
-                delta: 0.2,
-                force_tol: 0.05,
-                ..SellaMinConfig::default()
-            },
+            SellaMinConfig::default()
+                .with_delta(0.2)
+                .with_force_tol(0.05),
             x,
             Array1::from(vec![1.0, 1.0]),
             chart,
@@ -1164,11 +1137,9 @@ mod tests {
         let mut mask = [false; 9];
         mask[0] = true;
         let mut sess = SellaMinSession::on_cell_internal_log(
-            SellaMinConfig {
-                delta: 0.2,
-                force_tol: 0.05,
-                ..SellaMinConfig::default()
-            },
+            SellaMinConfig::default()
+                .with_delta(0.2)
+                .with_force_tol(0.05),
             x,
             Array1::from(vec![1.0, 1.0]),
             chart,
@@ -1199,11 +1170,9 @@ mod tests {
             )
             .unwrap();
         let mut sess = SellaMinSession::on_internal(
-            SellaMinConfig {
-                delta: 0.05,
-                restricted: crate::RestrictedKind::MaxInternalStep,
-                ..SellaMinConfig::default()
-            },
+            SellaMinConfig::default()
+                .with_delta(0.05)
+                .with_restricted(crate::RestrictedKind::MaxInternalStep),
             x,
             Array1::from(vec![1.0, 1.0]),
             chart,
@@ -1228,11 +1197,9 @@ mod tests {
             )
             .unwrap();
         let mut sess = SellaMinSession::on_internal(
-            SellaMinConfig {
-                delta: 0.05,
-                restricted: crate::RestrictedKind::RestrictedAtomicStep,
-                ..SellaMinConfig::default()
-            },
+            SellaMinConfig::default()
+                .with_delta(0.05)
+                .with_restricted(crate::RestrictedKind::RestrictedAtomicStep),
             x,
             Array1::from(vec![1.0, 1.0]),
             chart,

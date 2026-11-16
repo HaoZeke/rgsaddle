@@ -781,12 +781,10 @@ struct OpenWindow {
 /// }
 ///
 /// let endpoints = array![[-0.050011, 0.466694, 0.0], [0.623499, 0.028038, 0.0]];
-/// let config = BandConfig {
-///     force_tol: 1e-2,
-///     max_move: 0.05,
-///     autoneb: Some(AutoNebTuning { n_max: 7, ..AutoNebTuning::default() }),
-///     ..BandConfig::default()
-/// };
+/// let config = BandConfig::default()
+///     .with_force_tol(1e-2)
+///     .with_max_move(0.05)
+///     .with_autoneb(AutoNebTuning::default().with_n_max(7));
 /// let mut autoneb = AutoNeb::new(config, endpoints)?;
 /// let report = autoneb.run(&MullerBrown)?;
 ///
@@ -1234,10 +1232,11 @@ impl AutoNeb {
     }
 
     fn ci_settings(&self) -> CiConfig {
-        self.band.climbing.unwrap_or(CiConfig {
-            trigger_factor: 0.5,
-            trigger_force: 0.0,
-        })
+        self.band.climbing.unwrap_or(
+            CiConfig::default()
+                .with_trigger_factor(0.5)
+                .with_trigger_force(0.0),
+        )
     }
 
     fn relax<S: BandSurface>(
@@ -1270,13 +1269,15 @@ impl AutoNeb {
             }
             let start = window[0];
             let ks = self.springs[start..start + window.len() - 1].to_vec();
-            let mut band = self.band.clone();
-            band.force_tol = force_tol;
-            band.climbing = climbing;
-            band.autoneb = None;
-            band.min_mode = None;
-            band.zoom = None;
-            band.spring = SpringKind::Weighted { ks };
+            let band = self
+                .band
+                .clone()
+                .with_force_tol(force_tol)
+                .with_climbing(climbing)
+                .with_autoneb(None)
+                .with_min_mode(None)
+                .with_zoom(None)
+                .with_spring(SpringKind::Weighted { ks });
             let mut session = BandSession::new(band, sub)?;
             let last = *window.last().expect("window");
             if let (Some(left), Some(right)) = (self.energies[window[0]], self.energies[last]) {
@@ -1535,19 +1536,12 @@ mod tests {
     }
 
     fn band_with(tuning: AutoNebTuning) -> BandConfig {
-        BandConfig {
-            autoneb: Some(tuning),
-            ..BandConfig::default()
-        }
+        BandConfig::default().with_autoneb(tuning)
     }
 
     #[test]
     fn construction_fills_the_first_window_on_the_longest_segment() {
-        let config = band_with(AutoNebTuning {
-            n_simul: 1,
-            n_max: 4,
-            ..AutoNebTuning::default()
-        });
+        let config = band_with(AutoNebTuning::default().with_n_simul(1).with_n_max(4));
         let initial = array![[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
         let search = AutoNeb::new(config, initial).unwrap();
         assert_eq!(search.positions().nrows(), 3);
@@ -1557,20 +1551,13 @@ mod tests {
 
     #[test]
     fn weighted_springs_and_a_short_budget_are_refused() {
-        let config = BandConfig {
-            spring: SpringKind::Weighted { ks: vec![1.0, 1.0] },
-            ..BandConfig::default()
-        };
+        let config = BandConfig::default().with_spring(SpringKind::Weighted { ks: vec![1.0, 1.0] });
         let initial = array![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
         let Err(SaddleError::Invalid(message)) = AutoNeb::new(config, initial.clone()) else {
             panic!("weighted spring");
         };
         assert!(message.contains("temporarily"), "{message}");
-        let config = band_with(AutoNebTuning {
-            n_simul: 3,
-            n_max: 4,
-            ..AutoNebTuning::default()
-        });
+        let config = band_with(AutoNebTuning::default().with_n_simul(3).with_n_max(4));
         assert!(matches!(
             AutoNeb::new(config, initial),
             Err(SaddleError::Invalid(_))
@@ -1615,14 +1602,14 @@ mod tests {
 
     #[test]
     fn fill_scales_like_ase_and_an_insertion_doubles_the_cut() {
-        let config = band_with(AutoNebTuning {
-            n_simul: 3,
-            n_max: 6,
-            local_max_steps: 1,
-            climb_max_steps: 1,
-            climb: false,
-            ..AutoNebTuning::default()
-        });
+        let config = band_with(
+            AutoNebTuning::default()
+                .with_n_simul(3)
+                .with_n_max(6)
+                .with_local_max_steps(1)
+                .with_climb_max_steps(1)
+                .with_climb(false),
+        );
         let mut search = AutoNeb::new(config, array![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]).unwrap();
         assert_eq!(search.springs(), &[20.0, 20.0, 20.0, 20.0]);
         search.run(&Flat).unwrap();
@@ -1647,13 +1634,13 @@ mod tests {
 
     #[test]
     fn a_second_run_is_refused_and_the_ends_stay_put() {
-        let config = band_with(AutoNebTuning {
-            n_simul: 1,
-            n_max: 4,
-            local_max_steps: 5,
-            climb_max_steps: 80,
-            ..AutoNebTuning::default()
-        });
+        let config = band_with(
+            AutoNebTuning::default()
+                .with_n_simul(1)
+                .with_n_max(4)
+                .with_local_max_steps(5)
+                .with_climb_max_steps(80),
+        );
         let initial = array![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
         let mut search = AutoNeb::new(config, initial).unwrap();
         let report = search.run(&Flat).unwrap();
@@ -1805,10 +1792,7 @@ mod tests {
 
     #[test]
     fn zero_image_threads_are_refused() {
-        let config = band_with(AutoNebTuning {
-            threads: 0,
-            ..AutoNebTuning::default()
-        });
+        let config = band_with(AutoNebTuning::default().with_threads(0));
         let initial = array![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
         assert!(matches!(
             AutoNeb::new(config, initial),
@@ -1818,11 +1802,7 @@ mod tests {
 
     #[test]
     fn three_midpoints_of_a_unit_segment_are_equally_spaced() {
-        let config = band_with(AutoNebTuning {
-            n_simul: 3,
-            n_max: 5,
-            ..AutoNebTuning::default()
-        });
+        let config = band_with(AutoNebTuning::default().with_n_simul(3).with_n_max(5));
         let search = AutoNeb::new(config, array![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]).unwrap();
         for (index, want) in [0.0, 0.25, 0.5, 0.75, 1.0].into_iter().enumerate() {
             assert_abs_diff_eq!(search.positions()[(index, 0)], want, epsilon = 1e-12);
@@ -1831,11 +1811,7 @@ mod tests {
 
     #[test]
     fn two_repeated_midpoints_are_not_equal_thirds() {
-        let config = band_with(AutoNebTuning {
-            n_simul: 2,
-            n_max: 4,
-            ..AutoNebTuning::default()
-        });
+        let config = band_with(AutoNebTuning::default().with_n_simul(2).with_n_max(4));
         let search = AutoNeb::new(config, array![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]).unwrap();
         assert_abs_diff_eq!(search.positions()[(1, 0)], 0.25, epsilon = 1e-12);
         assert_abs_diff_eq!(search.positions()[(2, 0)], 0.5, epsilon = 1e-12);
@@ -1843,13 +1819,13 @@ mod tests {
 
     #[test]
     fn an_unchanged_window_keeps_one_session() {
-        let config = band_with(AutoNebTuning {
-            n_simul: 1,
-            n_max: 3,
-            local_max_steps: 2,
-            climb_max_steps: 40,
-            ..AutoNebTuning::default()
-        });
+        let config = band_with(
+            AutoNebTuning::default()
+                .with_n_simul(1)
+                .with_n_max(3)
+                .with_local_max_steps(2)
+                .with_climb_max_steps(40),
+        );
         let initial = array![[0.0, 0.0, 0.0], [0.5, 0.0, 0.0], [1.0, 0.0, 0.0]];
         let mut search = AutoNeb::new(config, initial).unwrap();
         let report = search.run(&Flat).unwrap();
@@ -2111,17 +2087,15 @@ mod tests {
         ];
         for (name, initial, pot) in cases {
             let run = |threads: usize| {
-                let config = BandConfig {
-                    method: rgmin::Method::lbfgs_with_memory(10),
-                    max_move: 0.1,
-                    autoneb: Some(AutoNebTuning {
-                        n_simul: 3,
-                        n_max: 7,
-                        threads,
-                        ..AutoNebTuning::default()
-                    }),
-                    ..BandConfig::default()
-                };
+                let config = BandConfig::default()
+                    .with_method(rgmin::Method::lbfgs_with_memory(10))
+                    .with_max_move(0.1)
+                    .with_autoneb(
+                        AutoNebTuning::default()
+                            .with_n_simul(3)
+                            .with_n_max(7)
+                            .with_threads(threads),
+                    );
                 let mut search = AutoNeb::new(config, initial.clone()).unwrap();
                 let report = search.run(&pot).unwrap();
                 (search, report)
@@ -2335,17 +2309,15 @@ mod tests {
             let mut first_batches = vec![Vec::new(); thread_counts.len()];
             for rep in 0..5 {
                 for (index, &threads) in thread_counts.iter().enumerate() {
-                    let config = BandConfig {
-                        method: rgmin::Method::lbfgs_with_memory(10),
-                        max_move: 0.1,
-                        autoneb: Some(AutoNebTuning {
-                            n_simul,
-                            n_max,
-                            threads,
-                            ..AutoNebTuning::default()
-                        }),
-                        ..BandConfig::default()
-                    };
+                    let config = BandConfig::default()
+                        .with_method(rgmin::Method::lbfgs_with_memory(10))
+                        .with_max_move(0.1)
+                        .with_autoneb(
+                            AutoNebTuning::default()
+                                .with_n_simul(n_simul)
+                                .with_n_max(n_max)
+                                .with_threads(threads),
+                        );
                     let spun = Spun {
                         pot,
                         spin,

@@ -675,11 +675,9 @@ impl StrainResponse {
         let positions = deform_vectors(&seed.positions, eps.tensor())?;
         let mode = deform_vectors(&seed.mode, eps.tensor())?;
         let cell = deform_cell(seed.cell, eps.tensor());
-        let search = MinModeConfig {
-            force_tol: 1e-6,
-            max_move: 0.2,
-            ..MinModeConfig::default()
-        };
+        let search = MinModeConfig::default()
+            .with_force_tol(1e-6)
+            .with_max_move(0.2);
         let mut dimer = SolidDimer::new(
             SolidDimerConfig::frozen(search).with_index_check(IndexCheck::first_order()),
             positions,
@@ -1545,24 +1543,27 @@ fn policy_from_json(obj: &[(String, Json)]) -> Result<TrustPolicy, SaddleError> 
             let bound = value
                 .as_object()
                 .ok_or_else(|| SaddleError::Invalid("curvature bound must be an object".into()))?;
-            Some(CurvatureBound {
-                lambda0: required_f64(bound, "lambda0")?,
-                slope: required_matrix(bound, "slope")?,
-                fraction: required_f64(bound, "fraction")?,
-            })
+            Some(CurvatureBound::new(
+                required_f64(bound, "lambda0")?,
+                required_matrix(bound, "slope")?,
+                required_f64(bound, "fraction")?,
+            ))
         }
     };
-    Ok(TrustPolicy {
-        radius: obj_get(obj, "radius").and_then(Json::as_f64),
-        quadratic: obj_get(obj, "quadratic").and_then(Json::as_f64),
-        error_tolerance: obj_get(obj, "error_tolerance_eV")
-            .and_then(Json::as_f64)
-            .unwrap_or(LINEAR_FOLD_EV),
-        curvature,
-        floor: obj_get(obj, "floor_eV")
-            .and_then(Json::as_f64)
-            .unwrap_or(0.0),
-    })
+    Ok(TrustPolicy::default()
+        .with_radius(obj_get(obj, "radius").and_then(Json::as_f64))
+        .with_quadratic(obj_get(obj, "quadratic").and_then(Json::as_f64))
+        .with_error_tolerance(
+            obj_get(obj, "error_tolerance_eV")
+                .and_then(Json::as_f64)
+                .unwrap_or(LINEAR_FOLD_EV),
+        )
+        .with_curvature(curvature)
+        .with_floor(
+            obj_get(obj, "floor_eV")
+                .and_then(Json::as_f64)
+                .unwrap_or(0.0),
+        ))
 }
 
 #[derive(Clone, Debug)]

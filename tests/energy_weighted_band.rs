@@ -68,14 +68,12 @@ fn energies_of(positions: ArrayView2<f64>) -> Array1<f64> {
 }
 
 fn config(spring: SpringKind) -> BandConfig {
-    BandConfig {
-        spring,
-        force_tol: 1e-3,
-        max_move: 0.05,
-        method: rgmin::Method::lbfgs_with_memory(10),
-        min_mode: None,
-        ..BandConfig::default()
-    }
+    BandConfig::default()
+        .with_spring(spring)
+        .with_force_tol(1e-3)
+        .with_max_move(0.05)
+        .with_method(rgmin::Method::lbfgs_with_memory(10))
+        .with_min_mode(None)
 }
 
 fn dynamic() -> SpringKind {

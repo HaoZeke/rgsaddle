@@ -224,12 +224,10 @@ fn band(
             .and(&end)
             .for_each(|x, &a, &b| *x = (1.0 - t) * a + t * b);
     }
-    let mut config = BandConfig {
-        climbing: Some(CiConfig::after(0.5)),
-        min_mode: None,
-        force_tol: f64::MIN_POSITIVE,
-        ..BandConfig::default()
-    };
+    let mut config = BandConfig::default()
+        .with_climbing(CiConfig::after(0.5))
+        .with_min_mode(None)
+        .with_force_tol(f64::MIN_POSITIVE);
     match method {
         "fire" | "rtr" => {}
         "ode12r" => config.method = rgmin::Method::Ode12r,
@@ -277,10 +275,7 @@ fn minmode(atoms: usize, kind: &str, steps: usize) -> Result<(), SaddleError> {
         other => panic!("unknown min-mode kind {other}"),
     };
     let x0 = (&start + &end) * 0.5;
-    let config = MinModeConfig {
-        kind,
-        ..MinModeConfig::default()
-    };
+    let config = MinModeConfig::default().with_kind(kind);
     let mut session = MinModeSession::new(config, x0, &end - &start)?;
     let mut hash = FNV_OFFSET;
     let mut evaluations = 0;

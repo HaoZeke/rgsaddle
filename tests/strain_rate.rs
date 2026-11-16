@@ -395,17 +395,18 @@ fn json_round_trip_keeps_the_hop_and_the_bound() {
     .unwrap()
     .with_prefactor(1.0e12, None)
     .unwrap()
-    .with_policy(TrustPolicy {
-        radius: Some(0.03),
-        quadratic: None,
-        error_tolerance: LINEAR_FOLD_EV,
-        curvature: Some(CurvatureBound {
-            lambda0: -0.2,
-            slope: [[0.0, 4.0, 0.0], [4.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
-            fraction: 0.5,
-        }),
-        floor: 0.0,
-    })
+    .with_policy(
+        TrustPolicy::default()
+            .with_radius(0.03)
+            .with_quadratic(None)
+            .with_error_tolerance(LINEAR_FOLD_EV)
+            .with_curvature(CurvatureBound::new(
+                -0.2,
+                [[0.0, 4.0, 0.0], [4.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+                0.5,
+            ))
+            .with_floor(0.0),
+    )
     .unwrap();
     let again = StrainResponse::from_json(&response.to_json()).unwrap();
     let strain = Strain::shear_yx(0.04);
@@ -434,10 +435,7 @@ fn refine_caches_an_index_one_saddle() {
         ElasticDipole::from_tensor([[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]]).unwrap(),
     )
     .unwrap()
-    .with_policy(TrustPolicy {
-        radius: Some(0.01),
-        ..TrustPolicy::default()
-    })
+    .with_policy(TrustPolicy::default().with_radius(0.01))
     .unwrap();
     let strain = Strain::shear_yx(0.05);
     assert!(matches!(

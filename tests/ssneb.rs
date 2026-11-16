@@ -50,14 +50,12 @@ fn bowed(n_images: usize) -> Array2<f64> {
 }
 
 fn ci_config() -> BandConfig {
-    BandConfig {
-        climbing: Some(CiConfig::always()),
-        force_tol: 1e-8,
-        max_move: 0.2,
-        min_mode: None,
-        method: Method::lbfgs_with_memory(12),
-        ..BandConfig::default()
-    }
+    BandConfig::default()
+        .with_climbing(CiConfig::always())
+        .with_force_tol(1e-8)
+        .with_max_move(0.2)
+        .with_min_mode(None)
+        .with_method(Method::lbfgs_with_memory(12))
 }
 
 fn same_positions(left: ArrayView2<f64>, right: ArrayView2<f64>) {
@@ -70,14 +68,12 @@ fn same_positions(left: ArrayView2<f64>, right: ArrayView2<f64>) {
 #[test]
 fn frozen_cell_matches_the_ordinary_band_and_its_climbing_image() {
     let initial = bowed(9);
-    let plain = BandConfig {
-        climbing: None,
-        force_tol: 1e-8,
-        max_move: 0.2,
-        min_mode: None,
-        method: Method::lbfgs_with_memory(12),
-        ..BandConfig::default()
-    };
+    let plain = BandConfig::default()
+        .with_climbing(None)
+        .with_force_tol(1e-8)
+        .with_max_move(0.2)
+        .with_min_mode(None)
+        .with_method(Method::lbfgs_with_memory(12));
     let mut ordinary = BandSession::new(plain.clone(), initial.clone()).unwrap();
     let mut frozen = SolidNeb::frozen(plain, initial.clone()).unwrap();
     assert!(frozen.is_frozen());
@@ -248,15 +244,13 @@ fn variable_cell_double_well_barrier_is_one() {
         chart_cells.push(h);
     }
     let mut band = SolidNeb::joint(
-        BandConfig {
-            climbing: Some(CiConfig::always()),
-            force_tol: 1e-6,
-            max_move: 0.2,
-            remove_translation: false,
-            method: Method::lbfgs_with_memory(20),
-            min_mode: None,
-            ..BandConfig::default()
-        },
+        BandConfig::default()
+            .with_climbing(CiConfig::always())
+            .with_force_tol(1e-6)
+            .with_max_move(0.2)
+            .with_remove_translation(false)
+            .with_method(Method::lbfgs_with_memory(20))
+            .with_min_mode(None),
         reference,
         chart_pos,
         &chart_cells,
@@ -338,11 +332,7 @@ impl BandSurface for SteepWall {
 /// off does.
 #[test]
 fn lbfgs_diverges_when_it_climbs_a_collision_image() {
-    let mut smooth = BandConfig {
-        force_tol: 1.0e-3,
-        ..ci_config()
-    };
-    smooth.min_mode = None;
+    let smooth = ci_config().with_force_tol(1.0e-3).with_min_mode(None);
     let mut band = BandSession::new(smooth, bowed(7)).unwrap();
     let mut report = band.step(&DoubleWell).unwrap();
     for _ in 0..80 {
@@ -360,15 +350,13 @@ fn lbfgs_diverges_when_it_climbs_a_collision_image() {
     let mut spiked = bowed(7);
     spiked[(3, 0)] = 0.35;
     spiked[(3, 1)] = 0.0;
-    let climb_now = BandConfig {
-        force_tol: 1.0e-2,
-        max_move: 0.2,
-        time_step: 0.1,
-        climbing: Some(CiConfig::always()),
-        method: Method::lbfgs_with_memory(12),
-        min_mode: None,
-        ..BandConfig::default()
-    };
+    let climb_now = BandConfig::default()
+        .with_force_tol(1.0e-2)
+        .with_max_move(0.2)
+        .with_time_step(0.1)
+        .with_climbing(CiConfig::always())
+        .with_method(Method::lbfgs_with_memory(12))
+        .with_min_mode(None);
     let mut climb = BandSession::new(climb_now, spiked.clone()).unwrap();
     let mut force = climb.step(&SteepWall).unwrap().max_force;
     let mut energy = 0.0;
@@ -386,15 +374,13 @@ fn lbfgs_diverges_when_it_climbs_a_collision_image() {
         "immediate climbing should stay on the collision or blow up, force {force} energy {energy}"
     );
 
-    let plain = BandConfig {
-        force_tol: 1.0e-2,
-        max_move: 0.15,
-        time_step: 0.1,
-        climbing: None,
-        method: Method::fire(rgmin::FireKind::V2),
-        min_mode: None,
-        ..BandConfig::default()
-    };
+    let plain = BandConfig::default()
+        .with_force_tol(1.0e-2)
+        .with_max_move(0.15)
+        .with_time_step(0.1)
+        .with_climbing(None)
+        .with_method(Method::fire(rgmin::FireKind::V2))
+        .with_min_mode(None);
     let mut relax = BandSession::new(plain, spiked).unwrap();
     let mut force = f64::MAX;
     for _ in 0..200 {

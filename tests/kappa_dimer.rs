@@ -188,10 +188,7 @@ fn failed_hessian_action_is_returned_without_a_force() {
 fn invalid_beta_and_nonfinite_inputs_are_rejected() {
     let g = array![1., 2., 3.];
     for beta in [0., -1., f64::NAN, f64::INFINITY] {
-        let cfg = KappaDimerConfig {
-            beta,
-            ..KappaDimerConfig::default()
-        };
+        let cfg = KappaDimerConfig::default().with_beta(beta);
         assert!(
             kappa_dimer_force(
                 g.view(),

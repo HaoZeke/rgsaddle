@@ -132,10 +132,7 @@ fn log_harmonic_rate(kt: f64) -> f64 {
 }
 
 fn dimer_plane() -> (Hyperplane, f64) {
-    let config = MinModeConfig {
-        force_tol: 1.0e-8,
-        ..Default::default()
-    };
+    let config = MinModeConfig::default().with_force_tol(1.0e-8);
     let mut session = MinModeSession::new(config, array![0.1, -0.05], array![1.0, 0.3]).unwrap();
     for _ in 0..2000 {
         let report = session.step(&SkewedWell).unwrap();

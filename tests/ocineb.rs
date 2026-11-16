@@ -192,13 +192,19 @@ fn initial_band(n_images: usize, y_amp: f64) -> Array2<f64> {
 }
 
 fn ocineb_config(force_tol: f64) -> OcinebConfig {
-    let mut config = OcinebConfig::default();
-    config.band.force_tol = force_tol;
-    config.band.max_move = 0.1;
-    config.minmode.force_tol = force_tol;
-    config.minmode.max_move = 0.1;
-    config.minmode.rotation_tol = 1e-4;
-    config
+    let config = OcinebConfig::default();
+    let band = config
+        .band
+        .clone()
+        .with_force_tol(force_tol)
+        .with_max_move(0.1);
+    let minmode = config
+        .minmode
+        .clone()
+        .with_force_tol(force_tol)
+        .with_max_move(0.1)
+        .with_rotation_tol(1e-4);
+    config.with_band(band).with_minmode(minmode)
 }
 
 fn run_ocineb(well: &Well, n_images: usize, y_amp: f64, force_tol: f64) -> (OcinebSession, usize) {
@@ -239,12 +245,10 @@ fn run_band(
         z_k: well.z_k,
         quartic: well.quartic,
     });
-    let config = BandConfig {
-        force_tol,
-        max_move: 0.1,
-        min_mode: None,
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default()
+        .with_force_tol(force_tol)
+        .with_max_move(0.1)
+        .with_min_mode(None);
     let mut session = BandSession::new(config, initial_band(n_images, y_amp)).unwrap();
     let mut status = BandStatus::Running;
     for _ in 0..4000 {
@@ -264,9 +268,9 @@ fn climbing_point(well: &Well, positions: ArrayView2<f64>, ci: usize) -> ([f64; 
 
 #[test]
 fn switch_waits_for_the_stability_latch() {
-    let mut config = ocineb_config(1e-3);
-    config.stability_count = 4;
-    config.trigger_factor = 10.0;
+    let config = ocineb_config(1e-3)
+        .with_stability_count(4)
+        .with_trigger_factor(10.0);
     let mut session = OcinebSession::new(config, initial_band(9, 0.3)).unwrap();
     let mut switched_at = None;
     for _ in 0..400 {
@@ -283,9 +287,9 @@ fn switch_waits_for_the_stability_latch() {
     let switched_at = switched_at.expect("hand-off did not arm");
     assert!(switched_at > 4, "switched at {switched_at}");
 
-    let mut held = ocineb_config(1e-3);
-    held.stability_count = 1000;
-    held.trigger_factor = 10.0;
+    let held = ocineb_config(1e-3)
+        .with_stability_count(1000)
+        .with_trigger_factor(10.0);
     let mut session = OcinebSession::new(held, initial_band(9, 0.3)).unwrap();
     for _ in 0..40 {
         let report = session.step(&Well::smooth()).unwrap();
@@ -313,9 +317,9 @@ fn alignment_accepts_the_path_tangent_on_the_double_well() {
 
 #[test]
 fn misaligned_mode_falls_back_without_moving_the_band() {
-    let mut config = ocineb_config(1e-3);
-    config.trigger_factor = 10.0;
-    config.stability_count = 2;
+    let config = ocineb_config(1e-3)
+        .with_trigger_factor(10.0)
+        .with_stability_count(2);
     let mut session = OcinebSession::new(config, initial_band(9, 0.3)).unwrap();
     let mut saw = false;
     for _ in 0..400 {
@@ -339,15 +343,15 @@ fn misaligned_mode_falls_back_without_moving_the_band() {
 
 #[test]
 fn positive_curvature_restores_the_climbing_image() {
-    let mut config = ocineb_config(1e-3);
-    config.trigger_factor = 10.0;
-    config.stability_count = 2;
+    let config = ocineb_config(1e-3)
+        .with_trigger_factor(10.0)
+        .with_stability_count(2);
     // Arm on the first assembly, while the bowed images still sit
     // above the endpoints. The bowl has no saddle, so the hand-off
     // must restore the band.
-    if let Some(ci) = config.band.climbing.as_mut() {
-        ci.trigger_factor = 2.0;
-    }
+    let climbing = config.band.climbing.map(|ci| ci.with_trigger_factor(2.0));
+    let band = config.band.clone().with_climbing(climbing);
+    let config = config.with_band(band);
     // y amplitude above 1 puts the middle image above both endpoints.
     let mut session = OcinebSession::new(config, initial_band(9, 2.0)).unwrap();
     let mut saw = false;
@@ -385,12 +389,10 @@ fn handoff_finds_the_same_saddle_as_plain_ci_neb() {
     assert!(pos[(ci, 1)].abs() < 0.05, "ci y={}", pos[(ci, 1)]);
     assert!(pos[(ci, 2)].abs() < 0.05, "ci z={}", pos[(ci, 2)]);
 
-    let config = BandConfig {
-        force_tol: tol,
-        max_move: 0.1,
-        min_mode: None,
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default()
+        .with_force_tol(tol)
+        .with_max_move(0.1)
+        .with_min_mode(None);
     let mut plain = BandSession::new(config, initial_band(n_images, 0.3)).unwrap();
     let mut plain_report = plain.step(&Well::smooth()).unwrap();
     for _ in 0..4000 {

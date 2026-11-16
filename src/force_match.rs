@@ -1129,10 +1129,7 @@ mod tests {
         let x = Array1::from(vec![0.0, 0.0, 0.0, 1.2, 0.0, 0.0]);
         let g = Array1::from(vec![-0.1, 0.0, 0.0, 0.1, 0.0, 0.0]);
         let z = [10u8, 10];
-        let opts = ForceMatchOpts {
-            kinds: vec![PairKind::Lj],
-            ..ForceMatchOpts::default()
-        };
+        let opts = ForceMatchOpts::default().with_kinds(vec![PairKind::Lj]);
         let report = force_match(x.view(), g.view(), &z, &opts).unwrap();
         assert_eq!(report.nonlinpars.len(), 0);
         assert_eq!(report.linpars.len(), 2);
@@ -1145,10 +1142,7 @@ mod tests {
         let x = Array1::from(vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
         let g = Array1::from(vec![-0.3, 0.0, 0.0, 0.3, 0.0, 0.0]);
         let z = [6u8, 8];
-        let opts = ForceMatchOpts {
-            kinds: vec![PairKind::Morse],
-            ..ForceMatchOpts::default()
-        };
+        let opts = ForceMatchOpts::default().with_kinds(vec![PairKind::Morse]);
         let report = force_match(x.view(), g.view(), &z, &opts).unwrap();
         assert_eq!(report.nonlinpars.len(), 1);
         assert!(report.nonlinpars[0] >= 1.0);
@@ -1228,12 +1222,11 @@ mod tests {
         let z = [6u8, 6];
         let pairs = covalent_pairs(x.view(), &z, 1.5).unwrap();
         assert_eq!(pairs, vec![[0, 1]]);
-        let opts = ForceMatchOpts {
-            kinds: vec![PairKind::Bond],
-            bond_scale: 1.5,
-            rcut_factor: 10.0,
-            tvecs: vec![[0.0, 0.0, 0.0]],
-        };
+        let opts = ForceMatchOpts::default()
+            .with_kinds(vec![PairKind::Bond])
+            .with_bond_scale(1.5)
+            .with_rcut_factor(10.0)
+            .with_tvecs(vec![[0.0, 0.0, 0.0]]);
         let set = collect_pairs(x.view(), &z, &opts).unwrap();
         assert_eq!(set.bond.len(), 1);
     }
@@ -1246,10 +1239,7 @@ mod tests {
         let report = force_match(x.view(), g.view(), &z, &ForceMatchOpts::default()).unwrap();
         assert_eq!(report.linpars.len(), 0);
         assert_eq!(report.hessian, Array2::<f64>::eye(3));
-        let extra = ForceMatchOpts {
-            tvecs: vec![[0.0, 0.0, 0.0], [5.0, 0.0, 0.0]],
-            ..ForceMatchOpts::default()
-        };
+        let extra = ForceMatchOpts::default().with_tvecs(vec![[0.0, 0.0, 0.0], [5.0, 0.0, 0.0]]);
         let report = force_match(x.view(), g.view(), &z, &extra).unwrap();
         assert_eq!(report.linpars.len(), 0);
         assert_eq!(report.hessian, Array2::<f64>::eye(3));
@@ -1259,12 +1249,10 @@ mod tests {
     fn rmin_ignores_self_image_tvecs() {
         let x = Array1::from(vec![0.0, 0.0, 0.0, 4.0, 0.0, 0.0]);
         let z = [10u8, 10];
-        let opts = ForceMatchOpts {
-            kinds: vec![PairKind::Lj],
-            tvecs: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
-            rcut_factor: 3.0,
-            ..ForceMatchOpts::default()
-        };
+        let opts = ForceMatchOpts::default()
+            .with_kinds(vec![PairKind::Lj])
+            .with_tvecs(vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+            .with_rcut_factor(3.0);
         let set = collect_pairs(x.view(), &z, &opts).unwrap();
         let n_ij = set
             .lj
@@ -1284,16 +1272,12 @@ mod tests {
         let x_near = Array1::from(vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
         let g = Array1::from(vec![-0.1, 0.0, 0.0, 0.1, 0.0, 0.0]);
         let z = [10u8, 10];
-        let far = ForceMatchOpts {
-            kinds: vec![PairKind::Lj],
-            tvecs: vec![[0.0, 0.0, 0.0], [-9.0, 0.0, 0.0]],
-            ..ForceMatchOpts::default()
-        };
-        let near = ForceMatchOpts {
-            kinds: vec![PairKind::Lj],
-            tvecs: vec![[0.0, 0.0, 0.0]],
-            ..ForceMatchOpts::default()
-        };
+        let far = ForceMatchOpts::default()
+            .with_kinds(vec![PairKind::Lj])
+            .with_tvecs(vec![[0.0, 0.0, 0.0], [-9.0, 0.0, 0.0]]);
+        let near = ForceMatchOpts::default()
+            .with_kinds(vec![PairKind::Lj])
+            .with_tvecs(vec![[0.0, 0.0, 0.0]]);
         let h_far = force_match(x_far.view(), g.view(), &z, &far).unwrap();
         let h_near = force_match(x_near.view(), g.view(), &z, &near).unwrap();
         for i in 0..6 {

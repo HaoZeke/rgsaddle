@@ -42,15 +42,13 @@ fn bowed_band() -> Array2<f64> {
 }
 
 fn config(spring: SpringKind) -> BandConfig {
-    BandConfig {
-        spring,
-        climbing: None,
-        force_tol: 1e-5,
-        max_move: 0.1,
-        method: rgmin::Method::lbfgs_with_memory(10),
-        min_mode: None,
-        ..BandConfig::default()
-    }
+    BandConfig::default()
+        .with_spring(spring)
+        .with_climbing(None)
+        .with_force_tol(1e-5)
+        .with_max_move(0.1)
+        .with_method(rgmin::Method::lbfgs_with_memory(10))
+        .with_min_mode(None)
 }
 
 fn displacements_at(positions: ArrayView2<f64>) -> Vec<Array1<f64>> {

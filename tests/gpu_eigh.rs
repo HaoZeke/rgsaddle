@@ -146,17 +146,11 @@ fn gpu_ok_respects_min_dim_disable_and_oom_floor() {
     clear_oom_floor();
     let host = GpuPolicy::host();
     assert!(!host.ok(512), "host policy must never claim a device");
-    let gated = GpuPolicy {
-        enabled: true,
-        min_dim: 200,
-    };
+    let gated = GpuPolicy::default().with_enabled(true).with_min_dim(200);
     assert!(!gated.ok(16), "below SELLA_GPU_MIN_DIM");
     record_oom(64);
     assert_eq!(rgsaddle::oom_floor(), Some(64));
-    let wide = GpuPolicy {
-        enabled: true,
-        min_dim: 1,
-    };
+    let wide = GpuPolicy::default().with_enabled(true).with_min_dim(1);
     assert!(!wide.ok(64), "OOM floor must skip this size");
     assert!(!wide.ok(128), "OOM floor skips larger shapes too");
     clear_oom_floor();
@@ -216,10 +210,7 @@ fn eigh_on_dlpk_keeps_the_process_oom_floor() {
         Some(64),
         "eigh_on Dlpk must keep the process-global OOM floor"
     );
-    let wide = GpuPolicy {
-        enabled: true,
-        min_dim: 1,
-    };
+    let wide = GpuPolicy::default().with_enabled(true).with_min_dim(1);
     assert!(!wide.ok(64));
     clear_oom_floor();
 }

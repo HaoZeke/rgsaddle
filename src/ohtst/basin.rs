@@ -330,14 +330,15 @@ pub fn basin_density<S: PointSurface>(
     }
     let kt = config.sampler.thermal;
     let spread = (kt * compliance).sqrt();
-    let mut sampler = config.sampler.clone();
-    if config.control && sampler.control.is_none() {
-        sampler.control = Some(
+    let sampler = if config.control && config.sampler.control.is_none() {
+        config.sampler.clone().with_control(
             HarmonicReference::new(minimum.to_owned())
                 .with_hvp_step(config.hvp_step)
                 .with_tolerance(config.tolerance),
-        );
-    }
+        )
+    } else {
+        config.sampler.clone()
+    };
     let mut planes = Planes {
         surface,
         minimum,

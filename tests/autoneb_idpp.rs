@@ -59,14 +59,12 @@ fn crossing() -> Array2<f64> {
 }
 
 fn tuning(threads: usize) -> AutoNebTuning {
-    AutoNebTuning {
-        n_simul: 1,
-        n_max: 4,
-        local_max_steps: 3,
-        climb_max_steps: 3,
-        threads,
-        ..AutoNebTuning::default()
-    }
+    AutoNebTuning::default()
+        .with_n_simul(1)
+        .with_n_max(4)
+        .with_local_max_steps(3)
+        .with_climb_max_steps(3)
+        .with_threads(threads)
 }
 
 fn digest(search: &AutoNeb) -> u64 {
@@ -90,20 +88,14 @@ fn digest(search: &AutoNeb) -> u64 {
 }
 
 fn run(tuning: AutoNebTuning, initial: Array2<f64>) -> AutoNeb {
-    let config = BandConfig {
-        autoneb: Some(tuning),
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default().with_autoneb(tuning);
     let mut search = AutoNeb::new(config, initial).unwrap();
     search.run(&Pairs).unwrap();
     search
 }
 
 fn idpp(threads: usize) -> AutoNebTuning {
-    AutoNebTuning {
-        interpolant: AutoNebInterpolant::Idpp(IdppConfig::default()),
-        ..tuning(threads)
-    }
+    tuning(threads).with_interpolant(AutoNebInterpolant::Idpp(IdppConfig::default()))
 }
 
 fn pair(row: ArrayView1<f64>, a: usize, b: usize) -> f64 {
@@ -126,10 +118,7 @@ fn the_default_path_keeps_the_base_digest_on_one_and_two_threads() {
     for threads in [1, 2] {
         let default = digest(&run(tuning(threads), crossing()));
         assert_eq!(default, BASE_DIGEST, "threads={threads} {default:#018x}");
-        let explicit = AutoNebTuning {
-            interpolant: AutoNebInterpolant::Linear,
-            ..tuning(threads)
-        };
+        let explicit = tuning(threads).with_interpolant(AutoNebInterpolant::Linear);
         assert_eq!(digest(&run(explicit, crossing())), BASE_DIGEST);
     }
 }
@@ -137,19 +126,13 @@ fn the_default_path_keeps_the_base_digest_on_one_and_two_threads() {
 #[test]
 fn an_idpp_fill_is_the_three_image_idpp_path_and_keeps_the_atoms_apart() {
     let ends = crossing();
-    let config = BandConfig {
-        autoneb: Some(idpp(1)),
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default().with_autoneb(idpp(1));
     let search = AutoNeb::new(config, ends.clone()).unwrap();
     let path = idpp_path(ends.row(0), ends.row(1), 3, None, &IdppConfig::default()).unwrap();
     assert_eq!(search.positions().nrows(), 3);
     assert!(same_bits(search.positions().row(1), path.row(1)));
 
-    let config = BandConfig {
-        autoneb: Some(tuning(1)),
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default().with_autoneb(tuning(1));
     let linear = AutoNeb::new(config, ends.clone()).unwrap();
     let target = 0.5 * (pair(ends.row(0), 0, 1) + pair(ends.row(1), 0, 1));
     assert!(pair(linear.positions().row(1), 0, 1) < 0.05 * target);
@@ -185,35 +168,22 @@ fn one_atom_has_no_pairs_so_idpp_places_the_linear_midpoint() {
 
 #[test]
 fn a_bad_idpp_stop_and_a_singular_cell_are_refused() {
-    let stop = AutoNebTuning {
-        interpolant: AutoNebInterpolant::Idpp(IdppConfig {
-            max_iterations: 0,
-            ..IdppConfig::default()
-        }),
-        ..tuning(1)
-    };
-    let config = BandConfig {
-        autoneb: Some(stop),
-        ..BandConfig::default()
-    };
+    let stop = tuning(1).with_interpolant(AutoNebInterpolant::Idpp(
+        IdppConfig::default().with_max_iterations(0),
+    ));
+    let config = BandConfig::default().with_autoneb(stop);
     assert!(matches!(
         AutoNeb::new(config, crossing()),
         Err(SaddleError::Invalid(_))
     ));
     let slab = Cell([[6.0, 0.0, 0.0], [0.0, 6.0, 0.0], [0.0, 0.0, 0.0]]);
-    let config = BandConfig {
-        autoneb: Some(idpp(1)),
-        cell: Some(slab),
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default().with_autoneb(idpp(1)).with_cell(slab);
     assert!(matches!(
         AutoNeb::new(config, crossing()),
         Err(SaddleError::Invalid(_))
     ));
-    let config = BandConfig {
-        autoneb: Some(tuning(1)),
-        cell: Some(slab),
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default()
+        .with_autoneb(tuning(1))
+        .with_cell(slab);
     assert!(AutoNeb::new(config, crossing()).is_ok());
 }

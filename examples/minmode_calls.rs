@@ -366,13 +366,11 @@ fn search_stopped(
     mode: &Array1<f64>,
     stop_length: f64,
 ) -> Outcome {
-    let config = MinModeConfig {
-        kind,
-        method: arm.method.method(),
-        force_tol: 1e-3,
-        max_move: system.max_move,
-        ..MinModeConfig::default()
-    };
+    let config = MinModeConfig::default()
+        .with_kind(kind)
+        .with_method(arm.method.method())
+        .with_force_tol(1e-3)
+        .with_max_move(system.max_move);
     let mut session = MinModeSession::new(config, start.clone(), mode.clone()).expect("session");
     session.set_fire_curvature(arm.curvature);
     session.set_cg_translate(arm.cg);

@@ -14,12 +14,10 @@ impl PointSurface for Saddle {
 #[test]
 fn optional_feasible_steps_preserve_the_saddle_and_atom_motion_cap() {
     for enabled in [false, true] {
-        let config = MinModeConfig {
-            method: rgmin::Method::lbfgs_with_memory(5),
-            max_move: 0.05,
-            force_tol: 1e-5,
-            ..Default::default()
-        };
+        let config = MinModeConfig::default()
+            .with_method(rgmin::Method::lbfgs_with_memory(5))
+            .with_max_move(0.05)
+            .with_force_tol(1e-5);
         let mut session =
             MinModeSession::new(config, array![0.35, 0.4, -0.3], array![1.0, 0.0, 0.0]).unwrap();
         session.set_highs(enabled);

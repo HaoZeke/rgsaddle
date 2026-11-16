@@ -38,11 +38,7 @@ fn event() -> StrainResponse {
     .unwrap()
     .with_prefactor(1.0e12, None)
     .unwrap()
-    .with_policy(TrustPolicy {
-        radius: Some(0.03),
-        floor: 0.05,
-        ..TrustPolicy::default()
-    })
+    .with_policy(TrustPolicy::default().with_radius(0.03).with_floor(0.05))
     .unwrap()
 }
 

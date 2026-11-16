@@ -631,16 +631,14 @@ fn run_band(pair_index: usize, springs: Springs) -> BandRow {
     } else {
         SpringKind::Uniform { k: 5.0 }
     };
-    let config = BandConfig {
-        tangent: TangentKind::Improved,
-        spring,
-        projection: ProjectionKind::Neb,
-        climbing: Some(CiConfig::after_rel(0.5)),
-        force_tol: 1e-3,
-        max_move: 0.05,
-        method: Method::lbfgs_with_memory(100),
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default()
+        .with_tangent(TangentKind::Improved)
+        .with_spring(spring)
+        .with_projection(ProjectionKind::Neb)
+        .with_climbing(CiConfig::after_rel(0.5))
+        .with_force_tol(1e-3)
+        .with_max_move(0.05)
+        .with_method(Method::lbfgs_with_memory(100));
     let mut session = match BandSession::new(config, images) {
         Ok(session) => session,
         Err(_) => return BandRow::unfinished(pair_index, template, surface.calls(), "error"),

@@ -878,7 +878,7 @@ pub fn check_cauchy_stress<S: PointSurface>(
 /// }
 ///
 /// let cube = [[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]];
-/// let search = MinModeConfig { force_tol: 1e-4, max_move: 0.1, ..MinModeConfig::default() };
+/// let search = MinModeConfig::default().with_force_tol(1e-4).with_max_move(0.1);
 /// let config = SolidDimerConfig::new(search).with_index_check(IndexCheck::default());
 /// let mut dimer = SolidDimer::new(config, array![0.3, 0.1, 0.0], cube, array![1.0, 0.5, 0.0])?;
 /// let report = dimer.run(&WellInCell, 500)?;
@@ -2004,13 +2004,11 @@ mod tests {
             Method::fire(rgmin::FireKind::V2),
             Method::lbfgs_with_memory(7),
         ] {
-            let search = MinModeConfig {
-                method: method.clone(),
-                force_tol: 1e-12,
-                max_move: 0.08,
-                max_rotations: 8,
-                ..MinModeConfig::default()
-            };
+            let search = MinModeConfig::default()
+                .with_method(method.clone())
+                .with_force_tol(1e-12)
+                .with_max_move(0.08)
+                .with_max_rotations(8);
             let mut plain =
                 MinModeSession::new(search.clone(), start.clone(), mode.clone()).unwrap();
             let mut solid = SolidDimer::new(
@@ -2286,10 +2284,7 @@ mod tests {
 
     #[test]
     fn held_diagonals_never_read_the_diagonal_stress() {
-        let search = MinModeConfig {
-            max_move: 0.05,
-            ..MinModeConfig::default()
-        };
+        let search = MinModeConfig::default().with_max_move(0.05);
         let cell = [[4.3, 0.0, 0.0], [0.35, 4.6, 0.0], [-0.25, 0.4, 5.0]];
         let atoms = array![0.6, 1.1, 1.4, 2.9, 2.6, 4.0];
         let mode = array![1.0, 0.0, 0.0, -1.0, 0.0, 0.0];
@@ -2527,10 +2522,7 @@ mod tests {
 
     #[test]
     fn stress_check_stops_a_free_cell_before_its_first_step() {
-        let search = MinModeConfig {
-            max_move: 0.05,
-            ..MinModeConfig::default()
-        };
+        let search = MinModeConfig::default().with_max_move(0.05);
         let cell = [[4.3, 0.0, 0.0], [0.35, 4.6, 0.0], [-0.25, 0.4, 5.0]];
         let atoms = array![0.6, 1.1, 1.4, 2.9, 2.6, 4.0];
         let mode = array![1.0, 0.0, 0.0, -1.0, 0.0, 0.0];
@@ -2621,15 +2613,13 @@ mod tests {
 
     #[test]
     fn joint_curvature_matches_the_second_difference() {
-        let search = MinModeConfig {
-            method: Method::lbfgs_with_memory(8),
-            force_tol: 1e-9,
-            max_move: 0.2,
-            dr: 1e-5,
-            rotation_tol: 1e-8,
-            max_rotations: 12,
-            ..MinModeConfig::default()
-        };
+        let search = MinModeConfig::default()
+            .with_method(Method::lbfgs_with_memory(8))
+            .with_force_tol(1e-9)
+            .with_max_move(0.2)
+            .with_dr(1e-5)
+            .with_rotation_tol(1e-8)
+            .with_max_rotations(12);
         let mut dimer = SolidDimer::new(
             SolidDimerConfig::new(search),
             array![0.25, 0.04, -0.03],
@@ -2720,14 +2710,12 @@ mod tests {
     }
 
     fn placed(escapes: usize) -> SolidDimer {
-        let search = MinModeConfig {
-            force_tol: 1e-8,
-            dr: 1e-4,
-            rotation_tol: 1e-8,
-            max_rotations: 8,
-            max_move: 0.05,
-            ..MinModeConfig::default()
-        };
+        let search = MinModeConfig::default()
+            .with_force_tol(1e-8)
+            .with_dr(1e-4)
+            .with_rotation_tol(1e-8)
+            .with_max_rotations(8)
+            .with_max_move(0.05);
         SolidDimer::new(
             SolidDimerConfig::frozen(search).with_index_check(
                 IndexCheck::first_order()
@@ -2844,15 +2832,13 @@ mod tests {
 
     #[test]
     fn index_check_accepts_the_quadratic_cell_saddle() {
-        let search = MinModeConfig {
-            method: Method::lbfgs_with_memory(8),
-            force_tol: 1e-9,
-            max_move: 0.2,
-            dr: 1e-5,
-            rotation_tol: 1e-8,
-            max_rotations: 12,
-            ..MinModeConfig::default()
-        };
+        let search = MinModeConfig::default()
+            .with_method(Method::lbfgs_with_memory(8))
+            .with_force_tol(1e-9)
+            .with_max_move(0.2)
+            .with_dr(1e-5)
+            .with_rotation_tol(1e-8)
+            .with_max_rotations(12);
         let mut dimer = SolidDimer::new(
             SolidDimerConfig::new(search).with_index_check(IndexCheck::first_order()),
             array![0.25, 0.04, -0.03],

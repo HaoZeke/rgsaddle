@@ -70,20 +70,17 @@ fn band() -> Array2<f64> {
 }
 
 fn config(zoom: Option<ZoomConfig>) -> BandConfig {
-    BandConfig {
-        max_move: 0.1,
-        min_mode: None,
-        zoom,
-        ..BandConfig::default()
-    }
+    BandConfig::default()
+        .with_max_move(0.1)
+        .with_min_mode(None)
+        .with_zoom(zoom)
 }
 
 fn eager(cubic: bool) -> ZoomConfig {
-    let mut zoom = ZoomConfig::default();
-    zoom.after = 10.0;
-    zoom.stability = 2;
-    zoom.cubic = cubic;
-    zoom
+    ZoomConfig::default()
+        .with_after(10.0)
+        .with_stability(2)
+        .with_cubic(cubic)
 }
 
 /// Step until the band zooms; returns the climbing image before it.
@@ -114,10 +111,8 @@ fn zoom_is_off_by_default_and_refuses_bad_settings() {
         (zoom.alpha, zoom.offset, zoom.stability) = (alpha, offset, stability);
         assert!(session.set_zoom(Some(zoom)).is_err());
     }
-    let weighted = BandConfig {
-        spring: SpringKind::Weighted { ks: vec![5.0; 8] },
-        ..config(Some(ZoomConfig::default()))
-    };
+    let weighted =
+        config(Some(ZoomConfig::default())).with_spring(SpringKind::Weighted { ks: vec![5.0; 8] });
     assert!(BandSession::new(weighted, band()).is_err());
     session.set_zoom(Some(ZoomConfig::default())).unwrap();
     assert_eq!(session.zoom(), Some(ZoomConfig::default()));
@@ -179,14 +174,9 @@ fn a_one_sided_energy_window_keeps_the_climber_inside() {
 
 #[test]
 fn the_zoom_decides_before_the_min_mode_refinement_starts() {
-    let refined = |zoom| BandConfig {
-        max_move: 0.1,
-        zoom,
-        ..BandConfig::default()
-    };
+    let refined = |zoom| BandConfig::default().with_max_move(0.1).with_zoom(zoom);
     assert!(refined(None).min_mode.is_some());
-    let mut zoom = ZoomConfig::default();
-    zoom.after = 10.0;
+    let zoom = ZoomConfig::default().with_after(10.0);
     let surface = Recorded::new(well);
 
     let mut session = BandSession::new(refined(None), band()).unwrap();

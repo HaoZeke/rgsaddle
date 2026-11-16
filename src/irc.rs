@@ -962,11 +962,7 @@ mod tests {
         let mut mode = Array1::zeros(saddle.len());
         mode[0] = 1.0;
         IrcSession::new(
-            IrcConfig {
-                dx,
-                force_tol: 1e-3,
-                ..IrcConfig::default()
-            },
+            IrcConfig::default().with_dx(dx).with_force_tol(1e-3),
             saddle,
             masses,
             mode,
@@ -992,12 +988,10 @@ mod tests {
         let mode: Array1<f64> = Array1::from(vec![1.0, 2.0, -1.0, 0.5, 0.25]);
         let unit_mode = &mode / mode.dot(&mode).sqrt();
         let mut irc = IrcSession::new_euclidean(
-            IrcConfig {
-                dx,
-                force_tol: 1e-12,
-                max_inner: 1,
-                ..IrcConfig::default()
-            },
+            IrcConfig::default()
+                .with_dx(dx)
+                .with_force_tol(1e-12)
+                .with_max_inner(1),
             saddle.clone(),
             mode,
             IrcDirection::Forward,
@@ -1018,12 +1012,10 @@ mod tests {
         let mut mode = Array1::zeros(5);
         mode[0] = 1.0;
         let mut irc = IrcSession::new_euclidean(
-            IrcConfig {
-                dx,
-                force_tol: 1e-12,
-                kind: IrcKind::Morokuma,
-                ..IrcConfig::default()
-            },
+            IrcConfig::default()
+                .with_dx(dx)
+                .with_force_tol(1e-12)
+                .with_kind(IrcKind::Morokuma),
             saddle,
             mode,
             IrcDirection::Forward,
@@ -1044,12 +1036,10 @@ mod tests {
         let masses = Array1::from(vec![1.0, 1.0]);
         let saddle = Array1::zeros(6);
         let mut irc = IrcSession::new(
-            IrcConfig {
-                dx,
-                force_tol: 1e-12,
-                kind: IrcKind::Morokuma,
-                ..IrcConfig::default()
-            },
+            IrcConfig::default()
+                .with_dx(dx)
+                .with_force_tol(1e-12)
+                .with_kind(IrcKind::Morokuma),
             saddle.clone(),
             masses.clone(),
             {
@@ -1100,12 +1090,10 @@ mod tests {
         mode[0] = 1.0;
         mode[3] = 1.0;
         let mut irc = IrcSession::new(
-            IrcConfig {
-                dx,
-                force_tol: 1e-12,
-                max_inner: 1,
-                ..IrcConfig::default()
-            },
+            IrcConfig::default()
+                .with_dx(dx)
+                .with_force_tol(1e-12)
+                .with_max_inner(1),
             saddle.clone(),
             masses.clone(),
             mode,
@@ -1148,12 +1136,10 @@ mod tests {
         mode[0] = 1.0;
         mode[3] = 1.0;
         let mut irc = IrcSession::new(
-            IrcConfig {
-                dx: 0.15,
-                force_tol: 1e-3,
-                kind: IrcKind::Gs2,
-                ..IrcConfig::default()
-            },
+            IrcConfig::default()
+                .with_dx(0.15)
+                .with_force_tol(1e-3)
+                .with_kind(IrcKind::Gs2),
             saddle.clone(),
             masses,
             mode,

@@ -26,11 +26,9 @@ impl BandSurface for Constant {
 }
 
 fn config() -> BandConfig {
-    BandConfig {
-        climbing: None,
-        force_tol: 1e-8,
-        ..BandConfig::default()
-    }
+    BandConfig::default()
+        .with_climbing(None)
+        .with_force_tol(1e-8)
 }
 
 #[test]

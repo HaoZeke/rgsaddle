@@ -633,39 +633,42 @@ pub(super) unsafe fn parse_band_config(
         ]))
     };
     Some(ParsedBand {
-        config: BandConfig {
-            tangent: if cfg.tangent == 0 {
+        config: BandConfig::default()
+            .with_tangent(if cfg.tangent == 0 {
                 TangentKind::Simple
             } else {
                 TangentKind::Improved
-            },
-            spring,
-            projection: match cfg.projection {
+            })
+            .with_spring(spring)
+            .with_projection(match cfg.projection {
                 0 => ProjectionKind::PlainElasticBand,
                 2 => ProjectionKind::DoublyNudged,
                 _ => ProjectionKind::Neb,
-            },
-            climbing: (cfg.ci_trigger_factor > 0.0 || cfg.flags & RGSADDLE_BAND_CI_AFTER != 0)
-                .then_some(CiConfig {
-                    trigger_factor: cfg.ci_trigger_factor,
-                    trigger_force: cfg.ci_trigger_force,
-                }),
-            cell,
-            force_tol: cfg.force_tol,
-            max_move: cfg.max_move,
-            remove_translation: cfg.flags & RGSADDLE_BAND_KEEP_TRANSLATION == 0,
-            method: method_of(cfg.method, cfg.memory),
-            solid,
-            quickmin: cfg.method == 3,
-            quickmin_options: rgmin::QuickMinOptions::rgmin(),
-            time_step: 1.0,
-            autoneb: None,
-            min_mode: (cfg.flags & RGSADDLE_BAND_NO_MIN_MODE == 0)
-                .then(crate::band::MinModeRefine::default),
+            })
+            .with_climbing(
+                (cfg.ci_trigger_factor > 0.0 || cfg.flags & RGSADDLE_BAND_CI_AFTER != 0).then_some(
+                    CiConfig::default()
+                        .with_trigger_factor(cfg.ci_trigger_factor)
+                        .with_trigger_force(cfg.ci_trigger_force),
+                ),
+            )
+            .with_cell(cell)
+            .with_force_tol(cfg.force_tol)
+            .with_max_move(cfg.max_move)
+            .with_remove_translation(cfg.flags & RGSADDLE_BAND_KEEP_TRANSLATION == 0)
+            .with_method(method_of(cfg.method, cfg.memory))
+            .with_solid(solid)
+            .with_quickmin(cfg.method == 3)
+            .with_quickmin_options(rgmin::QuickMinOptions::rgmin())
+            .with_time_step(1.0)
+            .with_autoneb(None)
+            .with_min_mode(
+                (cfg.flags & RGSADDLE_BAND_NO_MIN_MODE == 0)
+                    .then(crate::band::MinModeRefine::default),
+            )
             // Installed after creation through rgsaddle_band_set_exp_precon.
-            exp_precon: None,
-            zoom: None,
-        },
+            .with_exp_precon(None)
+            .with_zoom(None),
         per_image: cfg.flags & RGSADDLE_BAND_PER_IMAGE != 0,
         method: cfg.method,
     })
@@ -702,11 +705,11 @@ unsafe fn band_from_parts(
         Ok(mut session) => {
             if method == 2
                 && session
-                    .set_rtr(Some(crate::rtr::RtrConfig {
-                        radius_max: cfg.max_move * ((n_images - 2) as f64).sqrt(),
-                        reparametrization: rtr_reparametrization(cfg),
-                        ..crate::rtr::RtrConfig::default()
-                    }))
+                    .set_rtr(Some(
+                        crate::rtr::RtrConfig::default()
+                            .with_radius_max(cfg.max_move * ((n_images - 2) as f64).sqrt())
+                            .with_reparametrization(rtr_reparametrization(cfg)),
+                    ))
                     .is_err()
             {
                 return std::ptr::null_mut();
@@ -1092,31 +1095,30 @@ pub unsafe extern "C" fn rgsaddle_minmode_create(
     if cfg.method == 3 || cfg.method == 4 {
         return std::ptr::null_mut();
     }
-    let mm_config = MinModeConfig {
-        kind: if cfg.kind == 1 {
+    let mm_config = MinModeConfig::default()
+        .with_kind(if cfg.kind == 1 {
             MinModeKind::Lanczos
         } else {
             MinModeKind::Dimer
-        },
-        dr: cfg.dr,
-        rotation_tol: cfg.rotation_tol,
-        rotation_angle_tol: if cfg.version.minor >= 5 {
+        })
+        .with_dr(cfg.dr)
+        .with_rotation_tol(cfg.rotation_tol)
+        .with_rotation_angle_tol(if cfg.version.minor >= 5 {
             cfg.rotation_angle_tol
         } else {
             0.0
-        },
-        difference: if cfg.version.minor >= 5 && cfg.difference == 1 {
+        })
+        .with_difference(if cfg.version.minor >= 5 && cfg.difference == 1 {
             FiniteDifference::Central
         } else {
             FiniteDifference::Forward
-        },
-        max_rotations: cfg.max_rotations as usize,
-        krylov_dim: cfg.krylov_dim as usize,
-        force_tol: cfg.force_tol,
-        max_move: cfg.max_move,
-        method: method_of(cfg.method, 0),
-        seed_curvature: false,
-    };
+        })
+        .with_max_rotations(cfg.max_rotations as usize)
+        .with_krylov_dim(cfg.krylov_dim as usize)
+        .with_force_tol(cfg.force_tol)
+        .with_max_move(cfg.max_move)
+        .with_method(method_of(cfg.method, 0))
+        .with_seed_curvature(false);
     match MinModeSession::new(mm_config, x, m) {
         Ok(session) => Box::into_raw(Box::new(RgsaddleMinMode { session, n_atoms })),
         Err(_) => std::ptr::null_mut(),
@@ -1602,13 +1604,12 @@ pub unsafe extern "C" fn rgsaddle_trust_update(
     if radius_out.is_null() {
         return RGSADDLE_INVALID_PARAMETER;
     }
-    let schedule = TrustSchedule {
-        sigma_inc,
-        sigma_dec,
-        rho_inc,
-        rho_dec,
-        delta_min,
-    };
+    let schedule = TrustSchedule::default()
+        .with_sigma_inc(sigma_inc)
+        .with_sigma_dec(sigma_dec)
+        .with_rho_inc(rho_inc)
+        .with_rho_dec(rho_dec)
+        .with_delta_min(delta_min);
     unsafe {
         *radius_out = trust_update(radius, predicted, actual, step_norm, &schedule);
     }
@@ -1735,14 +1736,12 @@ pub unsafe extern "C" fn rgsaddle_index1_create(
         1 => HessianUpdate::Bofill,
         _ => return std::ptr::null_mut(),
     };
-    let session_config = Index1Config {
-        update,
-        mode,
-        trust_radius: cfg.trust_radius,
-        force_tol: cfg.force_tol,
-        fd_dr: cfg.fd_dr,
-        sparse_pattern: None,
-    };
+    let session_config = Index1Config::default()
+        .with_update(update)
+        .with_mode(mode)
+        .with_trust_radius(cfg.trust_radius)
+        .with_force_tol(cfg.force_tol)
+        .with_fd_dr(cfg.fd_dr);
     match Index1Session::new(session_config, x, hess, mass) {
         Ok(session) => Box::into_raw(Box::new(RgsaddleIndex1 { session, n_atoms })),
         Err(_) => std::ptr::null_mut(),
@@ -1938,9 +1937,9 @@ pub unsafe extern "C" fn rgsaddle_connect(
     let dof = (n_atoms as usize).saturating_mul(3);
     let left = unsafe { slice::from_raw_parts(left, dof) };
     let right = unsafe { slice::from_raw_parts(right, dof) };
-    let mut settings = ConnectConfig::optbench(cfg.max_calls as usize);
-    settings.forcetol = cfg.force_tol;
-    settings.quench_nodes = cfg.quench_nodes != 0;
+    let settings = ConnectConfig::optbench(cfg.max_calls as usize)
+        .with_forcetol(cfg.force_tol)
+        .with_quench_nodes(cfg.quench_nodes != 0);
     let result = connect(
         |x| {
             let mut energy = 0.0;
@@ -2036,12 +2035,10 @@ pub unsafe extern "C" fn rgsaddle_idpp_path(
             Err(_) => return RGSADDLE_INVALID_PARAMETER,
         }
     };
-    let config = crate::idpp::IdppConfig {
-        max_iterations: usize::try_from(max_iterations).unwrap_or(0),
-        grad_tol,
-        max_move,
-        ..crate::idpp::IdppConfig::default()
-    };
+    let config = crate::idpp::IdppConfig::default()
+        .with_max_iterations(usize::try_from(max_iterations).unwrap_or(0))
+        .with_grad_tol(grad_tol)
+        .with_max_move(max_move);
     let reactant = match Array1::from_shape_vec(dof, reactant.to_vec()) {
         Ok(v) => v,
         Err(_) => return RGSADDLE_SHAPE,

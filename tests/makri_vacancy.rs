@@ -258,18 +258,16 @@ fn evaluations(
         "{method:?}{} k={spring}",
         if precon.is_some() { "-Exp" } else { "" }
     );
-    let config = BandConfig {
-        spring: SpringKind::Uniform { k: spring },
-        climbing: None,
-        cell: Some(Cell([[l, 0.0, 0.0], [0.0, l, 0.0], [0.0, 0.0, l]])),
-        force_tol: 1e-3,
-        max_move: 0.0,
-        remove_translation: false,
-        method,
-        min_mode: None,
-        exp_precon: precon,
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default()
+        .with_spring(SpringKind::Uniform { k: spring })
+        .with_climbing(None)
+        .with_cell(Cell([[l, 0.0, 0.0], [0.0, l, 0.0], [0.0, 0.0, l]]))
+        .with_force_tol(1e-3)
+        .with_max_move(0.0)
+        .with_remove_translation(false)
+        .with_method(method)
+        .with_min_mode(None)
+        .with_exp_precon(precon);
     let surface = Surface {
         rows: AtomicUsize::new(0),
     };
@@ -318,12 +316,11 @@ fn ode12r_reproduces_the_cu_vacancy_counts_of_table_ii() {
         morse(product.view()).0
     );
     let band = initial_band(&reactant, &product, 5);
-    let exp = ExpBandPrecon {
-        a: 3.0,
-        c_stab: 0.1,
-        mu: None,
-        r_cut_factor: 2.2,
-    };
+    let exp = ExpBandPrecon::default()
+        .with_a(3.0)
+        .with_c_stab(0.1)
+        .with_mu(None)
+        .with_r_cut_factor(2.2);
     let plain = evaluations(Method::Ode12r, None, 1.0, &band);
     let precon = evaluations(Method::Ode12r, Some(exp), 1.0, &band);
     let lbfgs = evaluations(Method::lbfgs_with_memory(20), None, 1.0, &band);

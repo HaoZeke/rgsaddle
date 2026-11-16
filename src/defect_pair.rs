@@ -880,13 +880,11 @@ impl Default for DefectPairConfig {
             cell_mode: CellMode::Frozen,
             external_stress: [[0.0; 3]; 3],
             bulk_stress: [[0.0; 3]; 3],
-            band: BandConfig {
-                min_mode: None,
-                autoneb: None,
-                zoom: None,
-                climbing: Some(CiConfig::always()),
-                ..BandConfig::default()
-            },
+            band: BandConfig::default()
+                .with_min_mode(None)
+                .with_autoneb(None)
+                .with_zoom(None)
+                .with_climbing(CiConfig::always()),
             images: 7,
             max_dimer_steps: 80,
             max_band_steps: 80,
@@ -1350,12 +1348,14 @@ fn search_hop<S: PointSurface>(
     if seeds.is_empty() {
         return Ok(failed(HopOutcome::NotConverged));
     }
-    let mut dimer_config = config.dimer.clone();
-    dimer_config.mask = match config.cell_mode {
-        CellMode::Frozen => CellMask::frozen(),
-        CellMode::Variable => CellMask::all(),
-    };
-    dimer_config.external_stress = config.external_stress;
+    let dimer_config = config
+        .dimer
+        .clone()
+        .with_mask(match config.cell_mode {
+            CellMode::Frozen => CellMask::frozen(),
+            CellMode::Variable => CellMask::all(),
+        })
+        .with_external_stress(config.external_stress);
     let mut found_saddle = None;
     let mut last_negative = None;
     let mut saw_index = false;
@@ -1532,8 +1532,7 @@ fn fill_entry<S: PointSurface + Sync>(
     if !config.finite_temperature {
         return Ok(());
     }
-    let mut pafi_config = config.pafi.clone();
-    pafi_config.thermal = thermal;
+    let pafi_config = config.pafi.clone().with_thermal(thermal);
     let (profile, planes) = pafi::pafi_profile(surface, path, &arcs, &pafi_config)?;
     entry.d_f = Some(profile.barrier);
     entry.d_f_error = Some(profile.barrier_error);
@@ -1635,9 +1634,11 @@ fn shoot<S: PointSurface>(
     } else {
         planes[dividing].retained.clone()
     };
-    let mut shooting = config.shooting.clone();
-    shooting.thermal = thermal;
-    shooting.mass = config.mass;
+    let shooting = config
+        .shooting
+        .clone()
+        .with_thermal(thermal)
+        .with_mass(config.mass);
     // The product side is the side of increasing arc length. Trying the
     // opposite normal and keeping whichever κ falls in [0, 1] would score
     // a reactant-facing flux as transmission.
@@ -1662,12 +1663,11 @@ fn climb_path<S: PointSurface>(
 ) -> Result<(ArcPath, bool, f64), SaddleError> {
     let images = config.images.max(3);
     let mid = images / 2;
-    let idpp = crate::idpp::IdppConfig {
-        max_iterations: 2000,
-        grad_tol: 1.0e-3,
-        max_move: 0.2,
-        memory: 12,
-    };
+    let idpp = crate::idpp::IdppConfig::default()
+        .with_max_iterations(2000)
+        .with_grad_tol(1.0e-3)
+        .with_max_move(0.2)
+        .with_memory(12);
     let wrapped = crate::mic::Cell::from_ase(cell)
         .map_err(|error| SaddleError::Invalid(format!("IDPP cell: {error}")))?;
     let left = crate::idpp::idpp_path(
@@ -1699,8 +1699,7 @@ fn climb_path<S: PointSurface>(
     // that image the saddle. Relax with climbing off, then climb. If the
     // quasi-Newton climb still runs away, repeat it with FIRE, or with
     // ODE12r when the caller was already on FIRE.
-    let mut plain = bare_band(&config.band);
-    plain.climbing = None;
+    let plain = bare_band(&config.band).with_climbing(None);
     let start_cells = vec![cell; images];
     let (mut relaxed, mut relaxed_cells, mut relaxed_force) = run_band(
         surface,
@@ -1714,10 +1713,10 @@ fn climb_path<S: PointSurface>(
     if relaxed_force > config.band.force_tol * 5.0
         && !matches!(config.band.method, Method::Fire { .. })
     {
-        let mut fire = bare_band(&config.band);
-        fire.climbing = None;
-        fire.method = Method::fire(FireKind::V2);
-        fire.time_step = config.band.time_step.min(0.1);
+        let fire = bare_band(&config.band)
+            .with_climbing(None)
+            .with_method(Method::fire(FireKind::V2))
+            .with_time_step(config.band.time_step.min(0.1));
         let (pos, cells, force) =
             run_band(surface, config, fire, band, cell, Some(start_cells), false)?;
         if force < relaxed_force {
@@ -1726,8 +1725,7 @@ fn climb_path<S: PointSurface>(
             relaxed_force = force;
         }
     }
-    let mut climbing = bare_band(&config.band);
-    climbing.climbing = Some(CiConfig::always());
+    let climbing = bare_band(&config.band).with_climbing(CiConfig::always());
     let (climbed, _, climbed_force) = run_band(
         surface,
         config,
@@ -1741,13 +1739,13 @@ fn climb_path<S: PointSurface>(
         if climbed_force <= config.band.force_tol || climbed_force <= relaxed_force {
             (climbed, climbed_force)
         } else {
-            let mut retry = climbing;
-            retry.method = if matches!(config.band.method, Method::Fire { .. }) {
-                Method::Ode12r
-            } else {
-                Method::fire(FireKind::V2)
-            };
-            retry.time_step = config.band.time_step.min(0.1);
+            let retry = climbing
+                .with_method(if matches!(config.band.method, Method::Fire { .. }) {
+                    Method::Ode12r
+                } else {
+                    Method::fire(FireKind::V2)
+                })
+                .with_time_step(config.band.time_step.min(0.1));
             let (again, _, again_force) = run_band(
                 surface,
                 config,
@@ -1779,14 +1777,14 @@ fn climb_path<S: PointSurface>(
 }
 
 fn bare_band(config: &BandConfig) -> BandConfig {
-    let mut band = config.clone();
-    band.min_mode = None;
-    band.autoneb = None;
-    band.zoom = None;
-    band.solid = None;
-    band.exp_precon = None;
-    band.cell = None;
-    band
+    config
+        .clone()
+        .with_min_mode(None)
+        .with_autoneb(None)
+        .with_zoom(None)
+        .with_solid(None)
+        .with_exp_precon(None)
+        .with_cell(None)
 }
 
 fn run_band<S: PointSurface>(
@@ -2668,8 +2666,11 @@ pub fn segment_band<S: PointSurface>(
     k_min: f64,
     k_max: f64,
 ) -> Result<(ArcPath, bool, f64), SaddleError> {
-    let mut config = config.clone();
-    config.band.spring = crate::spring::SpringKind::EnergyWeighted { k_min, k_max };
+    let band = config
+        .band
+        .clone()
+        .with_spring(crate::spring::SpringKind::EnergyWeighted { k_min, k_max });
+    let config = config.clone().with_band(band);
     climb_path(surface, &config, reactant, saddle, downhill, cell, cell)
 }
 

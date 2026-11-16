@@ -34,12 +34,10 @@ impl PointSurface for DoubleWell {
 }
 
 fn converges(kind: MinModeKind) {
-    let config = MinModeConfig {
-        kind,
-        force_tol: 1e-4,
-        max_move: 0.1,
-        ..MinModeConfig::default()
-    };
+    let config = MinModeConfig::default()
+        .with_kind(kind)
+        .with_force_tol(1e-4)
+        .with_max_move(0.1);
     let start = array![0.35, 0.4, -0.3];
     let seed = array![0.8, 0.5, 0.1];
     let mut session = MinModeSession::new(config, start, seed).unwrap();
@@ -78,12 +76,10 @@ fn lanczos_finds_the_saddle() {
 /// sitting there must report Running while the lowest curvature is
 /// positive, whatever the force says.
 fn minimum_is_not_converged(kind: MinModeKind) {
-    let config = MinModeConfig {
-        kind,
-        force_tol: 1e-3,
-        max_move: 0.1,
-        ..MinModeConfig::default()
-    };
+    let config = MinModeConfig::default()
+        .with_kind(kind)
+        .with_force_tol(1e-3)
+        .with_max_move(0.1);
     let start = array![1.0, 0.0, 0.0];
     let seed = array![1.0, 0.0, 0.0];
     let mut session = MinModeSession::new(config, start.clone(), seed).unwrap();
@@ -127,11 +123,9 @@ impl PointSurface for FailingBeyond {
 
 #[test]
 fn surface_error_inside_a_step_is_returned_and_the_walker_stays_put() {
-    let config = MinModeConfig {
-        force_tol: 1e-4,
-        max_move: 0.1,
-        ..MinModeConfig::default()
-    };
+    let config = MinModeConfig::default()
+        .with_force_tol(1e-4)
+        .with_max_move(0.1);
     let start = array![0.35, 0.4, -0.3];
     let seed = array![0.8, 0.5, 0.1];
     let mut session = MinModeSession::new(config, start.clone(), seed).unwrap();
@@ -188,14 +182,12 @@ impl<S: PointSurface> PointSurface for CountingPoint<'_, S> {
 }
 
 fn estimate_from_bad_seed(kind: MinModeKind) -> (f64, usize, usize, Array1<f64>) {
-    let config = MinModeConfig {
-        kind,
-        rotation_tol: 1e-6,
-        rotation_angle_tol: 0.0,
-        max_rotations: 50,
-        krylov_dim: 6,
-        ..MinModeConfig::default()
-    };
+    let config = MinModeConfig::default()
+        .with_kind(kind)
+        .with_rotation_tol(1e-6)
+        .with_rotation_angle_tol(0.0)
+        .with_max_rotations(50)
+        .with_krylov_dim(6);
     let x = Array1::from(vec![0.1, -0.2, 0.05, 0.3, -0.1, 0.02]);
     let seed = Array1::from(vec![0.3, 0.5, 0.4, 0.4, 0.4, 0.4]);
     let mut session = MinModeSession::new(config, x, seed).unwrap();
@@ -233,12 +225,10 @@ fn lanczos_stops_on_the_ritz_residual() {
 }
 
 fn warm_session_costs_one_evaluation(kind: MinModeKind) {
-    let config = MinModeConfig {
-        kind,
-        rotation_tol: 1e-6,
-        rotation_angle_tol: 0.0,
-        ..MinModeConfig::default()
-    };
+    let config = MinModeConfig::default()
+        .with_kind(kind)
+        .with_rotation_tol(1e-6)
+        .with_rotation_angle_tol(0.0);
     let x = Array1::from(vec![0.1, -0.2, 0.05, 0.3, -0.1, 0.02]);
     let mut seed = Array1::zeros(6);
     seed[0] = 1.0;
@@ -284,11 +274,9 @@ fn lanczos_session_is_reusable_across_points() {
 
 #[test]
 fn a_step_reuses_its_accepted_point_as_the_next_centre() {
-    let config = MinModeConfig {
-        force_tol: 1e-6,
-        max_move: 0.05,
-        ..MinModeConfig::default()
-    };
+    let config = MinModeConfig::default()
+        .with_force_tol(1e-6)
+        .with_max_move(0.05);
     let start = array![0.35, 0.4, -0.3];
     let seed = array![1.0, 0.0, 0.0];
     let mut session = MinModeSession::new(config, start, seed).unwrap();
@@ -310,12 +298,10 @@ fn a_step_reuses_its_accepted_point_as_the_next_centre() {
 
 #[test]
 fn lbfgs_translation_costs_one_evaluation_per_step() {
-    let config = MinModeConfig {
-        force_tol: 1e-4,
-        max_move: 0.1,
-        method: rgmin::Method::lbfgs_with_memory(10),
-        ..MinModeConfig::default()
-    };
+    let config = MinModeConfig::default()
+        .with_force_tol(1e-4)
+        .with_max_move(0.1)
+        .with_method(rgmin::Method::lbfgs_with_memory(10));
     let start = array![0.35, 0.4, -0.3];
     let seed = array![0.8, 0.5, 0.1];
     let mut session = MinModeSession::new(config, start, seed).unwrap();
@@ -343,10 +329,7 @@ fn lbfgs_translation_costs_one_evaluation_per_step() {
 
 #[test]
 fn value_testing_methods_are_refused() {
-    let config = MinModeConfig {
-        method: rgmin::Method::Bfgs,
-        ..MinModeConfig::default()
-    };
+    let config = MinModeConfig::default().with_method(rgmin::Method::Bfgs);
     let err = MinModeSession::new(config, array![0.1, 0.2, 0.3], array![1.0, 0.0, 0.0])
         .err()
         .expect("refused");
@@ -368,12 +351,10 @@ impl PointSurface for Cubic {
 #[test]
 fn central_difference_removes_the_first_order_curvature_error() {
     let curvature = |difference| {
-        let config = MinModeConfig {
-            kind: MinModeKind::Lanczos,
-            difference,
-            dr: 1e-3,
-            ..MinModeConfig::default()
-        };
+        let config = MinModeConfig::default()
+            .with_kind(MinModeKind::Lanczos)
+            .with_difference(difference)
+            .with_dr(1e-3);
         let mut session =
             MinModeSession::new(config, array![0.0, 0.0, 0.0], array![1.0, 0.0, 0.0]).unwrap();
         session.estimate_mode(&Cubic).unwrap()
@@ -405,14 +386,12 @@ fn construction_rejects_modes_without_a_finite_nonzero_norm() {
 
 #[test]
 fn lanczos_push_follows_the_lowest_mode_one_action_at_a_time() {
-    let config = MinModeConfig {
-        kind: MinModeKind::Lanczos,
-        rotation_tol: 1e-6,
+    let config = MinModeConfig::default()
+        .with_kind(MinModeKind::Lanczos)
+        .with_rotation_tol(1e-6)
         // The pushed basis must keep going past this cap. A full
         // solve with dimension 1 cannot leave the seed.
-        krylov_dim: 1,
-        ..MinModeConfig::default()
-    };
+        .with_krylov_dim(1);
     let x = Array1::from(vec![0.1, -0.2, 0.05, 0.3, -0.1, 0.02]);
     let seed = Array1::from(vec![0.3, 0.5, 0.4, 0.4, 0.4, 0.4]);
     let mut session = MinModeSession::new(config, x, seed).unwrap();
@@ -457,13 +436,11 @@ fn lanczos_push_follows_the_lowest_mode_one_action_at_a_time() {
 #[test]
 fn dimer_push_runs_the_full_rotation() {
     let (curvature, _rotations, _evaluations, mode) = {
-        let config = MinModeConfig {
-            kind: MinModeKind::Dimer,
-            rotation_tol: 1e-6,
-            rotation_angle_tol: 0.0,
-            max_rotations: 50,
-            ..MinModeConfig::default()
-        };
+        let config = MinModeConfig::default()
+            .with_kind(MinModeKind::Dimer)
+            .with_rotation_tol(1e-6)
+            .with_rotation_angle_tol(0.0)
+            .with_max_rotations(50);
         let x = Array1::from(vec![0.1, -0.2, 0.05, 0.3, -0.1, 0.02]);
         let seed = Array1::from(vec![0.3, 0.5, 0.4, 0.4, 0.4, 0.4]);
         let mut session = MinModeSession::new(config, x, seed).unwrap();
@@ -500,13 +477,11 @@ fn construction_and_replacement_use_the_same_unit_mode() {
 }
 
 fn near_saddle(seed_curvature: bool, method: rgmin::Method) -> MinModeSession {
-    let config = MinModeConfig {
-        seed_curvature,
-        method,
-        max_move: 0.2,
-        force_tol: 1e-6,
-        ..MinModeConfig::default()
-    };
+    let config = MinModeConfig::default()
+        .with_seed_curvature(seed_curvature)
+        .with_method(method)
+        .with_max_move(0.2)
+        .with_force_tol(1e-6);
     MinModeSession::new(config, array![0.05, 0.02, -0.01], array![1.0, 0.0, 0.0]).unwrap()
 }
 
@@ -540,13 +515,11 @@ fn seeded_lbfgs_finishes_a_stiff_direction() {
         }
     }
 
-    let config = MinModeConfig {
-        seed_curvature: true,
-        method: rgmin::Method::lbfgs_with_memory(10),
-        max_move: 0.2,
-        force_tol: 1e-6,
-        ..MinModeConfig::default()
-    };
+    let config = MinModeConfig::default()
+        .with_seed_curvature(true)
+        .with_method(rgmin::Method::lbfgs_with_memory(10))
+        .with_max_move(0.2)
+        .with_force_tol(1e-6);
     let mut session = MinModeSession::new(config, array![0.02, 0.01], array![1.0, 0.0]).unwrap();
     let report = session.run(&Stiff, 80).unwrap();
     assert_eq!(report.status, MinModeStatus::Converged, "{report:?}");
@@ -555,11 +528,9 @@ fn seeded_lbfgs_finishes_a_stiff_direction() {
 
 #[test]
 fn a_failed_seeded_step_keeps_the_position() {
-    let config = MinModeConfig {
-        seed_curvature: true,
-        max_move: 0.2,
-        ..MinModeConfig::default()
-    };
+    let config = MinModeConfig::default()
+        .with_seed_curvature(true)
+        .with_max_move(0.2);
     let start = array![0.05, 0.02, -0.01];
     let mut session = MinModeSession::new(config, start.clone(), array![1.0, 0.0, 0.0]).unwrap();
     let surface = FailingBeyond {
@@ -574,12 +545,10 @@ fn a_failed_seeded_step_keeps_the_position() {
 
 #[test]
 fn seeded_search_still_converges_from_a_displaced_quadratic_start() {
-    let config = MinModeConfig {
-        seed_curvature: true,
-        force_tol: 1e-4,
-        max_move: 0.1,
-        ..MinModeConfig::default()
-    };
+    let config = MinModeConfig::default()
+        .with_seed_curvature(true)
+        .with_force_tol(1e-4)
+        .with_max_move(0.1);
     let mut session =
         MinModeSession::new(config, array![0.35, 0.4, -0.3], array![0.8, 0.5, 0.1]).unwrap();
     let report = session.run(&QuadraticSaddle, 400).unwrap();

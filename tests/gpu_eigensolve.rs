@@ -29,10 +29,7 @@ fn gpu_eigh_eigenvector_retract_stays_on_the_sphere() {
         return;
     }
     let a = diag3();
-    let mut policy = GpuPolicy {
-        enabled: true,
-        min_dim: 1,
-    };
+    let mut policy = GpuPolicy::default().with_enabled(true).with_min_dim(1);
     let (lams, vecs) = gpu_eigh(a.view(), &mut policy).unwrap();
     assert_eq!(lams.len(), 3);
     let x = vecs.column(0).to_owned();
@@ -72,10 +69,7 @@ fn gpu_qr_q_is_on_stiefel() {
     a[(0, 1)] = 0.0;
     a[(1, 1)] = 1.0;
     a[(2, 1)] = 1.0;
-    let mut policy = GpuPolicy {
-        enabled: true,
-        min_dim: 1,
-    };
+    let mut policy = GpuPolicy::default().with_enabled(true).with_min_dim(1);
     let (q, r) = gpu_qr(a.view(), &mut policy).unwrap();
     assert_eq!(q.nrows(), 3);
     assert_eq!(q.ncols(), 2);
@@ -97,10 +91,7 @@ fn gpu_project_is_ut_h_u() {
     }
     let h = diag3();
     let u = Array2::<f64>::eye(3).slice(ndarray::s![.., ..2]).to_owned();
-    let mut policy = GpuPolicy {
-        enabled: true,
-        min_dim: 1,
-    };
+    let mut policy = GpuPolicy::default().with_enabled(true).with_min_dim(1);
     let p = gpu_project(h.view(), u.view(), &mut policy).unwrap();
     assert_eq!(p.nrows(), 2);
     assert_eq!(p.ncols(), 2);
@@ -131,10 +122,9 @@ fn size_gate_matches_sella_default() {
     }
     let _guard = lock_oom_for_test();
     clear_oom_floor();
-    let p = GpuPolicy {
-        enabled: true,
-        min_dim: GPU_MIN_DIM,
-    };
+    let p = GpuPolicy::default()
+        .with_enabled(true)
+        .with_min_dim(GPU_MIN_DIM);
     assert_eq!(p.min_dim, GPU_MIN_DIM);
     assert_eq!(GPU_MIN_DIM, 200);
     assert!(!gpu_ok(&p, 50));
@@ -200,10 +190,7 @@ fn missing_dlpk_kernel_does_not_record_oom() {
     }
     let _guard = lock_oom_for_test();
     clear_oom_floor();
-    let mut policy = GpuPolicy {
-        enabled: true,
-        min_dim: 1,
-    };
+    let mut policy = GpuPolicy::default().with_enabled(true).with_min_dim(1);
     let a = Array2::<f64>::eye(2);
     let uploaded = to_gpu(Array1::from(vec![1.0, 0.0, 0.0, 1.0]));
     if let Some(ref dev) = uploaded {
@@ -255,10 +242,7 @@ fn to_gpu_matrix_oom_floor_records_n_not_n_squared() {
         "failed to_gpu_matrix of shape (n,n) records n, not n*n"
     );
     assert_ne!(oom_floor(), Some(n * n));
-    let p = GpuPolicy {
-        enabled: true,
-        min_dim: 1,
-    };
+    let p = GpuPolicy::default().with_enabled(true).with_min_dim(1);
     assert!(!gpu_ok(&p, n));
     clear_oom_floor();
 }

@@ -147,14 +147,12 @@ struct Sample {
 
 impl Job {
     fn run(&self, seed_curvature: bool) -> Sample {
-        let config = MinModeConfig {
-            kind: MinModeKind::Dimer,
-            seed_curvature,
-            force_tol: 1e-3,
-            max_move: 0.2,
-            method: self.method.method(),
-            ..MinModeConfig::default()
-        };
+        let config = MinModeConfig::default()
+            .with_kind(MinModeKind::Dimer)
+            .with_seed_curvature(seed_curvature)
+            .with_force_tol(1e-3)
+            .with_max_move(0.2)
+            .with_method(self.method.method());
         let mut session =
             MinModeSession::new(config, self.start.clone(), self.seed.clone()).expect("session");
         let surface = Counting {

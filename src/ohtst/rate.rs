@@ -289,16 +289,14 @@ mod tests {
             .with_time_step(0.2)
             .with_records(400)
             .with_retain(64);
-        let shooting = ShootingConfig {
-            thermal: kt,
-            time_step: 0.02,
-            steps: 300,
-            record_every: 50,
-            shots: 256,
-            blocks: 8,
-            plateau_record: 5,
-            ..ShootingConfig::default()
-        };
+        let shooting = ShootingConfig::default()
+            .with_thermal(kt)
+            .with_time_step(0.02)
+            .with_steps(300)
+            .with_record_every(50)
+            .with_shots(256)
+            .with_blocks(8)
+            .with_plateau_record(5);
         let line = Hyperplane::new(array![0.0, 0.0], array![1.0, 0.0]).unwrap();
         let sample = sample_plane(&Barrier, &line, None, &config).unwrap();
         let kappa = plane_transmission(&Barrier, &sample, &shooting).unwrap();
@@ -307,10 +305,7 @@ mod tests {
         let sample = sample_plane(&Barrier, &tilted, None, &config).unwrap();
         let kappa = plane_transmission(&Barrier, &sample, &shooting).unwrap();
         assert!(kappa.kappa < 1.0 - 4.0 * kappa.error, "{kappa:?}");
-        let heavy = ShootingConfig {
-            mass: 2.0,
-            ..shooting
-        };
+        let heavy = shooting.with_mass(2.0);
         assert!(plane_transmission(&Barrier, &sample, &heavy).is_err());
     }
 

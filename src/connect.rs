@@ -397,10 +397,11 @@ fn connect_force(
             }
             unique.push(node);
         }
-        let mut sub = settings.clone();
-        sub.n_loops = 4;
-        sub.nsteps = 8_000;
-        sub.minimize_nsteps = 1_000;
+        let sub = settings
+            .clone()
+            .with_n_loops(4)
+            .with_nsteps(8_000)
+            .with_minimize_nsteps(1_000);
         let mut best: Option<Found> = None;
         for i in 0..unique.len() {
             for j in i + 1..unique.len() {
@@ -458,12 +459,10 @@ fn climb_between(
     let mut best: Option<Found> = None;
     for fraction in [0.15, 0.35, 0.65, 0.85] {
         let start = Array1::from_iter(left.iter().zip(right).map(|(a, b)| a + fraction * (b - a)));
-        let config = MinModeConfig {
-            force_tol: settings.forcetol,
-            max_move: 0.1,
-            method: Method::lbfgs_with_memory(20),
-            ..MinModeConfig::default()
-        };
+        let config = MinModeConfig::default()
+            .with_force_tol(settings.forcetol)
+            .with_max_move(0.1)
+            .with_method(Method::lbfgs_with_memory(20));
         let mut session = MinModeSession::new(config, start, seed.clone())?;
         session.set_force_gate(ForceGate::L2Norm);
         let stepped = session.run(&surface, 60)?;
@@ -698,14 +697,12 @@ fn climb_lanczos(
         // Lanczos saddle search (no rigid projection inside the product).
         project_rigid: false,
     };
-    let config = MinModeConfig {
-        kind: MinModeKind::Lanczos,
-        krylov_dim: settings.lanczos_iterations.max(1),
-        force_tol: settings.forcetol,
-        max_move: settings.minmode_max_move,
-        method: Method::lbfgs_with_memory(settings.minmode_memory.max(1)),
-        ..MinModeConfig::default()
-    };
+    let config = MinModeConfig::default()
+        .with_kind(MinModeKind::Lanczos)
+        .with_krylov_dim(settings.lanczos_iterations.max(1))
+        .with_force_tol(settings.forcetol)
+        .with_max_move(settings.minmode_max_move)
+        .with_method(Method::lbfgs_with_memory(settings.minmode_memory.max(1)));
     let mut session = MinModeSession::new(
         config.clone(),
         Array1::from_vec(start.to_vec()),
@@ -804,8 +801,7 @@ fn complement_curvature(
     krylov: usize,
     rel_tol: Option<f64>,
 ) -> Result<(f64, usize), SaddleError> {
-    let mut check_config = config.clone();
-    check_config.krylov_dim = krylov.max(1);
+    let check_config = config.clone().with_krylov_dim(krylov.max(1));
     let mut check = MinModeSession::new(
         check_config,
         Array1::from_vec(pos.to_vec()),

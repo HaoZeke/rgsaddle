@@ -42,10 +42,7 @@ Sella's ~rayleigh_ritz~ takes its Ritz pairs from those symmetrized products, an
 Turn it on in the config, or on a live session before its next diagonalization:
 
 #+begin_src rust
-let config = SellaSaddleConfig {
-    symmetrized_ritz: true,
-    ..SellaSaddleConfig::default()
-};
+let config = SellaSaddleConfig::default().with_symmetrized_ritz(true);
 let mut session = SellaSaddleSession::new(config, x, masses)?;
 // or, on a session that already exists
 session.set_symmetrized_ritz(true);
@@ -122,10 +119,7 @@ To keep the Euclidean radius alone, turn the ceiling off in the config or on a l
 A live session takes the change from its next step.
 
 #+begin_src rust
-let config = SellaSaddleConfig {
-    small_system_atom_ceiling: false,
-    ..SellaSaddleConfig::default()
-};
+let config = SellaSaddleConfig::default().with_small_system_atom_ceiling(false);
 let mut session = SellaSaddleSession::new(config, x, masses)?;
 // or, on a session that already exists
 session.set_small_system_atom_ceiling(false);

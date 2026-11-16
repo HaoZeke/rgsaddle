@@ -397,10 +397,9 @@ mod tests {
         if isolated_gpu_test("gpu::tests::default_policy_gates_at_two_hundred", false) {
             return;
         }
-        let p = GpuPolicy {
-            enabled: true,
-            min_dim: GPU_MIN_DIM,
-        };
+        let p = GpuPolicy::default()
+            .with_enabled(true)
+            .with_min_dim(GPU_MIN_DIM);
         assert!(!p.gpu_ok(199));
         if cuda_available() {
             assert!(p.gpu_ok(200));
@@ -444,10 +443,7 @@ mod tests {
         }
         let _guard = lock_oom_for_test();
         clear_oom_floor();
-        let mut policy = GpuPolicy {
-            enabled: true,
-            min_dim: 1,
-        };
+        let mut policy = GpuPolicy::default().with_enabled(true).with_min_dim(1);
         let a = Array2::<f64>::eye(2);
         let _ = gpu_eigh(a.view(), &mut policy).unwrap();
         let _ = gpu_qr(a.view(), &mut policy).unwrap();
@@ -496,10 +492,7 @@ mod tests {
         assert!(to_gpu_matrix(a.view()).is_none());
         assert_eq!(oom_floor(), Some(n), "Sella to_gpu records A.shape[0]");
         assert_ne!(oom_floor(), Some(n * n));
-        let p = GpuPolicy {
-            enabled: true,
-            min_dim: 1,
-        };
+        let p = GpuPolicy::default().with_enabled(true).with_min_dim(1);
         assert!(!gpu_ok(&p, n));
         clear_oom_floor();
     }
@@ -531,10 +524,7 @@ mod tests {
         let mut a = Array2::<f64>::zeros((2, 2));
         a[(0, 0)] = 2.0;
         a[(1, 1)] = 8.0;
-        let mut policy = GpuPolicy {
-            enabled: true,
-            min_dim: 1,
-        };
+        let mut policy = GpuPolicy::default().with_enabled(true).with_min_dim(1);
         let (lams, vecs) = gpu_eigh(a.view(), &mut policy).unwrap();
         assert!((lams[0] - 2.0).abs() < 1e-10);
         assert!((lams[1] - 8.0).abs() < 1e-10);

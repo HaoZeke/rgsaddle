@@ -49,12 +49,10 @@ fn excluded_direction_is_absent_from_measured_actions_and_the_lowest_mode() {
                 points: Mutex::new(Vec::new()),
                 actions: AtomicUsize::new(0),
             };
-            let config = MinModeConfig {
-                kind,
-                rotation_tol: 1e-10,
-                rotation_angle_tol: 0.0,
-                ..Default::default()
-            };
+            let config = MinModeConfig::default()
+                .with_kind(kind)
+                .with_rotation_tol(1e-10)
+                .with_rotation_angle_tol(0.0);
             let mut session =
                 MinModeSession::new(config, Array1::zeros(3), array![1.0, 0.0, 0.0]).unwrap();
             let estimate = session.estimate_mode(&surface).unwrap();
@@ -84,12 +82,10 @@ fn force_gate_setter_preserves_default_and_changes_physical_translation() {
         points: Mutex::new(Vec::new()),
         actions: AtomicUsize::new(0),
     };
-    let config = MinModeConfig {
-        method: rgmin::Method::lbfgs_with_memory(4),
-        force_tol: 1e-3,
-        max_move: 1e-5,
-        ..Default::default()
-    };
+    let config = MinModeConfig::default()
+        .with_method(rgmin::Method::lbfgs_with_memory(4))
+        .with_force_tol(1e-3)
+        .with_max_move(1e-5);
     let start = array![-0.0008, 0.0008, 0.0004];
     let mode = array![1.0, 0.0, 0.0];
     let mut component = MinModeSession::new(config.clone(), start.clone(), mode.clone()).unwrap();

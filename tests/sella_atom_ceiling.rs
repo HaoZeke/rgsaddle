@@ -104,10 +104,7 @@ fn small_search_keeps_every_atom_move_under_the_ceiling_from_the_first_step() {
 #[test]
 fn ceiling_is_never_looser_than_the_starting_euclidean_radius() {
     // delta 0.01 on six free coordinates is a radius of 0.06, under 0.1.
-    let config = SellaSaddleConfig {
-        delta: 0.01,
-        ..SellaSaddleConfig::default()
-    };
+    let config = SellaSaddleConfig::default().with_delta(0.01);
     let on = walk(config, 4, Some(true), 8);
     for (k, largest) in on.moves.iter().enumerate() {
         assert!(
@@ -140,10 +137,7 @@ fn larger_search_is_the_same_with_the_ceiling_on_or_off() {
 
 #[test]
 fn without_iterative_diagonalization_the_ceiling_changes_nothing() {
-    let config = || SellaSaddleConfig {
-        eig: false,
-        ..SellaSaddleConfig::default()
-    };
+    let config = || SellaSaddleConfig::default().with_eig(false);
     let off = walk(config(), 4, Some(false), 6);
     let on = walk(config(), 4, Some(true), 6);
     assert_eq!(on.bits, off.bits);

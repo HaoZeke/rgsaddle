@@ -29,11 +29,7 @@ fn forward_and_reverse_leave_the_saddle_opposite_ways() {
     let masses = Array1::from(vec![1.0, 1.0]);
     let mut mode = Array1::zeros(6);
     mode[0] = 1.0;
-    let cfg = IrcConfig {
-        dx: 0.2,
-        force_tol: 1e-3,
-        ..IrcConfig::default()
-    };
+    let cfg = IrcConfig::default().with_dx(0.2).with_force_tol(1e-3);
     let mut session = IrcSession::new(
         cfg.clone(),
         saddle.clone(),
@@ -117,11 +113,7 @@ fn from_surface_launches_along_the_mass_weighted_mode() {
     let dx = 0.1;
     let seed = Array1::from(vec![1.0, 0.2, -0.1, 0.3, 0.05, 0.1]);
     let mut session = IrcSession::from_surface(
-        IrcConfig {
-            dx,
-            max_inner: 0,
-            ..IrcConfig::default()
-        },
+        IrcConfig::default().with_dx(dx).with_max_inner(0),
         Array1::zeros(6),
         masses.clone(),
         seed,
@@ -148,12 +140,10 @@ fn morokuma_forward_and_reverse_leave_opposite_ways() {
     let masses = Array1::from(vec![1.0, 1.0]);
     let mut mode = Array1::zeros(6);
     mode[0] = 1.0;
-    let cfg = IrcConfig {
-        dx: 0.2,
-        force_tol: 1e-3,
-        kind: IrcKind::Morokuma,
-        ..IrcConfig::default()
-    };
+    let cfg = IrcConfig::default()
+        .with_dx(0.2)
+        .with_force_tol(1e-3)
+        .with_kind(IrcKind::Morokuma);
     let mut session = IrcSession::new(cfg, saddle, masses, mode, IrcDirection::Forward).unwrap();
     let _ = session.step(&DoubleWell).unwrap();
     let x_fwd = session.position()[0];
@@ -172,12 +162,10 @@ fn morokuma_run_reaches_a_well() {
     let masses = Array1::from(vec![1.0, 1.0]);
     let seed = Array1::from(vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
     let mut session = IrcSession::from_surface(
-        IrcConfig {
-            dx: 0.15,
-            force_tol: 0.05,
-            kind: IrcKind::Morokuma,
-            ..IrcConfig::default()
-        },
+        IrcConfig::default()
+            .with_dx(0.15)
+            .with_force_tol(0.05)
+            .with_kind(IrcKind::Morokuma),
         saddle,
         masses,
         seed,
@@ -206,12 +194,10 @@ fn run_reaches_a_well() {
         let masses = Array1::from(vec![1.0, 1.0]);
         let seed = Array1::from(vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
         let mut session = IrcSession::from_surface(
-            IrcConfig {
-                dx: 0.15,
-                force_tol: 0.05,
-                kind,
-                ..IrcConfig::default()
-            },
+            IrcConfig::default()
+                .with_dx(0.15)
+                .with_force_tol(0.05)
+                .with_kind(kind),
             saddle,
             masses,
             seed,
@@ -311,13 +297,11 @@ fn roll_branch(kind: IrcKind, direction: IrcDirection) -> (Array1<f64>, f64, f64
     let masses = Array1::from(vec![1.0, 1.0]);
     let seed = Array1::from(vec![1.0, 0.2, 0.0, 0.0, 0.0, 0.0]);
     let mut session = IrcSession::from_surface(
-        IrcConfig {
-            dx: 0.1,
-            force_tol: 0.05,
-            max_inner: 10,
-            kind,
-            ..IrcConfig::default()
-        },
+        IrcConfig::default()
+            .with_dx(0.1)
+            .with_force_tol(0.05)
+            .with_max_inner(10)
+            .with_kind(kind),
         saddle,
         masses,
         seed,
@@ -384,12 +368,10 @@ fn accepted_points_sit_on_the_mw_sphere() {
     mode[0] = 1.0;
     mode[3] = 1.0;
     let dx = 0.2;
-    let cfg = IrcConfig {
-        dx,
-        force_tol: 1e-3,
-        kind: IrcKind::SellaSphere,
-        ..IrcConfig::default()
-    };
+    let cfg = IrcConfig::default()
+        .with_dx(dx)
+        .with_force_tol(1e-3)
+        .with_kind(IrcKind::SellaSphere);
     let mut session = IrcSession::new(
         cfg,
         saddle.clone(),
@@ -432,12 +414,10 @@ fn gs2_points_sit_on_the_mw_sphere_about_the_pivot() {
     mode[3] = 1.0;
     let dx = 0.2;
     let mut session = IrcSession::new(
-        IrcConfig {
-            dx,
-            force_tol: 1e-3,
-            kind: IrcKind::Gs2,
-            ..IrcConfig::default()
-        },
+        IrcConfig::default()
+            .with_dx(dx)
+            .with_force_tol(1e-3)
+            .with_kind(IrcKind::Gs2),
         saddle.clone(),
         masses.clone(),
         mode.clone(),

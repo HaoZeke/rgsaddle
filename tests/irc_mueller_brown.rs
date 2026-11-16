@@ -84,11 +84,9 @@ fn reverse_branch_at_a_small_radius_never_halves_it() {
     let dx = 0.00625;
     let (saddle, mode) = saddle_and_mode();
     let mut session = IrcSession::new_euclidean(
-        IrcConfig {
-            dx,
-            kind: IrcKind::SellaSphere,
-            ..IrcConfig::default()
-        },
+        IrcConfig::default()
+            .with_dx(dx)
+            .with_kind(IrcKind::SellaSphere),
         saddle,
         mode,
         IrcDirection::Reverse,
@@ -172,12 +170,10 @@ fn path_errors(kind: IrcKind, direction: IrcDirection) -> Vec<(f64, f64)> {
         .map(|i| {
             let dx = COARSEST / 2f64.powi(i);
             let mut session = IrcSession::new_euclidean(
-                IrcConfig {
-                    dx,
-                    force_tol: 1e-4,
-                    kind,
-                    ..IrcConfig::default()
-                },
+                IrcConfig::default()
+                    .with_dx(dx)
+                    .with_force_tol(1e-4)
+                    .with_kind(kind),
                 saddle.clone(),
                 mode.clone(),
                 direction,
@@ -258,12 +254,10 @@ fn gs2_steps_at_the_finest_radius_stop_before_the_last_trial() {
     let dx = COARSEST / 2f64.powi(HALVINGS);
     let (saddle, mode) = saddle_and_mode();
     for direction in [IrcDirection::Forward, IrcDirection::Reverse] {
-        let config = IrcConfig {
-            dx,
-            force_tol: 1e-4,
-            kind: IrcKind::Gs2,
-            ..IrcConfig::default()
-        };
+        let config = IrcConfig::default()
+            .with_dx(dx)
+            .with_force_tol(1e-4)
+            .with_kind(IrcKind::Gs2);
         let max_inner = config.max_inner;
         let mut session =
             IrcSession::new_euclidean(config, saddle.clone(), mode.clone(), direction).unwrap();

@@ -34,18 +34,17 @@ fn relax(options: rgmin::QuickMinOptions, time_step: f64) -> (usize, f64) {
         band[(i, 0)] = -1.0 + 2.0 * t;
         band[(i, 1)] = 0.3 * (std::f64::consts::PI * t).sin();
     }
-    let config = BandConfig {
-        quickmin: true,
-        quickmin_options: options,
-        time_step,
-        climbing: Some(CiConfig {
-            trigger_factor: 0.5,
-            trigger_force: 0.0,
-        }),
-        force_tol: 1e-4,
-        max_move: 0.05,
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default()
+        .with_quickmin(true)
+        .with_quickmin_options(options)
+        .with_time_step(time_step)
+        .with_climbing(
+            CiConfig::default()
+                .with_trigger_factor(0.5)
+                .with_trigger_force(0.0),
+        )
+        .with_force_tol(1e-4)
+        .with_max_move(0.05);
     let mut session = BandSession::new(config, band).unwrap();
     let report = session.run(&DoubleWell, 5000).unwrap();
     assert_eq!(report.status, BandStatus::Converged, "{report:?}");
@@ -81,20 +80,12 @@ fn a_band_on_another_method_ignores_the_variant() {
 #[test]
 fn the_time_step_is_validated_and_kept() {
     let band = ndarray::array![[-1.0, 0.0, 0.0], [0.0, 0.2, 0.0], [1.0, 0.0, 0.0]];
-    let refused = BandSession::new(
-        BandConfig {
-            time_step: 0.0,
-            ..BandConfig::default()
-        },
-        band.clone(),
-    );
+    let refused = BandSession::new(BandConfig::default().with_time_step(0.0), band.clone());
     assert!(matches!(refused, Err(SaddleError::Invalid(_))));
     let mut session = BandSession::new(
-        BandConfig {
-            quickmin: true,
-            quickmin_options: rgmin::QuickMinOptions::eon(),
-            ..BandConfig::default()
-        },
+        BandConfig::default()
+            .with_quickmin(true)
+            .with_quickmin_options(rgmin::QuickMinOptions::eon()),
         band,
     )
     .unwrap();

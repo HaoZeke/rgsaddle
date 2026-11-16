@@ -270,10 +270,7 @@ fn sella_min_onestep_matches_sella_optimizer() {
     let blob = case_slice(name);
     let x0 = vecn(&json_nums(blob, "x0"));
     let mut sess = SellaMinSession::new(
-        SellaMinConfig {
-            delta: json_num(blob, "delta0"),
-            ..SellaMinConfig::default()
-        },
+        SellaMinConfig::default().with_delta(json_num(blob, "delta0")),
         x0,
         Array1::from(vec![1.0]),
     )
@@ -311,12 +308,10 @@ fn sella_saddle_onestep_matches_sella_optimizer() {
     let blob = case_slice(name);
     let x0 = vecn(&json_nums(blob, "x0"));
     let mut sess = SellaSaddleSession::new(
-        SellaSaddleConfig {
-            delta: json_num(blob, "delta0"),
-            eig: false,
-            order: json_usize(blob, "order"),
-            ..SellaSaddleConfig::default()
-        },
+        SellaSaddleConfig::default()
+            .with_delta(json_num(blob, "delta0"))
+            .with_eig(false)
+            .with_order(json_usize(blob, "order")),
         x0,
         Array1::from(vec![1.0]),
     )
@@ -354,10 +349,7 @@ fn sella_min_qn_tr_matches_sella_optimizer() {
     let blob = case_slice(name);
     let x0 = vecn(&json_nums(blob, "x0"));
     let mut sess = SellaMinSession::new(
-        SellaMinConfig {
-            delta: json_num(blob, "delta0"),
-            ..SellaMinConfig::default()
-        },
+        SellaMinConfig::default().with_delta(json_num(blob, "delta0")),
         x0,
         Array1::from(vec![1.0, 1.0]),
     )
@@ -396,12 +388,10 @@ fn sella_saddle_prfo_tr_matches_sella_optimizer() {
     let blob = case_slice(name);
     let x0 = vecn(&json_nums(blob, "x0"));
     let mut sess = SellaSaddleSession::new(
-        SellaSaddleConfig {
-            delta: json_num(blob, "delta0"),
-            eig: false,
-            order: json_usize(blob, "order"),
-            ..SellaSaddleConfig::default()
-        },
+        SellaSaddleConfig::default()
+            .with_delta(json_num(blob, "delta0"))
+            .with_eig(false)
+            .with_order(json_usize(blob, "order")),
         x0,
         Array1::from(vec![1.0, 1.0]),
     )

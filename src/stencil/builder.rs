@@ -649,36 +649,34 @@ fn mode_session(builder: &PointBuilder, mode: Array1<f64>) -> Result<MinModeSess
     } else {
         MinModeKind::Dimer
     };
-    let config = MinModeConfig {
-        kind,
-        dr: builder.dr,
-        difference: FiniteDifference::Forward,
-        rotation_tol: builder.rotation_tol,
-        rotation_angle_tol: builder.rotation_angle_tol,
-        max_rotations: builder.max_rotations,
-        krylov_dim: builder.krylov_dim,
-        force_tol: builder.force_tol,
-        max_move: builder.max_move,
-        method: Method::fire(FireKind::V2),
-        seed_curvature: false,
-    };
+    let config = MinModeConfig::default()
+        .with_kind(kind)
+        .with_dr(builder.dr)
+        .with_difference(FiniteDifference::Forward)
+        .with_rotation_tol(builder.rotation_tol)
+        .with_rotation_angle_tol(builder.rotation_angle_tol)
+        .with_max_rotations(builder.max_rotations)
+        .with_krylov_dim(builder.krylov_dim)
+        .with_force_tol(builder.force_tol)
+        .with_max_move(builder.max_move)
+        .with_method(Method::fire(FireKind::V2))
+        .with_seed_curvature(false);
     MinModeSession::new(config, builder.x.clone(), mode)
 }
 
 fn art_mode_config(engine: &ArtEngine) -> MinModeConfig {
-    MinModeConfig {
-        kind: MinModeKind::Lanczos,
-        dr: engine.dr,
-        difference: FiniteDifference::Forward,
-        rotation_tol: engine.rotation_tol,
-        rotation_angle_tol: engine.rotation_angle_tol,
-        max_rotations: engine.max_rotations,
-        krylov_dim: engine.krylov_dim,
-        force_tol: engine.force_tol,
-        max_move: engine.max_move,
-        method: Method::fire(FireKind::V2),
-        seed_curvature: false,
-    }
+    MinModeConfig::default()
+        .with_kind(MinModeKind::Lanczos)
+        .with_dr(engine.dr)
+        .with_difference(FiniteDifference::Forward)
+        .with_rotation_tol(engine.rotation_tol)
+        .with_rotation_angle_tol(engine.rotation_angle_tol)
+        .with_max_rotations(engine.max_rotations)
+        .with_krylov_dim(engine.krylov_dim)
+        .with_force_tol(engine.force_tol)
+        .with_max_move(engine.max_move)
+        .with_method(Method::fire(FireKind::V2))
+        .with_seed_curvature(false)
 }
 
 fn force_solver(method: Method, n: usize, max_move: f64) -> Result<Solver, SaddleError> {

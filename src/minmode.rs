@@ -3064,13 +3064,11 @@ mod tests {
 
     #[test]
     fn seeded_lbfgs_step_leaves_a_secant_pair() {
-        let config = MinModeConfig {
-            seed_curvature: true,
-            method: Method::lbfgs_with_memory(10),
-            force_tol: 1e-12,
-            max_move: 0.2,
-            ..MinModeConfig::default()
-        };
+        let config = MinModeConfig::default()
+            .with_seed_curvature(true)
+            .with_method(Method::lbfgs_with_memory(10))
+            .with_force_tol(1e-12)
+            .with_max_move(0.2);
         // The Newton step 0.15 fits in max_move 0.2, so the seed is taken
         // and the secant is what the next two-loop step would read.
         let mut session =
@@ -3111,13 +3109,11 @@ mod tests {
     /// Phys. 128, 014106 (2008), doi:10.1063/1.2815812.
     #[test]
     fn lbfgs_pairs_survive_a_turn_inside_the_cone() {
-        let config = MinModeConfig {
-            method: Method::lbfgs_with_memory(10),
-            force_tol: 1e-8,
-            max_move: 0.05,
-            rotation_angle_tol: 0.0,
-            ..MinModeConfig::default()
-        };
+        let config = MinModeConfig::default()
+            .with_method(Method::lbfgs_with_memory(10))
+            .with_force_tol(1e-8)
+            .with_max_move(0.05)
+            .with_rotation_angle_tol(0.0);
         let mut session =
             MinModeSession::new(config, array![0.4, 0.15, -0.1], array![1.0, 0.2, 0.0]).unwrap();
         session.step(&QuadraticSaddle).unwrap();
@@ -3232,14 +3228,8 @@ mod tests {
     #[test]
     fn torque_window_follows_rotation_tol_until_it_is_set() {
         let stock = MinModeConfig::default();
-        let eon = MinModeConfig {
-            rotation_tol: 0.1,
-            ..MinModeConfig::default()
-        };
-        let tight = MinModeConfig {
-            rotation_tol: 1e-6,
-            ..MinModeConfig::default()
-        };
+        let eon = MinModeConfig::default().with_rotation_tol(0.1);
+        let tight = MinModeConfig::default().with_rotation_tol(1e-6);
         // A rotational force of 0.5 after one rotation is inside the window.
         assert!(super::rotation_finished(&stock, None, 0.5, 1));
         assert!(super::rotation_finished(&eon, None, 0.5, 1));
@@ -3260,11 +3250,9 @@ mod tests {
     }
 
     fn dimer_rotations(rotation_tol: f64, window: Option<bool>) -> (usize, Array1<f64>) {
-        let config = MinModeConfig {
-            rotation_tol,
-            rotation_angle_tol: 0.0,
-            ..MinModeConfig::default()
-        };
+        let config = MinModeConfig::default()
+            .with_rotation_tol(rotation_tol)
+            .with_rotation_angle_tol(0.0);
         let mut session = MinModeSession::new(
             config,
             array![0.3, 0.2, 0.1, 0.4],
@@ -3315,11 +3303,9 @@ mod tests {
 
     #[test]
     fn dimer_rotation_history_crosses_translations_but_resets_at_boundaries() {
-        let config = MinModeConfig {
-            max_rotations: 1,
-            rotation_tol: 1e-12,
-            ..MinModeConfig::default()
-        };
+        let config = MinModeConfig::default()
+            .with_max_rotations(1)
+            .with_rotation_tol(1e-12);
         let mut session = MinModeSession::new(config, array![0.3, 0.2], array![0.8, 0.6]).unwrap();
         session.estimate_mode(&RotatingQuadratic).unwrap();
         assert!(session.dimer_rotation.force.is_some());
@@ -3343,11 +3329,9 @@ mod tests {
 
     #[test]
     fn failed_dimer_action_preserves_rotation_history() {
-        let config = MinModeConfig {
-            rotation_tol: 1e-12,
-            rotation_angle_tol: std::f64::consts::PI,
-            ..MinModeConfig::default()
-        };
+        let config = MinModeConfig::default()
+            .with_rotation_tol(1e-12)
+            .with_rotation_angle_tol(std::f64::consts::PI);
         let mut session = MinModeSession::new(config, array![0.3, 0.2], array![0.8, 0.6]).unwrap();
         session.estimate_mode(&RotatingQuadratic).unwrap();
         assert!(session.dimer_rotation.force.is_some());
@@ -3367,12 +3351,10 @@ mod tests {
 
     #[test]
     fn an_excluded_mode_drops_unrelated_curvature_and_rotation_history() {
-        let config = MinModeConfig {
-            kind: super::MinModeKind::Lanczos,
-            rotation_tol: 1e-12,
-            krylov_dim: 3,
-            ..MinModeConfig::default()
-        };
+        let config = MinModeConfig::default()
+            .with_kind(super::MinModeKind::Lanczos)
+            .with_rotation_tol(1e-12)
+            .with_krylov_dim(3);
         let position = array![0.3, 0.2, 0.1, 0.4];
         let mut session =
             MinModeSession::new(config, position, array![1.0, 0.0, 0.0, 0.0]).unwrap();
@@ -3415,12 +3397,10 @@ mod tests {
 
     #[test]
     fn fire_on_a_stiff_negative_curvature_steps_inside_the_cap() {
-        let config = MinModeConfig {
-            force_tol: 1e-3,
-            max_move: 0.2,
-            rotation_angle_tol: 0.0,
-            ..MinModeConfig::default()
-        };
+        let config = MinModeConfig::default()
+            .with_force_tol(1e-3)
+            .with_max_move(0.2)
+            .with_rotation_angle_tol(0.0);
         let start = array![0.002, 0.15, 0.0];
         let mode = array![1.0, 0.0, 0.0];
         let mut plain = MinModeSession::new(config.clone(), start.clone(), mode.clone()).unwrap();
@@ -3440,12 +3420,10 @@ mod tests {
 
     #[test]
     fn cg_translate_on_a_stiff_well_converges() {
-        let config = MinModeConfig {
-            force_tol: 1e-3,
-            max_move: 0.2,
-            rotation_angle_tol: 0.0,
-            ..MinModeConfig::default()
-        };
+        let config = MinModeConfig::default()
+            .with_force_tol(1e-3)
+            .with_max_move(0.2)
+            .with_rotation_angle_tol(0.0);
         let mut session =
             MinModeSession::new(config, array![0.002, 0.15, 0.0], array![1.0, 0.0, 0.0]).unwrap();
         session.set_cg_translate(true);
@@ -3457,13 +3435,11 @@ mod tests {
 
     #[test]
     fn projected_lbfgs_on_a_stiff_well_converges() {
-        let config = MinModeConfig {
-            force_tol: 1e-3,
-            max_move: 0.2,
-            method: Method::lbfgs_with_memory(10),
-            rotation_angle_tol: 0.0,
-            ..MinModeConfig::default()
-        };
+        let config = MinModeConfig::default()
+            .with_force_tol(1e-3)
+            .with_max_move(0.2)
+            .with_method(Method::lbfgs_with_memory(10))
+            .with_rotation_angle_tol(0.0);
         let mut session =
             MinModeSession::new(config, array![0.002, 0.15, 0.0], array![1.0, 0.0, 0.0]).unwrap();
         session.set_lbfgs_project(true);
@@ -3502,12 +3478,10 @@ mod tests {
     }
 
     fn stopped_rotations(kind: MinModeKind, length: f64) -> (usize, usize, Array1<f64>, f64) {
-        let config = MinModeConfig {
-            kind,
-            rotation_tol: 1e-6,
-            rotation_angle_tol: 0.0,
-            ..MinModeConfig::default()
-        };
+        let config = MinModeConfig::default()
+            .with_kind(kind)
+            .with_rotation_tol(1e-6)
+            .with_rotation_angle_tol(0.0);
         let mut session = MinModeSession::new(
             config,
             array![0.3, 0.2, 0.1, 0.4],
@@ -3528,12 +3502,10 @@ mod tests {
     #[test]
     fn rotation_stop_length_zero_keeps_the_rotation() {
         for kind in [MinModeKind::Dimer, MinModeKind::Lanczos] {
-            let config = MinModeConfig {
-                kind,
-                rotation_tol: 1e-6,
-                rotation_angle_tol: 0.0,
-                ..MinModeConfig::default()
-            };
+            let config = MinModeConfig::default()
+                .with_kind(kind)
+                .with_rotation_tol(1e-6)
+                .with_rotation_angle_tol(0.0);
             let mut session = MinModeSession::new(
                 config,
                 array![0.3, 0.2, 0.1, 0.4],

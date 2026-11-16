@@ -676,11 +676,9 @@ mod tests {
         assert!((w[3] - 1.0).abs() < 1e-14);
         let w2 = weights_for_equalities_with(
             &chart,
-            InternalWeights {
-                translation: 2.0,
-                bond: 3.0,
-                ..InternalWeights::default()
-            },
+            InternalWeights::default()
+                .with_translation(2.0)
+                .with_bond(3.0),
         );
         assert!((w2[0] - 2.0).abs() < 1e-14);
         assert!((w2[3] - 3.0).abs() < 1e-14);
@@ -698,13 +696,12 @@ mod tests {
         };
         let w = pack_weights(
             c,
-            InternalWeights {
-                translation: 2.0,
-                bond: 3.0,
-                angle: 4.0,
-                dihedral: 5.0,
-                other: 6.0,
-            },
+            InternalWeights::default()
+                .with_translation(2.0)
+                .with_bond(3.0)
+                .with_angle(4.0)
+                .with_dihedral(5.0)
+                .with_other(6.0),
         );
         assert_eq!(w.len(), 7);
         assert!((w[0] - 2.0).abs() < 1e-14);

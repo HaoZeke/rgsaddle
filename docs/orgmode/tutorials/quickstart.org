@@ -43,7 +43,7 @@ let saddle = Array1::zeros(6);
 let masses = Array1::from(vec![1.0, 1.0]);
 let seed = Array1::from(vec![1.0, 0.1, 0.0, 0.0, 0.0, 0.0]);
 let mut session = IrcSession::from_surface(
-    IrcConfig { dx: 0.2, ..IrcConfig::default() },
+    IrcConfig::default().with_dx(0.2),
     saddle,
     masses,
     seed,

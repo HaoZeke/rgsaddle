@@ -65,13 +65,11 @@ fn ode12r_converges_the_double_well_band_to_the_saddle() {
     let n_images = 9;
     // The plain climbing band: the min-mode refinement of the climbing
     // image has its own evaluation count and is off here.
-    let config = BandConfig {
-        force_tol: 1e-3,
-        max_move: 0.1,
-        method: rgmin::Method::Ode12r,
-        min_mode: None,
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default()
+        .with_force_tol(1e-3)
+        .with_max_move(0.1)
+        .with_method(rgmin::Method::Ode12r)
+        .with_min_mode(None);
     let mut session = BandSession::new(config, initial_band(n_images)).unwrap();
     let (status, steps, rows) = relax(&mut session, &DoubleWell, 3000);
     assert_eq!(
@@ -150,13 +148,11 @@ fn a_rejected_trial_leaves_the_band_in_place_and_costs_one_evaluation() {
         }
     }
     let band = ndarray::array![[0.0, 0.0, 0.0], [1.0, 0.5, 0.0], [2.0, 0.0, 0.0]];
-    let config = BandConfig {
-        spring: SpringKind::Uniform { k: 0.0 },
-        climbing: None,
-        max_move: 0.0,
-        method: rgmin::Method::Ode12r,
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default()
+        .with_spring(SpringKind::Uniform { k: 0.0 })
+        .with_climbing(None)
+        .with_max_move(0.0)
+        .with_method(rgmin::Method::Ode12r);
     let mut session = BandSession::new(config, band.clone()).unwrap();
     let report = session.step(&Stiff).unwrap();
     assert_eq!(
@@ -181,13 +177,11 @@ fn a_rejected_trial_leaves_the_band_in_place_and_costs_one_evaluation() {
 #[test]
 fn the_valley_step_of_length_one_lands_on_the_path() {
     let band = ndarray::array![[0.0, 0.0, 0.0], [1.0, 0.5, 0.0], [2.0, 0.0, 0.0]];
-    let config = BandConfig {
-        spring: SpringKind::Uniform { k: 0.0 },
-        climbing: None,
-        max_move: 0.0,
-        method: rgmin::Method::Ode12r,
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default()
+        .with_spring(SpringKind::Uniform { k: 0.0 })
+        .with_climbing(None)
+        .with_max_move(0.0)
+        .with_method(rgmin::Method::Ode12r);
     let mut session = BandSession::new(config, band).unwrap();
     let report = session.step(&Valley).unwrap();
     assert!(
@@ -258,15 +252,13 @@ fn diatomic_trials(precon: Option<ExpBandPrecon>) -> (usize, usize, Array1<f64>)
     // The well acts on the centroid, a pure translation of the molecule,
     // so the band keeps the mean force: dropping it would leave only the
     // bond, which the plain integration solves in three trials.
-    let config = BandConfig {
-        force_tol: 1e-3,
-        max_move: 0.1,
-        method: rgmin::Method::Ode12r,
-        remove_translation: false,
-        min_mode: None,
-        exp_precon: precon,
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default()
+        .with_force_tol(1e-3)
+        .with_max_move(0.1)
+        .with_method(rgmin::Method::Ode12r)
+        .with_remove_translation(false)
+        .with_min_mode(None)
+        .with_exp_precon(precon);
     let mut session = BandSession::new(config, diatomic_band(n_images)).unwrap();
     let (status, steps, rows) = relax(&mut session, &StiffDiatomic, 4000);
     assert_eq!(
@@ -281,10 +273,8 @@ fn diatomic_trials(precon: Option<ExpBandPrecon>) -> (usize, usize, Array1<f64>)
 #[test]
 fn the_exp_metric_relaxes_the_stiff_diatomic_band_in_fewer_trials() {
     let (plain_steps, plain_rows, plain_saddle) = diatomic_trials(None);
-    let (exp_steps, exp_rows, exp_saddle) = diatomic_trials(Some(ExpBandPrecon {
-        mu: Some(200.0),
-        ..ExpBandPrecon::default()
-    }));
+    let (exp_steps, exp_rows, exp_saddle) =
+        diatomic_trials(Some(ExpBandPrecon::default().with_mu(200.0)));
     eprintln!("plain {plain_steps} trials / {plain_rows} rows, exp {exp_steps} / {exp_rows}");
     for saddle in [&plain_saddle, &exp_saddle] {
         let cx = 0.5 * (saddle[0] + saddle[3]);
@@ -305,11 +295,9 @@ fn the_exp_metric_relaxes_the_stiff_diatomic_band_in_fewer_trials() {
 
 #[test]
 fn the_exp_metric_is_refused_where_it_has_no_pairs() {
-    let config = BandConfig {
-        method: rgmin::Method::Ode12r,
-        exp_precon: Some(ExpBandPrecon::default()),
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default()
+        .with_method(rgmin::Method::Ode12r)
+        .with_exp_precon(ExpBandPrecon::default());
     let err = match BandSession::new(config, initial_band(5)) {
         Err(err) => err,
         Ok(_) => panic!("a single-atom band accepted the exponential metric"),

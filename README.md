@@ -68,7 +68,7 @@ fn main() -> Result<(), SaddleError> {
         let t = i as f64 / 8.0;
         [2.0 * t - 1.0, 0.3 * (std::f64::consts::PI * t).sin(), 0.0][k]
     });
-    let config = BandConfig { force_tol: 1e-3, max_move: 0.1, ..BandConfig::default() };
+    let config = BandConfig::default().with_force_tol(1e-3).with_max_move(0.1);
     let mut session = BandSession::new(config, initial)?;
     let mut report = session.step(&DoubleWell)?;
     while report.status == BandStatus::Running {
@@ -145,7 +145,7 @@ fn main() -> Result<(), SaddleError> {
         let t = i as f64 / 8.0;
         [2.0 * t - 1.0, 0.3 * (std::f64::consts::PI * t).sin(), 0.0][k]
     });
-    let config = BandConfig { force_tol: 1e-3, max_move: 0.1, ..BandConfig::default() };
+    let config = BandConfig::default().with_force_tol(1e-3).with_max_move(0.1);
     let mut session = BandSession::new(config, initial)?;
     let mut report = session.step(&DoubleWell)?;
     while report.status == BandStatus::Running {

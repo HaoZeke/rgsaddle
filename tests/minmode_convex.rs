@@ -18,13 +18,11 @@ impl PointSurface for Quadratic {
 }
 
 fn one_step(kind: MinModeKind, curvature: f64) -> Array1<f64> {
-    let config = MinModeConfig {
-        kind,
-        max_move: 2.0,
-        force_tol: 1e-12,
-        rotation_tol: 1e-8,
-        ..MinModeConfig::default()
-    };
+    let config = MinModeConfig::default()
+        .with_kind(kind)
+        .with_max_move(2.0)
+        .with_force_tol(1e-12)
+        .with_rotation_tol(1e-8);
     let mut session =
         MinModeSession::new(config, array![1.0, 1.0, 0.0], array![1.0, 0.0, 0.0]).unwrap();
     session.step(&Quadratic { curvature }).unwrap();

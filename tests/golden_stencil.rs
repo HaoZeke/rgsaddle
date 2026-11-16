@@ -241,39 +241,33 @@ fn chain_band() -> Array2<f64> {
 }
 
 fn band_config(preset: &str) -> BandConfig {
-    let mut config = BandConfig {
-        tangent: TangentKind::Improved,
-        spring: SpringKind::Uniform { k: 5.0 },
-        projection: ProjectionKind::Neb,
-        climbing: None,
-        force_tol: 1e-8,
-        max_move: 0.2,
-        method: rgmin::Method::fire(rgmin::FireKind::V2),
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default()
+        .with_tangent(TangentKind::Improved)
+        .with_spring(SpringKind::Uniform { k: 5.0 })
+        .with_projection(ProjectionKind::Neb)
+        .with_climbing(None)
+        .with_force_tol(1e-8)
+        .with_max_move(0.2)
+        .with_method(rgmin::Method::fire(rgmin::FireKind::V2));
     match preset {
-        "neb" => {}
-        "ci-neb" => {
-            config.climbing = Some(CiConfig {
-                trigger_factor: 0.5,
-                trigger_force: 0.0,
-            });
-        }
-        "dneb" => {
-            config.projection = ProjectionKind::DoublyNudged;
-        }
-        "weighted-neb" => {
-            config.spring = SpringKind::Weighted {
+        "neb" => config,
+        "ci-neb" => config.with_climbing(
+            CiConfig::default()
+                .with_trigger_factor(0.5)
+                .with_trigger_force(0.0),
+        ),
+        "dneb" => config.with_projection(ProjectionKind::DoublyNudged),
+        "weighted-neb" => config
+            .with_spring(SpringKind::Weighted {
                 ks: vec![1.0, 2.0, 3.0, 4.0, 3.0, 2.0],
-            };
-            config.climbing = Some(CiConfig {
-                trigger_factor: 0.5,
-                trigger_force: 0.0,
-            });
-        }
+            })
+            .with_climbing(
+                CiConfig::default()
+                    .with_trigger_factor(0.5)
+                    .with_trigger_force(0.0),
+            ),
         other => panic!("unknown band preset {other}"),
     }
-    config
 }
 
 fn run_band(preset: &str, fixture: &str) -> (Array2<f64>, Vec<f64>) {
@@ -283,13 +277,15 @@ fn run_band(preset: &str, fixture: &str) -> (Array2<f64>, Vec<f64>) {
         "harmonic-chain" => chain_band(),
         other => panic!("unknown fixture {other}"),
     };
-    let mut config = band_config(preset);
-    if preset == "weighted-neb" {
+    let config = band_config(preset);
+    let config = if preset == "weighted-neb" {
         let n = initial.nrows();
-        config.spring = SpringKind::Weighted {
+        config.with_spring(SpringKind::Weighted {
             ks: (0..n - 1).map(|i| 1.0 + i as f64).collect(),
-        };
-    }
+        })
+    } else {
+        config
+    };
     let mut session = BandSession::new(config, initial.clone()).expect("band");
     match fixture {
         "double-well" => {
@@ -328,23 +324,22 @@ fn energies_of(fixture: &str, positions: ArrayView2<f64>) -> Vec<f64> {
 }
 
 fn mode_config(preset: &str) -> MinModeConfig {
-    MinModeConfig {
-        kind: match preset {
+    MinModeConfig::default()
+        .with_kind(match preset {
             "dimer" => MinModeKind::Dimer,
             "lanczos" => MinModeKind::Lanczos,
             other => panic!("unknown mode preset {other}"),
-        },
-        dr: 1e-3,
-        difference: FiniteDifference::Forward,
-        rotation_tol: 1e-4,
-        rotation_angle_tol: 0.0,
-        max_rotations: 8,
-        krylov_dim: 6,
-        force_tol: 1e-12,
-        max_move: 0.1,
-        method: rgmin::Method::fire(rgmin::FireKind::V2),
-        seed_curvature: false,
-    }
+        })
+        .with_dr(1e-3)
+        .with_difference(FiniteDifference::Forward)
+        .with_rotation_tol(1e-4)
+        .with_rotation_angle_tol(0.0)
+        .with_max_rotations(8)
+        .with_krylov_dim(6)
+        .with_force_tol(1e-12)
+        .with_max_move(0.1)
+        .with_method(rgmin::Method::fire(rgmin::FireKind::V2))
+        .with_seed_curvature(false)
 }
 
 fn run_mode(preset: &str, fixture: &str) -> (Array2<f64>, Vec<f64>) {
@@ -389,30 +384,30 @@ fn run_autoneb(fixture: &str, threads: usize) -> (Array2<f64>, Vec<f64>) {
         ),
         other => panic!("unknown fixture {other}"),
     };
-    let config = BandConfig {
-        force_tol: 1e-3,
-        max_move: 0.1,
-        method: rgmin::Method::fire(rgmin::FireKind::V2),
-        spring: SpringKind::Uniform { k: 5.0 },
-        climbing: Some(CiConfig {
-            trigger_factor: 0.5,
-            trigger_force: 0.0,
-        }),
-        autoneb: Some(AutoNebTuning {
-            n_simul: 1,
-            n_max: 4,
-            local_force_tol: 1.0,
-            local_max_steps: 2,
-            climb_max_steps: 2,
-            space_energy_ratio: 0.5,
-            climb: true,
-            full_band: false,
-            threads,
-            record_samples: false,
-            interpolant: AutoNebInterpolant::Linear,
-        }),
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default()
+        .with_force_tol(1e-3)
+        .with_max_move(0.1)
+        .with_method(rgmin::Method::fire(rgmin::FireKind::V2))
+        .with_spring(SpringKind::Uniform { k: 5.0 })
+        .with_climbing(
+            CiConfig::default()
+                .with_trigger_factor(0.5)
+                .with_trigger_force(0.0),
+        )
+        .with_autoneb(
+            AutoNebTuning::default()
+                .with_n_simul(1)
+                .with_n_max(4)
+                .with_local_force_tol(1.0)
+                .with_local_max_steps(2)
+                .with_climb_max_steps(2)
+                .with_space_energy_ratio(0.5)
+                .with_climb(true)
+                .with_full_band(false)
+                .with_threads(threads)
+                .with_record_samples(false)
+                .with_interpolant(AutoNebInterpolant::Linear),
+        );
     let mut search = AutoNeb::new(config, initial).expect("autoneb");
     match fixture {
         "double-well" => {

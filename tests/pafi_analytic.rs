@@ -54,24 +54,23 @@ fn line(samples: usize) -> Vec<Array1<f64>> {
 fn one_dimensional_barrier_is_the_potential() {
     let frames = line(41);
     let path = ArcPath::from_positions(&frames).expect("path");
-    let mut config = PafiConfig {
-        thermal: 0.02,
-        mobility: 1.0,
-        time_step: 0.01,
-        thermalize: 5,
-        stride: 1,
-        samples: 8,
-        blocks: 2,
-        seed: 3,
-        fix_com: false,
-        retain: 1,
-        target_error: None,
-        max_rounds: 1,
-    };
+    let config = PafiConfig::default()
+        .with_thermal(0.02)
+        .with_mobility(1.0)
+        .with_time_step(0.01)
+        .with_thermalize(5)
+        .with_stride(1)
+        .with_samples(8)
+        .with_blocks(2)
+        .with_seed(3)
+        .with_fix_com(false)
+        .with_retain(1)
+        .with_target_error(None)
+        .with_max_rounds(1);
     let geometry = path.geometry(0.5).expect("mid");
     // x = -0.5 sits halfway in arc length on this uniform line.
     assert!((geometry.positions[0] + 0.5).abs() < 1e-9);
-    config.samples = 4;
+    let config = config.with_samples(4);
     let plane = average_hyperplane(&AlongX, &geometry, &config).expect("plane");
     let expected = -4.0 * (-0.5) * (1.0 - 0.25);
     assert!(
@@ -102,20 +101,19 @@ fn transverse_width_shifts_the_free_energy() {
         })
         .collect();
     let path = ArcPath::from_positions(&frames).expect("path");
-    let config = PafiConfig {
-        thermal,
-        mobility: 1.0,
-        time_step: 0.004,
-        thermalize: 400,
-        stride: 8,
-        samples: 600,
-        blocks: 6,
-        seed: 11,
-        fix_com: false,
-        retain: 2,
-        target_error: None,
-        max_rounds: 1,
-    };
+    let config = PafiConfig::default()
+        .with_thermal(thermal)
+        .with_mobility(1.0)
+        .with_time_step(0.004)
+        .with_thermalize(400)
+        .with_stride(8)
+        .with_samples(600)
+        .with_blocks(6)
+        .with_seed(11)
+        .with_fix_com(false)
+        .with_retain(2)
+        .with_target_error(None)
+        .with_max_rounds(1);
     let (profile, _) = pafi_profile(&Widening, &path, &path.arcs(), &config).expect("profile");
     let miss = (profile.barrier - truth).abs();
     assert!(

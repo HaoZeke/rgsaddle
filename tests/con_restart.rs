@@ -53,11 +53,9 @@ fn bits(values: &[f64]) -> Vec<u64> {
 }
 
 fn session() -> BandSession {
-    let config = BandConfig {
-        force_tol: 1e-12,
-        max_move: 0.05,
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default()
+        .with_force_tol(1e-12)
+        .with_max_move(0.05);
     BandSession::new(config, initial_band(IMAGES)).unwrap()
 }
 

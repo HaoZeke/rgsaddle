@@ -39,10 +39,7 @@ fn problem() -> Problem {
     let saddle = stationary(LepsHo::energy, [2.02, -0.17]);
     let barrier =
         LepsHo::energy(saddle[0], saddle[1]).0 - LepsHo::energy(reactant[0], reactant[1]).0;
-    let config = MinModeConfig {
-        force_tol: 1.0e-8,
-        ..Default::default()
-    };
+    let config = MinModeConfig::default().with_force_tol(1.0e-8);
     let mut session = MinModeSession::new(config, array![1.9, -0.05], array![1.0, 0.2]).unwrap();
     while session.step(&LepsHo).unwrap().status != MinModeStatus::Converged {}
     let guideline = array![product[0] - reactant[0], product[1] - reactant[1]];

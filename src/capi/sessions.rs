@@ -15,6 +15,36 @@ fn force_gate_of(v: i32) -> Option<crate::ForceGate> {
     crate::ForceGate::try_from_abi(v)
 }
 
+/// The C value when it is positive, else the Rust default.
+fn positive_or(value: f64, default: f64) -> f64 {
+    if value > 0.0 { value } else { default }
+}
+
+fn sella_min_config(cfg: &RgsaddleSellaMinConfig, force_gate: crate::ForceGate) -> SellaMinConfig {
+    let defaults = SellaMinConfig::default();
+    SellaMinConfig::default()
+        .with_delta(positive_or(cfg.delta, defaults.delta))
+        .with_force_tol(positive_or(cfg.force_tol, defaults.force_tol))
+        .with_force_gate(force_gate)
+}
+
+fn sella_saddle_config(
+    cfg: &RgsaddleSellaSaddleConfig,
+    force_gate: crate::ForceGate,
+) -> SellaSaddleConfig {
+    let defaults = SellaSaddleConfig::default();
+    let order = if cfg.order > 0 {
+        cfg.order as usize
+    } else {
+        defaults.order
+    };
+    SellaSaddleConfig::default()
+        .with_delta(positive_or(cfg.delta, defaults.delta))
+        .with_force_tol(positive_or(cfg.force_tol, defaults.force_tol))
+        .with_order(order)
+        .with_force_gate(force_gate)
+}
+
 #[repr(C)]
 /// The RgsaddleIrcConfig.
 pub struct RgsaddleIrcConfig {
@@ -178,15 +208,18 @@ pub unsafe extern "C" fn rgsaddle_minmode_set_kappa(
         let Some(kind) = rgmin::EigensolverKind::from_ordinal(c.eigen_kind as u8) else {
             return RGSADDLE_INVALID_PARAMETER;
         };
-        Some(crate::kappa::KappaDimerConfig {
-            beta: c.beta,
-            eigen: rgmin::EigenParams::default()
-                .with_kind(kind)
-                .with_nev(1)
-                .with_krylov(c.krylov_dimension as usize)
-                .with_max_iter(c.max_iterations as usize)
-                .with_tol(c.tolerance),
-        })
+        Some(
+            crate::kappa::KappaDimerConfig::default()
+                .with_beta(c.beta)
+                .with_eigen(
+                    rgmin::EigenParams::default()
+                        .with_kind(kind)
+                        .with_nev(1)
+                        .with_krylov(c.krylov_dimension as usize)
+                        .with_max_iter(c.max_iterations as usize)
+                        .with_tol(c.tolerance),
+                ),
+        )
     };
     match unsafe { &mut *session }.session.set_kappa(cfg) {
         Ok(()) => RGSADDLE_OK,
@@ -233,14 +266,12 @@ pub unsafe extern "C" fn rgsaddle_irc_create(
     let Some(kind) = irc_kind_of(cfg) else {
         return std::ptr::null_mut();
     };
-    let irc_cfg = IrcConfig {
-        dx: cfg.dx,
-        force_tol: cfg.force_tol,
-        force_gate,
-        max_inner: cfg.max_inner.max(1) as usize,
-        kind,
-        ..IrcConfig::default()
-    };
+    let irc_cfg = IrcConfig::default()
+        .with_dx(cfg.dx)
+        .with_force_tol(cfg.force_tol)
+        .with_force_gate(force_gate)
+        .with_max_inner(cfg.max_inner.max(1) as usize)
+        .with_kind(kind);
     let dir = if cfg.direction == 1 {
         IrcDirection::Reverse
     } else {
@@ -284,14 +315,12 @@ pub unsafe extern "C" fn rgsaddle_irc_create_from_surface(
     let Some(kind) = irc_kind_of(cfg) else {
         return std::ptr::null_mut();
     };
-    let irc_cfg = IrcConfig {
-        dx: cfg.dx,
-        force_tol: cfg.force_tol,
-        force_gate,
-        max_inner: cfg.max_inner.max(1) as usize,
-        kind,
-        ..IrcConfig::default()
-    };
+    let irc_cfg = IrcConfig::default()
+        .with_dx(cfg.dx)
+        .with_force_tol(cfg.force_tol)
+        .with_force_gate(force_gate)
+        .with_max_inner(cfg.max_inner.max(1) as usize)
+        .with_kind(kind);
     let dir = if cfg.direction == 1 {
         IrcDirection::Reverse
     } else {
@@ -615,14 +644,12 @@ mod irc_abi_tests {
 
     fn rust_first_point(kind: IrcKind) -> [f64; 6] {
         let mut session = IrcSession::new(
-            IrcConfig {
-                dx: 0.15,
-                force_tol: 0.05,
-                force_gate: crate::ForceGate::MaxForceOnAtom,
-                max_inner: 10,
-                kind,
-                ..IrcConfig::default()
-            },
+            IrcConfig::default()
+                .with_dx(0.15)
+                .with_force_tol(0.05)
+                .with_force_gate(crate::ForceGate::MaxForceOnAtom)
+                .with_max_inner(10)
+                .with_kind(kind),
             Array1::zeros(6),
             Array1::from(SPLIT_MASSES.to_vec()),
             Array1::from(SPLIT_MODE.to_vec()),
@@ -1085,14 +1112,7 @@ pub unsafe extern "C" fn rgsaddle_sella_min_create(
     let dof = (3 * n_atoms) as usize;
     let x = Array1::from(unsafe { slice::from_raw_parts(position, dof) }.to_vec());
     let m = Array1::from(unsafe { slice::from_raw_parts(masses, n_atoms as usize) }.to_vec());
-    let mut sella = SellaMinConfig::default();
-    if cfg.delta > 0.0 {
-        sella.delta = cfg.delta;
-    }
-    if cfg.force_tol > 0.0 {
-        sella.force_tol = cfg.force_tol;
-    }
-    sella.force_gate = force_gate;
+    let sella = sella_min_config(cfg, force_gate);
     match SellaMinSession::new(sella, x, m) {
         Ok(session) => Box::into_raw(Box::new(RgsaddleSellaMin { session, n_atoms })),
         Err(_) => std::ptr::null_mut(),
@@ -1126,14 +1146,7 @@ pub unsafe extern "C" fn rgsaddle_sella_min_create_on(
     let dof = (3 * n_atoms) as usize;
     let x = Array1::from(unsafe { slice::from_raw_parts(position, dof) }.to_vec());
     let m = Array1::from(unsafe { slice::from_raw_parts(masses, n_atoms as usize) }.to_vec());
-    let mut sella = SellaMinConfig::default();
-    if cfg.delta > 0.0 {
-        sella.delta = cfg.delta;
-    }
-    if cfg.force_tol > 0.0 {
-        sella.force_tol = cfg.force_tol;
-    }
-    sella.force_gate = force_gate;
+    let sella = sella_min_config(cfg, force_gate);
     match SellaMinSession::with_chart(sella, x, m, chart.cons.clone()) {
         Ok(session) => Box::into_raw(Box::new(RgsaddleSellaMin { session, n_atoms })),
         Err(_) => std::ptr::null_mut(),
@@ -1167,14 +1180,7 @@ pub unsafe extern "C" fn rgsaddle_sella_min_create_internal(
     let dof = (3 * n_atoms) as usize;
     let x = Array1::from(unsafe { slice::from_raw_parts(position, dof) }.to_vec());
     let m = Array1::from(unsafe { slice::from_raw_parts(masses, n_atoms as usize) }.to_vec());
-    let mut sella = SellaMinConfig::default();
-    if cfg.delta > 0.0 {
-        sella.delta = cfg.delta;
-    }
-    if cfg.force_tol > 0.0 {
-        sella.force_tol = cfg.force_tol;
-    }
-    sella.force_gate = force_gate;
+    let sella = sella_min_config(cfg, force_gate);
     match SellaMinSession::on_internal(sella, x, m, chart.cons.clone()) {
         Ok(session) => Box::into_raw(Box::new(RgsaddleSellaMin { session, n_atoms })),
         Err(_) => std::ptr::null_mut(),
@@ -1221,14 +1227,7 @@ pub unsafe extern "C" fn rgsaddle_sella_min_create_cell(
             bits[i] = mv[i] != 0;
         }
     }
-    let mut sella = SellaMinConfig::default();
-    if cfg.delta > 0.0 {
-        sella.delta = cfg.delta;
-    }
-    if cfg.force_tol > 0.0 {
-        sella.force_tol = cfg.force_tol;
-    }
-    sella.force_gate = force_gate;
+    let sella = sella_min_config(cfg, force_gate);
     match SellaMinSession::on_cell(sella, x, m, lc, bits) {
         Ok(session) => Box::into_raw(Box::new(RgsaddleSellaMin { session, n_atoms })),
         Err(_) => std::ptr::null_mut(),
@@ -1286,14 +1285,7 @@ pub unsafe extern "C" fn rgsaddle_sella_min_create_cell_internal(
             bits[i] = mv[i] != 0;
         }
     }
-    let mut sella = SellaMinConfig::default();
-    if cfg.delta > 0.0 {
-        sella.delta = cfg.delta;
-    }
-    if cfg.force_tol > 0.0 {
-        sella.force_tol = cfg.force_tol;
-    }
-    sella.force_gate = force_gate;
+    let sella = sella_min_config(cfg, force_gate);
     match SellaMinSession::on_cell_internal(sella, x, m, chart.cons.clone(), lc, bits) {
         Ok(session) => Box::into_raw(Box::new(RgsaddleSellaMin { session, n_atoms })),
         Err(_) => std::ptr::null_mut(),
@@ -1482,17 +1474,7 @@ pub unsafe extern "C" fn rgsaddle_sella_saddle_create(
     let dof = (3 * n_atoms) as usize;
     let x = Array1::from(unsafe { slice::from_raw_parts(position, dof) }.to_vec());
     let m = Array1::from(unsafe { slice::from_raw_parts(masses, n_atoms as usize) }.to_vec());
-    let mut sella = SellaSaddleConfig::default();
-    if cfg.delta > 0.0 {
-        sella.delta = cfg.delta;
-    }
-    if cfg.force_tol > 0.0 {
-        sella.force_tol = cfg.force_tol;
-    }
-    if cfg.order > 0 {
-        sella.order = cfg.order as usize;
-    }
-    sella.force_gate = force_gate;
+    let sella = sella_saddle_config(cfg, force_gate);
     match SellaSaddleSession::new(sella, x, m) {
         Ok(session) => Box::into_raw(Box::new(RgsaddleSellaSaddle { session, n_atoms })),
         Err(_) => std::ptr::null_mut(),
@@ -1526,17 +1508,7 @@ pub unsafe extern "C" fn rgsaddle_sella_saddle_create_on(
     let dof = (3 * n_atoms) as usize;
     let x = Array1::from(unsafe { slice::from_raw_parts(position, dof) }.to_vec());
     let m = Array1::from(unsafe { slice::from_raw_parts(masses, n_atoms as usize) }.to_vec());
-    let mut sella = SellaSaddleConfig::default();
-    if cfg.delta > 0.0 {
-        sella.delta = cfg.delta;
-    }
-    if cfg.force_tol > 0.0 {
-        sella.force_tol = cfg.force_tol;
-    }
-    if cfg.order > 0 {
-        sella.order = cfg.order as usize;
-    }
-    sella.force_gate = force_gate;
+    let sella = sella_saddle_config(cfg, force_gate);
     match SellaSaddleSession::with_chart(sella, x, m, chart.cons.clone()) {
         Ok(session) => Box::into_raw(Box::new(RgsaddleSellaSaddle { session, n_atoms })),
         Err(_) => std::ptr::null_mut(),
@@ -1570,17 +1542,7 @@ pub unsafe extern "C" fn rgsaddle_sella_saddle_create_internal(
     let dof = (3 * n_atoms) as usize;
     let x = Array1::from(unsafe { slice::from_raw_parts(position, dof) }.to_vec());
     let m = Array1::from(unsafe { slice::from_raw_parts(masses, n_atoms as usize) }.to_vec());
-    let mut sella = SellaSaddleConfig::default();
-    if cfg.delta > 0.0 {
-        sella.delta = cfg.delta;
-    }
-    if cfg.force_tol > 0.0 {
-        sella.force_tol = cfg.force_tol;
-    }
-    if cfg.order > 0 {
-        sella.order = cfg.order as usize;
-    }
-    sella.force_gate = force_gate;
+    let sella = sella_saddle_config(cfg, force_gate);
     match SellaSaddleSession::on_internal(sella, x, m, chart.cons.clone()) {
         Ok(session) => Box::into_raw(Box::new(RgsaddleSellaSaddle { session, n_atoms })),
         Err(_) => std::ptr::null_mut(),
@@ -1627,17 +1589,7 @@ pub unsafe extern "C" fn rgsaddle_sella_saddle_create_cell(
             bits[i] = mv[i] != 0;
         }
     }
-    let mut sella = SellaSaddleConfig::default();
-    if cfg.delta > 0.0 {
-        sella.delta = cfg.delta;
-    }
-    if cfg.force_tol > 0.0 {
-        sella.force_tol = cfg.force_tol;
-    }
-    if cfg.order > 0 {
-        sella.order = cfg.order as usize;
-    }
-    sella.force_gate = force_gate;
+    let sella = sella_saddle_config(cfg, force_gate);
     match SellaSaddleSession::on_cell(sella, x, m, lc, bits) {
         Ok(session) => Box::into_raw(Box::new(RgsaddleSellaSaddle { session, n_atoms })),
         Err(_) => std::ptr::null_mut(),
@@ -1695,17 +1647,7 @@ pub unsafe extern "C" fn rgsaddle_sella_saddle_create_cell_internal(
             bits[i] = mv[i] != 0;
         }
     }
-    let mut sella = SellaSaddleConfig::default();
-    if cfg.delta > 0.0 {
-        sella.delta = cfg.delta;
-    }
-    if cfg.force_tol > 0.0 {
-        sella.force_tol = cfg.force_tol;
-    }
-    if cfg.order > 0 {
-        sella.order = cfg.order as usize;
-    }
-    sella.force_gate = force_gate;
+    let sella = sella_saddle_config(cfg, force_gate);
     match SellaSaddleSession::on_cell_internal(sella, x, m, chart.cons.clone(), lc, bits) {
         Ok(session) => Box::into_raw(Box::new(RgsaddleSellaSaddle { session, n_atoms })),
         Err(_) => std::ptr::null_mut(),
@@ -2127,23 +2069,19 @@ pub unsafe extern "C" fn rgsaddle_samd_create(
     let dof = (3 * n_atoms) as usize;
     let pos = Array1::from(unsafe { slice::from_raw_parts(x, dof) }.to_vec());
     let vel = Array1::from(unsafe { slice::from_raw_parts(v0, dof) }.to_vec());
-    let mut samd = SamdConfig::default();
-    if cfg.dt > 0.0 {
-        samd.dt = cfg.dt;
-    }
-    if cfg.tau > 0.0 {
-        samd.tau = cfg.tau;
-    }
-    if cfg.t0 > 0.0 {
-        samd.t0 = cfg.t0;
-    }
-    if cfg.tf > 0.0 {
-        samd.tf = cfg.tf;
-    }
-    if cfg.ngen > 0 {
-        samd.ngen = cfg.ngen as usize;
-    }
-    samd.exponential = cfg.exponential != 0;
+    let defaults = SamdConfig::default();
+    let ngen = if cfg.ngen > 0 {
+        cfg.ngen as usize
+    } else {
+        defaults.ngen
+    };
+    let samd = SamdConfig::default()
+        .with_dt(positive_or(cfg.dt, defaults.dt))
+        .with_tau(positive_or(cfg.tau, defaults.tau))
+        .with_t0(positive_or(cfg.t0, defaults.t0))
+        .with_tf(positive_or(cfg.tf, defaults.tf))
+        .with_ngen(ngen)
+        .with_exponential(cfg.exponential != 0);
     let cs = CSurface {
         f,
         user,
@@ -3333,16 +3271,15 @@ pub unsafe extern "C" fn rgsaddle_band_set_exp_precon(
     }
     let defaults = crate::ExpBandPrecon::default();
     let pick = |v: f64, d: f64| if v > 0.0 && v.is_finite() { v } else { d };
-    let precon = crate::ExpBandPrecon {
-        a: pick(a, defaults.a),
-        c_stab: pick(c_stab, defaults.c_stab),
-        mu: if mu > 0.0 && mu.is_finite() {
+    let precon = crate::ExpBandPrecon::default()
+        .with_a(pick(a, defaults.a))
+        .with_c_stab(pick(c_stab, defaults.c_stab))
+        .with_mu(if mu > 0.0 && mu.is_finite() {
             Some(mu)
         } else {
             None
-        },
-        r_cut_factor: pick(r_cut_factor, defaults.r_cut_factor),
-    };
+        })
+        .with_r_cut_factor(pick(r_cut_factor, defaults.r_cut_factor));
     match unsafe { (*band).session.set_exp_precon(precon) } {
         Ok(()) => RGSADDLE_OK,
         Err(e) => status_of(&e),
@@ -3369,13 +3306,14 @@ pub unsafe extern "C" fn rgsaddle_band_set_zoom(
     let (offset, stability) = (usize::try_from(offset), usize::try_from(stability));
     let zoom = match (enabled, cubic, offset, stability) {
         (0, ..) => None,
-        (1, 0 | 1, Ok(offset), Ok(stability)) => Some(crate::ZoomConfig {
-            alpha,
-            offset,
-            after,
-            stability,
-            cubic: cubic == 1,
-        }),
+        (1, 0 | 1, Ok(offset), Ok(stability)) => Some(
+            crate::ZoomConfig::default()
+                .with_alpha(alpha)
+                .with_offset(offset)
+                .with_after(after)
+                .with_stability(stability)
+                .with_cubic(cubic == 1),
+        ),
         _ => return RGSADDLE_INVALID_PARAMETER,
     };
     match unsafe { (*band).session.set_zoom(zoom) } {

@@ -330,17 +330,15 @@ fn exchange_endpoints() -> (Array1<f64>, Array1<f64>) {
 // eigenvalues near -7.9 and -2.2), and a climbing image climbs into it
 // from either start, so the start comparison runs the band unclimbed.
 fn neb(initial: Array2<f64>) -> (rgsaddle::BandReport, Array2<f64>) {
-    let config = BandConfig {
-        tangent: TangentKind::Improved,
-        spring: SpringKind::Uniform { k: 5.0 },
-        climbing: None,
-        force_tol: 0.01,
-        max_move: 0.2,
-        remove_translation: true,
-        method: rgmin::Method::lbfgs_with_memory(20),
-        min_mode: None,
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default()
+        .with_tangent(TangentKind::Improved)
+        .with_spring(SpringKind::Uniform { k: 5.0 })
+        .with_climbing(None)
+        .with_force_tol(0.01)
+        .with_max_move(0.2)
+        .with_remove_translation(true)
+        .with_method(rgmin::Method::lbfgs_with_memory(20))
+        .with_min_mode(None);
     let mut session = BandSession::new(config, initial).unwrap();
     let mut rows = 0;
     let mut report = session.step(&Lj).unwrap();
@@ -502,10 +500,7 @@ fn rejects_a_short_path_and_a_bad_stop() {
         product.view(),
         3,
         None,
-        &IdppConfig {
-            max_iterations: 0,
-            ..IdppConfig::default()
-        },
+        &IdppConfig::default().with_max_iterations(0),
     )
     .unwrap_err();
     assert!(matches!(empty, SaddleError::Invalid(_)), "{empty}");
@@ -514,10 +509,7 @@ fn rejects_a_short_path_and_a_bad_stop() {
         product.view(),
         3,
         None,
-        &IdppConfig {
-            grad_tol: f64::NAN,
-            ..IdppConfig::default()
-        },
+        &IdppConfig::default().with_grad_tol(f64::NAN),
     )
     .unwrap_err();
     assert!(matches!(tol, SaddleError::Invalid(_)), "{tol}");
@@ -530,11 +522,9 @@ fn rejects_a_short_path_and_a_bad_stop() {
         "{non_finite}"
     );
     for (time_step, max_iterations) in [(0.0, 10), (0.1, 0)] {
-        let config = SidppConfig {
-            time_step,
-            max_iterations,
-            ..SidppConfig::default()
-        };
+        let config = SidppConfig::default()
+            .with_time_step(time_step)
+            .with_max_iterations(max_iterations);
         let err = sidpp_path(reactant.view(), product.view(), 3, None, &config).unwrap_err();
         assert!(matches!(err, SaddleError::Invalid(_)), "{err}");
     }

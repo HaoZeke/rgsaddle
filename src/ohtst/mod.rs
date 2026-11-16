@@ -69,7 +69,7 @@
 //!     }
 //! }
 //!
-//! let search = MinModeConfig { force_tol: 1e-8, ..MinModeConfig::default() };
+//! let search = MinModeConfig::default().with_force_tol(1e-8);
 //! let mut dimer = MinModeSession::new(search, array![0.1, -0.05], array![1.0, 0.3])?;
 //! assert_eq!(dimer.run(&SkewedWell, 2000)?.status, MinModeStatus::Converged);
 //! let seed = Hyperplane::from_min_mode(&dimer)?.oriented_toward(array![1.0, 1.0].view());

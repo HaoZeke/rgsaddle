@@ -19,18 +19,17 @@ impl PointSurface for Quartic {
 }
 
 fn shoot(friction: f64, steps: usize, shots: usize, plateau: usize) -> rgsaddle::Transmission {
-    let config = ShootingConfig {
-        thermal: 0.05,
-        mass: 1.0,
-        friction,
-        time_step: 0.002,
-        steps,
-        record_every: 25,
-        shots,
-        blocks: 4,
-        seed: 7,
-        plateau_record: plateau,
-    };
+    let config = ShootingConfig::default()
+        .with_thermal(0.05)
+        .with_mass(1.0)
+        .with_friction(friction)
+        .with_time_step(0.002)
+        .with_steps(steps)
+        .with_record_every(25)
+        .with_shots(shots)
+        .with_blocks(4)
+        .with_seed(7)
+        .with_plateau_record(plateau);
     let starts = vec![Array1::zeros(1); 4];
     bennett_chandler(
         &Quartic,

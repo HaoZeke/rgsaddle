@@ -107,12 +107,10 @@ pub struct SolidImage {
 /// let product = array![1.0, 0.0, 0.0];
 /// let mut positions = linear_path(reactant.view(), product.view(), 7, None)?;
 /// positions.slice_mut(s![1..6, 1]).fill(0.2);
-/// let config = BandConfig {
-///     force_tol: 1e-3,
-///     max_move: 0.1,
-///     min_mode: None,
-///     ..BandConfig::default()
-/// };
+/// let config = BandConfig::default()
+///     .with_force_tol(1e-3)
+///     .with_max_move(0.1)
+///     .with_min_mode(None);
 /// let zero = [[0.0; 3]; 3];
 /// let mut band = SolidNeb::joint(config, cube, positions, &[cube; 7], CellMask::all(), zero, 1.0)?;
 /// let mut report = band.step(&WellInCell)?;

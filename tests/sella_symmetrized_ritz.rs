@@ -54,10 +54,7 @@ fn start() -> Array1<f64> {
 fn walk(symmetrized: Option<bool>) -> (Vec<usize>, Array1<f64>) {
     let surface = Skewed::new();
     let mut session = SellaSaddleSession::new(
-        SellaSaddleConfig {
-            small_system_atom_ceiling: false,
-            ..SellaSaddleConfig::default()
-        },
+        SellaSaddleConfig::default().with_small_system_atom_ceiling(false),
         start(),
         Array1::from_elem(N_ATOMS, 1.0),
     )

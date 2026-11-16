@@ -90,49 +90,35 @@ fn band(n_images: usize) -> Array2<f64> {
 }
 
 fn configs() -> Vec<(&'static str, BandConfig)> {
-    let base = BandConfig {
-        climbing: Some(CiConfig::always()),
-        min_mode: None,
-        max_move: 0.05,
-        force_tol: 1e-9,
-        ..BandConfig::default()
-    };
+    let base = BandConfig::default()
+        .with_climbing(CiConfig::always())
+        .with_min_mode(None)
+        .with_max_move(0.05)
+        .with_force_tol(1e-9);
     vec![
         ("cineb-uniform-fire", base.clone()),
-        (
-            "neb-uniform-fire",
-            BandConfig {
-                climbing: None,
-                ..base.clone()
-            },
-        ),
+        ("neb-uniform-fire", base.clone().with_climbing(None)),
         (
             "dneb-weighted-fire",
-            BandConfig {
-                projection: ProjectionKind::DoublyNudged,
-                spring: SpringKind::EnergyWeighted {
+            base.clone()
+                .with_projection(ProjectionKind::DoublyNudged)
+                .with_spring(SpringKind::EnergyWeighted {
                     k_min: 1.0,
                     k_max: 5.0,
-                },
-                ..base.clone()
-            },
+                }),
         ),
         (
             "peb-om-live-fire",
-            BandConfig {
-                projection: ProjectionKind::PlainElasticBand,
-                spring: SpringKind::OnsagerMachlupLive { k: 5.0 },
-                climbing: None,
-                ..base.clone()
-            },
+            base.clone()
+                .with_projection(ProjectionKind::PlainElasticBand)
+                .with_spring(SpringKind::OnsagerMachlupLive { k: 5.0 })
+                .with_climbing(None),
         ),
         (
             "cineb-uniform-quickmin",
-            BandConfig {
-                method: rgmin::Method::QuickMin,
-                quickmin: true,
-                ..base.clone()
-            },
+            base.clone()
+                .with_method(rgmin::Method::QuickMin)
+                .with_quickmin(true),
         ),
     ]
 }

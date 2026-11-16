@@ -64,41 +64,32 @@ fn band(n_images: usize) -> Array2<f64> {
 }
 
 fn configs() -> Vec<(&'static str, BandConfig)> {
-    let base = BandConfig {
-        climbing: Some(CiConfig::after(0.5)),
-        min_mode: None,
-        max_move: 0.05,
-        force_tol: 1e-6,
-        ..BandConfig::default()
-    };
+    let base = BandConfig::default()
+        .with_climbing(CiConfig::after(0.5))
+        .with_min_mode(None)
+        .with_max_move(0.05)
+        .with_force_tol(1e-6);
     vec![
         ("cineb-uniform-fire", base.clone()),
         (
             "dneb-weighted-lbfgs",
-            BandConfig {
-                projection: ProjectionKind::DoublyNudged,
-                spring: SpringKind::EnergyWeighted {
+            base.clone()
+                .with_projection(ProjectionKind::DoublyNudged)
+                .with_spring(SpringKind::EnergyWeighted {
                     k_min: 1.0,
                     k_max: 5.0,
-                },
-                method: rgmin::Method::lbfgs_with_memory(5),
-                ..base.clone()
-            },
+                })
+                .with_method(rgmin::Method::lbfgs_with_memory(5)),
         ),
         (
             "neb-om-live-fire",
-            BandConfig {
-                spring: SpringKind::OnsagerMachlupLive { k: 5.0 },
-                climbing: None,
-                ..base.clone()
-            },
+            base.clone()
+                .with_spring(SpringKind::OnsagerMachlupLive { k: 5.0 })
+                .with_climbing(None),
         ),
         (
             "ocineb-fire",
-            BandConfig {
-                min_mode: BandConfig::default().min_mode,
-                ..base.clone()
-            },
+            base.clone().with_min_mode(BandConfig::default().min_mode),
         ),
     ]
 }

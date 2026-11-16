@@ -492,11 +492,12 @@ pub fn pafi_profile<S: PointSurface + Sync>(
             break;
         }
         let factor = (profile.barrier_error / target).powi(2).clamp(2.0, 8.0);
-        let mut extra = config.clone();
-        extra.samples = ((config.samples as f64) * factor).ceil() as usize;
-        extra.samples = extra.samples.max(config.blocks * 2);
-        extra.thermalize = config.thermalize / 2;
-        extra.target_error = None;
+        let samples = ((config.samples as f64) * factor).ceil() as usize;
+        let extra = config
+            .clone()
+            .with_samples(samples.max(config.blocks * 2))
+            .with_thermalize(config.thermalize / 2)
+            .with_target_error(None);
         let more = sample_planes(surface, path, arcs, &extra, round as u64 * 10_000)?;
         for (plane, added) in planes.iter_mut().zip(more) {
             let (gradient, error) =
@@ -529,12 +530,13 @@ fn sample_planes<S: PointSurface + Sync>(
         .enumerate()
         .map(|(index, arc)| {
             let geometry = path.geometry(*arc)?;
-            let mut local = config.clone();
-            local.seed = config
-                .seed
-                .wrapping_add(salt)
-                .wrapping_add(index as u64)
-                .wrapping_add(1);
+            let local = config.clone().with_seed(
+                config
+                    .seed
+                    .wrapping_add(salt)
+                    .wrapping_add(index as u64)
+                    .wrapping_add(1),
+            );
             average_hyperplane(surface, &geometry, &local)
         })
         .collect()

@@ -31,13 +31,11 @@ fn rejected_saddle_ras_model_shrinks_the_atomic_radius() {
     let surface = StiffQuadratic {
         evaluations: AtomicUsize::new(0),
     };
-    let config = SellaSaddleConfig {
-        delta: 0.1 / 9.0,
-        eig: false,
-        force_tol: 1e-12,
-        restricted: RestrictedKind::RestrictedAtomicStep,
-        ..SellaSaddleConfig::default()
-    };
+    let config = SellaSaddleConfig::default()
+        .with_delta(0.1 / 9.0)
+        .with_eig(false)
+        .with_force_tol(1e-12)
+        .with_restricted(RestrictedKind::RestrictedAtomicStep);
     let contraction = config.sigma_dec;
     let mut session = SellaSaddleSession::on(
         config,

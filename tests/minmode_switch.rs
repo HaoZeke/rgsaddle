@@ -35,13 +35,11 @@ impl PointSurface for BentWell {
 /// From inside the basin of the minimum near x = 1 the walker leaves
 /// the basin along the lowest mode and stops at the saddle.
 fn escapes_the_basin(kind: MinModeKind, method: rgmin::Method) -> usize {
-    let config = MinModeConfig {
-        kind,
-        method: method.clone(),
-        force_tol: 1e-5,
-        max_move: 0.1,
-        ..MinModeConfig::default()
-    };
+    let config = MinModeConfig::default()
+        .with_kind(kind)
+        .with_method(method.clone())
+        .with_force_tol(1e-5)
+        .with_max_move(0.1);
     let surface = BentWell {
         visited: Mutex::new(Vec::new()),
     };
@@ -97,10 +95,7 @@ fn lanczos_lbfgs_escapes_the_basin() {
 /// (validation/dimer_extrapolation.py).
 #[test]
 fn dimer_estimate_stays_inside_the_spectrum() {
-    let config = MinModeConfig {
-        kind: MinModeKind::Dimer,
-        ..MinModeConfig::default()
-    };
+    let config = MinModeConfig::default().with_kind(MinModeKind::Dimer);
     let surface = BentWell {
         visited: Mutex::new(Vec::new()),
     };

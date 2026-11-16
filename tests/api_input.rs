@@ -39,21 +39,16 @@ fn a_non_finite_start_is_refused() {
         array![1.0, 0.0, 0.0],
     );
     assert!(matches!(built, Err(SaddleError::NonFinite(_))));
-    let config = MinModeConfig {
-        max_rotations: 0,
-        ..MinModeConfig::default()
-    };
+    let config = MinModeConfig::default().with_max_rotations(0);
     let built = MinModeSession::new(config, array![0.2, 0.0, 0.0], array![1.0, 0.0, 0.0]);
     assert!(matches!(built, Err(SaddleError::Invalid(_))));
 }
 
 #[test]
 fn a_nan_force_tolerance_is_refused() {
-    let config = BandConfig {
-        force_tol: f64::NAN,
-        min_mode: None,
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default()
+        .with_force_tol(f64::NAN)
+        .with_min_mode(None);
     let built = BandSession::new(config, three());
     assert!(matches!(built, Err(SaddleError::Invalid(_))));
 }
@@ -61,12 +56,10 @@ fn a_nan_force_tolerance_is_refused() {
 #[test]
 fn a_solid_band_refuses_live_onsager_machlup_springs() {
     let cell = Cell([[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]]);
-    let config = BandConfig {
-        min_mode: None,
-        spring: SpringKind::OnsagerMachlupLive { k: 1.0 },
-        solid: Some(SolidState::new(vec![cell, cell, cell])),
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default()
+        .with_min_mode(None)
+        .with_spring(SpringKind::OnsagerMachlupLive { k: 1.0 })
+        .with_solid(SolidState::new(vec![cell, cell, cell]));
     let built = BandSession::new(config, three());
     assert!(matches!(built, Err(SaddleError::Invalid(_))));
 }
@@ -77,10 +70,7 @@ fn an_endpoint_that_slopes_into_the_band_does_not_climb() {
     let energies = array![0.0, 1.0, 2.0];
     let mut into = ndarray::Array2::zeros((3, 3));
     into[(2, 0)] = 1.0;
-    let config = BandConfig {
-        force_tol: 1e-3,
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default().with_force_tol(1e-3);
     let blocked = climbing_image(&config, positions.view(), energies.view(), into.view()).unwrap();
     assert_eq!(blocked, None);
     let mut away = ndarray::Array2::zeros((3, 3));

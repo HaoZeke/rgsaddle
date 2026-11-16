@@ -120,16 +120,13 @@ fn search_of(config: &RgsaddleIndexKConfig) -> Result<(MinModeConfig, BlockEigen
         2 => (MinModeKind::Lanczos, BlockEigenKind::Lobpcg),
         _ => return Err(RGSADDLE_INVALID_PARAMETER),
     };
-    let mut search = MinModeConfig {
-        kind,
-        dr: config.dr,
-        rotation_tol: config.rotation_tol,
-        max_rotations: config.max_rotations as usize,
-        force_tol: config.force_tol,
-        max_move: config.max_move,
-        ..MinModeConfig::default()
-    };
-    search.kind = kind;
+    let search = MinModeConfig::default()
+        .with_kind(kind)
+        .with_dr(config.dr)
+        .with_rotation_tol(config.rotation_tol)
+        .with_max_rotations(config.max_rotations as usize)
+        .with_force_tol(config.force_tol)
+        .with_max_move(config.max_move);
     Ok((search, block))
 }
 
@@ -184,10 +181,10 @@ pub unsafe extern "C" fn rgsaddle_indexk_create(
         Ok(modes) => modes,
         Err(_) => return std::ptr::null_mut(),
     };
-    let mut options = IndexKConfig::new(k, search);
-    options.block = block;
-    options.residual_tol = cfg.residual_tol;
-    options.max_block_iterations = cfg.max_block_iterations as usize;
+    let options = IndexKConfig::new(k, search)
+        .with_block(block)
+        .with_residual_tol(cfg.residual_tol)
+        .with_max_block_iterations(cfg.max_block_iterations as usize);
     match IndexKSession::new(options, x, modes) {
         Ok(session) => Box::into_raw(Box::new(RgsaddleIndexK {
             session,

@@ -99,13 +99,11 @@ fn run(config: BandConfig, rtr: Option<RtrConfig>, steps: usize) -> (u64, usize,
 }
 
 fn base() -> BandConfig {
-    BandConfig {
-        climbing: Some(CiConfig::after(0.5)),
-        min_mode: None,
-        max_move: 0.1,
-        force_tol: 1e-6,
-        ..BandConfig::default()
-    }
+    BandConfig::default()
+        .with_climbing(CiConfig::after(0.5))
+        .with_min_mode(None)
+        .with_max_move(0.1)
+        .with_force_tol(1e-6)
 }
 
 #[test]
@@ -200,14 +198,12 @@ fn ode12r_evaluates_each_band_once() {
         let t = i as f64 / (n_images - 1) as f64;
         (1.0 - t) * a[c] + t * b[c]
     });
-    let config = BandConfig {
-        method: rgmin::Method::Ode12r,
-        climbing: Some(CiConfig::after(0.5)),
-        min_mode: None,
-        max_move: 0.1,
-        force_tol: 1e-3,
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default()
+        .with_method(rgmin::Method::Ode12r)
+        .with_climbing(CiConfig::after(0.5))
+        .with_min_mode(None)
+        .with_max_move(0.1)
+        .with_force_tol(1e-3);
     let mut session = BandSession::new(config, positions).unwrap();
     let surface = Lj38::default();
     let mut hash = 0xcbf2_9ce4_8422_2325;

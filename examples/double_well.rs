@@ -46,11 +46,9 @@ fn main() -> Result<(), SaddleError> {
         }
     });
 
-    let config = BandConfig {
-        force_tol: 1e-3,
-        max_move: 0.1,
-        ..BandConfig::default()
-    };
+    let config = BandConfig::default()
+        .with_force_tol(1e-3)
+        .with_max_move(0.1);
     let mut session = BandSession::new(config, initial)?;
     let report = loop {
         let report = session.step(&DoubleWell)?;

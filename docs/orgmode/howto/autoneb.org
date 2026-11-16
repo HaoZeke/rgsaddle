@@ -13,12 +13,8 @@ On the double well, AutoNEB used more force calls than one fixed CI-NEB: 1.42 ti
 ~BandConfig::autoneb~ carries the tuning. ~None~ is a fixed band. ~AutoNeb::new~ reads that tuning, or the defaults when it is ~None~.
 
 #+begin_src rust
-let mut config = BandConfig::default();
-config.autoneb = Some(AutoNebTuning {
-    n_simul: 3,
-    n_max: 7,
-    ..AutoNebTuning::default()
-});
+let config = BandConfig::default()
+    .with_autoneb(AutoNebTuning::default().with_n_simul(3).with_n_max(7));
 let mut search = AutoNeb::new(config, endpoints)?;
 let report = search.run(&surface)?;
 #+end_src

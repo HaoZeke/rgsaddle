@@ -165,30 +165,30 @@ fn muller_brown_matches_an_ase_autoneb_run() {
     assert!(ase_dist < 0.05, "ASE ci {ase_ci:?} distance {ase_dist}");
     assert!(ase_ci[2].abs() < 1e-8, "ASE z {}", ase_ci[2]);
 
-    let band = BandConfig {
-        force_tol: 0.05,
-        max_move: 0.05,
-        method: rgmin::Method::fire(rgmin::FireKind::V1),
-        spring: rgsaddle::SpringKind::Uniform { k: 5.0 },
-        climbing: Some(CiConfig {
-            trigger_factor: 1.0,
-            trigger_force: f64::INFINITY,
-        }),
-        autoneb: Some(AutoNebTuning {
-            n_simul: 3,
-            n_max: 7,
-            local_force_tol: 0.5,
-            local_max_steps: 25,
-            climb_max_steps: 80,
-            space_energy_ratio: 0.5,
-            climb: true,
-            full_band: false,
-            threads: 1,
-            record_samples: false,
-            interpolant: AutoNebInterpolant::Linear,
-        }),
-        ..BandConfig::default()
-    };
+    let band = BandConfig::default()
+        .with_force_tol(0.05)
+        .with_max_move(0.05)
+        .with_method(rgmin::Method::fire(rgmin::FireKind::V1))
+        .with_spring(rgsaddle::SpringKind::Uniform { k: 5.0 })
+        .with_climbing(
+            CiConfig::default()
+                .with_trigger_factor(1.0)
+                .with_trigger_force(f64::INFINITY),
+        )
+        .with_autoneb(
+            AutoNebTuning::default()
+                .with_n_simul(3)
+                .with_n_max(7)
+                .with_local_force_tol(0.5)
+                .with_local_max_steps(25)
+                .with_climb_max_steps(80)
+                .with_space_energy_ratio(0.5)
+                .with_climb(true)
+                .with_full_band(false)
+                .with_threads(1)
+                .with_record_samples(false)
+                .with_interpolant(AutoNebInterpolant::Linear),
+        );
     let initial = array![
         [-0.05001082, 0.46669410, 0.0],
         [0.62349940, 0.02803776, 0.0]

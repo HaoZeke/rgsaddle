@@ -38,12 +38,10 @@ fn initial_band(n_images: usize) -> Array2<f64> {
 }
 
 fn config(min_mode: Option<MinModeRefine>) -> BandConfig {
-    BandConfig {
-        force_tol: 1e-6,
-        max_move: 0.1,
-        min_mode,
-        ..BandConfig::default()
-    }
+    BandConfig::default()
+        .with_force_tol(1e-6)
+        .with_max_move(0.1)
+        .with_min_mode(min_mode)
 }
 
 fn run(config: BandConfig) -> (BandSession, Vec<rgsaddle::BandReport>) {
@@ -111,34 +109,29 @@ fn without_min_mode_the_band_reports_no_curvature() {
 
 #[test]
 fn an_invalid_refinement_is_refused() {
-    let mut refine = MinModeRefine::default();
-    refine.alignment_tol = 1.5;
+    let refine = MinModeRefine::default().with_alignment_tol(1.5);
     assert!(BandSession::new(config(Some(refine)), initial_band(7)).is_err());
-    let mut refine = MinModeRefine::default();
-    refine.curvature_retained = 1.5;
+    let refine = MinModeRefine::default().with_curvature_retained(1.5);
     assert!(BandSession::new(config(Some(refine)), initial_band(7)).is_err());
-    let mut refine = MinModeRefine::default();
-    refine.min_overlap = -0.1;
+    let refine = MinModeRefine::default().with_min_overlap(-0.1);
     assert!(BandSession::new(config(Some(refine)), initial_band(7)).is_err());
-    let mut refine = MinModeRefine::default();
-    refine.retry_factor = Some(0.0);
+    let refine = MinModeRefine::default().with_retry_factor(0.0);
     assert!(BandSession::new(config(Some(refine)), initial_band(7)).is_err());
 }
 
 #[test]
 fn an_infinite_trigger_needs_a_retry_factor() {
-    let mut refine = MinModeRefine::default();
+    let refine = MinModeRefine::default();
     assert!(refine.trigger_factor.is_infinite());
-    refine.retry_factor = None;
+    let refine = refine.with_retry_factor(None);
     assert!(BandSession::new(config(Some(refine)), initial_band(7)).is_err());
-    refine.trigger_factor = 0.5;
+    let refine = refine.with_trigger_factor(0.5);
     assert!(BandSession::new(config(Some(refine)), initial_band(7)).is_ok());
 }
 
 #[test]
 fn the_alignment_exit_still_lands_on_the_saddle() {
-    let mut refine = MinModeRefine::default();
-    refine.climb_alignment = true;
+    let refine = MinModeRefine::default().with_climb_alignment(true);
     let (session, reports) = run(config(Some(refine)));
     let last = reports.last().unwrap();
     assert_eq!(last.status, BandStatus::Converged);

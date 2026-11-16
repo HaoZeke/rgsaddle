@@ -632,18 +632,16 @@ fn saddle_from_minimum(
     max_steps: usize,
 ) -> SearchRow {
     let before = copper.calls();
-    let search = MinModeConfig {
-        method: Method::fire(FireKind::V2),
-        force_tol: 2e-3,
+    let search = MinModeConfig::default()
+        .with_method(Method::fire(FireKind::V2))
+        .with_force_tol(2e-3)
         // At 0.008 Å the 5% fixed-cell search steps past the switch, which
         // sits 7.8 meV above the minimum, onto an unrelated saddle.
-        max_move: 0.004,
-        dr: 1e-3,
-        rotation_tol: 1e-3,
-        max_rotations: 12,
-        seed_curvature: false,
-        ..MinModeConfig::default()
-    };
+        .with_max_move(0.004)
+        .with_dr(1e-3)
+        .with_rotation_tol(1e-3)
+        .with_max_rotations(12)
+        .with_seed_curvature(false);
     let mut dimer = SolidDimer::new(
         SolidDimerConfig::new(search)
             .with_mask(mask)
@@ -847,10 +845,7 @@ fn reactant_index(
     external: [[f64; 3]; 3],
 ) -> ReactantIndex {
     let before = copper.calls();
-    let search = MinModeConfig {
-        force_tol: 2e-3,
-        ..MinModeConfig::default()
-    };
+    let search = MinModeConfig::default().with_force_tol(2e-3);
     let dimer = SolidDimer::new(
         SolidDimerConfig::new(search)
             .with_mask(mask)
@@ -1928,12 +1923,12 @@ fn strain_response_head_to_head() {
     let residual = (calib.barrier - calib_estimate.barrier).abs();
     let coeff = residual / calib_strain.norm().powi(2);
     response = response
-        .with_policy(TrustPolicy {
-            quadratic: Some(coeff),
-            error_tolerance: LINEAR_FOLD_EV,
-            floor: 0.0,
-            ..TrustPolicy::default()
-        })
+        .with_policy(
+            TrustPolicy::default()
+                .with_quadratic(coeff)
+                .with_error_tolerance(LINEAR_FOLD_EV)
+                .with_floor(0.0),
+        )
         .unwrap();
     let build_calls = copper.calls();
     let build_note = format!(
@@ -3261,13 +3256,11 @@ fn enumerate_escapes(
             }
             let mode = &kick / norm;
             let seed_pos = reactant + &kick;
-            let search = MinModeConfig {
-                force_tol: 0.04,
-                max_move: 0.1,
-                dr: 1.0e-3,
-                max_rotations: 8,
-                ..MinModeConfig::default()
-            };
+            let search = MinModeConfig::default()
+                .with_force_tol(0.04)
+                .with_max_move(0.1)
+                .with_dr(1.0e-3)
+                .with_max_rotations(8);
             let dimer_config = SolidDimerConfig::frozen(search)
                 .with_index_check(IndexCheck::first_order().with_step(1.0e-3).with_escapes(1));
             let mut dimer = SolidDimer::new(dimer_config, seed_pos, cell, mode).ok()?;
@@ -3639,74 +3632,72 @@ fn cu_config(
     harmonic: Vec<usize>,
     seed: u64,
 ) -> rgsaddle::DefectPairConfig {
-    let search = MinModeConfig {
-        force_tol: 2.0e-2,
-        max_move: 0.1,
-        dr: 1.0e-3,
-        max_rotations: 8,
-        ..MinModeConfig::default()
-    };
-    rgsaddle::DefectPairConfig {
-        dimer: SolidDimerConfig::frozen(search)
-            .with_index_check(IndexCheck::first_order().with_step(1.0e-3).with_escapes(1)),
-        band: rgsaddle::BandConfig {
-            force_tol: 0.01,
-            max_move: 0.06,
-            time_step: 0.08,
-            method: Method::fire(FireKind::V2),
-            spring: rgsaddle::SpringKind::Uniform { k: 1.0 },
-            climbing: Some(rgsaddle::CiConfig::always()),
-            min_mode: None,
-            autoneb: None,
-            zoom: None,
-            quickmin: false,
-            ..rgsaddle::BandConfig::default()
-        },
-        images: 9,
-        max_dimer_steps: 100,
-        max_band_steps: 120,
-        relax: pair_relax(),
-        seed_fraction: 0.45,
-        push: 0.3,
-        connect_rmsd: 1.5,
-        direction_tol: 0.08,
-        pafi: rgsaddle::PafiConfig {
-            thermalize: 40,
-            stride: 16,
-            samples,
-            blocks: 6,
-            time_step: 0.01,
-            mobility: 0.2,
-            seed,
-            fix_com: true,
-            retain: 4,
-            target_error: Some(target),
-            max_rounds: 4,
-            ..rgsaddle::PafiConfig::default()
-        },
-        shooting: rgsaddle::ShootingConfig {
-            friction: 2.0,
-            time_step: 0.03,
-            steps: 80,
-            record_every: 20,
-            shots: 32,
-            blocks: 4,
-            seed: seed.wrapping_add(9),
-            plateau_record: 2,
-            mass: 63.546,
-            ..rgsaddle::ShootingConfig::default()
-        },
-        temperatures: temperatures.to_vec(),
-        boltzmann: rgsaddle::BOLTZMANN_EV_PER_K,
-        mass: 63.546,
-        angular_scale: rgsaddle::angular_scale_rad_s(),
-        harmonic_step: 1.0e-3,
-        harmonic_atoms: Some(harmonic),
-        planes: 11,
-        zero_t_tol: 0.02,
-        bulk_stress: bulk,
-        ..rgsaddle::DefectPairConfig::default()
-    }
+    let search = MinModeConfig::default()
+        .with_force_tol(2.0e-2)
+        .with_max_move(0.1)
+        .with_dr(1.0e-3)
+        .with_max_rotations(8);
+    rgsaddle::DefectPairConfig::default()
+        .with_dimer(
+            SolidDimerConfig::frozen(search)
+                .with_index_check(IndexCheck::first_order().with_step(1.0e-3).with_escapes(1)),
+        )
+        .with_band(
+            rgsaddle::BandConfig::default()
+                .with_force_tol(0.01)
+                .with_max_move(0.06)
+                .with_time_step(0.08)
+                .with_method(Method::fire(FireKind::V2))
+                .with_spring(rgsaddle::SpringKind::Uniform { k: 1.0 })
+                .with_climbing(rgsaddle::CiConfig::always())
+                .with_min_mode(None)
+                .with_autoneb(None)
+                .with_zoom(None)
+                .with_quickmin(false),
+        )
+        .with_images(9)
+        .with_max_dimer_steps(100)
+        .with_max_band_steps(120)
+        .with_relax(pair_relax())
+        .with_seed_fraction(0.45)
+        .with_push(0.3)
+        .with_connect_rmsd(1.5)
+        .with_direction_tol(0.08)
+        .with_pafi(
+            rgsaddle::PafiConfig::default()
+                .with_thermalize(40)
+                .with_stride(16)
+                .with_samples(samples)
+                .with_blocks(6)
+                .with_time_step(0.01)
+                .with_mobility(0.2)
+                .with_seed(seed)
+                .with_fix_com(true)
+                .with_retain(4)
+                .with_target_error(target)
+                .with_max_rounds(4),
+        )
+        .with_shooting(
+            rgsaddle::ShootingConfig::default()
+                .with_friction(2.0)
+                .with_time_step(0.03)
+                .with_steps(80)
+                .with_record_every(20)
+                .with_shots(32)
+                .with_blocks(4)
+                .with_seed(seed.wrapping_add(9))
+                .with_plateau_record(2)
+                .with_mass(63.546),
+        )
+        .with_temperatures(temperatures.to_vec())
+        .with_boltzmann(rgsaddle::BOLTZMANN_EV_PER_K)
+        .with_mass(63.546)
+        .with_angular_scale(rgsaddle::angular_scale_rad_s())
+        .with_harmonic_step(1.0e-3)
+        .with_harmonic_atoms(harmonic)
+        .with_planes(11)
+        .with_zero_t_tol(0.02)
+        .with_bulk_stress(bulk)
 }
 
 struct Campaign {
@@ -4883,13 +4874,11 @@ fn search_seed(
     }
     let mode = kick / mode_norm;
     let seed = reactant + kick;
-    let search = MinModeConfig {
-        force_tol: 0.04,
-        max_move: 0.1,
-        dr: 1.0e-3,
-        max_rotations: 8,
-        ..MinModeConfig::default()
-    };
+    let search = MinModeConfig::default()
+        .with_force_tol(0.04)
+        .with_max_move(0.1)
+        .with_dr(1.0e-3)
+        .with_max_rotations(8);
     let dimer_config = SolidDimerConfig::frozen(search)
         .with_index_check(IndexCheck::first_order().with_step(1.0e-3).with_escapes(1));
     let mut dimer = SolidDimer::new(dimer_config, seed, cell, mode).ok()?;
@@ -5145,16 +5134,21 @@ fn run_science_job(
     let (_, _, bulk) = copper.evaluate(perfect.view(), job.cell);
     let center = centroid(&job.positions, [job.mobile[0], job.mobile[1]]);
     let harmonic = local_atoms(&job.positions, center, job.cell);
-    let mut config = cu_config(temperatures, 16, 0.01, bulk, harmonic, 41);
-    config.finite_temperature = finite;
-    config.zero_t_tol = 0.01;
-    config.pafi.max_rounds = 3;
-    config.pafi.samples = 16;
-    config.pafi.thermalize = 20;
-    config.max_dimer_steps = 60;
-    config.max_band_steps = 80;
-    config.images = 7;
-    config.connect_rmsd = 0.9;
+    let config = cu_config(temperatures, 16, 0.01, bulk, harmonic, 41);
+    let pafi = config
+        .pafi
+        .clone()
+        .with_max_rounds(3)
+        .with_samples(16)
+        .with_thermalize(20);
+    let config = config
+        .with_finite_temperature(finite)
+        .with_zero_t_tol(0.01)
+        .with_pafi(pafi)
+        .with_max_dimer_steps(60)
+        .with_max_band_steps(80)
+        .with_images(7)
+        .with_connect_rmsd(0.9);
     let setup = rgsaddle::PairSetup {
         positions: job.positions.clone(),
         cell: job.cell,
@@ -5505,19 +5499,17 @@ fn crystal_image(reactant: &Array1<f64>, repeats: usize, a: f64) -> Array1<f64> 
 }
 
 fn capture_band(climbing: bool) -> rgsaddle::BandConfig {
-    rgsaddle::BandConfig {
-        force_tol: 0.02,
-        max_move: 0.08,
-        time_step: 0.08,
-        method: Method::fire(FireKind::V2),
-        spring: rgsaddle::SpringKind::Uniform { k: 1.0 },
-        climbing: climbing.then(rgsaddle::CiConfig::always),
-        min_mode: None,
-        autoneb: None,
-        zoom: None,
-        quickmin: false,
-        ..rgsaddle::BandConfig::default()
-    }
+    rgsaddle::BandConfig::default()
+        .with_force_tol(0.02)
+        .with_max_move(0.08)
+        .with_time_step(0.08)
+        .with_method(Method::fire(FireKind::V2))
+        .with_spring(rgsaddle::SpringKind::Uniform { k: 1.0 })
+        .with_climbing(climbing.then(rgsaddle::CiConfig::always))
+        .with_min_mode(None)
+        .with_autoneb(None)
+        .with_zoom(None)
+        .with_quickmin(false)
 }
 
 fn relax_neb(
@@ -5563,13 +5555,11 @@ fn polish_index(
     if scale < 1.0e-8 {
         return None;
     }
-    let search = MinModeConfig {
-        force_tol: 0.03,
-        max_move: 0.08,
-        dr: 1.0e-3,
-        max_rotations: 6,
-        ..MinModeConfig::default()
-    };
+    let search = MinModeConfig::default()
+        .with_force_tol(0.03)
+        .with_max_move(0.08)
+        .with_dr(1.0e-3)
+        .with_max_rotations(6);
     let config = SolidDimerConfig::frozen(search)
         .with_index_check(IndexCheck::first_order().with_step(1.0e-3).with_escapes(1));
     let mut dimer = SolidDimer::new(config, saddle.clone(), cell, mode / scale).ok()?;
@@ -6096,14 +6086,15 @@ fn drive_phase(
     method: Method,
     steps: usize,
 ) -> Result<(Array2<f64>, f64), String> {
-    let mut config = capture_band(climbing);
-    config.force_tol = 0.01;
-    config.time_step = if matches!(method, Method::Ode12r) {
+    let time_step = if matches!(method, Method::Ode12r) {
         0.05
     } else {
         0.08
     };
-    config.method = method;
+    let config = capture_band(climbing)
+        .with_force_tol(0.01)
+        .with_time_step(time_step)
+        .with_method(method);
     let held = FastHeld { copper, cell };
     let mut neb =
         rgsaddle::SolidNeb::frozen(config, positions).map_err(|error| error.to_string())?;
@@ -6135,12 +6126,11 @@ fn capture_neb_band(
     cell: [[f64; 3]; 3],
 ) -> Result<(Array2<f64>, f64), String> {
     let wrapped = rgsaddle::mic::Cell::from_ase(cell).map_err(|error| error.to_string())?;
-    let idpp = rgsaddle::IdppConfig {
-        max_iterations: 40,
-        grad_tol: 5.0e-2,
-        max_move: 0.15,
-        memory: 8,
-    };
+    let idpp = rgsaddle::IdppConfig::default()
+        .with_max_iterations(40)
+        .with_grad_tol(5.0e-2)
+        .with_max_move(0.15)
+        .with_memory(8);
     let guess = rgsaddle::idpp_path(reactant.view(), product.view(), 17, Some(&wrapped), &idpp)
         .or_else(|_| rgsaddle::linear_path(reactant.view(), product.view(), 17, Some(&wrapped)))
         .map_err(|error| error.to_string())?;
@@ -6283,18 +6273,27 @@ fn run_dense_job(
     let (_, _, bulk) = copper.evaluate(perfect.view(), job.cell);
     let center = centroid(&job.positions, [job.mobile[0], job.mobile[1]]);
     let harmonic = local_atoms(&job.positions, center, job.cell);
-    let mut config = cu_config(&[temperature], 24, 0.01, bulk, harmonic, 41);
-    config.finite_temperature = true;
-    config.zero_t_tol = 0.01;
-    config.pafi.max_rounds = 4;
-    config.pafi.samples = 24;
-    config.pafi.thermalize = 20;
-    config.max_dimer_steps = 70;
-    config.max_band_steps = 300;
-    config.band.force_tol = 8.0e-3;
-    config.band.time_step = 0.04;
-    config.images = 9;
-    config.connect_rmsd = 1.0;
+    let config = cu_config(&[temperature], 24, 0.01, bulk, harmonic, 41);
+    let pafi = config
+        .pafi
+        .clone()
+        .with_max_rounds(4)
+        .with_samples(24)
+        .with_thermalize(20);
+    let band = config
+        .band
+        .clone()
+        .with_force_tol(8.0e-3)
+        .with_time_step(0.04);
+    let config = config
+        .with_finite_temperature(true)
+        .with_zero_t_tol(0.01)
+        .with_pafi(pafi)
+        .with_max_dimer_steps(70)
+        .with_max_band_steps(300)
+        .with_band(band)
+        .with_images(9)
+        .with_connect_rmsd(1.0);
     let setup = rgsaddle::PairSetup {
         positions: job.positions.clone(),
         cell: job.cell,
@@ -6648,23 +6647,20 @@ fn offset_len(offset: &[f64; 3]) -> f64 {
 }
 
 fn survey_config(bulk: [[f64; 3]; 3]) -> rgsaddle::DefectPairConfig {
-    let mut config = cu_config(&[500.0], 8, 0.01, bulk, Vec::new(), 7);
-    config.finite_temperature = false;
-    config.max_dimer_steps = 40;
-    config.relax = pair_relax().with_force_tol(2.0e-3);
-    config.push = 0.35;
-    config.dimer = {
-        let search = MinModeConfig {
-            force_tol: 0.04,
-            max_move: 0.1,
-            dr: 1.0e-3,
-            max_rotations: 6,
-            ..MinModeConfig::default()
-        };
-        SolidDimerConfig::frozen(search)
-            .with_index_check(IndexCheck::first_order().with_step(1.0e-3).with_escapes(0))
-    };
-    config
+    let search = MinModeConfig::default()
+        .with_force_tol(0.04)
+        .with_max_move(0.1)
+        .with_dr(1.0e-3)
+        .with_max_rotations(6);
+    cu_config(&[500.0], 8, 0.01, bulk, Vec::new(), 7)
+        .with_finite_temperature(false)
+        .with_max_dimer_steps(40)
+        .with_relax(pair_relax().with_force_tol(2.0e-3))
+        .with_push(0.35)
+        .with_dimer(
+            SolidDimerConfig::frozen(search)
+                .with_index_check(IndexCheck::first_order().with_step(1.0e-3).with_escapes(0)),
+        )
 }
 
 fn curvature_along(held: &FastHeld, positions: &Array1<f64>, tangent: &Array1<f64>) -> f64 {
@@ -6850,12 +6846,18 @@ fn defect_pair_local_capture() {
         let floor = best.saddle_energy - 0.6;
         let (downhill, down_energy) =
             rgsaddle::descend_to_floor(&held, start, cell, &config, floor).expect("descend");
-        let mut band_config = config.clone();
-        band_config.band.force_tol = 2.0e-3;
-        band_config.max_band_steps = 320;
-        band_config.band.time_step = 0.04;
-        band_config.images = 13;
-        band_config.zero_t_tol = 0.02;
+        let band_config = config
+            .clone()
+            .with_band(
+                config
+                    .band
+                    .clone()
+                    .with_force_tol(2.0e-3)
+                    .with_time_step(0.04),
+            )
+            .with_max_band_steps(320)
+            .with_images(13)
+            .with_zero_t_tol(0.02);
         let (band, converged, force) = rgsaddle::segment_band(
             &held,
             &band_config,
@@ -6919,12 +6921,14 @@ fn defect_pair_local_capture() {
                 cell: scaled_cell,
             };
             let thermal = temperature * rgsaddle::BOLTZMANN_EV_PER_K;
-            let mut pafi = band_config.pafi.clone();
-            pafi.thermal = thermal;
-            pafi.samples = 20;
-            pafi.max_rounds = 4;
-            pafi.target_error = Some(0.01);
-            pafi.thermalize = 20;
+            let pafi = band_config
+                .pafi
+                .clone()
+                .with_thermal(thermal)
+                .with_samples(20)
+                .with_max_rounds(4)
+                .with_target_error(0.01)
+                .with_thermalize(20);
             let arcs = scaled.arcs();
             let Ok((profile, planes)) = rgsaddle::pafi_profile(&held_t, &scaled, &arcs, &pafi)
             else {
@@ -6938,9 +6942,11 @@ fn defect_pair_local_capture() {
             };
             let dividing = profile.dividing;
             let geometry = scaled.geometry(profile.arc[dividing]).expect("geometry");
-            let mut shooting = band_config.shooting.clone();
-            shooting.thermal = thermal;
-            shooting.mass = 63.546;
+            let shooting = band_config
+                .shooting
+                .clone()
+                .with_thermal(thermal)
+                .with_mass(63.546);
             let starts = if planes[dividing].retained.is_empty() {
                 vec![geometry.positions.clone()]
             } else {
@@ -7243,11 +7249,17 @@ fn defect_pair_viv() {
             best.saddle_energy - 0.6,
         )
         .expect("descent from the saddle to the floor");
-        let mut band_config = config.clone();
-        band_config.band.force_tol = 2.0e-3;
-        band_config.band.time_step = 0.04;
-        band_config.max_band_steps = 320;
-        band_config.images = 13;
+        let band_config = config
+            .clone()
+            .with_band(
+                config
+                    .band
+                    .clone()
+                    .with_force_tol(2.0e-3)
+                    .with_time_step(0.04),
+            )
+            .with_max_band_steps(320)
+            .with_images(13);
         let (band, converged, force) = match rgsaddle::segment_band(
             &held,
             &band_config,
@@ -7289,12 +7301,14 @@ fn defect_pair_viv() {
                 continue;
             }
             let thermal = thermal_t * rgsaddle::BOLTZMANN_EV_PER_K;
-            let mut pafi = band_config.pafi.clone();
-            pafi.thermal = thermal;
-            pafi.samples = 20;
-            pafi.max_rounds = 4;
-            pafi.target_error = Some(0.01);
-            pafi.thermalize = 20;
+            let pafi = band_config
+                .pafi
+                .clone()
+                .with_thermal(thermal)
+                .with_samples(20)
+                .with_max_rounds(4)
+                .with_target_error(0.01)
+                .with_thermalize(20);
             let Ok((profile, planes)) = rgsaddle::pafi_profile(&held, &band, &band.arcs(), &pafi)
             else {
                 continue;
@@ -7303,9 +7317,11 @@ fn defect_pair_viv() {
                 .geometry(profile.arc[profile.dividing])
                 .expect("dividing");
             let reactant_tangent = band.geometry(band.bounds().0).expect("end").tangent;
-            let mut shooting = band_config.shooting.clone();
-            shooting.thermal = thermal;
-            shooting.mass = 63.546;
+            let shooting = band_config
+                .shooting
+                .clone()
+                .with_thermal(thermal)
+                .with_mass(63.546);
             let starts = if planes[profile.dividing].retained.is_empty() {
                 vec![geometry.positions.clone()]
             } else {
@@ -7448,11 +7464,17 @@ fn defect_pair_run9() {
             let (downhill, _) =
                 rgsaddle::descend_to_floor(&held, start, cell, &config, best.saddle_energy - 0.4)
                     .expect("descent from the saddle to the floor");
-            let mut band_config = config.clone();
-            band_config.band.force_tol = 2.0e-3;
-            band_config.band.time_step = 0.03;
-            band_config.max_band_steps = 240;
-            band_config.images = 21;
+            let band_config = config
+                .clone()
+                .with_band(
+                    config
+                        .band
+                        .clone()
+                        .with_force_tol(2.0e-3)
+                        .with_time_step(0.03),
+                )
+                .with_max_band_steps(240)
+                .with_images(21);
             if let Ok((band, force_ok, force)) = rgsaddle::segment_band(
                 &held,
                 &band_config,
@@ -7467,12 +7489,14 @@ fn defect_pair_run9() {
                 let zero_v = zero.as_ref().map(|p| p.barrier).unwrap_or(f64::NAN);
                 for thermal_t in [500.0_f64, 300.0] {
                     let thermal = thermal_t * rgsaddle::BOLTZMANN_EV_PER_K;
-                    let mut pafi = band_config.pafi.clone();
-                    pafi.thermal = thermal;
-                    pafi.samples = 48;
-                    pafi.max_rounds = 3;
-                    pafi.target_error = Some(0.01);
-                    pafi.thermalize = 30;
+                    let pafi = band_config
+                        .pafi
+                        .clone()
+                        .with_thermal(thermal)
+                        .with_samples(48)
+                        .with_max_rounds(3)
+                        .with_target_error(0.01)
+                        .with_thermalize(30);
                     let dense = {
                         let nodes = band.arcs();
                         let mut arcs = Vec::new();
@@ -7492,9 +7516,11 @@ fn defect_pair_run9() {
                         let geometry = band.geometry(profile.arc[profile.dividing]).expect("plane");
                         let reactant_tangent =
                             band.geometry(band.bounds().0).expect("reactant").tangent;
-                        let mut shooting = band_config.shooting.clone();
-                        shooting.thermal = thermal;
-                        shooting.mass = 63.546;
+                        let shooting = band_config
+                            .shooting
+                            .clone()
+                            .with_thermal(thermal)
+                            .with_mass(63.546);
                         let starts = if planes[profile.dividing].retained.is_empty() {
                             vec![geometry.positions.clone()]
                         } else {
@@ -7800,11 +7826,17 @@ fn survey_shell(
         best.saddle_energy - 0.6,
     )
     .expect("descent from the saddle to the floor");
-    let mut band_config = config.clone();
-    band_config.band.force_tol = 2.0e-3;
-    band_config.band.time_step = 0.04;
-    band_config.max_band_steps = 240;
-    band_config.images = 13;
+    let band_config = config
+        .clone()
+        .with_band(
+            config
+                .band
+                .clone()
+                .with_force_tol(2.0e-3)
+                .with_time_step(0.04),
+        )
+        .with_max_band_steps(240)
+        .with_images(13);
     let (band, converged, force) = match rgsaddle::segment_band(
         &held,
         &band_config,
@@ -7841,12 +7873,14 @@ fn survey_shell(
         return;
     }
     let thermal = temperature * rgsaddle::BOLTZMANN_EV_PER_K;
-    let mut pafi = band_config.pafi.clone();
-    pafi.thermal = thermal;
-    pafi.samples = 24;
-    pafi.max_rounds = 3;
-    pafi.target_error = Some(0.01);
-    pafi.thermalize = 20;
+    let pafi = band_config
+        .pafi
+        .clone()
+        .with_thermal(thermal)
+        .with_samples(24)
+        .with_max_rounds(3)
+        .with_target_error(0.01)
+        .with_thermalize(20);
     let Ok((profile, planes)) = rgsaddle::pafi_profile(&held, &band, &band.arcs(), &pafi) else {
         return;
     };
@@ -7857,9 +7891,11 @@ fn survey_shell(
         .geometry(profile.arc[profile.dividing])
         .expect("dividing");
     let reactant_tangent = band.geometry(band.bounds().0).expect("end").tangent;
-    let mut shooting = band_config.shooting.clone();
-    shooting.thermal = thermal;
-    shooting.mass = 63.546;
+    let shooting = band_config
+        .shooting
+        .clone()
+        .with_thermal(thermal)
+        .with_mass(63.546);
     let starts = if planes[profile.dividing].retained.is_empty() {
         vec![geometry.positions.clone()]
     } else {
@@ -8239,13 +8275,11 @@ fn tight_dimer(
     if norm < 1.0e-8 {
         return None;
     }
-    let search = MinModeConfig {
-        force_tol: TIGHT_FORCE_EV_PER_A,
-        max_move: 0.08,
-        dr: 1.0e-3,
-        max_rotations: 12,
-        ..MinModeConfig::default()
-    };
+    let search = MinModeConfig::default()
+        .with_force_tol(TIGHT_FORCE_EV_PER_A)
+        .with_max_move(0.08)
+        .with_dr(1.0e-3)
+        .with_max_rotations(12);
     let dimer_config = SolidDimerConfig::frozen(search)
         .with_index_check(IndexCheck::first_order().with_step(1.0e-3).with_escapes(0));
     let held = FastHeld { copper, cell };
@@ -9331,15 +9365,20 @@ fn record_pafi(
     append_capture_catalogue: bool,
 ) {
     let held = FastHeld { copper, cell };
-    let mut config = survey_config(bulk);
-    config.band.force_tol = 2.0e-3;
-    config.band.time_step = 0.04;
-    config.max_band_steps = 240;
-    config.images = 13;
-    config.band.spring = rgsaddle::SpringKind::EnergyWeighted {
-        k_min: 0.1,
-        k_max: 5.0,
-    };
+    let config = survey_config(bulk);
+    let segment = config
+        .band
+        .clone()
+        .with_force_tol(2.0e-3)
+        .with_time_step(0.04)
+        .with_spring(rgsaddle::SpringKind::EnergyWeighted {
+            k_min: 0.1,
+            k_max: 5.0,
+        });
+    let config = config
+        .with_band(segment)
+        .with_max_band_steps(240)
+        .with_images(13);
     let (band, converged, force) = match rgsaddle::segment_band(
         &held, &config, reactant, saddle, downhill, cell, 0.1, 5.0,
     ) {
@@ -9367,12 +9406,14 @@ fn record_pafi(
             .unwrap_or(f64::NAN)
     };
     let thermal = temperature * rgsaddle::BOLTZMANN_EV_PER_K;
-    let mut pafi = config.pafi.clone();
-    pafi.thermal = thermal;
-    pafi.samples = 16;
-    pafi.max_rounds = 3;
-    pafi.target_error = Some(0.01);
-    pafi.thermalize = 20;
+    let pafi = config
+        .pafi
+        .clone()
+        .with_thermal(thermal)
+        .with_samples(16)
+        .with_max_rounds(3)
+        .with_target_error(0.01)
+        .with_thermalize(20);
     let Ok((profile, planes)) = rgsaddle::pafi_profile(&held, &band, &band.arcs(), &pafi) else {
         return;
     };
@@ -9404,9 +9445,11 @@ fn record_pafi(
     let Ok(geometry) = band.geometry(arc) else {
         return;
     };
-    let mut shooting = config.shooting.clone();
-    shooting.thermal = thermal;
-    shooting.mass = 63.546;
+    let shooting = config
+        .shooting
+        .clone()
+        .with_thermal(thermal)
+        .with_mass(63.546);
     let starts = if dividing < planes.len() && !planes[dividing].retained.is_empty() {
         planes[dividing].retained.clone()
     } else {

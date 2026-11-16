@@ -166,10 +166,7 @@ fn harmonic_rate(geometry: &Geometry, kt: f64) -> f64 {
 
 /// The plane of a dimer run from near the saddle, and its curvature.
 fn dimer_plane() -> (Hyperplane, f64) {
-    let config = MinModeConfig {
-        force_tol: 1.0e-8,
-        ..Default::default()
-    };
+    let config = MinModeConfig::default().with_force_tol(1.0e-8);
     let mut session = MinModeSession::new(config, array![1.9, -0.05], array![1.0, 0.2]).unwrap();
     for _ in 0..2000 {
         let report = session.step(&LepsHo).unwrap();
@@ -380,17 +377,15 @@ fn leps_rate_against_quadrature_and_harmonic_tst() {
     let ratio = exact / harmonic_rate(&geometry, kt);
     assert!((ratio - 0.95493).abs() < 1.0e-4, "ratio {ratio}");
 
-    let shooting = ShootingConfig {
-        thermal: kt,
-        friction: 1.0,
-        time_step: 0.05,
-        steps: 400,
-        record_every: 40,
-        shots: 256,
-        blocks: 8,
-        plateau_record: 9,
-        ..ShootingConfig::default()
-    };
+    let shooting = ShootingConfig::default()
+        .with_thermal(kt)
+        .with_friction(1.0)
+        .with_time_step(0.05)
+        .with_steps(400)
+        .with_record_every(40)
+        .with_shots(256)
+        .with_blocks(8)
+        .with_plateau_record(9);
     let kappa = plane_transmission(&LepsHo, &work.end, &shooting).unwrap();
     assert!(
         kappa.kappa > 4.0 * kappa.error && kappa.kappa < 1.0 + 4.0 * kappa.error,

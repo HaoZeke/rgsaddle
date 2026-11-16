@@ -103,11 +103,7 @@ impl Fixture {
 
     fn session(&self, dx: f64, force_tol: f64, direction: IrcDirection) -> IrcSession {
         IrcSession::new(
-            IrcConfig {
-                dx,
-                force_tol,
-                ..IrcConfig::default()
-            },
+            IrcConfig::default().with_dx(dx).with_force_tol(force_tol),
             self.saddle.clone(),
             self.masses.clone(),
             self.mode.clone(),

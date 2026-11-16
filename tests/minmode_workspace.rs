@@ -95,13 +95,13 @@ fn estimate_allocations(config: MinModeConfig) -> (usize, usize) {
 #[test]
 fn a_longer_dimer_rotation_allocates_nothing_more() {
     for difference in [FiniteDifference::Forward, FiniteDifference::Central] {
-        let config = |max_rotations| MinModeConfig {
-            kind: MinModeKind::Dimer,
-            difference,
-            rotation_tol: 0.0,
-            rotation_angle_tol: 0.0,
-            max_rotations,
-            ..MinModeConfig::default()
+        let config = |max_rotations| {
+            MinModeConfig::default()
+                .with_kind(MinModeKind::Dimer)
+                .with_difference(difference)
+                .with_rotation_tol(0.0)
+                .with_rotation_angle_tol(0.0)
+                .with_max_rotations(max_rotations)
         };
         let (short, short_rotations) = estimate_allocations(config(2));
         let (long, long_rotations) = estimate_allocations(config(8));
@@ -116,12 +116,12 @@ fn a_longer_dimer_rotation_allocates_nothing_more() {
 #[test]
 fn a_larger_krylov_space_allocates_nothing_more() {
     for difference in [FiniteDifference::Forward, FiniteDifference::Central] {
-        let config = |krylov_dim| MinModeConfig {
-            kind: MinModeKind::Lanczos,
-            difference,
-            rotation_tol: 0.0,
-            krylov_dim,
-            ..MinModeConfig::default()
+        let config = |krylov_dim| {
+            MinModeConfig::default()
+                .with_kind(MinModeKind::Lanczos)
+                .with_difference(difference)
+                .with_rotation_tol(0.0)
+                .with_krylov_dim(krylov_dim)
         };
         let (small, small_actions) = estimate_allocations(config(2));
         let (large, large_actions) = estimate_allocations(config(8));
@@ -205,16 +205,15 @@ fn searches_match_the_allocating_code_bitwise() {
     let got: Vec<(&str, u64)> = cases
         .iter()
         .map(|&(label, kind, difference, method, _)| {
-            let mut config = MinModeConfig {
-                kind,
-                difference,
-                max_move: 0.1,
-                force_tol: 1e-8,
-                ..MinModeConfig::default()
+            let config = MinModeConfig::default()
+                .with_kind(kind)
+                .with_difference(difference)
+                .with_max_move(0.1)
+                .with_force_tol(1e-8);
+            let config = match method {
+                Some(method) => config.with_method(method.clone()),
+                None => config,
             };
-            if let Some(method) = method {
-                config.method = method.clone();
-            }
             (label, search_hash(config, 200))
         })
         .collect();
