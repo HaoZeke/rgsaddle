@@ -179,14 +179,41 @@ impl LangevinConfig {
     }
 }
 
+fn dot(a: &[f64], b: &[f64]) -> f64 {
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
+fn axpy(y: &mut [f64], a: f64, x: &[f64]) {
+    for (yi, xi) in y.iter_mut().zip(x) {
+        *yi += a * xi;
+    }
+}
+
+fn contiguous(a: Array1<f64>) -> Array1<f64> {
+    if a.is_standard_layout() {
+        a
+    } else {
+        a.as_standard_layout().into_owned()
+    }
+}
+
+fn slice(a: &Array1<f64>) -> &[f64] {
+    a.as_slice().expect("sampler buffers are contiguous")
+}
+
+fn slice_mut(a: &mut Array1<f64>) -> &mut [f64] {
+    a.as_slice_mut().expect("sampler buffers are contiguous")
+}
+
 /// One step of constrained Langevin dynamics with an optional Metropolis
 /// test. Positions keep `anchor`'s component along every `held` direction,
-/// and a proposal on the positive side of a wall is rejected.
+/// and a proposal on the positive side of a wall is rejected. The step
+/// works in place on contiguous buffers.
 pub(crate) struct Dynamics<'a, S> {
     surface: &'a S,
     held: Vec<Array1<f64>>,
-    anchor: Array1<f64>,
-    walls: &'a [Hyperplane],
+    anchor: Vec<f64>,
+    walls: Vec<(Array1<f64>, f64)>,
     kt: f64,
     h: f64,
     decay: f64,
@@ -196,6 +223,10 @@ pub(crate) struct Dynamics<'a, S> {
     pub(crate) gradient: Array1<f64>,
     energy: f64,
     v: Array1<f64>,
+    force: Array1<f64>,
+    trial: Array1<f64>,
+    trial_v: Array1<f64>,
+    trial_force: Array1<f64>,
     rng: Rng,
     pub(crate) evaluations: usize,
     pub(crate) proposed: usize,
@@ -217,12 +248,23 @@ impl<'a, S: PointSurface> Dynamics<'a, S> {
                 "the starting configuration is past a wall".into(),
             ));
         }
+        let start = contiguous(start);
+        let held: Vec<Array1<f64>> = held.into_iter().map(contiguous).collect();
+        let anchor = held.iter().map(|t| dot(slice(t), slice(&start))).collect();
+        let walls = walls
+            .iter()
+            .map(|wall| {
+                let normal = wall.normal().to_owned();
+                let offset = normal.dot(&wall.point());
+                (normal, offset)
+            })
+            .collect();
         let n = start.len();
         let decay = (-config.friction * config.time_step).exp();
         let mut dynamics = Self {
             surface,
             held,
-            anchor: start.clone(),
+            anchor,
             walls,
             kt: config.thermal,
             h: config.time_step,
@@ -233,6 +275,10 @@ impl<'a, S: PointSurface> Dynamics<'a, S> {
             gradient: Array1::zeros(n),
             energy: 0.0,
             v: Array1::zeros(n),
+            force: Array1::zeros(n),
+            trial: Array1::zeros(n),
+            trial_v: Array1::zeros(n),
+            trial_force: Array1::zeros(n),
             rng,
             evaluations: 0,
             proposed: 0,
@@ -242,13 +288,13 @@ impl<'a, S: PointSurface> Dynamics<'a, S> {
         let q0 = dynamics.q.clone();
         let (energy, gradient) = dynamics.evaluate(q0.view())?;
         dynamics.energy = energy;
-        dynamics.gradient = gradient;
+        dynamics.set_force(gradient);
         let sigma = config.thermal.sqrt();
-        for value in dynamics.v.iter_mut() {
+        for value in slice_mut(&mut dynamics.v) {
             *value = sigma * dynamics.rng.normal();
         }
         let mut v = std::mem::take(&mut dynamics.v);
-        dynamics.tangent(&mut v);
+        dynamics.tangent(slice_mut(&mut v));
         dynamics.v = v;
         Ok(dynamics)
     }
@@ -264,61 +310,109 @@ impl<'a, S: PointSurface> Dynamics<'a, S> {
         if !energy.is_finite() || !gradient.iter().all(|g| g.is_finite()) {
             return Err(SaddleError::NonFinite("sampler energy or gradient"));
         }
-        Ok((energy, gradient))
+        Ok((energy, contiguous(gradient)))
     }
 
-    fn tangent(&self, v: &mut Array1<f64>) {
+    /// Store `gradient` and the projected force `-gradient`.
+    fn set_force(&mut self, gradient: Array1<f64>) {
+        self.gradient = gradient;
+        let mut force = std::mem::take(&mut self.force);
+        let f = slice_mut(&mut force);
+        for (fi, gi) in f.iter_mut().zip(slice(&self.gradient)) {
+            *fi = -gi;
+        }
+        self.tangent(f);
+        self.force = force;
+    }
+
+    fn tangent(&self, v: &mut [f64]) {
         for direction in &self.held {
-            let c = direction.dot(v);
-            v.scaled_add(-c, direction);
+            let t = slice(direction);
+            let c = dot(t, v);
+            axpy(v, -c, t);
         }
     }
 
-    fn constrain(&self, q: &mut Array1<f64>) {
-        for direction in &self.held {
-            let c = direction.dot(q) - direction.dot(&self.anchor);
-            q.scaled_add(-c, direction);
+    fn constrain(&self, q: &mut [f64]) {
+        for (direction, anchor) in self.held.iter().zip(&self.anchor) {
+            let t = slice(direction);
+            let c = dot(t, q) - anchor;
+            axpy(q, -c, t);
         }
     }
 
     /// Advance one step. Returns whether the proposal was accepted.
     pub(crate) fn step(&mut self) -> Result<bool, SaddleError> {
-        for value in self.v.iter_mut() {
-            *value = self.decay * *value + self.kick * self.rng.normal();
-        }
+        let (decay, kick, h) = (self.decay, self.kick, self.h);
         let mut v = std::mem::take(&mut self.v);
-        self.tangent(&mut v);
+        for value in slice_mut(&mut v) {
+            *value = decay * *value + kick * self.rng.normal();
+        }
+        self.tangent(slice_mut(&mut v));
         self.proposed += 1;
-        let kinetic0 = 0.5 * v.dot(&v);
-        let mut force = -&self.gradient;
-        self.tangent(&mut force);
-        let mut v1 = &v + &(&force * (0.5 * self.h));
-        let mut q1 = &self.q + &(&v1 * self.h);
-        self.constrain(&mut q1);
-        if self.walls.iter().any(|wall| wall.distance(q1.view()) > 0.0) {
+        let kinetic0 = 0.5 * dot(slice(&v), slice(&v));
+        let mut trial_v = std::mem::take(&mut self.trial_v);
+        let mut trial = std::mem::take(&mut self.trial);
+        {
+            let tv = slice_mut(&mut trial_v);
+            tv.copy_from_slice(slice(&v));
+            axpy(tv, 0.5 * h, slice(&self.force));
+            let tq = slice_mut(&mut trial);
+            tq.copy_from_slice(slice(&self.q));
+            axpy(tq, h, slice(&trial_v));
+            self.constrain(tq);
+        }
+        let blocked = self
+            .walls
+            .iter()
+            .any(|(normal, offset)| dot(slice(normal), slice(&trial)) > *offset);
+        if blocked {
             self.wall_hits += 1;
-            self.v = -v;
+            v.mapv_inplace(|x| -x);
+            self.v = v;
+            self.trial = trial;
+            self.trial_v = trial_v;
             return Ok(false);
         }
-        let (energy1, gradient1) = self.evaluate(q1.view())?;
-        let mut force1 = -&gradient1;
-        self.tangent(&mut force1);
-        v1.scaled_add(0.5 * self.h, &force1);
+        let (energy1, gradient1) = match self.evaluate(trial.view()) {
+            Ok(result) => result,
+            Err(error) => {
+                self.v = v;
+                self.trial = trial;
+                self.trial_v = trial_v;
+                return Err(error);
+            }
+        };
+        let mut force1 = std::mem::take(&mut self.trial_force);
+        {
+            let f1 = slice_mut(&mut force1);
+            for (fi, gi) in f1.iter_mut().zip(slice(&gradient1)) {
+                *fi = -gi;
+            }
+            self.tangent(f1);
+            axpy(slice_mut(&mut trial_v), 0.5 * h, f1);
+        }
         let accept = if self.metropolis {
-            let delta = energy1 + 0.5 * v1.dot(&v1) - self.energy - kinetic0;
+            let kinetic1 = 0.5 * dot(slice(&trial_v), slice(&trial_v));
+            let delta = energy1 + kinetic1 - self.energy - kinetic0;
             delta <= 0.0 || self.rng.uniform() < (-delta / self.kt).exp()
         } else {
             true
         };
         if accept {
-            self.q = q1;
+            std::mem::swap(&mut self.q, &mut trial);
+            std::mem::swap(&mut v, &mut trial_v);
+            std::mem::swap(&mut self.force, &mut force1);
             self.gradient = gradient1;
             self.energy = energy1;
-            self.v = v1;
             self.accepted += 1;
         } else {
-            self.v = -v;
+            v.mapv_inplace(|x| -x);
         }
+        self.trial_force = force1;
+        self.v = v;
+        self.trial = trial;
+        self.trial_v = trial_v;
         Ok(accept)
     }
 
@@ -508,25 +602,29 @@ pub fn sample_plane<S: PointSurface>(
         .checked_div(config.retain)
         .map_or(usize::MAX, |every| every.max(1));
     let mut retained = Vec::with_capacity(config.retain);
+    let mut arm = vec![0.0; n];
     for record in 0..config.records {
         for _ in 0..config.stride {
             dynamics.step()?;
         }
-        let q = &dynamics.q;
-        let d = normal.dot(&dynamics.gradient);
-        let arm = q - &point;
-        sum[0] += d;
-        sum.slice_mut(s![1..=n]).scaled_add(d, &arm);
-        sum.slice_mut(s![n + 1..]).scaled_add(1.0, q);
+        let q = slice(&dynamics.q);
+        let d = dot(slice(&normal), slice(&dynamics.gradient));
+        for ((a, qi), pi) in arm.iter_mut().zip(q).zip(slice(&point)) {
+            *a = qi - pi;
+        }
+        let total = slice_mut(&mut sum);
+        total[0] += d;
+        axpy(&mut total[1..=n], d, &arm);
+        axpy(&mut total[n + 1..], 1.0, q);
         series[0].push(d);
         for (j, probe) in probes.iter().enumerate() {
-            series[1 + j].push(d * probe.dot(&arm));
+            series[1 + j].push(d * dot(slice(probe), &arm));
         }
         if (record + 1) % chunk == 0 || record + 1 == config.records {
             chunk_sums.push(std::mem::replace(&mut sum, Array1::zeros(2 * n + 1)));
         }
         if retained.len() < config.retain && record % retain_every == retain_every - 1 {
-            retained.push(q.clone());
+            retained.push(dynamics.q.clone());
         }
     }
     let tau = series
