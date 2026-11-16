@@ -16,9 +16,10 @@
 
 use ndarray::{Array1, ArrayView1};
 use rgsaddle::{
-    AnharmonicConfig, BasinConfig, HarmonicReference, Hyperplane, LangevinConfig, PointSurface,
-    SaddleError, TransmissionConfig, anharmonic_correction, basin_density, sample_plane,
-    transmission_coefficient,
+    AnharmonicConfig, BasinConfig, GaussianTransport, HarmonicReference, Hyperplane,
+    LangevinConfig, PlanePath, PointSurface, ReversibleWorkConfig, SaddleError, TransmissionConfig,
+    Transport, WorkEstimate, anharmonic_correction, basin_density, reversible_work_along,
+    sample_plane, transmission_coefficient,
 };
 
 include!(concat!(
@@ -517,4 +518,59 @@ fn coupled_modes_transmission_balances_the_plane_partition_function() {
         b.0,
         b.1
     );
+}
+
+/// The work from the plane `q₁ = -1` through the reactant well to the
+/// saddle plane `q₁ = 0` at `kT = 0.2`, against the product of
+/// one-dimensional quadratures, 2.60354. Integration over nine nodes gave
+/// 2.60477 ± 0.00192. With rigid maps BAR gave 2.60254 ± 0.00327 and MBAR
+/// 2.60107 ± 0.00431, neighbours overlapping at 0.499 or more. Gaussian
+/// maps fitted to 128 samples per plane resolve little of the change in
+/// 47 bath modes, and the shrinkage toward the rigid map keeps them from
+/// costing overlap: BAR gave 2.59864 ± 0.00674 and MBAR
+/// 2.60063 ± 0.00519, with overlaps of 0.475 or more against 0.389
+/// without the shrinkage.
+#[test]
+fn coupled_modes_work_to_the_saddle_plane() {
+    let model = CoupledModes::new();
+    let kt = 0.2;
+    let axis = model.axis();
+    let planes = [-1.0, 0.0].map(|s| Hyperplane::new(&axis * s, axis.clone()).unwrap());
+    let path = PlanePath::legs(&planes).unwrap();
+    let exact = -kt * (model.log_plane(0.0, kt) - model.log_plane(-1.0, kt));
+    let sampler = LangevinConfig::default()
+        .with_thermal(kt)
+        .with_time_step(0.1)
+        .with_friction(1.0)
+        .with_burn_in(300)
+        .with_stride(5)
+        .with_records(2000)
+        .with_seed(4);
+    let config = ReversibleWorkConfig::default()
+        .with_sampler(sampler)
+        .with_nodes(9)
+        .with_mbar(true)
+        .with_estimate(WorkEstimate::Mbar);
+    for transport in [Transport::Rigid, GaussianTransport::default().into()] {
+        let work = reversible_work_along(
+            &model,
+            &path,
+            None,
+            &config.clone().with_transport(transport.clone()),
+        )
+        .unwrap();
+        let estimates = [
+            ("integration", work.integrated_work, work.integrated_error),
+            ("BAR", work.bar_work.unwrap(), work.bar_error.unwrap()),
+            ("MBAR", work.mbar_work.unwrap(), work.mbar_error.unwrap()),
+        ];
+        for (name, value, error) in estimates {
+            assert!(
+                (value - exact).abs() < 4.0 * error,
+                "{transport:?}: {name} {value} ± {error} against {exact}"
+            );
+        }
+        assert!(work.warnings.is_empty(), "{:?}", work.warnings);
+        assert!(work.nodes.iter().skip(1).all(|n| n.overlap.unwrap() > 0.45));
+    }
 }

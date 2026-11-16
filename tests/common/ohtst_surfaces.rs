@@ -329,6 +329,58 @@ mod ohtst_surfaces {
         p
     }
 
+    /// The steepest-descent path from the saddle `start` along `direction`
+    /// to the minimum below it: points `spacing` apart in arc length, by
+    /// RK4 on `dx/ds = -∇V/|∇V|` with steps of `spacing / 50`, then the
+    /// minimum polished by [`descend`]. The flow is singular at the
+    /// minimum, so the integration stops once a step moves less than a
+    /// quarter of its length.
+    pub fn descent_path(
+        energy: fn(f64, f64) -> (f64, f64, f64),
+        start: [f64; 2],
+        direction: [f64; 2],
+        spacing: f64,
+    ) -> Vec<[f64; 2]> {
+        let flow = |p: [f64; 2]| {
+            let (_, gx, gy) = energy(p[0], p[1]);
+            let g = gx.hypot(gy);
+            [-gx / g, -gy / g]
+        };
+        let h = spacing / 50.0;
+        let mut points = vec![start];
+        let mut p = [start[0] + h * direction[0], start[1] + h * direction[1]];
+        let mut travelled = h;
+        let mut previous = energy(p[0], p[1]).0;
+        for _ in 0..1_000_000 {
+            let k1 = flow(p);
+            let k2 = flow([p[0] + 0.5 * h * k1[0], p[1] + 0.5 * h * k1[1]]);
+            let k3 = flow([p[0] + 0.5 * h * k2[0], p[1] + 0.5 * h * k2[1]]);
+            let k4 = flow([p[0] + h * k3[0], p[1] + h * k3[1]]);
+            let next = [
+                p[0] + h / 6.0 * (k1[0] + 2.0 * k2[0] + 2.0 * k3[0] + k4[0]),
+                p[1] + h / 6.0 * (k1[1] + 2.0 * k2[1] + 2.0 * k3[1] + k4[1]),
+            ];
+            let e = energy(next[0], next[1]).0;
+            let moved = (next[0] - p[0]).hypot(next[1] - p[1]);
+            if e >= previous || moved < 0.25 * h {
+                break;
+            }
+            previous = e;
+            p = next;
+            travelled += moved;
+            if travelled >= spacing * points.len() as f64 {
+                points.push(p);
+            }
+        }
+        let minimum = descend(energy, p);
+        let last = points[points.len() - 1];
+        if (minimum[0] - last[0]).hypot(minimum[1] - last[1]) < 0.5 * spacing {
+            points.pop();
+        }
+        points.push(minimum);
+        points
+    }
+
     /// Stationary point near `start` by Newton's method on the analytic
     /// gradient, with a central-difference Jacobian.
     pub fn stationary(energy: fn(f64, f64) -> (f64, f64, f64), start: [f64; 2]) -> [f64; 2] {

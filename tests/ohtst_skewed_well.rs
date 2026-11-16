@@ -15,12 +15,13 @@
 //! `kT = 0.1` and gives 0.1374 and -7.359° at `kT = 0.4`. The rate differs
 //! by 2e-4 in `ln k` there.
 
-use ndarray::array;
+use ndarray::{Array1, array};
 use rgsaddle::{
-    AnharmonicConfig, BasinConfig, BasinEnd, Basins, EndState, Hyperplane, LangevinConfig,
-    MinModeConfig, MinModeSession, MinModeStatus, PlaneOptimizer, PlaneOptimizerConfig,
-    ReversibleWorkConfig, TransmissionConfig, anharmonic_correction, basin_density, ohtst_rate,
-    reactant_density, reversible_work, transmission_coefficient,
+    AnharmonicConfig, BasinConfig, BasinEnd, Basins, EndState, GaussianTransport, Hyperplane,
+    LangevinConfig, MinModeConfig, MinModeSession, MinModeStatus, PlaneOptimizer,
+    PlaneOptimizerConfig, PlanePath, ReversibleWorkConfig, TransmissionConfig, WorkEstimate,
+    anharmonic_correction, basin_density, ohtst_rate, reactant_density, reversible_work,
+    reversible_work_along, transmission_coefficient,
 };
 
 include!(concat!(
@@ -33,8 +34,8 @@ include!(concat!(
 ));
 
 use ohtst_surfaces::{
-    SKEWED_ALPHA, SKEWED_K0, SkewedWell, descend, eigen2, half_plane_integral, hessian, line_draws,
-    line_free_energy, line_integral, stationary,
+    SKEWED_ALPHA, SKEWED_K0, SkewedWell, descend, descent_path, eigen2, half_plane_integral,
+    hessian, line_draws, line_free_energy, line_integral, stationary,
 };
 use plane_manifold::PointSphereFixture;
 
@@ -254,7 +255,10 @@ fn skewed_well_first_order_correction() {
 /// quadrature maximum of `A` within four errors and resolves the turn
 /// from the saddle plane, and the sampled rate matches the quadrature
 /// rate of that line, `ln(k/k_HTST) = -0.0310`. The virial on the final
-/// plane is `kT`, one free direction.
+/// plane is `kT`, one free direction. The work along the optimizer's own
+/// 23 steps, trapezoid on each, is 0.06487 ± 0.00455 by integration and
+/// 0.09183 ± 0.02243 by BAR, against 0.06200 by quadrature of its first
+/// and last lines.
 #[test]
 fn skewed_well_optimum_and_rate_at_high_temperature() {
     let kt = 0.4;
@@ -300,6 +304,30 @@ fn skewed_well_optimum_and_rate_at_high_temperature() {
         sample.virial,
         sample.virial_error
     );
+
+    let trace = PlanePath::trace(&optimum.trace).unwrap();
+    let climb = reversible_work_along(
+        &SkewedWell,
+        &trace,
+        None,
+        &ReversibleWorkConfig::default()
+            .with_sampler(sampler(kt, 0.15).with_records(2000))
+            .with_nodes(2)
+            .with_simpson(false),
+    )
+    .unwrap();
+    let (from, to) = (trace.start().unwrap(), trace.end().unwrap());
+    let exact_climb = free_energy([to.point()[0], to.point()[1]], angle_of(&to), kt)
+        - free_energy([from.point()[0], from.point()[1]], angle_of(&from), kt);
+    for (name, value, error) in [
+        ("integration", climb.integrated_work, climb.integrated_error),
+        ("BAR", climb.bar_work.unwrap(), climb.bar_error.unwrap()),
+    ] {
+        assert!(
+            (value - exact_climb).abs() < 4.0 * error,
+            "{name} along the trace {value} ± {error} against {exact_climb}"
+        );
+    }
 
     let optimal = Hyperplane::new(
         array![shift * found.cos(), shift * found.sin()],
@@ -460,4 +488,74 @@ fn skewed_well_transmission_times_tst_rate_is_line_independent() {
         b.0,
         b.1
     );
+}
+
+/// The work from the line through the reactant minimum, normal to its
+/// soft mode, to the saddle line along the PAFI planes of the
+/// steepest-descent path at `kT = 0.4`, against quadrature of the two
+/// lines, 0.87272. Over eight spline pieces integration gave
+/// 0.87431 ± 0.00679 and MBAR across the 17 nodes with Gaussian maps
+/// 0.87673 ± 0.00545; BAR gave 0.85134 ± 0.01730 with Gaussian maps and
+/// 0.86340 ± 0.01547 with rigid ones. The planes are close enough that
+/// the rigid map already holds the one free direction: neighbours overlap
+/// at 0.482 or more with it and 0.469 or more with the Gaussian map.
+#[test]
+fn skewed_well_work_along_the_minimum_energy_path() {
+    let kt = 0.4;
+    let (saddle_plane, _) = dimer_plane();
+    let (mode, pivot) = (saddle_plane.normal(), saddle_plane.point());
+    let mut points = descent_path(
+        SkewedWell::energy,
+        [pivot[0], pivot[1]],
+        [-mode[0], -mode[1]],
+        0.2,
+    );
+    points.reverse();
+    let reactant = points[0];
+    assert!((reactant[0] - REACTANT[0]).hypot(reactant[1] - REACTANT[1]) < 1e-9);
+    let (_, _, soft) = eigen2(hessian(SkewedWell::energy, reactant));
+    let along = [points[1][0] - reactant[0], points[1][1] - reactant[1]];
+    let sign = (soft[0] * along[0] + soft[1] * along[1]).signum();
+    let start_normal = array![sign * soft[0], sign * soft[1]];
+    let points: Vec<Array1<f64>> = points.iter().map(|p| array![p[0], p[1]]).collect();
+    let path = PlanePath::curve(&points, Some(start_normal.view()), Some(mode)).unwrap();
+    let (first, last) = (path.start().unwrap(), path.end().unwrap());
+    let exact = free_energy([pivot[0], pivot[1]], angle_of(&last), kt)
+        - free_energy(REACTANT, angle_of(&first), kt);
+    let config = ReversibleWorkConfig::default()
+        .with_sampler(sampler(kt, 0.15).with_records(2000))
+        .with_nodes(3);
+    let rigid = reversible_work_along(&SkewedWell, &path, None, &config).unwrap();
+    let config = config
+        .with_transport(GaussianTransport::default().into())
+        .with_mbar(true)
+        .with_estimate(WorkEstimate::Mbar);
+    let work = reversible_work_along(&SkewedWell, &path, None, &config).unwrap();
+    let estimates = [
+        ("integration", work.integrated_work, work.integrated_error),
+        ("BAR", work.bar_work.unwrap(), work.bar_error.unwrap()),
+        ("MBAR", work.mbar_work.unwrap(), work.mbar_error.unwrap()),
+        (
+            "rigid BAR",
+            rigid.bar_work.unwrap(),
+            rigid.bar_error.unwrap(),
+        ),
+    ];
+    for (name, value, error) in estimates {
+        assert!(
+            (value - exact).abs() < 4.0 * error,
+            "{name} {value} ± {error} against {exact}"
+        );
+    }
+    assert_eq!(work.work, work.mbar_work.unwrap());
+    for result in [&work, &rigid] {
+        assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+        assert!(
+            result
+                .nodes
+                .iter()
+                .skip(1)
+                .all(|n| n.overlap.unwrap() > 0.4)
+        );
+    }
 }

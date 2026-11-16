@@ -9,13 +9,14 @@
 //! functions. The paper gives its rate constants without units, so they
 //! are not compared here.
 
-use ndarray::array;
+use ndarray::{Array1, array};
 use rgsaddle::{
-    BasinConfig, Basins, Counting, EndState, Hyperplane, LangevinConfig, MinModeConfig,
-    MinModeSession, MinModeStatus, PlaneIntegrator, PlaneOptimizer, PlaneOptimizerConfig,
-    ReversibleWorkConfig, ShootingConfig, TransmissionConfig, angular_scale_rad_s, basin_density,
-    exact_eigh, ohtst_rate, plane_transmission, reactant_density, reversible_work,
-    transmission_coefficient, vineyard_prefactor,
+    BasinConfig, Basins, Counting, EndState, GaussianTransport, Hyperplane, LangevinConfig,
+    MinModeConfig, MinModeSession, MinModeStatus, PlaneIntegrator, PlaneOptimizer,
+    PlaneOptimizerConfig, PlanePath, ReversibleWorkConfig, ShootingConfig, TransmissionConfig,
+    WorkEstimate, angular_scale_rad_s, basin_density, exact_eigh, ohtst_rate, plane_transmission,
+    reactant_density, reversible_work, reversible_work_along, transmission_coefficient,
+    vineyard_prefactor,
 };
 
 include!(concat!(
@@ -28,7 +29,8 @@ include!(concat!(
 ));
 
 use ohtst_surfaces::{
-    LepsHo, descend, eigen2, half_plane_integral, hessian, line_draws, line_free_energy, stationary,
+    LepsHo, descend, descent_path, eigen2, half_plane_integral, hessian, line_draws,
+    line_free_energy, stationary,
 };
 use plane_manifold::PointSphereFixture;
 
@@ -650,4 +652,74 @@ fn leps_transmission_times_tst_rate_is_line_independent() {
             "κ k_TST {left:e} against {right:e} ± {error:e}"
         );
     }
+}
+
+/// The work from the line through the reactant minimum, normal to its
+/// soft mode, to the saddle line along the PAFI planes of the
+/// steepest-descent path at `kT` = 0.1 `E_A`, against quadrature of the
+/// two lines, 2.92859. Over 13 spline pieces integration gave
+/// 2.92179 ± 0.03840 and MBAR across the 27 nodes with Gaussian maps
+/// 2.92919 ± 0.00290; BAR gave 2.94235 ± 0.01837 with Gaussian maps and
+/// 2.89296 ± 0.03728 with rigid ones. Through the corner of the surface
+/// the rigid map loses overlap: the smallest between neighbours is 0.346
+/// with it and 0.471 with the Gaussian map, which keeps over 0.9 of its
+/// fitted change there.
+#[test]
+fn leps_work_along_the_minimum_energy_path() {
+    let geometry = geometry();
+    let kt = 0.1 * geometry.barrier;
+    let (saddle_plane, _) = dimer_plane();
+    let product = array![geometry.product[0], geometry.product[1]];
+    let saddle_plane = saddle_plane.oriented_toward(product.view());
+    let (mode, pivot) = (saddle_plane.normal(), saddle_plane.point());
+    let mut points = descent_path(
+        LepsHo::energy,
+        [pivot[0], pivot[1]],
+        [-mode[0], -mode[1]],
+        0.2,
+    );
+    points.reverse();
+    let reactant = points[0];
+    let (_, _, soft) = eigen2(hessian(LepsHo::energy, reactant));
+    let along = [points[1][0] - reactant[0], points[1][1] - reactant[1]];
+    let sign = (soft[0] * along[0] + soft[1] * along[1]).signum();
+    let start_normal = array![sign * soft[0], sign * soft[1]];
+    let points: Vec<Array1<f64>> = points.iter().map(|p| array![p[0], p[1]]).collect();
+    let path = PlanePath::curve(&points, Some(start_normal.view()), Some(mode)).unwrap();
+    let (first, last) = (path.start().unwrap(), path.end().unwrap());
+    let exact = free_energy(&geometry, [pivot[0], pivot[1]], angle_of(&last), kt)
+        - free_energy(&geometry, reactant, angle_of(&first), kt);
+    let config = ReversibleWorkConfig::default()
+        .with_sampler(sampler(kt, 0.1).with_records(2000))
+        .with_nodes(3);
+    let rigid = reversible_work_along(&LepsHo, &path, None, &config).unwrap();
+    let config = config
+        .with_transport(GaussianTransport::default().into())
+        .with_mbar(true)
+        .with_estimate(WorkEstimate::Mbar);
+    let work = reversible_work_along(&LepsHo, &path, None, &config).unwrap();
+    let smallest = |work: &rgsaddle::ReversibleWork| {
+        work.nodes
+            .iter()
+            .filter_map(|n| n.overlap)
+            .fold(1.0, f64::min)
+    };
+    let estimates = [
+        ("integration", work.integrated_work, work.integrated_error),
+        ("BAR", work.bar_work.unwrap(), work.bar_error.unwrap()),
+        ("MBAR", work.mbar_work.unwrap(), work.mbar_error.unwrap()),
+        (
+            "rigid BAR",
+            rigid.bar_work.unwrap(),
+            rigid.bar_error.unwrap(),
+        ),
+    ];
+    for (name, value, error) in estimates {
+        assert!(
+            (value - exact).abs() < 4.0 * error,
+            "{name} {value} ± {error} against {exact}"
+        );
+    }
+    assert!(work.warnings.is_empty() && rigid.warnings.is_empty());
+    assert!(smallest(&rigid) > 0.3 && smallest(&work) > smallest(&rigid));
 }
