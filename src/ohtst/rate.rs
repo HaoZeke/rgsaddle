@@ -221,7 +221,7 @@ mod tests {
     use super::*;
     use crate::minmode::PointSurface;
     use crate::ohtst::sample::{LangevinConfig, sample_plane};
-    use crate::ohtst::work::WorkNode;
+    use crate::ohtst::work::{WorkEstimate, WorkNode};
     use ndarray::{Array1, array};
 
     fn simpson(f: impl Fn(f64) -> f64, a: f64, b: f64, steps: usize) -> f64 {
@@ -335,17 +335,27 @@ mod tests {
             error: 0.0,
             work: 0.0,
             bar_work: None,
+            overlap: None,
+            transport_weight: None,
+            mbar_work: None,
         };
         let kt = 0.5;
         let work = ReversibleWork {
             work: 3.0,
             error: 0.1,
+            estimate: WorkEstimate::Integration,
+            integrated_work: 3.0,
+            integrated_error: 0.1,
             nodes: vec![node],
             end,
             evaluations: 0,
             thermal: kt,
             bar_work: None,
             bar_error: None,
+            mbar_work: None,
+            mbar_error: None,
+            overlap: None,
+            warnings: Vec::new(),
         };
         let density = ReactantDensity {
             plane: plane.clone(),

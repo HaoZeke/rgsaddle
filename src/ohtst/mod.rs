@@ -44,19 +44,23 @@
 mod anharmonic;
 mod basin;
 mod control;
+mod mbar;
 mod optimize;
+mod path;
 mod plane;
 mod rate;
 mod reactant;
 mod sample;
 mod spline;
 mod transmission;
+mod transport;
 mod work;
 
 pub use anharmonic::{AnharmonicConfig, AnharmonicCorrection, anharmonic_correction};
 pub use basin::{BasinConfig, BasinDensity, BasinEnd, basin_density};
 pub use control::HarmonicReference;
 pub use optimize::{PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum, PlaneStep, PlaneTrace};
+pub use path::PlanePath;
 pub use plane::{FixedCell, Hyperplane, MassWeighted};
 pub use rate::{OhTstRate, PlaneDensity, flux_mass, ohtst_rate, plane_transmission};
 pub use reactant::{ReactantDensity, reactant_density};
@@ -65,4 +69,8 @@ pub use transmission::{
     Basins, Counting, EndState, Endpoint, PermutationDistance, QuenchConfig, StateDistance,
     TransmissionCoefficient, TransmissionConfig, TransmissionEstimate, transmission_coefficient,
 };
-pub use work::{ReversibleWork, ReversibleWorkConfig, WorkNode, reversible_work};
+pub use transport::{GaussianTransport, Transport};
+pub use work::{
+    ReversibleWork, ReversibleWorkConfig, WorkEstimate, WorkNode, reversible_work,
+    reversible_work_along,
+};
