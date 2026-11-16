@@ -129,8 +129,8 @@ pub use ocineb::{
 };
 pub use ohtst::{
     Hyperplane, LangevinConfig, MassWeighted, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum,
-    PlaneSample, PlaneStep, PlaneTrace, ReversibleWork, ReversibleWorkConfig, WorkNode,
-    reversible_work, sample_plane,
+    PlaneSample, PlaneStep, PlaneTrace, ReactantDensity, ReversibleWork, ReversibleWorkConfig,
+    WorkNode, reactant_density, reversible_work, sample_plane,
 };
 pub use pafi::{
     ArcPath, FreeEnergyProfile, HyperplaneAverage, PafiConfig, PathFrame, PathGeometry,
