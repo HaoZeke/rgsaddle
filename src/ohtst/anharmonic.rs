@@ -31,11 +31,10 @@
 //!
 //! `ln(k / k_HTST) = kT (A‡ - A_R - S² / (8|λ_u|)) + O(kT²)`.
 
-use ndarray::{Array1, Array2, ArrayView1};
+use ndarray::{Array1, ArrayView1};
 
 use super::plane::Hyperplane;
 use super::sample::held_directions;
-use crate::eigensolve::exact_eigh;
 use crate::stats::Rng;
 use crate::{PointSurface, SaddleError};
 
@@ -449,25 +448,17 @@ fn krylov_inverse_sqrt(
     norm: f64,
 ) -> Result<Array1<f64>, SaddleError> {
     let m = alpha.len();
-    let mut t = Array2::zeros((m, m));
-    for i in 0..m {
-        t[(i, i)] = alpha[i];
-        if i + 1 < m {
-            t[(i, i + 1)] = beta[i];
-            t[(i + 1, i)] = beta[i];
-        }
-    }
-    let (values, vectors) = exact_eigh(t.view())?;
+    let (values, vectors) = tridiagonal_eigh(alpha, &beta[..m - 1])?;
     if values.iter().any(|&v| v.is_nan() || v <= 0.0) {
         return Err(SaddleError::Invalid(
             "the Hessian is not positive on the probed subspace".into(),
         ));
     }
-    let mut coefficients = Array1::<f64>::zeros(m);
+    let mut coefficients = vec![0.0; m];
     for (k, &value) in values.iter().enumerate() {
-        let weight = vectors[(0, k)] * norm / value.sqrt();
-        for i in 0..m {
-            coefficients[i] += weight * vectors[(i, k)];
+        let weight = vectors[k] * norm / value.sqrt();
+        for (i, c) in coefficients.iter_mut().enumerate() {
+            *c += weight * vectors[i * m + k];
         }
     }
     let mut z = Array1::zeros(basis[0].len());
@@ -475,6 +466,75 @@ fn krylov_inverse_sqrt(
         z.scaled_add(*c, q);
     }
     Ok(z)
+}
+
+/// Eigenvalues and eigenvectors of the symmetric tridiagonal matrix with
+/// diagonal `diagonal` and off-diagonal `off`, by implicit QL with
+/// Wilkinson shifts. Component `i` of eigenvector `k` is `vectors[i m + k]`.
+fn tridiagonal_eigh(diagonal: &[f64], off: &[f64]) -> Result<(Vec<f64>, Vec<f64>), SaddleError> {
+    let m = diagonal.len();
+    let mut d = diagonal.to_vec();
+    let mut e = off.to_vec();
+    e.resize(m, 0.0);
+    let mut z = vec![0.0; m * m];
+    for i in 0..m {
+        z[i * m + i] = 1.0;
+    }
+    for l in 0..m {
+        let mut iterations = 0;
+        loop {
+            let mut last = l;
+            while last + 1 < m && e[last].abs() > f64::EPSILON * (d[last].abs() + d[last + 1].abs())
+            {
+                last += 1;
+            }
+            if last == l {
+                break;
+            }
+            iterations += 1;
+            if iterations > 60 {
+                return Err(SaddleError::Solver(
+                    "the tridiagonal eigensolver did not converge".into(),
+                ));
+            }
+            let mut g = (d[l + 1] - d[l]) / (2.0 * e[l]);
+            let mut r = g.hypot(1.0);
+            g = d[last] - d[l] + e[l] / (g + r.copysign(g));
+            let (mut s, mut c, mut p) = (1.0, 1.0, 0.0);
+            let mut deflated = false;
+            for i in (l..last).rev() {
+                let f = s * e[i];
+                let b = c * e[i];
+                r = f.hypot(g);
+                e[i + 1] = r;
+                if r == 0.0 {
+                    d[i + 1] -= p;
+                    e[last] = 0.0;
+                    deflated = true;
+                    break;
+                }
+                s = f / r;
+                c = g / r;
+                g = d[i + 1] - p;
+                r = (d[i] - g) * s + 2.0 * c * b;
+                p = s * r;
+                d[i + 1] = g + p;
+                g = c * r - b;
+                for k in 0..m {
+                    let f = z[k * m + i + 1];
+                    z[k * m + i + 1] = s * z[k * m + i] + c * f;
+                    z[k * m + i] = c * z[k * m + i] - s * f;
+                }
+            }
+            if deflated {
+                continue;
+            }
+            d[l] -= p;
+            e[l] = g;
+            e[last] = 0.0;
+        }
+    }
+    Ok((d, z))
 }
 
 fn mean_and_error(values: &[f64]) -> (f64, f64) {
@@ -487,7 +547,8 @@ fn mean_and_error(values: &[f64]) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::array;
+    use crate::eigensolve::exact_eigh;
+    use ndarray::{Array2, array};
 
     /// A rotation of the plane of axes `a` and `b`.
     fn givens(n: usize, a: usize, b: usize, angle: f64) -> Array2<f64> {
@@ -497,6 +558,34 @@ mod tests {
         g[(a, b)] = -angle.sin();
         g[(b, a)] = angle.sin();
         g
+    }
+
+    #[test]
+    fn tridiagonal_eigensolver_matches_the_dense_one() {
+        let diagonal = [2.0, -1.0, 0.5, 3.0, 0.0, 1.5];
+        let off = [0.7, 1.2, -0.4, 0.9, 2.0];
+        let m = diagonal.len();
+        let mut t = Array2::<f64>::zeros((m, m));
+        for i in 0..m {
+            t[(i, i)] = diagonal[i];
+            if i + 1 < m {
+                t[(i, i + 1)] = off[i];
+                t[(i + 1, i)] = off[i];
+            }
+        }
+        let (values, vectors) = tridiagonal_eigh(&diagonal, &off).unwrap();
+        let mut sorted = values.clone();
+        sorted.sort_by(f64::total_cmp);
+        let (dense, _) = exact_eigh(t.view()).unwrap();
+        for (a, b) in sorted.iter().zip(&dense) {
+            assert!((a - b).abs() < 1e-12, "{a} against {b}");
+        }
+        for (k, value) in values.iter().enumerate() {
+            let v = Array1::from_shape_fn(m, |i| vectors[i * m + k]);
+            assert!((v.dot(&v) - 1.0).abs() < 1e-12);
+            let residual = t.dot(&v) - &v * *value;
+            assert!(residual.dot(&residual).sqrt() < 1e-12);
+        }
     }
 
     #[test]
