@@ -27,7 +27,11 @@ use rgmin::ManifoldKind;
 /// force into the direction, and renormalizes it. The finite iteration count
 /// retains the stochastic component of the seed instead of converging every
 /// launch to one deterministic minimum mode.
+///
+/// Non-exhaustive: start from [`VelocitySofteningConfig::default`] and
+/// chain the `with_*` setters.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct VelocitySofteningConfig {
     /// Number of force probes. Each iteration costs one surface evaluation.
     pub steps: usize,
@@ -156,6 +160,10 @@ pub fn t_exp(i: usize, t0: f64, tf: f64, n: usize) -> f64 {
 }
 
 /// The SamdConfig.
+///
+/// Non-exhaustive: start from [`SamdConfig::default`] and chain the
+/// `with_*` setters.
+#[non_exhaustive]
 pub struct SamdConfig {
     /// The dt.
     pub dt: f64,

@@ -419,7 +419,11 @@ pub fn ras_cons(s: &Array1<f64>) -> f64 {
 ///
 /// Rotations reuse `translation` (`wx`), matching Sella
 /// `_get_weights`.
+///
+/// Non-exhaustive: start from [`InternalWeights::default`] and chain
+/// the `with_*` setters.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct InternalWeights {
     /// The translation.
     pub translation: f64,

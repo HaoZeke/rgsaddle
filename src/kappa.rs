@@ -6,6 +6,10 @@ use std::cell::{Cell, RefCell};
 
 #[derive(Clone, Debug)]
 /// The KappaDimerConfig.
+///
+/// Non-exhaustive: start from [`KappaDimerConfig::default`] and chain
+/// the `with_*` setters.
+#[non_exhaustive]
 pub struct KappaDimerConfig {
     /// Switching length in the position units; beta * kappa is dimensionless.
     pub beta: f64,

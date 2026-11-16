@@ -35,7 +35,12 @@ static FAIL_NEXT_CLAIM: AtomicBool = AtomicBool::new(false);
 
 /// Opt-out / size policy from `_gpu.py`. The OOM floor is
 /// process-global ([`oom_floor`]), matching Sella `_oom_floor`.
+///
+/// Non-exhaustive: start from [`GpuPolicy::from_env`] (also the
+/// default), [`GpuPolicy::disabled`] or [`GpuPolicy::host`] and chain
+/// the `with_*` setters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct GpuPolicy {
     /// `SELLA_DISABLE_GPU`. When false the host path always runs.
     pub enabled: bool,

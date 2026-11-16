@@ -170,7 +170,12 @@ impl Manifold for SellaGeom {
 }
 
 /// Sella `optimize.py` trust numbers (`delta0` lives on the session).
+///
+/// Non-exhaustive: start from [`TrustSchedule::minimum`] (also the
+/// default) or [`TrustSchedule::saddle`] and chain the `with_*`
+/// setters.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct TrustSchedule {
     /// Factor by which a good step grows the trust radius.
     pub sigma_inc: f64,

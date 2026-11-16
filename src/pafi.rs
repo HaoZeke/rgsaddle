@@ -27,7 +27,11 @@ use crate::minmode::PointSurface;
 use crate::stats::{Rng, block_mean};
 
 /// Overdamped hyperplane sampling.
+///
+/// Non-exhaustive: start from [`PafiConfig::default`] and chain the
+/// `with_*` setters.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct PafiConfig {
     /// `kT` in the energy unit of the surface.
     pub thermal: f64,

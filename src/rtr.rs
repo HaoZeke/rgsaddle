@@ -224,7 +224,11 @@ pub(crate) fn reparametrize_linear(
 }
 
 /// Settings of the band trust-region step.
+///
+/// Non-exhaustive: start from [`RtrConfig::default`] and chain the
+/// `with_*` setters.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct RtrConfig {
     /// `Delta_bar`: largest trust radius, in the band's flattened metric.
     pub radius_max: f64,

@@ -33,7 +33,11 @@ pub enum PairKind {
 }
 
 /// Options for the full Cython matcher.
+///
+/// Non-exhaustive: start from [`ForceMatchOpts::default`] and chain the
+/// `with_*` setters.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct ForceMatchOpts {
     /// Sella `types`. Default is `buck` then `bond`.
     pub kinds: Vec<PairKind>,

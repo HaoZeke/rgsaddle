@@ -24,7 +24,11 @@ use crate::mic::{self, Cell};
 ///
 /// The defaults are 5000 L-BFGS steps, a gradient L2 norm of `1e-3`,
 /// a per-atom step cap of `0.1`, and 20 L-BFGS pairs.
+///
+/// Non-exhaustive: start from [`IdppConfig::default`] and chain the
+/// `with_*` setters.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct IdppConfig {
     /// The max iterations.
     pub max_iterations: usize,
@@ -144,7 +148,11 @@ pub(crate) fn idpp_midpoint(
 /// settings of Schmerwitz, Asgeirsson, and Jonsson, Sec. 2.3.
 /// `max_move` and `max_iterations` are the [`IdppConfig`] defaults,
 /// spent once per growth stage. `time_step` is the fixed quick-min step.
+///
+/// Non-exhaustive: start from [`SidppConfig::default`] and chain the
+/// `with_*` setters.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct SidppConfig {
     /// Base spring constant `k` of Eqs. 5 and 10.
     pub spring: f64,

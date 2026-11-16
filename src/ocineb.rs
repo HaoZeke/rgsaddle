@@ -65,7 +65,11 @@ pub enum OcinebStatus {
 }
 
 /// Band, minimum-mode, and the hand-off parameters.
+///
+/// Non-exhaustive: start from [`OcinebConfig::default`] and chain the
+/// `with_*` setters.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct OcinebConfig {
     /// The band. Its `min_mode` is replaced by these hand-off controls.
     pub band: BandConfig,

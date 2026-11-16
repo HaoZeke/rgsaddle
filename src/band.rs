@@ -127,7 +127,12 @@ impl Cell {
 /// (Henkelman, Uberuaga and Jonsson, J. Chem. Phys. 113, 9901 (2000),
 /// doi:10.1063/1.1329672). [`CiConfig::always`] climbs from the first
 /// evaluation.
+///
+/// Non-exhaustive: start from [`CiConfig::after`],
+/// [`CiConfig::after_rel`], [`CiConfig::always`] or
+/// [`CiConfig::default`] and chain the `with_*` setters.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct CiConfig {
     /// The trigger factor.
     pub trigger_factor: f64,
@@ -230,6 +235,9 @@ impl SolidState {
 /// Band configuration. `force_tol` is on the max absolute component
 /// of the projected force over interior images.
 ///
+/// Non-exhaustive: start from [`BandConfig::default`] and chain the
+/// `with_*` setters.
+///
 /// ```
 /// use rgsaddle::{BandConfig, CiConfig};
 ///
@@ -241,6 +249,7 @@ impl SolidState {
 /// assert!(config.min_mode.is_none());
 /// ```
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct BandConfig {
     /// How the path direction at an interior image is chosen.
     pub tangent: TangentKind,
@@ -373,7 +382,11 @@ impl Default for BandConfig {
 /// mu`. An armed climbing image reflects the preconditioned gradient in
 /// the P-metric, `-(P^{-1} g - 2 t_P (t_P . g))`, whose fixed point is
 /// the saddle.
+///
+/// Non-exhaustive: start from [`ExpBandPrecon::default`] and chain the
+/// `with_*` setters.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct ExpBandPrecon {
     /// Exponent `A` of `exp(-A (r / r_nn - 1))`.
     pub a: f64,

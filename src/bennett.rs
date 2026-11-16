@@ -28,7 +28,11 @@ use crate::minmode::PointSurface;
 use crate::stats::Rng;
 
 /// Inertial shooting from one dividing surface.
+///
+/// Non-exhaustive: start from [`ShootingConfig::default`] and chain the
+/// `with_*` setters.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct ShootingConfig {
     /// `kT` in the energy unit of the surface.
     pub thermal: f64,

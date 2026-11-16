@@ -21,6 +21,10 @@ use crate::pes::CartesianPes;
 use crate::pes_internal::{CellCartesianPes, CellInternalPes, InternalPes, SellaPes};
 
 /// The SellaSaddleConfig.
+///
+/// Non-exhaustive: start from [`SellaSaddleConfig::default`] and chain
+/// the `with_*` setters.
+#[non_exhaustive]
 pub struct SellaSaddleConfig {
     /// Trust radius, in the host's length unit.
     pub delta: f64,

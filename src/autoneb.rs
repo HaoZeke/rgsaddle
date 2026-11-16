@@ -500,7 +500,11 @@ impl AutoNebStage {
 ///
 /// Distances and forces are in the caller's units. Climbing uses the
 /// parent band's [`BandConfig::climbing`] settings.
+///
+/// Non-exhaustive: start from [`AutoNebTuning::default`] and chain the
+/// `with_*` setters.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct AutoNebTuning {
     /// Free images in a local window. The window pins one image on
     /// each side, so it holds `n_simul + 2` images when the band is

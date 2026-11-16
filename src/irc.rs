@@ -79,7 +79,11 @@ impl IrcKind {
 }
 
 /// Outer IRC controls.
+///
+/// Non-exhaustive: start from [`IrcConfig::default`] and chain the
+/// `with_*` setters.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct IrcConfig {
     /// Sphere radius in the session metric (Sella `dx`) and Morokuma `h`.
     pub dx: f64,

@@ -23,6 +23,10 @@ use crate::pes::CartesianPes;
 use crate::pes_internal::{CellCartesianPes, CellInternalPes, InternalPes, SellaPes};
 
 /// Sella `_default_kwargs['minimum']` plus a force gate.
+///
+/// Non-exhaustive: start from [`SellaMinConfig::default`] and chain the
+/// `with_*` setters.
+#[non_exhaustive]
 pub struct SellaMinConfig {
     /// Sella `delta0`. The living trust radius starts here.
     pub delta: f64,

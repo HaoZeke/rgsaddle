@@ -139,6 +139,10 @@ impl MinModeKind {
 
 #[derive(Clone, Debug)]
 /// The MinModeConfig.
+///
+/// Non-exhaustive: start from [`MinModeConfig::default`] and chain the
+/// `with_*` setters.
+#[non_exhaustive]
 pub struct MinModeConfig {
     /// Which estimator produces the lowest mode.
     pub kind: MinModeKind,

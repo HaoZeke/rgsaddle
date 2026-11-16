@@ -125,7 +125,11 @@ impl<S: PointSurface, H: HessianProduct> PointSurface for WithHessian<'_, S, H> 
 /// `search` is the one-mode configuration: kind, finite-difference
 /// width, translator, force tolerance, and per-atom cap. `k = 1` uses
 /// it unchanged.
+///
+/// Non-exhaustive: start from [`IndexKConfig::new`] or
+/// [`IndexKConfig::default`] and chain the `with_*` setters.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct IndexKConfig {
     /// Number of lowest modes. At least 1 and at most the dimension.
     pub k: usize,

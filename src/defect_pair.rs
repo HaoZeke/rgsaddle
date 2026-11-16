@@ -785,7 +785,11 @@ pub enum CellMode {
 /// `boltzmann` is [`crate::BOLTZMANN_EV_PER_K`]. `mass` and `angular_scale`
 /// convert `sqrt(λ / mass)` into a frequency. For eV, Å and amu,
 /// `angular_scale` is [`crate::angular_scale_rad_s`].
+///
+/// Non-exhaustive: start from [`DefectPairConfig::default`] and chain
+/// the `with_*` setters.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct DefectPairConfig {
     /// Saddle search. The cell mask is set from `cell_mode`.
     pub dimer: SolidDimerConfig,

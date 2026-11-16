@@ -1,0 +1,9 @@
+Every public configuration struct is ~#[non_exhaustive]~.
+~AutoNebTuning~, ~BandConfig~, ~CiConfig~, ~CurvatureBound~, ~DefectPairConfig~, ~ExpBandPrecon~, ~FmmSolver~, ~ForceMatchOpts~, ~GpuPolicy~, ~IdppConfig~, ~IndexKConfig~, ~InternalWeights~, ~IrcConfig~, ~KappaDimerConfig~, ~MinModeConfig~, ~OcinebConfig~, ~PafiConfig~, ~RtrConfig~, ~SamdConfig~, ~SellaMinConfig~, ~SellaSaddleConfig~, ~ShootingConfig~, ~SidppConfig~, ~TrustPolicy~, ~TrustSchedule~ and ~VelocitySofteningConfig~ join the configs that already were, so a struct literal of one, including one that ends in ~..Default::default()~, or an exhaustive pattern of one no longer compiles outside this crate.
+The fields stay public: reading one, or assigning to one of a value already built, still compiles.
+Each config has a ~#[must_use]~ ~with_*~ setter for every public field, and each new setter of an ~Option~ field takes the value or ~None~.
+~ConnectConfig~, ~MinModeRefine~ and ~ZoomConfig~, already non-exhaustive, gain a setter for every field, and ~Basins~, ~HarmonicReference~, ~PermutationDistance~, ~SolidDimerConfig~, ~SolidState~ and ~StressCheck~ gain the ones they lacked.
+Start from ~Default~ or the named constructor and chain the setters: ~BandConfig { force_tol: 1e-3, ..BandConfig::default() }~ becomes ~BandConfig::default().with_force_tol(1e-3)~, and a nested write such as ~config.band.max_move = 0.05~ becomes ~let band = config.band.clone().with_max_move(0.05);~ then ~config.with_band(band)~.
+~ConnectConfig::default()~ is ~ConnectConfig::optbench(250_000)~, the ~max_calls~ default of the Python ~connect~; ~TrustSchedule::default()~ is ~TrustSchedule::minimum()~; ~CurvatureBound::new~ takes ~lambda0~, ~slope~ and ~fraction~.
+Every default is unchanged, and the L-BFGS default is still the capped eOn step.
+The ~#[repr(C)]~ structs of the C ABI keep their layout.

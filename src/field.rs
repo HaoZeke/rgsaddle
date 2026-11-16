@@ -204,7 +204,11 @@ impl FieldSolver for DirectSolver {
 /// target cell of half-width `t` are well separated when the distance
 /// between centres exceeds `(s + t) / theta`. `leaf` is the most particles
 /// a cell keeps before it splits.
+///
+/// Non-exhaustive: build it with [`FmmSolver::new`] and the `with_*`
+/// setters.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct FmmSolver {
     /// Medium the dipoles sit in.
     pub green: Kelvin,

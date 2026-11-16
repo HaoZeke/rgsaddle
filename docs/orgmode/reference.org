@@ -6,6 +6,8 @@ The API documentation for every public item is on [[https://docs.rs/rgsaddle][do
 =cargo doc --open= builds the same pages from a checkout.
 Runnable examples open =BandSession=, =AutoNeb=, =OcinebSession=, =MinModeSession=, =Index1Session=, =IndexKSession=, =SolidDimer=, =SolidNeb=, =Stencil= and the =ohtst= module, and, with =--features capi=, the C band, min-mode and stencil handles.
 =cargo test --doc= runs them.
+Every public configuration struct is non-exhaustive.
+Start from =Default= or the type's named constructor and chain the =with_*= setters, as in =BandConfig::default().with_force_tol(1e-3)=.
 The table below lists the main types.
 
 | Type                           | Role                                                                                                               |

@@ -269,7 +269,11 @@ impl HopVariant {
 ///
 /// A missing bound does not constrain that check. The floor always
 /// applies: a predicted barrier at or below [`Self::floor`] needs a search.
+///
+/// Non-exhaustive: start from [`TrustPolicy::default`] and chain the
+/// `with_*` setters.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct TrustPolicy {
     /// Largest Frobenius norm of `ε` for which the line is used.
     pub radius: Option<f64>,
@@ -307,7 +311,11 @@ impl Default for TrustPolicy {
 ///
 /// `λ(ε) = λ0 + slope : ε`. `λ0` is negative. The line is trusted while
 /// `λ` stays negative and at least as negative as `fraction * λ0`.
+///
+/// Non-exhaustive: build it with [`CurvatureBound::new`] and the
+/// `with_*` setters.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct CurvatureBound {
     /// Unstable-mode curvature at zero strain.
     pub lambda0: f64,
