@@ -411,7 +411,8 @@ pub struct BandReport {
 /// state (orbitals, densities) on the image index tells the two apart
 /// by the row count.
 pub trait BandSurface: Sync {
-    /// Eval.
+    /// Fill `energies[r]` and row `r` of `gradients` for each row `r` of
+    /// `positions`.
     fn eval(
         &self,
         positions: ArrayView2<f64>,

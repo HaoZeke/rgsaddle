@@ -720,6 +720,68 @@ struct OpenWindow {
 /// Growing band.
 ///
 /// [`AutoNebTuning::interpolant`] places each image.
+///
+/// # Examples
+///
+/// AutoNEB between minima B and C of the Müller-Brown surface, one atom
+/// in the plane z = 0. The band starts from its two endpoints, grows to
+/// seven images, and climbs to the saddle near (0.212, 0.293).
+///
+/// ```
+/// use ndarray::{Array1, Array2, ArrayView2, array};
+/// use rgsaddle::{AutoNeb, AutoNebTuning, BandConfig, BandStatus, BandSurface, SaddleError};
+///
+/// # const A: [f64; 4] = [-200.0, -100.0, -170.0, 15.0];
+/// # const XX: [f64; 4] = [-1.0, -1.0, -6.5, 0.7];
+/// # const XY: [f64; 4] = [0.0, 0.0, 11.0, 0.6];
+/// # const YY: [f64; 4] = [-10.0, -10.0, -6.5, 0.7];
+/// # const X0: [f64; 4] = [1.0, 0.0, -0.5, -1.0];
+/// # const Y0: [f64; 4] = [0.0, 0.5, 1.5, 1.0];
+/// # fn muller_brown(x: f64, y: f64) -> (f64, f64, f64) {
+/// #     let (mut e, mut gx, mut gy) = (0.0, 0.0, 0.0);
+/// #     for i in 0..4 {
+/// #         let (dx, dy) = (x - X0[i], y - Y0[i]);
+/// #         let t = A[i] * (XX[i] * dx * dx + XY[i] * dx * dy + YY[i] * dy * dy).exp();
+/// #         e += t;
+/// #         gx += t * (2.0 * XX[i] * dx + XY[i] * dy);
+/// #         gy += t * (XY[i] * dx + 2.0 * YY[i] * dy);
+/// #     }
+/// #     (e, gx, gy)
+/// # }
+/// struct MullerBrown;
+///
+/// impl BandSurface for MullerBrown {
+///     fn eval(
+///         &self,
+///         positions: ArrayView2<f64>,
+///         energies: &mut Array1<f64>,
+///         gradients: &mut Array2<f64>,
+///     ) -> Result<(), SaddleError> {
+///         for (i, r) in positions.outer_iter().enumerate() {
+///             let (e, gx, gy) = muller_brown(r[0], r[1]);
+///             energies[i] = e;
+///             gradients.row_mut(i).assign(&array![gx, gy, 0.0]);
+///         }
+///         Ok(())
+///     }
+/// }
+///
+/// let endpoints = array![[-0.050011, 0.466694, 0.0], [0.623499, 0.028038, 0.0]];
+/// let config = BandConfig {
+///     force_tol: 1e-2,
+///     max_move: 0.05,
+///     autoneb: Some(AutoNebTuning { n_max: 7, ..AutoNebTuning::default() }),
+///     ..BandConfig::default()
+/// };
+/// let mut autoneb = AutoNeb::new(config, endpoints)?;
+/// let report = autoneb.run(&MullerBrown)?;
+///
+/// assert_eq!(report.status, BandStatus::Converged);
+/// assert_eq!(report.n_images, 7);
+/// let saddle = autoneb.positions().row(report.ci_index.unwrap()).to_owned();
+/// assert!((saddle[0] - 0.212).abs() < 0.01 && (saddle[1] - 0.293).abs() < 0.01);
+/// # Ok::<(), SaddleError>(())
+/// ```
 pub struct AutoNeb {
     band: BandConfig,
     tuning: AutoNebTuning,

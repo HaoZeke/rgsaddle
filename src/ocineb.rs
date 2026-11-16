@@ -266,12 +266,82 @@ impl<S: BandSurface + PointSurface> BandSurface for Handoff<'_, S> {
 }
 
 /// Host-stepped CI-NEB to minimum-mode hand-off.
+///
+/// # Examples
+///
+/// OCI-NEB between minima B and C of the Müller-Brown surface, one atom
+/// in the plane z = 0. The surface serves the band through
+/// [`BandSurface`] and the climbing image's mode estimate through
+/// [`PointSurface`].
+///
+/// ```
+/// use ndarray::{Array1, Array2, ArrayView1, ArrayView2, array};
+/// use rgsaddle::{
+///     BandSurface, OcinebConfig, OcinebSession, OcinebStatus, PointSurface, SaddleError,
+///     linear_path,
+/// };
+///
+/// # const A: [f64; 4] = [-200.0, -100.0, -170.0, 15.0];
+/// # const XX: [f64; 4] = [-1.0, -1.0, -6.5, 0.7];
+/// # const XY: [f64; 4] = [0.0, 0.0, 11.0, 0.6];
+/// # const YY: [f64; 4] = [-10.0, -10.0, -6.5, 0.7];
+/// # const X0: [f64; 4] = [1.0, 0.0, -0.5, -1.0];
+/// # const Y0: [f64; 4] = [0.0, 0.5, 1.5, 1.0];
+/// # fn muller_brown(x: f64, y: f64) -> (f64, f64, f64) {
+/// #     let (mut e, mut gx, mut gy) = (0.0, 0.0, 0.0);
+/// #     for i in 0..4 {
+/// #         let (dx, dy) = (x - X0[i], y - Y0[i]);
+/// #         let t = A[i] * (XX[i] * dx * dx + XY[i] * dx * dy + YY[i] * dy * dy).exp();
+/// #         e += t;
+/// #         gx += t * (2.0 * XX[i] * dx + XY[i] * dy);
+/// #         gy += t * (XY[i] * dx + 2.0 * YY[i] * dy);
+/// #     }
+/// #     (e, gx, gy)
+/// # }
+/// struct MullerBrown;
+///
+/// impl PointSurface for MullerBrown {
+///     fn eval(&self, r: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+///         let (e, gx, gy) = muller_brown(r[0], r[1]);
+///         Ok((e, array![gx, gy, 0.0]))
+///     }
+/// }
+///
+/// impl BandSurface for MullerBrown {
+///     fn eval(
+///         &self,
+///         positions: ArrayView2<f64>,
+///         energies: &mut Array1<f64>,
+///         gradients: &mut Array2<f64>,
+///     ) -> Result<(), SaddleError> {
+///         for (i, r) in positions.outer_iter().enumerate() {
+///             let (e, g) = PointSurface::eval(self, r)?;
+///             energies[i] = e;
+///             gradients.row_mut(i).assign(&g);
+///         }
+///         Ok(())
+///     }
+/// }
+///
+/// let b = array![-0.050011, 0.466694, 0.0];
+/// let c = array![0.623499, 0.028038, 0.0];
+/// let mut config = OcinebConfig::default();
+/// config.band.max_move = 0.05;
+/// config.band.force_tol = 1e-2;
+/// let mut session = OcinebSession::new(config, linear_path(b.view(), c.view(), 7, None)?)?;
+/// let report = session.run(&MullerBrown, 2000)?;
+///
+/// assert_eq!(report.status, OcinebStatus::Converged);
+/// let saddle = session.positions().row(report.ci_index.unwrap()).to_owned();
+/// assert!((saddle[0] - 0.212).abs() < 0.01 && (saddle[1] - 0.293).abs() < 0.01);
+/// # Ok::<(), SaddleError>(())
+/// ```
 pub struct OcinebSession {
     band: BandSession,
 }
 
 impl OcinebSession {
-    /// New.
+    /// Open the band on `initial`, one image per row, endpoints included.
     pub fn new(config: OcinebConfig, initial: Array2<f64>) -> Result<Self, SaddleError> {
         validate(&config)?;
         if !(config.minmode.dr.is_finite() && config.minmode.dr > 0.0) {
@@ -378,7 +448,7 @@ impl OcinebSession {
         })
     }
 
-    /// Run.
+    /// Loop [`Self::step`] until convergence or `max_steps` steps.
     pub fn run<S: BandSurface + PointSurface>(
         &mut self,
         surface: &S,
