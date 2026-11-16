@@ -1,0 +1,5 @@
+~BandConfig::with_fixed_atoms~ takes a per-atom mask shared by every image of a band, and ~BandSession::set_fixed_atoms~ sets it between steps.
+Fixed atoms never move under FIRE, L-BFGS, quick-min, ODE12r or the trust-region band, carry no force in the step or the report, and are left out of the tangents, the springs, the climbing image and the min-mode refinement; with any atom fixed the mean force stays.
+Endpoints that place a fixed atom differently are refused, and a mask with no fixed atom is the band without a mask to the bit.
+The exponential metric (Packwood et al. 2016, as Makri, Ortner and Kermode, J. Chem. Phys. 150, 094109 (2019), apply it) is then built on the free atoms, with fixed atoms still counted as neighbours, so it runs with fixed atoms.
+The C ABI moves to minor 39 with ~rgsaddle_band_set_fixed_atoms~ and ~rgsaddle_band_project_fixed~, Python's ~project_band~ takes ~fixed~, and ~rgsaddle.ase.NEB~ reads ~FixAtoms~ from its images.

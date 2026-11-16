@@ -285,6 +285,33 @@ def _image_positions(images: list[Any]) -> Float64:
     return np.ascontiguousarray(np.stack(rows), dtype=np.float64)
 
 
+def _fixed_atoms(images: list[Any]) -> Uint8 | None:
+    """One byte per atom, 1 where ``FixAtoms`` holds it, or None.
+
+    Every image must fix the same atoms. Other constraints stay with
+    the calculator path: ``get_forces()`` applies them.
+    """
+    masks: list[Uint8] = []
+    for image in images:
+        mask = np.zeros(len(image), dtype=np.uint8)
+        constraints = getattr(image, "constraints", None) or []
+        if constraints:
+            from ase.constraints import FixAtoms
+
+            for constraint in constraints:
+                if isinstance(constraint, FixAtoms):
+                    mask[np.asarray(constraint.index, dtype=np.int64)] = 1
+        masks.append(mask)
+    if not masks or not masks[0].any():
+        if any(mask.any() for mask in masks):
+            raise ValueError("FixAtoms must fix the same atoms in every image")
+        return None
+    for index, mask in enumerate(masks[1:], start=1):
+        if not np.array_equal(mask, masks[0]):
+            raise ValueError(f"image {index} fixes other atoms than image 0")
+    return masks[0]
+
+
 class _NebView:
     """ASE optimizable view of interior images."""
 
@@ -342,6 +369,12 @@ class NEB:
     removes the mean Cartesian force. It does not rotate the images:
     a Kabsch step would move the geometry the calculator sees, and the
     unit tangent already fixes the path direction.
+
+    ``FixAtoms`` on the images is the band's fixed-atom mask (rgsaddle
+    ABI minor 39): those atoms get zero force rows, tangents and
+    springs use the free atoms, and the mean force stays even with
+    ``remove_rotation_and_translation``. Every image must fix the same
+    atoms, and the endpoints must agree on where they sit.
 
     Lengths and energies are the calculator's.
     """
@@ -414,10 +447,14 @@ class NEB:
             raise ValueError("interpolation needs two endpoints and one interior image")
         start = np.asarray(self.images[0].get_positions(), dtype=np.float64)
         end = np.asarray(self.images[-1].get_positions(), dtype=np.float64)
+        fixed = _fixed_atoms(self.images)
         last = len(self.images) - 1
         for index, image in enumerate(self.images[1:-1], start=1):
             weight = index / last
-            image.set_positions((1.0 - weight) * start + weight * end, apply_constraint=False)
+            row = (1.0 - weight) * start + weight * end
+            if fixed is not None:
+                row[fixed == 1] = start[fixed == 1]
+            image.set_positions(row, apply_constraint=False)
 
     def get_positions(self) -> Float64:
         blocks = [
@@ -457,6 +494,7 @@ class NEB:
             projection=self._projection,
             tangent=self._tangent,
             remove_translation=self.remove_rotation_and_translation,
+            fixed=_fixed_atoms(self.images),
         )
         count = len(self.images)
         natoms = len(self.images[0])

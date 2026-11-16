@@ -14,6 +14,8 @@ The spring constant defaults to 0.1, ASE's value. A ~BandSession~ still defaults
 
 ~remove_rotation_and_translation=True~ removes the mean Cartesian force. It does not rotate an image onto its neighbour. A Kabsch rotation would change the geometry the calculator evaluates, and the unit tangent already fixes the path direction.
 
+~FixAtoms~ on the images is read into the band's fixed-atom mask, as ~rgsaddle_band_set_fixed_atoms~ takes it from C. The fixed atoms get zero force rows, keep the mean force even with ~remove_rotation_and_translation=True~, and stay where the first image has them through ~interpolate()~. Every image must fix the same atoms. Other constraints act through ~get_forces()~ as before.
+
 Image freezing (ASE's dynamic NEB) is not implemented.
 
 * From ASE's dimer and from Sella

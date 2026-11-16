@@ -936,7 +936,7 @@ int32_t projection_code(const std::string &name) {
 
 nb::tuple project_band(Matrix positions, Vector energies, Matrix gradients, double k, bool climb,
                        const std::string &projection, const std::string &tangent,
-                       bool remove_translation, double force_tol) {
+                       bool remove_translation, double force_tol, nb::handle fixed) {
   if (positions.shape(0) < 3 || positions.shape(1) <= 0 || positions.shape(1) % 3 != 0) {
     throw nb::value_error("positions must be (images >= 3, 3N)");
   }
@@ -967,10 +967,19 @@ nb::tuple project_band(Matrix positions, Vector energies, Matrix gradients, doub
   config.ci_trigger_factor = climb ? 1.0 : 0.0;
   config.force_tol = force_tol;
   config.max_move = 0.2;
+  std::vector<std::uint8_t> mask;
+  if (!fixed.is_none()) {
+    auto view = nb::cast<nb::ndarray<const std::uint8_t, nb::ndim<1>, nb::c_contig, nb::device::cpu>>(fixed);
+    if (static_cast<std::int64_t>(view.shape(0)) != dof / 3) {
+      throw nb::value_error("fixed must hold one entry per atom");
+    }
+    mask.assign(view.data(), view.data() + view.shape(0));
+  }
   std::vector<double> forces(static_cast<std::size_t>(rows * dof), 0.0);
   std::int64_t ci = -1;
-  const auto status = rgsaddle_band_project(&config, rows, dof / 3, positions.data(), energies.data(),
-                                            gradients.data(), forces.data(), &ci);
+  const auto status =
+      rgsaddle_band_project_fixed(&config, rows, dof / 3, positions.data(), energies.data(), gradients.data(),
+                                  mask.empty() ? nullptr : mask.data(), forces.data(), &ci);
   if (status != RGSADDLE_OK) {
     status_error(status);
   }
@@ -1247,17 +1256,21 @@ NB_MODULE(_core, m) {
       "project_band", &project_band, nb::arg("positions").noconvert(), nb::arg("energies").noconvert(),
       nb::arg("gradients").noconvert(), nb::arg("k") = 0.1, nb::arg("climb") = false,
       nb::arg("projection") = "neb", nb::arg("tangent") = "improved",
-      nb::arg("remove_translation") = false, nb::arg("force_tol") = 1e-3,
+      nb::arg("remove_translation") = false, nb::arg("force_tol") = 1e-3, nb::arg("fixed") = nb::none(),
       nb::sig("def project_band(positions: numpy.typing.NDArray[numpy.float64], energies: "
               "numpy.typing.NDArray[numpy.float64], gradients: numpy.typing.NDArray[numpy.float64], "
               "k: float = 0.1, climb: bool = False, projection: str = 'neb', tangent: str = 'improved', "
-              "remove_translation: bool = False, force_tol: float = 0.001) -> "
+              "remove_translation: bool = False, force_tol: float = 0.001, "
+              "fixed: numpy.typing.NDArray[numpy.uint8] | None = None) -> "
               "tuple[numpy.typing.NDArray[numpy.float64], int]"),
       "Project an evaluated band. Returns (forces, ci_index). forces is flat, "
       "one row per image including zero endpoints, in the ASE force convention. "
       "climb selects the interior image by the endpoint-slope rule on this call; "
       "a higher endpoint that slopes into the band does not climb. Units are the "
-      "caller's. k is energy per length squared.");
+      "caller's. k is energy per length squared. fixed is one uint8 per atom, 1 "
+      "for a fixed atom (ABI minor 39): its force rows are zero, tangents and "
+      "springs use the free atoms, and the mean force stays. The endpoints must "
+      "agree on every fixed atom.");
 
   m.def(
       "reparametrize", &reparametrize_py, nb::arg("positions").noconvert(), nb::arg("scheme") = "linear",
