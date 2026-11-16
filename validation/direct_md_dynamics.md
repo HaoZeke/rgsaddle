@@ -46,8 +46,11 @@ Random-vacancy ensembles as in `direct_md_random.md`: the through-origin fit of 
 |---:|:---|:---|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | 300 | Table 1, k-method | - | - | 100 | - | - | 3.631 | 21.98 | 2.04 | 0.143 ± 0.006 | 254 | 21 | 254 | 21 | - |
 | 500 | Langevin, γ = 0.1/ps | coordination | `direct_md_random.csv` | 192 | 149 | 1500 | 3.638666 | 92.33 | 8.07 | 1.075 ± 0.040 | 141.62 | 13.43 | 289.44 | 25.51 | 1.563 ± 0.238 |
+| 500 | Langevin, γ = 0.1/ps | site_occupancy | `direct_md_random_sites_langevin_500K.csv` | 96 | 82 | 1500 | 3.644035 | 133.29 | 16.42 | 1.059 ± 0.045 | 207.23 | 27.00 | 417.23 | 51.63 | 2.256 ± 0.396 |
+| 500 | NPH then NVE, rescaled | site_occupancy | `direct_md_random_sites_nph_nve_500K.csv` | 96 | 77 | 1500 | 3.645023 | 130.67 | 14.47 | 1.145 ± 0.064 | 187.88 | 23.29 | 408.92 | 45.52 | 2.212 ± 0.369 |
 | 500 | Table 1, k-method | - | - | 100 | - | - | 3.643 | 59.08 | 7.38 | 0.526 ± 0.006 | 185 | 23 | 185 | 23 | - |
 | 700 | Table 1, k-method | - | - | 100 | - | - | 3.655 | 112.53 | 5.74 | 0.910 ± 0.012 | 203 | 10 | 203 | 10 | - |
 
+At 500 K with the site detector, NPH then NVE, rescaled over Langevin, γ = 0.1/ps: k ratio 0.980 ± 0.162 (z = -0.12).
 
 Table 1, 8788 atoms: 300 K 254 ± 21 Ω (k-method), 286 ± 28 Ω (mean-time); 500 K 185 ± 23 Ω (k-method), 161 ± 15 Ω (mean-time); 700 K 203 ± 10 Ω (k-method), 210 ± 21 Ω (mean-time).
