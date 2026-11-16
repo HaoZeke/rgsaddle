@@ -17,9 +17,9 @@
 
 use ndarray::array;
 use rgsaddle::{
-    AnharmonicConfig, Hyperplane, LangevinConfig, MinModeConfig, MinModeSession, MinModeStatus,
-    PlaneOptimizer, PlaneOptimizerConfig, ReversibleWorkConfig, anharmonic_correction, ohtst_rate,
-    reactant_density, reversible_work,
+    AnharmonicConfig, BasinConfig, Hyperplane, LangevinConfig, MinModeConfig, MinModeSession,
+    MinModeStatus, PlaneOptimizer, PlaneOptimizerConfig, ReversibleWorkConfig,
+    anharmonic_correction, basin_density, ohtst_rate, reactant_density, reversible_work,
 };
 
 include!(concat!(
@@ -33,7 +33,7 @@ include!(concat!(
 
 use ohtst_surfaces::{
     SKEWED_ALPHA, SKEWED_K0, SkewedWell, descend, eigen2, half_plane_integral, hessian,
-    line_free_energy, stationary,
+    line_free_energy, line_integral, stationary,
 };
 use plane_manifold::PointSphereFixture;
 
@@ -330,4 +330,33 @@ fn skewed_well_optimum_and_rate_at_high_temperature() {
         rate.log_rate_error
     );
     assert!(rate.log_rate_error < 0.08);
+}
+
+/// Parallel planes along `(1, 1)` around the reactant at `kT = 0.1` give
+/// `Z_H(0) / Z_R` within errors of quadrature, with `Z_R` taken behind the
+/// parallel line through the saddle. The outermost plane stays behind
+/// that line.
+#[test]
+fn skewed_well_basin_density_against_quadrature() {
+    let kt = 0.1;
+    let normal = [1.0, 1.0];
+    let exact = line_integral(SkewedWell::energy, REACTANT, normal, kt, 0.0, EXTENT)
+        / half_plane_integral(SkewedWell::energy, [0.0, 0.0], normal, kt, 0.0, EXTENT);
+    let config = BasinConfig::default().with_sampler(sampler(kt, 0.1).with_records(4000));
+    let reactant = array![REACTANT[0], REACTANT[1]];
+    let result = basin_density(
+        &SkewedWell,
+        reactant.view(),
+        array![normal[0], normal[1]].view(),
+        &config,
+    )
+    .unwrap();
+    assert!(*result.offsets.last().unwrap() < 2.0f64.sqrt());
+    assert!(
+        (result.density - exact).abs() < 4.0 * result.density_error,
+        "{} ± {} against {exact}",
+        result.density,
+        result.density_error
+    );
+    assert!(result.density_error < 0.02 * exact);
 }

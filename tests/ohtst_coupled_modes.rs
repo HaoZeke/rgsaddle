@@ -16,8 +16,8 @@
 
 use ndarray::{Array1, ArrayView1};
 use rgsaddle::{
-    AnharmonicConfig, HarmonicReference, Hyperplane, LangevinConfig, PointSurface, SaddleError,
-    anharmonic_correction, sample_plane,
+    AnharmonicConfig, BasinConfig, HarmonicReference, Hyperplane, LangevinConfig, PointSurface,
+    SaddleError, anharmonic_correction, basin_density, sample_plane,
 };
 
 include!(concat!(
@@ -383,4 +383,40 @@ fn coupled_modes_control_variates() {
     assert!(worst < 4.5, "torque {worst} errors off");
     let ratio = tilted.centroid_torque_error.sum() / raw.centroid_torque_error.sum();
     assert!(ratio < 0.3, "torque error ratio {ratio}");
+}
+
+/// Parallel planes along `q₁` around the minimum at `kT = 0.2` give
+/// `Z_H(0) / Z_R` within errors of the product quadrature. The Hessian at
+/// the minimum is block diagonal there, so `σ_ξ = (kT / 8V₀)^½`.
+#[test]
+fn coupled_modes_basin_density() {
+    let model = CoupledModes::new();
+    let kt = 0.2;
+    let axis = model.axis();
+    let minimum = -&axis;
+    let at = model.log_plane(-1.0, kt);
+    let behind = simpson(
+        &|s: f64| (model.log_plane(s, kt) - at).exp(),
+        -2.5,
+        0.0,
+        1.0e-9,
+    );
+    let exact = 1.0 / behind;
+    let config = BasinConfig::default().with_sampler(
+        LangevinConfig::default()
+            .with_thermal(kt)
+            .with_time_step(0.1)
+            .with_burn_in(300)
+            .with_records(2000)
+            .with_seed(12),
+    );
+    let result = basin_density(&model, minimum.view(), axis.view(), &config).unwrap();
+    assert!((result.spread - (kt / (8.0 * V0)).sqrt()).abs() < 1.0e-6);
+    assert!(
+        (result.density - exact).abs() < 4.0 * result.density_error,
+        "{} ± {} against {exact}",
+        result.density,
+        result.density_error
+    );
+    assert!(result.density_error < 0.03 * exact);
 }
