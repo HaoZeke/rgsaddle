@@ -1,0 +1,4 @@
+The ~msrv~ CI job reads ~rust-version~ from ~Cargo.toml~ with ~cargo metadata~ and installs that toolchain.
+On it, the job runs clippy with ~-D warnings~ on ~--features capi~, and on all targets with ~readcon~, ~readcon,readcon-db~ and ~capi,verify~, as the stable jobs do.
+It then builds and tests ~--features capi~, all with ~--locked~.
+Every job built on stable before, so the ~nonminimal_bool~ and ~needless_range_loop~ findings that only clippy 1.88 reports reached develop.

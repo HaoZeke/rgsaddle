@@ -139,3 +139,43 @@ jobs:
         run: cargo clippy --locked --all-targets --features ${{ matrix.features }} -- -D warnings
       - name: Public items are documented
         run: cargo rustdoc --locked --features ${{ matrix.features }} -- -D missing_docs
+
+  # The other jobs build on stable, and clippy's lints change between
+  # releases. This job installs the rust-version from Cargo.toml and
+  # repeats the clippy steps of the test and readcon jobs and of the
+  # rust job in verify.yml on it, then builds and tests the C ABI with
+  # the lockfile. A clippy step added there belongs here too.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build tools for the bundled MPFR
+        run: sudo apt-get update && sudo apt-get install -y m4 make
+      - name: Read rust-version from Cargo.toml
+        id: msrv
+        run: |
+          set -euo pipefail
+          version="$(cargo metadata --no-deps --format-version 1 | jq -er '.packages[] | select(.name == "rgsaddle") | .rust_version')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Install Rust ${{ steps.msrv.outputs.version }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+          components: clippy
+      # Only main and develop save the cache. A pull request restores its
+      # base branch's entry, which per-branch saves would evict.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
+      - name: Clippy (capi)
+        run: cargo clippy --locked --features capi -- -D warnings
+      - name: Clippy (readcon)
+        run: cargo clippy --locked --all-targets --features readcon -- -D warnings
+      - name: Clippy (readcon,readcon-db)
+        run: cargo clippy --locked --all-targets --features readcon,readcon-db -- -D warnings
+      - name: Clippy (capi,verify)
+        run: cargo clippy --locked --all-targets --features capi,verify -- -D warnings
+      - name: Build the C ABI library
+        run: cargo build --locked --features capi
+      - name: Test
+        run: cargo test --locked --features capi
