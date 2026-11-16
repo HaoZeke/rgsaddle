@@ -24,8 +24,10 @@
 //! at a fixed volume or lattice parameter for each temperature is a
 //! surface built with that cell.
 
+mod optimize;
 mod plane;
 mod sample;
 
+pub use optimize::{PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum, PlaneStep, PlaneTrace};
 pub use plane::{Hyperplane, MassWeighted};
 pub use sample::{LangevinConfig, PlaneSample, sample_plane};
