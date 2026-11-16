@@ -144,7 +144,12 @@ fn fnv1a(hash: &mut u64, value: f64) {
 /// over the Krylov block of a Lanczos session.
 fn search_hash(config: MinModeConfig, steps: usize) -> u64 {
     let (x, mode) = start();
+    let lanczos = config.kind == MinModeKind::Lanczos;
     let mut session = MinModeSession::new(config, x, mode).unwrap();
+    // The allocating code ran every Lanczos estimate to its residual.
+    if lanczos {
+        session.set_torque_window(Some(false));
+    }
     let mut hash = 0xcbf2_9ce4_8422_2325;
     for _ in 0..steps {
         let report = session.step(&Saddle).unwrap();

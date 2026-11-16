@@ -24,7 +24,7 @@ Image freezing (ASE's dynamic NEB) is not implemented.
 ~rgsaddle.ase.Sella(atoms, order=1)~ is the saddle optimizer. ~run(fmax, steps)~ is ASE's loop. One step is the partitioned rational-function trust step, not a dimer translation. Masses come from ~atoms.get_masses~.
 
 * From eOn
-The band tangents, springs, projections, and the climbing-image arm follow eOn's branch structure. ~CiConfig::after(0.5)~ is eOn's ~ci_after~. ~after_rel~ is ~ci_after_rel~. ~always~ climbs from the first evaluation. The minimum-mode dimer stops on eOn's torque window at the stock residual, and ~rotation_angle_tol~ defaults to five degrees.
+The band tangents, springs, projections, and the climbing-image arm follow eOn's branch structure. ~CiConfig::after(0.5)~ is eOn's ~ci_after~. ~after_rel~ is ~ci_after_rel~. ~always~ climbs from the first evaluation. The minimum-mode dimer stops on eOn's torque window at the stock residual, and ~rotation_angle_tol~ defaults to five degrees. Lanczos stops on the same window at two vectors. eOn's Lanczos stops on the relative change of its lowest Ritz value (~lanczos_tolerance~), which ~set_lanczos_rel_tol~ sets here without the window.
 
 eOn's client reads a config file and a potential plugin. Here the host passes positions and a surface. There is no system name, species table, or potential key in the session. A solid-state band takes one cell per image and the Cauchy stress through ~BandSurface::eval_cells~.
 

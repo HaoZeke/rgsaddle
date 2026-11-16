@@ -126,7 +126,8 @@ pub enum MinModeKind {
     Dimer,
     /// Lanczos on finite-difference Hessian actions: a Krylov
     /// subspace per compute, one gradient per action, stopped when
-    /// the lowest Ritz pair's residual meets `rotation_tol`.
+    /// the lowest Ritz pair's residual meets `rotation_tol`, or under
+    /// the dimer's torque window once two vectors leave it under 1.
     Lanczos,
 }
 
@@ -160,7 +161,8 @@ pub struct MinModeConfig {
     /// Rotation stops when the rotational force `|H v - (v.H v) v|`
     /// falls under this. The default is 1e-4. At that value and any
     /// looser one, the dimer also stops after one rotation once the
-    /// rotational force is under 1. A tighter value keeps driving the
+    /// rotational force is under 1, and Lanczos once two vectors leave
+    /// the Ritz residual under 1. A tighter value keeps driving the
     /// residual, and the torque window stays out of that loop.
     /// [`MinModeSession::set_torque_window`] turns the window on or off
     /// whatever this value is. Lanczos
@@ -317,12 +319,14 @@ pub const MODE_RESET_ANGLE: f64 = 0.25 * PI;
 pub const DEFAULT_ROTATION_ANGLE_TOL: f64 = 5.0 * PI / 180.0;
 
 /// Stock rotational-force residual. At this value and looser, the dimer
-/// uses eOn's classic torque window. A stricter residual keeps iterating.
+/// and Lanczos use eOn's classic torque window. A stricter residual
+/// keeps iterating.
 const STOCK_ROTATION_TOL: f64 = 1e-4;
 
 /// eOn `dimer_torque_max`. After one rotation, a rotational force under
 /// this is finished (classic dimer, `torque_min` .. `torque_max`,
-/// `rotations_min` = 1).
+/// `rotations_min` = 1). Lanczos reads it as the Ritz residual once it
+/// holds two vectors.
 const TORQUE_MAX: f64 = 1.0;
 
 /// Scale of the step that replaces a capped FIRE move which left the
@@ -852,8 +856,14 @@ fn rotation_finished(
     {
         return true;
     }
-    let window = torque_window.unwrap_or(config.rotation_tol + 1e-12 >= STOCK_ROTATION_TOL);
-    window && rotations >= 1 && force_norm < TORQUE_MAX
+    torque_window_on(config, torque_window) && rotations >= 1 && force_norm < TORQUE_MAX
+}
+
+/// Whether the classic torque window applies: `torque_window` when it
+/// is `Some`, otherwise exactly when `rotation_tol` is at least
+/// [`STOCK_ROTATION_TOL`].
+fn torque_window_on(config: &MinModeConfig, torque_window: Option<bool>) -> bool {
+    torque_window.unwrap_or(config.rotation_tol + 1e-12 >= STOCK_ROTATION_TOL)
 }
 
 /// Climb along `mode` by one full per-atom `max_move`.
@@ -1015,6 +1025,8 @@ struct LanczosStop {
     early: bool,
     /// [`MinModeSession::set_rotation_stop_length`]; 0 is off.
     length: f64,
+    /// The classic torque window of [`rotation_finished`].
+    window: bool,
 }
 
 /// Krylov vectors of one Lanczos estimate with their Hessian actions.
@@ -1026,7 +1038,9 @@ pub type KrylovBlock = Vec<(Array1<f64>, Array1<f64>)>;
 /// 121, 9776 (2004), doi:10.1063/1.1809574, as eOn implements it: stop
 /// when the relative change in the lowest Ritz value falls under
 /// `rotation_tol`, or when the residual `beta |s|` does. A seed that
-/// is already the mode closes the Krylov on the first product.
+/// is already the mode closes the Krylov on the first product. Under
+/// the torque window the estimate also stops once it holds two vectors
+/// and the residual is under [`TORQUE_MAX`], where the dimer stops.
 #[allow(clippy::too_many_arguments)]
 fn lanczos_mode<S: PointSurface>(
     surface: &Counted<'_, S>,
@@ -1125,8 +1139,15 @@ fn lanczos_mode<S: PointSurface>(
         // force-error stop reads the same pair.
         let residual_ok = residual <= config.rotation_tol
             || rotation_force_converged(residual, theta, stop.length, config.force_tol);
+        // The first two vectors span the dimer's rotation plane {v, H v},
+        // and their Ritz vector is the dimer rotated to the lowest
+        // curvature in it (Zeng, Xiao, and Henkelman, J. Chem. Phys. 140,
+        // 044115 (2014), doi:10.1063/1.4862410). The window ends both
+        // estimates on the same rotational force. It is not a converged
+        // solve: the next estimate still spends its second product.
+        let windowed = stop.window && j >= 1 && residual < TORQUE_MAX;
         let capped = alpha.len() == m;
-        if residual_ok || agreed || capped || b <= 1e-12 {
+        if residual_ok || agreed || windowed || capped || b <= 1e-12 {
             let mut mode = Array1::zeros(n);
             for (qi, &si) in q[..=j].iter().zip(s.iter()) {
                 Zip::from(&mut mode).and(qi).for_each(|m, &q| *m += q * si);
@@ -1761,9 +1782,11 @@ impl MinModeSession {
 
     /// Stop a Lanczos estimate when the lowest Ritz value's relative
     /// change falls under `tol`. The improved Lanczos search uses this
-    /// so a translation does not wait for a tight residual. `None`
-    /// restores the stock residual and the relative Ritz change, both
-    /// at `rotation_tol`.
+    /// so a translation does not wait for a tight residual. A set
+    /// tolerance also leaves the inferred torque window out; only
+    /// [`MinModeSession::set_torque_window`] with `Some(true)` adds it.
+    /// `None` restores the stock residual and the relative Ritz change,
+    /// both at `rotation_tol`, and the inferred window.
     pub fn set_lanczos_rel_tol(&mut self, tol: Option<f64>) -> Result<(), SaddleError> {
         if let Some(tol) = tol
             && !(tol.is_finite() && tol > 0.0)
@@ -1786,10 +1809,14 @@ impl MinModeSession {
     /// Turn the classic dimer torque window on or off apart from
     /// `rotation_tol`. With the window on, a rotation also stops after
     /// one iteration once the rotational force is under 1 (eOn
-    /// `torque_max`). `None`, the default, keeps the window on exactly
-    /// when `rotation_tol` is at least the stock 1e-4. eOn's improved
-    /// dimer stops on `torque_min` (0.1) with no window, which is
-    /// `rotation_tol` 0.1 and `Some(false)`. Lanczos does not read it.
+    /// `torque_max`), and a Lanczos estimate stops once two vectors
+    /// leave the Ritz residual, the rotational force of the Ritz
+    /// vector, under 1. `None`, the default, keeps the window on exactly
+    /// when `rotation_tol` is at least the stock 1e-4, and for Lanczos
+    /// only while no [`MinModeSession::set_lanczos_rel_tol`] is set.
+    /// eOn's improved dimer stops on `torque_min` (0.1) with no window,
+    /// which is `rotation_tol` 0.1 and `Some(false)`. `Some(false)` is
+    /// also the Lanczos estimate that runs to its residual.
     pub fn set_torque_window(&mut self, window: Option<bool>) {
         self.torque_window = window;
     }
@@ -2281,6 +2308,12 @@ impl MinModeSession {
             self.curvature
         };
         let early = !replaced_seed && self.lanczos_ready;
+        // A host relative tolerance is that host's own stop, so only an
+        // explicit window applies on top of it.
+        let window = match self.lanczos_rel_tol {
+            Some(_) => self.torque_window == Some(true),
+            None => torque_window_on(&self.config, self.torque_window),
+        };
         let mut work = std::mem::take(&mut self.lanczos_work);
         let answer = lanczos_mode(
             surface,
@@ -2293,6 +2326,7 @@ impl MinModeSession {
                 previous,
                 early,
                 length: self.rotation_stop_length,
+                window,
             },
             block,
             &mut work,
@@ -2355,9 +2389,10 @@ impl MinModeSession {
 
     /// Advance a Lanczos estimate by one Hessian action.
     ///
-    /// [`MinModeSession::estimate_mode`] runs the residual test to
-    /// completion. A host that judges the mode itself (an overlap with
-    /// a vector it does not hand to the session) repeats this call.
+    /// [`MinModeSession::estimate_mode`] runs to its own stop, the
+    /// residual test or the torque window. A host that judges the mode
+    /// itself (an overlap with a vector it does not hand to the
+    /// session) repeats this call.
     /// The Krylov basis stays until the geometry or the seed changes,
     /// and it grows to the free dimension rather than stopping at
     /// `krylov_dim`. Returning the same vector after the residual test
@@ -3485,6 +3520,72 @@ mod tests {
         assert!(residual > window);
         assert!(torque(&early) < 1.0);
         assert_eq!((window, early), dimer_rotations(0.1, None));
+    }
+
+    fn windowed_estimate(
+        kind: MinModeKind,
+        rotation_tol: f64,
+        window: Option<bool>,
+        rel_tol: Option<f64>,
+    ) -> (super::ModeEstimate, bool) {
+        let config = MinModeConfig::default()
+            .with_kind(kind)
+            .with_rotation_tol(rotation_tol)
+            .with_rotation_angle_tol(0.0);
+        let mut session = MinModeSession::new(
+            config,
+            array![0.3, 0.2, 0.1, 0.4],
+            array![1.0, 0.3, 0.2, 0.1],
+        )
+        .unwrap();
+        session.set_torque_window(window);
+        session.set_lanczos_rel_tol(rel_tol).unwrap();
+        let estimate = session.estimate_mode(&AnisotropicQuadratic).unwrap();
+        (estimate, session.lanczos_ready)
+    }
+
+    /// The seed's rotational force is 1.6, and one rotation in
+    /// span{v, H v} leaves 0.71. One stock dimer rotation and the
+    /// two-vector Lanczos estimate both take the lowest curvature in that
+    /// plane (Zeng, Xiao, and Henkelman, J. Chem. Phys. 140, 044115
+    /// (2014), doi:10.1063/1.4862410), and the torque window ends both
+    /// there.
+    #[test]
+    fn stock_lanczos_stops_where_one_dimer_rotation_does() {
+        let (dimer, _) = windowed_estimate(MinModeKind::Dimer, 1e-4, None, None);
+        let (lanczos, ready) = windowed_estimate(MinModeKind::Lanczos, 1e-4, None, None);
+        assert_eq!(dimer.rotations, 1);
+        assert_eq!(lanczos.rotations, 2);
+        assert_eq!(lanczos.evaluations, dimer.evaluations);
+        assert_abs_diff_eq!(lanczos.curvature, dimer.curvature, epsilon = 1e-8);
+        assert_abs_diff_eq!(lanczos.mode.dot(&dimer.mode).abs(), 1.0, epsilon = 1e-8);
+        assert!(torque(&lanczos.mode) > 0.1 && torque(&lanczos.mode) < 1.0);
+        assert!(!ready, "a windowed estimate is not a converged solve");
+    }
+
+    #[test]
+    fn lanczos_reads_the_torque_window() {
+        let stock = windowed_estimate(MinModeKind::Lanczos, 1e-4, None, None).0;
+        let (off, ready) = windowed_estimate(MinModeKind::Lanczos, 1e-4, Some(false), None);
+        assert!(off.rotations > stock.rotations);
+        assert!(torque(&off.mode) <= 1e-4);
+        assert!(ready);
+        let tight = windowed_estimate(MinModeKind::Lanczos, 1e-6, None, None).0;
+        assert_eq!(tight.rotations, off.rotations);
+        let forced = windowed_estimate(MinModeKind::Lanczos, 1e-6, Some(true), None).0;
+        assert_eq!(forced.rotations, stock.rotations);
+        assert_eq!(forced.mode, stock.mode);
+    }
+
+    #[test]
+    fn a_host_relative_tolerance_keeps_its_own_lanczos_stop() {
+        let host = windowed_estimate(MinModeKind::Lanczos, 1e-4, None, Some(1e-3)).0;
+        let off = windowed_estimate(MinModeKind::Lanczos, 1e-4, Some(false), Some(1e-3)).0;
+        assert_eq!(host.rotations, off.rotations);
+        assert_eq!(host.mode, off.mode);
+        assert!(host.rotations > 2);
+        let on = windowed_estimate(MinModeKind::Lanczos, 1e-4, Some(true), Some(1e-3)).0;
+        assert_eq!(on.rotations, 2);
     }
 
     #[test]

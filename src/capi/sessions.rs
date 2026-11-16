@@ -3427,13 +3427,17 @@ mod torque_window_abi_tests {
     }
 
     fn session(rotation_tol: f64) -> *mut RgsaddleMinMode {
+        session_of(0, rotation_tol)
+    }
+
+    fn session_of(kind: i32, rotation_tol: f64) -> *mut RgsaddleMinMode {
         let cfg = RgsaddleMinModeConfig {
             version: RgsaddleVersion {
                 major: RGSADDLE_ABI_MAJOR,
                 minor: RGSADDLE_ABI_MINOR,
             },
             flags: 0,
-            kind: 0,
+            kind,
             method: 0,
             dr: 1e-3,
             rotation_tol,
@@ -3545,5 +3549,37 @@ mod torque_window_abi_tests {
     fn minmode_rotation_stop_length_abi_cuts_rotations() {
         assert_eq!(stopped_rotations(0.0), rotations(1e-6, None));
         assert!(stopped_rotations(1e-3) < stopped_rotations(0.0));
+    }
+
+    fn lanczos_step_actions(window: Option<i32>) -> i64 {
+        let sess = session_of(1, 1e-4);
+        if let Some(window) = window {
+            assert_eq!(
+                unsafe { rgsaddle_minmode_set_torque_window(sess, window) },
+                RGSADDLE_OK
+            );
+        }
+        let mut report = std::mem::MaybeUninit::<RgsaddleReport>::zeroed();
+        let status = unsafe {
+            rgsaddle_minmode_step(
+                sess,
+                Some(quadratic_cb),
+                std::ptr::null_mut(),
+                report.as_mut_ptr(),
+            )
+        };
+        assert_eq!(status, RGSADDLE_OK);
+        unsafe { rgsaddle_minmode_free(sess) };
+        unsafe { report.assume_init() }.rotations
+    }
+
+    /// The seed spans four modes, so four products are exact. The
+    /// three-vector Ritz residual, 0.94, is inside the window.
+    #[test]
+    fn lanczos_session_reads_the_minmode_torque_window_abi() {
+        assert_eq!(lanczos_step_actions(None), 3);
+        assert_eq!(lanczos_step_actions(Some(-1)), 3);
+        assert_eq!(lanczos_step_actions(Some(1)), 3);
+        assert_eq!(lanczos_step_actions(Some(0)), 4);
     }
 }
