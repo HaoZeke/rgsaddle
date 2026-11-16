@@ -727,4 +727,20 @@ mod tests {
         let stable = Hyperplane::new(Array1::zeros(4), model.q.row(1).to_owned()).unwrap();
         assert!(anharmonic_correction(&model, minimum.view(), &stable, &config).is_err());
     }
+
+    /// The contractions to the bit, so a rewrite of `Coupled::exact` keeps
+    /// every rounding.
+    #[test]
+    fn coupled_well_contractions_are_pinned() {
+        let (reactant, plane, slope, curvature) = Coupled::new().exact();
+        assert_eq!(
+            [reactant, plane, slope, curvature].map(f64::to_bits),
+            [
+                0xbf9a_837e_7e4d_1004,
+                0xbfc4_eeee_eeee_eeef,
+                0x3fd9_dddd_dddd_dddd,
+                0x4000_0000_0000_0000,
+            ]
+        );
+    }
 }
