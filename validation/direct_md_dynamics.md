@@ -11,15 +11,19 @@ D for one trajectory is the block mean of |Δr|² over 6τ of the doubly occupie
 | 300 | Langevin, γ = 0.1/ps | `direct_md_sia_d_long.csv` | 3.628311 | 8 | 320 | 40.0 | 0.2770 | 0.0182 | 6.6% | 1.937 ± 0.151 | - | - |
 | 300 | Langevin, γ = 0.01/ps | `direct_md_sia_d_gamma0.01.csv` | 3.628311 | 8 | 320 | 40.0 | 0.2591 | 0.0148 | 5.7% | 1.812 ± 0.128 | 0.935 ± 0.081 | -0.76 |
 | 300 | NPH then NVE, rescaled | `direct_md_sia_d_nph_nve.csv` | 3.632699 | 8 | 320 | 40.0 | 0.3137 | 0.0160 | 5.1% | 2.194 ± 0.145 | 1.132 ± 0.094 | 1.51 |
+| 300 | Langevin, γ = 0.1/ps, zero total pressure | `direct_md_sia_d_p0.csv` | 3.631851 | 8 | 320 | 40.0 | 0.2717 | 0.0157 | 5.8% | 1.900 ± 0.136 | 0.981 ± 0.086 | -0.22 |
 | 500 | Langevin, γ = 0.1/ps | `direct_md_sia_d_long.csv` | 3.638666 | 8 | 320 | 20.0 | 1.0751 | 0.0397 | 3.7% | 2.044 ± 0.079 | - | - |
 | 500 | Langevin, γ = 0.01/ps | `direct_md_sia_d_gamma0.01.csv` | 3.638666 | 8 | 320 | 20.0 | 1.1014 | 0.0422 | 3.8% | 2.094 ± 0.084 | 1.025 ± 0.054 | 0.46 |
 | 500 | NPH then NVE, rescaled | `direct_md_sia_d_nph_nve.csv` | 3.645155 | 8 | 320 | 20.0 | 1.1448 | 0.0638 | 5.6% | 2.176 ± 0.124 | 1.065 ± 0.071 | 0.93 |
+| 500 | Langevin, γ = 0.1/ps, zero total pressure | `direct_md_sia_d_p0.csv` | 3.644035 | 8 | 320 | 20.0 | 1.0590 | 0.0449 | 4.2% | 2.013 ± 0.088 | 0.985 ± 0.055 | -0.27 |
 | 700 | Langevin, γ = 0.1/ps | `direct_md_sia_d_long.csv` | 3.649788 | 8 | 320 | 10.0 | 1.9114 | 0.0822 | 4.3% | 2.100 ± 0.094 | - | - |
 | 700 | Langevin, γ = 0.01/ps | `direct_md_sia_d_gamma0.01.csv` | 3.649788 | 8 | 320 | 10.0 | 1.8306 | 0.0783 | 4.3% | 2.012 ± 0.090 | 0.958 ± 0.058 | -0.71 |
 | 700 | NPH then NVE, rescaled | `direct_md_sia_d_nph_nve.csv` | 3.658733 | 8 | 320 | 10.0 | 2.0717 | 0.1631 | 7.9% | 2.277 ± 0.182 | 1.084 ± 0.097 | 0.88 |
+| 700 | Langevin, γ = 0.1/ps, zero total pressure | `direct_md_sia_d_p0.csv` | 3.657362 | 8 | 320 | 10.0 | 2.0246 | 0.1230 | 6.1% | 2.225 ± 0.138 | 1.059 ± 0.079 | 0.76 |
 
 Langevin, γ = 0.01/ps over Langevin, γ = 0.1/ps: D ratio 0.935 to 1.025 across temperatures.
 NPH then NVE, rescaled over Langevin, γ = 0.1/ps: D ratio 1.065 to 1.132 across temperatures.
+Langevin, γ = 0.1/ps, zero total pressure over Langevin, γ = 0.1/ps: D ratio 0.981 to 1.059 across temperatures.
 Every campaign over Table 1: D ratio 1.812 to 2.277.
 
 Table 1 D_i (Å²/ps): 300 K 0.143 ± 0.006; 500 K 0.526 ± 0.006; 700 K 0.910 ± 0.012.
