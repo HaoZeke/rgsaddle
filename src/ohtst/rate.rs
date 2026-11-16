@@ -8,9 +8,14 @@
 //! k = √(kT/2π) ρ exp(-ΔA/kT),
 //! ```
 //!
-//! with `ρ = Q_Z / Q_R` from [`reactant_density`] on the first plane of
-//! the work path and `ΔA` the [`reversible_work`] from that plane to the
-//! optimal one (Eqs. 2, 3 and 21). The two errors add in `ln k`.
+//! with `ρ = Q_Z / Q_R` the density of the reactant distribution on the
+//! first plane of the work path and `ΔA` the [`reversible_work`] from that
+//! plane to the optimal one (Eqs. 2, 3 and 21). Any [`PlaneDensity`]
+//! supplies `ρ`: [`basin_density`] integrates the mean force over planes
+//! parallel to the first one, and [`reactant_density`] counts the
+//! crossings of that plane by one sampled basin, the paper's Eq. 22, whose
+//! weight `1/|ξ̇|` has a second moment that diverges at slow crossings.
+//! The two errors add in `ln k`.
 //!
 //! With a Cartesian unit normal `n̂` the same flux is `√(kT/2πμ)` with
 //! `μ = 1 / (n̂ᵀ M⁻¹ n̂)` ([`flux_mass`]), because `n̂ · ẋ` is Gaussian with
@@ -22,6 +27,7 @@
 //! trajectories shot from the plane's own ensemble ([`plane_transmission`]),
 //! and [`OhTstRate::transmitted`] applies it.
 //!
+//! [`basin_density`]: crate::ohtst::basin_density
 //! [`reactant_density`]: crate::ohtst::reactant_density
 //! [`reversible_work`]: crate::ohtst::reversible_work
 
