@@ -2,7 +2,8 @@
 #+OPTIONS: toc:nil num:nil
 
 * System prerequisites
-- Rust 1.88 or newer (the ~rust-version~ in ~Cargo.toml~) with clippy and rustfmt.
+- The current stable Rust with clippy and rustfmt; CI formats, lints and tests with it.
+- rustup and jq, which the minimum supported Rust version checks below use to install the toolchain that ~rust-version~ in ~Cargo.toml~ names.
 - A C compiler, and a C++ compiler with C++17 support and its standard library headers.
   The C and C++ smoke tests call ~cc~ and ~c++~, or the compilers named by ~CC~ and ~CXX~.
   The CMake builds below use the same compilers.
@@ -43,6 +44,28 @@ The CI test job runs the check and compiles the consumer:
 #+begin_src sh
 python3 ci/check_dependency_pins.py
 cargo check --manifest-path ci/consumer/Cargo.toml --target-dir target
+#+end_src
+
+* Minimum supported Rust version
+The minimum supported Rust version (MSRV) is the ~rust-version~ in ~Cargo.toml~.
+A change must not need a newer compiler, and must pass the MSRV checks below as well as the stable ones.
+Clippy adds and revises lints between releases, so code that stable's clippy accepts can fail the MSRV's, and the reverse.
+The ~msrv~ job of the CI workflow reads ~rust-version~ with ~cargo metadata~ and installs that toolchain.
+It runs the clippy steps of the test and readcon jobs and of the verify workflow's rust job on it, then builds and tests ~--features capi~, all with ~--locked~.
+A dependency in ~Cargo.lock~ that needs a newer compiler fails the job.
+Edition 2024's resolver avoids that when it can: ~cargo update~ prefers versions that support the MSRV.
+To raise the MSRV, edit ~rust-version~; the job and the commands below read it from there.
+These commands reproduce the job:
+
+#+begin_src sh
+msrv=$(cargo metadata --no-deps --format-version 1 | jq -er '.packages[] | select(.name == "rgsaddle") | .rust_version')
+rustup toolchain install "$msrv" --profile minimal --component clippy
+cargo +"$msrv" clippy --locked --features capi -- -D warnings
+cargo +"$msrv" clippy --locked --all-targets --features readcon -- -D warnings
+cargo +"$msrv" clippy --locked --all-targets --features readcon,readcon-db -- -D warnings
+cargo +"$msrv" clippy --locked --all-targets --features capi,verify -- -D warnings
+cargo +"$msrv" build --locked --features capi
+cargo +"$msrv" test --locked --features capi
 #+end_src
 
 * Python stub
