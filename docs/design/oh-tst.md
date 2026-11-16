@@ -16,6 +16,43 @@ as described where they appear. Published reference values were recomputed
 where the source gives enough information (Section 10). Where they disagree
 with the source, both values are given.
 
+## Status
+
+`rgsaddle::ohtst` implements this design, and
+`docs/orgmode/howto/oh-tst.org` is its guide. The plane optimizer runs on
+rgmin's product manifold and takes from it items 1 to 4 and 7 of
+Section 4.6:
+
+- the offset $d$ is a Euclidean factor of weight one, not
+  $\mathrm{SPD}(1)$;
+- the normal lies on `ManifoldKind::sphere_excluding` of the sampler's
+  held modes, or on `sphere_within` the span of a rotation basis $W$
+  (Section 4.5);
+- the sphere factor carries the block weight $\ell^2$ of Section 4.2, with
+  $\ell$ the largest translation over the largest rotation, or the
+  harmonic Hessian (3.15) as its `TangentMetric`, with $H_\parallel$ from
+  a fixed number of Lanczos steps of Hessian actions at the reference
+  point, the low-rank option of Section 4.2;
+- `rtr::minimize_rtr_gauged` re-centres the pivot on the centroid of each
+  accepted plane's sample;
+- the rotation gradient is passed as a tangent vector, the gradient of the
+  degree-zero extension, so rgmin's Weingarten term on the sphere
+  vanishes.
+
+The stochastic drivers of item 5 are not in rgmin, and the optimizer does
+without them. It runs rgmin's Riemannian trust region on a sample-average
+approximation: every plane is sampled from the same start configuration
+with the same seed, and the change of $A$ from the current plane to a
+trial is the trapezoid of their sampled gradients along the chord, exact
+for a quadratic $A$, in place of the BAR difference of Section 4.4. The
+model Hessian is the harmonic one, or one curvature per factor measured
+along the trial steps; Hessian estimates with error bars (item 6) are not
+used. The norm test grows the sample at accepted planes, and the run stops
+when the translation and rotation blocks of the gradient have been within
+a few block standard errors of zero for several accepted planes in a row,
+in place of `control::NoiseFloor`. Averaged stochastic gradient ascent,
+step 2 of Section 4.4, is not implemented.
+
 ## Contents
 
 1. Scope and existing pieces
