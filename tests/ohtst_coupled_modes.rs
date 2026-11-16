@@ -386,8 +386,12 @@ fn coupled_modes_control_variates() {
 }
 
 /// Parallel planes along `q₁` around the minimum at `kT = 0.2` give
-/// `Z_H(0) / Z_R` within errors of the product quadrature. The Hessian at
-/// the minimum is block diagonal there, so `σ_ξ = (kT / 8V₀)^½`.
+/// `Z_H(0) / Z_R` within errors of the product quadrature, 3.466707; the
+/// twelve planes of 2000 records gave 3.4669 ± 0.0035. The Hessian at the
+/// minimum is block diagonal there, so `σ_ξ = (kT / 8V₀)^½`, and the mean
+/// force fluctuates through `Σ c_j q_j²` alone, quadratic in the free
+/// modes: the harmonic control variates, linear in them, leave its error
+/// as it is.
 #[test]
 fn coupled_modes_basin_density() {
     let model = CoupledModes::new();
@@ -413,10 +417,15 @@ fn coupled_modes_basin_density() {
     let result = basin_density(&model, minimum.view(), axis.view(), &config).unwrap();
     assert!((result.spread - (kt / (8.0 * V0)).sqrt()).abs() < 1.0e-6);
     assert!(
-        (result.density - exact).abs() < 4.0 * result.density_error,
+        (result.density - exact).abs()
+            < 4.0 * result.density_error + result.quadrature_error * result.density,
         "{} ± {} against {exact}",
         result.density,
         result.density_error
     );
-    assert!(result.density_error < 0.03 * exact);
+    assert!(result.density_error < 0.002 * exact);
+    let raw = result.uncontrolled_errors.as_ref().unwrap();
+    for (controlled, raw) in result.slope_errors.iter().zip(raw) {
+        assert!((controlled / raw - 1.0).abs() < 1e-6);
+    }
 }

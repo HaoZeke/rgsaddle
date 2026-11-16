@@ -287,7 +287,12 @@ fn leps_optimizer_climbs_from_the_dimer_plane() {
 /// The OH-TST rate at `kT = 0.1 E_A`. The density of the reactant
 /// distribution at `Z_R`, the guideline plane through the minimum, matches
 /// quadrature (0.6509) both from crossings behind a wall at the optimal
-/// plane and from parallel planes; the reversible work from `Z_R` to the
+/// plane and from parallel planes. The parallel planes, with control
+/// variates from the Hessian at the minimum, gave 0.6516 ± 0.0007 from
+/// twelve planes of 4000 records, and the crossings 0.662 ± 0.028 from
+/// 16 000. Without the control variates the mean forces on the planes
+/// behind and through the minimum have errors 13 to 20 times larger, and
+/// those next to the barrier about the same. The reversible work from `Z_R` to the
 /// optimal plane matches quadrature (8.3081 kT; Simpson's rule on its
 /// slopes at the same nodes is within 0.01 kT of that); and their rate
 /// matches the quadrature rate, 3.8589e-5 in the surface's time unit, all
@@ -334,11 +339,13 @@ fn leps_rate_against_quadrature_and_harmonic_tst() {
     )
     .unwrap();
     assert!(
-        (basin.density - density_exact).abs() < 4.0 * basin.density_error,
+        (basin.density - density_exact).abs()
+            < 4.0 * basin.density_error + basin.quadrature_error * basin.density,
         "parallel planes {} ± {} against {density_exact}",
         basin.density,
         basin.density_error
     );
+    assert!(basin.density_error < 0.002 * density_exact);
 
     let nodes = 17;
     let layout = simpson_on_leg(

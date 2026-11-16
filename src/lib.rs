@@ -128,7 +128,7 @@ pub use ocineb::{
     walk_helped,
 };
 pub use ohtst::{
-    AnharmonicConfig, AnharmonicCorrection, BasinConfig, BasinDensity, FixedCell,
+    AnharmonicConfig, AnharmonicCorrection, BasinConfig, BasinDensity, BasinEnd, FixedCell,
     HarmonicReference, Hyperplane, LangevinConfig, MassWeighted, OhTstRate, PlaneDensity,
     PlaneIntegrator, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum, PlaneSample, PlaneStep,
     PlaneTrace, ReactantDensity, ReversibleWork, ReversibleWorkConfig, Uncontrolled, WorkNode,

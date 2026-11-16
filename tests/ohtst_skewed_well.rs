@@ -17,8 +17,8 @@
 
 use ndarray::array;
 use rgsaddle::{
-    AnharmonicConfig, BasinConfig, Hyperplane, LangevinConfig, MinModeConfig, MinModeSession,
-    MinModeStatus, PlaneOptimizer, PlaneOptimizerConfig, ReversibleWorkConfig,
+    AnharmonicConfig, BasinConfig, BasinEnd, Hyperplane, LangevinConfig, MinModeConfig,
+    MinModeSession, MinModeStatus, PlaneOptimizer, PlaneOptimizerConfig, ReversibleWorkConfig,
     anharmonic_correction, basin_density, ohtst_rate, reactant_density, reversible_work,
 };
 
@@ -346,15 +346,22 @@ fn skewed_well_optimum_and_rate_at_high_temperature() {
 }
 
 /// Parallel planes along `(1, 1)` around the reactant at `kT = 0.1` give
-/// `Z_H(0) / Z_R` within errors of quadrature, with `Z_R` taken behind the
-/// parallel line through the saddle. The outermost plane stays behind
-/// that line.
+/// `Z_H(0) / Z_R` within errors of quadrature, 1.396348 with `Z_R` taken
+/// behind the parallel line through the saddle, `ξ = √2`. The side behind
+/// ends on the cap; the side ahead turns over just past that line, where
+/// the plane free energy peaks about 9 `kT` up, so the two regions differ
+/// by a part in 10⁵. With 4000 records a plane, the spline gave
+/// 1.3966 ± 0.0017, and 1.3900 ± 0.0080 without the control variates,
+/// which cut the error of the mean force on the plane through the minimum
+/// sevenfold; the quintic fit it replaces gave 1.3871 ± 0.0126 at a
+/// reduced chi-square of 5.66, from the shoulder before the barrier.
 #[test]
 fn skewed_well_basin_density_against_quadrature() {
     let kt = 0.1;
     let normal = [1.0, 1.0];
     let exact = line_integral(SkewedWell::energy, REACTANT, normal, kt, 0.0, EXTENT)
         / half_plane_integral(SkewedWell::energy, [0.0, 0.0], normal, kt, 0.0, EXTENT);
+    assert!((exact - 1.396348).abs() < 1e-6, "{exact}");
     let config = BasinConfig::default().with_sampler(sampler(kt, 0.1).with_records(4000));
     let reactant = array![REACTANT[0], REACTANT[1]];
     let result = basin_density(
@@ -364,12 +371,20 @@ fn skewed_well_basin_density_against_quadrature() {
         &config,
     )
     .unwrap();
-    assert!(*result.offsets.last().unwrap() < 2.0f64.sqrt());
+    assert_eq!(result.ends, [BasinEnd::Cap, BasinEnd::Turn]);
+    let summit = result.window[1];
+    assert!(summit > 2.0f64.sqrt() && summit < 1.6, "{summit}");
     assert!(
-        (result.density - exact).abs() < 4.0 * result.density_error,
+        (result.density - exact).abs()
+            < 4.0 * result.density_error + result.quadrature_error * exact,
         "{} ± {} against {exact}",
         result.density,
         result.density_error
     );
-    assert!(result.density_error < 0.02 * exact);
+    assert!(result.density_error < 0.003 * exact);
+    assert!(result.quadrature_error < 0.5 * result.density_error / result.density);
+    let centre = result.offsets.iter().position(|xi| *xi == 0.0).unwrap();
+    let raw = result.uncontrolled_errors.as_ref().unwrap();
+    let reduction = raw[centre] / result.slope_errors[centre];
+    assert!(reduction > 4.0, "{reduction}");
 }

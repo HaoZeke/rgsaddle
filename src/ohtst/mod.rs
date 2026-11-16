@@ -46,10 +46,11 @@ mod plane;
 mod rate;
 mod reactant;
 mod sample;
+mod spline;
 mod work;
 
 pub use anharmonic::{AnharmonicConfig, AnharmonicCorrection, anharmonic_correction};
-pub use basin::{BasinConfig, BasinDensity, basin_density};
+pub use basin::{BasinConfig, BasinDensity, BasinEnd, basin_density};
 pub use control::HarmonicReference;
 pub use optimize::{PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum, PlaneStep, PlaneTrace};
 pub use plane::{FixedCell, Hyperplane, MassWeighted};
