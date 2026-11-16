@@ -17,9 +17,10 @@
 use ndarray::{Array1, ArrayView1};
 use rgsaddle::{
     AnharmonicConfig, BasinConfig, GaussianTransport, HarmonicReference, Hyperplane,
-    LangevinConfig, PlanePath, PointSurface, ReversibleWorkConfig, SaddleError, TransmissionConfig,
-    Transport, WorkEstimate, anharmonic_correction, basin_density, reversible_work_along,
-    sample_plane, transmission_coefficient,
+    LangevinConfig, PlaneMetric, PlaneOptimizer, PlaneOptimizerConfig, PlanePath, PointSurface,
+    ReversibleWorkConfig, SaddleError, TransmissionConfig, Transport, WorkEstimate,
+    anharmonic_correction, basin_density, reversible_work_along, sample_plane,
+    transmission_coefficient,
 };
 
 include!(concat!(
@@ -385,6 +386,75 @@ fn coupled_modes_control_variates() {
     assert!(worst < 4.5, "torque {worst} errors off");
     let ratio = tilted.centroid_torque_error.sum() / raw.centroid_torque_error.sum();
     assert!(ratio < 0.3, "torque error ratio {ratio}");
+}
+
+/// From the saddle plane turned 0.3 rad at `kT = 0.2`, the optimizer turns
+/// the normal back to `q₁` and moves the plane to the quadrature optimum
+/// with either metric, each within four errors. The angle error is the
+/// torque error over the smallest rotational curvature of the harmonic
+/// model, `kT (1 + |λ₁| / max ω_j²)` with `λ₁ = -4 V₀`, and the offset
+/// error the normal-force error over the quadrature curvature of `A`.
+/// The block metric took 13 trust-region iterations and 475146 force
+/// calls to end 0.00218 rad off the axis, with an angle error of 0.00378,
+/// at the offset 0.068867 ± 0.000224; the harmonic metric took 13
+/// iterations and 692733 force calls to 0.00219 rad and
+/// 0.068874 ± 0.000224. The optimum is 0.068873.
+#[test]
+fn coupled_modes_optimizer_turns_back_to_the_axis() {
+    let model = CoupledModes::new();
+    let kt = 0.2;
+    let axis = model.axis();
+    let mut e = Array1::zeros(N);
+    e[1] = 1.0;
+    let across = model.rotate(e);
+    let tilt: f64 = 0.3;
+    let start =
+        Hyperplane::new(Array1::zeros(N), &axis * tilt.cos() + &across * tilt.sin()).unwrap();
+    let sampler = LangevinConfig::default()
+        .with_thermal(kt)
+        .with_time_step(0.1)
+        .with_friction(1.0)
+        .with_burn_in(300)
+        .with_stride(5)
+        .with_records(1000)
+        .with_seed(4);
+    let s = model.optimal_offset(kt);
+    let h = 1.0e-3;
+    let curvature = kt
+        * (model.log_plane(s + h, kt) - 2.0 * model.log_plane(s, kt) + model.log_plane(s - h, kt))
+        / (h * h);
+    let stiffest = model.omega2.iter().fold(0.0_f64, |m, w| m.max(*w));
+    let rotation = kt * (1.0 + 4.0 * V0 / stiffest);
+    for (name, metric) in [
+        ("block", PlaneMetric::Blocks),
+        (
+            "harmonic",
+            PlaneMetric::Harmonic(HarmonicReference::new(Array1::zeros(N))),
+        ),
+    ] {
+        let config = PlaneOptimizerConfig::default()
+            .with_sampler(sampler.clone())
+            .with_metric(metric);
+        let optimum = PlaneOptimizer::new(&start, config)
+            .unwrap()
+            .run(&model)
+            .unwrap();
+        let normal = optimum.plane.normal();
+        let angle = normal.dot(&axis).min(1.0).acos();
+        let shift = normal.dot(&optimum.plane.point());
+        let last = optimum.trace.last().unwrap();
+        let angle_error = last.rotation_error / rotation;
+        let offset_error = last.normal_force_error / curvature.abs();
+        assert!(
+            angle < 4.0 * angle_error,
+            "{name} metric: {angle} rad off the axis, error {angle_error}"
+        );
+        assert!(
+            (shift - s).abs() < 4.0 * offset_error,
+            "{name} metric: offset {shift} ± {offset_error} against {s}"
+        );
+        assert_eq!(optimum.trace.len(), optimum.accepted + 1);
+    }
 }
 
 /// Parallel planes along `q₁` around the minimum at `kT = 0.2` give
