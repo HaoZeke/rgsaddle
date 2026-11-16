@@ -18,13 +18,29 @@
 //! the last configuration of the one before. `A` is a function of the
 //! plane, so any path between two planes gives the same work; the paper
 //! accumulates it along the optimizer's own trajectory instead.
+//!
+//! With [`ReversibleWorkConfig::bar_samples`] the same nodes also give the
+//! work without quadrature error, by Bennett's acceptance ratio between
+//! neighbours (J. Comput. Phys. 22, 245 (1976)). The map
+//!
+//! ```text
+//! T(q) = p_a + R (q - p_a) + P (p_b - p_a),
+//! ```
+//!
+//! with `R` the rotation taking `ν_a` to `ν_b` in their span and `P` the
+//! projector off the held modes, is rigid, takes plane `a` onto plane `b`
+//! and keeps the held modes, so `Z_b / Z_a = ⟨exp(-ΔV/kT)⟩_a` with
+//! `ΔV = V(T q) - V(q)`, and the reverse average runs over `b` with `T⁻¹`.
+//! This is Eqs. (7.1) and (7.2) of the OH-TST design survey. BAR uses the
+//! configurations each node retains, so their spacing should exceed the
+//! correlation time.
 
 use ndarray::{Array1, ArrayView1, s};
 
 use crate::error::SaddleError;
 use crate::minmode::PointSurface;
 use crate::ohtst::plane::Hyperplane;
-use crate::ohtst::sample::{LangevinConfig, PlaneSample, sample_plane};
+use crate::ohtst::sample::{LangevinConfig, PlaneSample, held_directions, sample_plane};
 
 /// Settings of [`reversible_work`].
 #[non_exhaustive]
@@ -40,6 +56,9 @@ pub struct ReversibleWorkConfig {
     /// Composite Simpson weights; they need an odd node count. Otherwise
     /// trapezoid.
     pub simpson: bool,
+    /// Configurations each node keeps for the BAR estimate; zero turns it
+    /// off. A larger [`LangevinConfig::retain`] wins.
+    pub bar_samples: usize,
 }
 
 impl Default for ReversibleWorkConfig {
@@ -49,11 +68,19 @@ impl Default for ReversibleWorkConfig {
             warm_burn_in: 100,
             nodes: 9,
             simpson: true,
+            bar_samples: 128,
         }
     }
 }
 
 impl ReversibleWorkConfig {
+    /// Set [`Self::bar_samples`].
+    #[must_use]
+    pub fn with_bar_samples(mut self, bar_samples: usize) -> Self {
+        self.bar_samples = bar_samples;
+        self
+    }
+
     /// Set [`Self::sampler`].
     #[must_use]
     pub fn with_sampler(mut self, sampler: LangevinConfig) -> Self {
@@ -99,6 +126,8 @@ pub struct WorkNode {
     pub error: f64,
     /// Work from the first plane to this node by the trapezoid rule.
     pub work: f64,
+    /// Work from the first plane to this node by BAR between neighbours.
+    pub bar_work: Option<f64>,
 }
 
 /// `A(last plane) - A(first plane)`.
@@ -118,6 +147,10 @@ pub struct ReversibleWork {
     pub evaluations: usize,
     /// The sampling temperature `kT`.
     pub thermal: f64,
+    /// The work by BAR between neighbouring nodes.
+    pub bar_work: Option<f64>,
+    /// Asymptotic standard error of [`Self::bar_work`].
+    pub bar_error: Option<f64>,
 }
 
 /// One leg of the path: the plane at `s` and its derivative in `s`.
@@ -241,6 +274,15 @@ pub fn reversible_work<S: PointSurface>(
     let mut variance = 0.0;
     let mut evaluations = 0;
     let mut sampled = 0u64;
+    let excluded = held_directions(
+        surface,
+        planes[0].point(),
+        None,
+        config.sampler.hold_excluded,
+    )?;
+    let kt = config.sampler.thermal;
+    let mut neighbour: Option<(Hyperplane, Vec<Array1<f64>>, Vec<f64>)> = None;
+    let (mut bar_work, mut bar_variance) = (0.0, 0.0);
     for (k, leg) in legs.iter().enumerate() {
         let mut cumulative = nodes.last().map_or(0.0, |node| node.work);
         let mut before = None;
@@ -255,6 +297,7 @@ pub fn reversible_work<S: PointSurface>(
                 }
                 let mut sampler = config.sampler.clone();
                 sampler.seed = sampler.seed.wrapping_add(sampled);
+                sampler.retain = sampler.retain.max(config.bar_samples);
                 if sampled > 0 {
                     sampler.burn_in = config.warm_burn_in;
                 }
@@ -268,6 +311,30 @@ pub fn reversible_work<S: PointSurface>(
                 sampled += 1;
                 evaluations += sample.evaluations;
                 seed_from = Some(sample.last.clone());
+                if config.bar_samples > 0 {
+                    let energies = sample
+                        .retained
+                        .iter()
+                        .map(|q| energy(surface, q, &mut evaluations))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    if let Some((from, configurations, before)) = neighbour.take() {
+                        let map = RigidMap::new(&from, &sample.plane, &excluded);
+                        let mut forward = Vec::with_capacity(configurations.len());
+                        for (q, e) in configurations.iter().zip(&before) {
+                            let mapped = energy(surface, &map.forward(q), &mut evaluations)?;
+                            forward.push((mapped - e) / kt);
+                        }
+                        let mut reverse = Vec::with_capacity(energies.len());
+                        for (q, e) in sample.retained.iter().zip(&energies) {
+                            let mapped = energy(surface, &map.backward(q), &mut evaluations)?;
+                            reverse.push((mapped - e) / kt);
+                        }
+                        let (difference, error) = bennett(&forward, &reverse)?;
+                        bar_work += kt * difference;
+                        bar_variance += (kt * error).powi(2);
+                    }
+                    neighbour = Some((sample.plane.clone(), sample.retained.clone(), energies));
+                }
                 open = Some((sample, Array1::zeros(tangent.len())));
             }
             let (sample, direction) = open
@@ -287,6 +354,7 @@ pub fn reversible_work<S: PointSurface>(
                     derivative,
                     error,
                     work: cumulative,
+                    bar_work: (config.bar_samples > 0).then_some(bar_work),
                 });
             }
         }
@@ -303,7 +371,149 @@ pub fn reversible_work<S: PointSurface>(
         end,
         evaluations,
         thermal: config.sampler.thermal,
+        bar_work: (config.bar_samples > 0).then_some(bar_work),
+        bar_error: (config.bar_samples > 0).then(|| bar_variance.sqrt()),
     })
+}
+
+fn energy<S: PointSurface>(
+    surface: &S,
+    q: &Array1<f64>,
+    evaluations: &mut usize,
+) -> Result<f64, SaddleError> {
+    let (value, _) = surface.eval(q.view())?;
+    *evaluations += 1;
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(SaddleError::NonFinite("energy of a mapped configuration"))
+    }
+}
+
+/// The rigid map from plane `a` onto plane `b`.
+struct RigidMap {
+    pivot: Array1<f64>,
+    shift: Array1<f64>,
+    from: Array1<f64>,
+    across: Option<Array1<f64>>,
+    cos: f64,
+    sin: f64,
+}
+
+impl RigidMap {
+    fn new(a: &Hyperplane, b: &Hyperplane, excluded: &[Array1<f64>]) -> Self {
+        let (na, nb) = (a.normal().to_owned(), b.normal().to_owned());
+        let cos = na.dot(&nb).clamp(-1.0, 1.0);
+        let mut across = &nb - &(&na * cos);
+        let length = across.dot(&across).sqrt();
+        let across = (length > 1.0e-14).then(|| {
+            across /= length;
+            across
+        });
+        let mut shift = &b.point() - &a.point();
+        for t in excluded {
+            let c = t.dot(&shift);
+            shift.scaled_add(-c, t);
+        }
+        Self {
+            pivot: a.point().to_owned(),
+            shift,
+            from: na,
+            across,
+            cos,
+            sin: length,
+        }
+    }
+
+    /// `R v`, or `Rᵀ v` when `sign` is negative.
+    fn rotate(&self, v: &mut Array1<f64>, sign: f64) {
+        let Some(u) = &self.across else {
+            return;
+        };
+        let (a, b) = (self.from.dot(v), u.dot(v));
+        let sin = sign * self.sin;
+        v.scaled_add(sin * a, u);
+        v.scaled_add(-sin * b, &self.from);
+        v.scaled_add(self.cos - 1.0, &(&self.from * a + u * b));
+    }
+
+    fn forward(&self, q: &Array1<f64>) -> Array1<f64> {
+        let mut v = q - &self.pivot;
+        self.rotate(&mut v, 1.0);
+        v + &self.pivot + &self.shift
+    }
+
+    fn backward(&self, q: &Array1<f64>) -> Array1<f64> {
+        let mut v = q - &self.pivot - &self.shift;
+        self.rotate(&mut v, -1.0);
+        v + &self.pivot
+    }
+}
+
+/// Bennett's acceptance ratio: `ΔA / kT` from forward works `w_F` on
+/// samples of `a` and reverse works `w_R` on samples of `b`, in units of
+/// `kT`, with its asymptotic standard error (Bennett's Eq. 10).
+fn bennett(forward: &[f64], reverse: &[f64]) -> Result<(f64, f64), SaddleError> {
+    if forward.is_empty() || reverse.is_empty() {
+        return Err(SaddleError::Invalid(
+            "BAR needs retained configurations on both planes".into(),
+        ));
+    }
+    let (nf, nr) = (forward.len() as f64, reverse.len() as f64);
+    let m = (nf / nr).ln();
+    let fermi = |x: f64| 1.0 / (1.0 + x.exp());
+    let balance = |df: f64| -> f64 {
+        let left: f64 = forward.iter().map(|w| fermi(m + w - df)).sum();
+        let right: f64 = reverse.iter().map(|w| fermi(-m + w + df)).sum();
+        left - right
+    };
+    let mean = |values: &[f64]| values.iter().sum::<f64>() / values.len() as f64;
+    let (mut low, mut high) = (-mean(reverse) - 1.0, mean(forward) + 1.0);
+    if low > high {
+        std::mem::swap(&mut low, &mut high);
+    }
+    let mut width = 1.0;
+    while balance(low) > 0.0 {
+        low -= width;
+        width *= 2.0;
+        if width > 1.0e6 {
+            return Err(SaddleError::Solver("BAR did not bracket".into()));
+        }
+    }
+    width = 1.0;
+    while balance(high) < 0.0 {
+        high += width;
+        width *= 2.0;
+        if width > 1.0e6 {
+            return Err(SaddleError::Solver("BAR did not bracket".into()));
+        }
+    }
+    for _ in 0..200 {
+        let middle = 0.5 * (low + high);
+        if balance(middle) > 0.0 {
+            high = middle;
+        } else {
+            low = middle;
+        }
+        if high - low < 1.0e-12 * (1.0 + middle.abs()) {
+            break;
+        }
+    }
+    let df = 0.5 * (low + high);
+    let spread = |values: Vec<f64>| {
+        let n = values.len() as f64;
+        let first = values.iter().sum::<f64>() / n;
+        let second = values.iter().map(|f| f * f).sum::<f64>() / n;
+        (second / (first * first) - 1.0) / n
+    };
+    let variance = spread(forward.iter().map(|w| fermi(m + w - df)).collect())
+        + spread(reverse.iter().map(|w| fermi(-m + w + df)).collect());
+    let error = if variance.is_finite() {
+        variance.max(0.0).sqrt()
+    } else {
+        f64::INFINITY
+    };
+    Ok((df, error))
 }
 
 #[cfg(test)]
@@ -359,6 +569,52 @@ mod tests {
         let partial = exact(&planes[1], kt) - exact(&planes[0], kt);
         assert!((middle.work - partial).abs() < 0.01);
         assert_eq!(result.end.plane, planes[2]);
+        let (bar, bar_error) = (result.bar_work.unwrap(), result.bar_error.unwrap());
+        assert!(
+            (bar - expected).abs() < 4.0 * bar_error,
+            "BAR {bar} ± {bar_error}, closed form {expected}"
+        );
+        assert!(bar_error < 0.02, "{bar_error}");
+        assert!((middle.bar_work.unwrap() - partial).abs() < 0.02);
+    }
+
+    #[test]
+    fn the_rigid_map_takes_one_plane_onto_the_other() {
+        let a = Hyperplane::new(array![0.2, -0.4, 0.1], array![1.0, 0.3, 0.0]).unwrap();
+        let b = Hyperplane::new(array![0.9, 0.2, 0.5], array![0.4, 1.0, 0.0]).unwrap();
+        let held = [array![0.0, 0.0, 1.0]];
+        let map = RigidMap::new(&a, &b, &held);
+        let q = a.project(array![1.3, -0.2, 0.7].view());
+        let r = a.project(array![-0.5, 0.8, 0.7].view());
+        let (tq, tr) = (map.forward(&q), map.forward(&r));
+        assert!(b.distance(tq.view()).abs() < 1e-12);
+        assert!((tq[2] - q[2]).abs() < 1e-12);
+        let (d0, d1) = (&q - &r, &tq - &tr);
+        assert!((d0.dot(&d0) - d1.dot(&d1)).abs() < 1e-12);
+        let back = map.backward(&tq);
+        assert!((&back - &q).iter().all(|x| x.abs() < 1e-12));
+        let same = RigidMap::new(&a, &a, &held);
+        assert!((&same.forward(&q) - &q).iter().all(|x| x.abs() < 1e-12));
+    }
+
+    /// Gaussian works that obey Crooks' relation, `w_F ~ N(Δ + σ²/2, σ²)`
+    /// and `w_R ~ N(-Δ + σ²/2, σ²)`, give back `Δ`.
+    #[test]
+    fn bar_recovers_a_known_difference() {
+        let mut rng = crate::stats::Rng::new(4);
+        let (delta, sigma) = (1.7, 1.2);
+        let draw = |rng: &mut crate::stats::Rng, centre: f64, n: usize| -> Vec<f64> {
+            (0..n).map(|_| centre + sigma * rng.normal()).collect()
+        };
+        let forward = draw(&mut rng, delta + 0.5 * sigma * sigma, 4000);
+        let reverse = draw(&mut rng, -delta + 0.5 * sigma * sigma, 3000);
+        let (estimate, error) = bennett(&forward, &reverse).unwrap();
+        assert!(
+            (estimate - delta).abs() < 4.0 * error,
+            "{estimate} ± {error}"
+        );
+        assert!(error < 0.05 && error > 0.0);
+        assert!(bennett(&forward, &[]).is_err());
     }
 
     #[test]

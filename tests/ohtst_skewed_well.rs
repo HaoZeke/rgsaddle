@@ -321,6 +321,23 @@ fn skewed_well_optimum_and_rate_at_high_temperature() {
         &config,
     )
     .unwrap();
+    let exact_work = free_energy([shift * found.cos(), shift * found.sin()], found, kt)
+        - free_energy(REACTANT, std::f64::consts::FRAC_PI_4, kt);
+    eprintln!(
+        "WORK ti {} ± {} bar {:?} ± {:?} exact {exact_work}",
+        work.work, work.error, work.bar_work, work.bar_error
+    );
+    let (bar, bar_error) = (work.bar_work.unwrap(), work.bar_error.unwrap());
+    assert!(
+        (bar - exact_work).abs() < 4.0 * bar_error,
+        "BAR {bar} ± {bar_error} against {exact_work}"
+    );
+    assert!(
+        (work.work - exact_work).abs() < 4.0 * work.error,
+        "TI {} ± {} against {exact_work}",
+        work.work,
+        work.error
+    );
     let rate = ohtst_rate(&density, &work).unwrap();
     let at_found = log_rate(kt, shift, found);
     assert!(

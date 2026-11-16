@@ -324,6 +324,7 @@ mod tests {
             derivative: 0.0,
             error: 0.0,
             work: 0.0,
+            bar_work: None,
         };
         let kt = 0.5;
         let work = ReversibleWork {
@@ -333,6 +334,8 @@ mod tests {
             end,
             evaluations: 0,
             thermal: kt,
+            bar_work: None,
+            bar_error: None,
         };
         let density = ReactantDensity {
             plane: plane.clone(),
