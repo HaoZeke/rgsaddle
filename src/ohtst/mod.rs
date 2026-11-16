@@ -40,6 +40,58 @@
 //! parameter for each temperature is a surface evaluated in that cell:
 //! wrap it in [`FixedCell`] with the cell for the temperature, then in
 //! [`MassWeighted`].
+//!
+//! # Examples
+//!
+//! The first two calls on the skewed double well
+//! `V = (x² − 1)² + ½ k(x) (y − x)²`, `k(x) = 4 (1 + 0.8 tanh 2x)`, already
+//! in mass-weighted coordinates. A dimer converges on the saddle at the
+//! origin and seeds the plane. The optimizer then climbs the plane free
+//! energy at `kT = 0.1` with short Langevin samples.
+//!
+//! ```
+//! use ndarray::{Array1, ArrayView1, array};
+//! use rgsaddle::{
+//!     Hyperplane, LangevinConfig, MinModeConfig, MinModeSession, MinModeStatus, PlaneOptimizer,
+//!     PlaneOptimizerConfig, PointSurface, SaddleError,
+//! };
+//!
+//! struct SkewedWell;
+//!
+//! impl PointSurface for SkewedWell {
+//!     fn eval(&self, q: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+//!         let (x, y) = (q[0], q[1]);
+//!         let (well, tanh, valley) = (x * x - 1.0, (2.0 * x).tanh(), y - x);
+//!         let k = 4.0 * (1.0 + 0.8 * tanh);
+//!         let energy = well * well + 0.5 * k * valley * valley;
+//!         let gx = 4.0 * x * well + 3.2 * (1.0 - tanh * tanh) * valley * valley - k * valley;
+//!         Ok((energy, array![gx, k * valley]))
+//!     }
+//! }
+//!
+//! let search = MinModeConfig { force_tol: 1e-8, ..MinModeConfig::default() };
+//! let mut dimer = MinModeSession::new(search, array![0.1, -0.05], array![1.0, 0.3])?;
+//! assert_eq!(dimer.run(&SkewedWell, 2000)?.status, MinModeStatus::Converged);
+//! let seed = Hyperplane::from_min_mode(&dimer)?.oriented_toward(array![1.0, 1.0].view());
+//!
+//! let sampler = LangevinConfig::default()
+//!     .with_thermal(0.1)
+//!     .with_time_step(0.1)
+//!     .with_burn_in(200)
+//!     .with_records(400)
+//!     .with_seed(9);
+//! let config = PlaneOptimizerConfig::default()
+//!     .with_sampler(sampler)
+//!     .with_max_records(400)
+//!     .with_max_iterations(10);
+//! let optimum = PlaneOptimizer::new(&seed, config)?.run(&SkewedWell)?;
+//!
+//! let normal = optimum.plane.normal();
+//! assert!((normal.dot(&normal) - 1.0).abs() < 1e-12);
+//! assert!(normal[0] > 0.0 && normal[1] > 0.0);
+//! assert!(optimum.plane.point().iter().all(|c| c.abs() < 0.5));
+//! # Ok::<(), SaddleError>(())
+//! ```
 
 mod anharmonic;
 mod basin;
