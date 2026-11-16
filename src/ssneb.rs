@@ -66,6 +66,67 @@ pub struct SolidImage {
 }
 
 /// Climbing-image NEB on atoms, or on atoms plus cell strain.
+///
+/// # Examples
+///
+/// A joint-chart band for one atom in a double well
+/// `(x² − 1)² + 2y² + 2z²` inside a cell held near a cube of side 4 by
+/// a quadratic penalty on every lattice entry. Every strain is free and
+/// no stress is applied. The climbing image ends on the saddle at the
+/// origin in the undeformed cube.
+///
+/// ```
+/// use ndarray::{Array1, ArrayView1, array, s};
+/// use rgsaddle::{
+///     BandConfig, BandStatus, CellMask, PointSurface, SaddleError, SolidNeb, linear_path,
+/// };
+///
+/// const CUBE: [f64; 9] = [4.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 4.0];
+///
+/// struct WellInCell;
+///
+/// impl PointSurface for WellInCell {
+///     fn eval(&self, r: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+///         self.eval_in_cell(r, &CUBE)
+///     }
+///
+///     fn eval_in_cell(
+///         &self,
+///         r: ArrayView1<f64>,
+///         cell: &[f64; 9],
+///     ) -> Result<(f64, Array1<f64>), SaddleError> {
+///         let (x, y, z) = (r[0], r[1], r[2]);
+///         let elastic: f64 = cell.iter().zip(CUBE).map(|(h, h0)| (h - h0).powi(2)).sum();
+///         let energy = (x * x - 1.0).powi(2) + 2.0 * y * y + 2.0 * z * z + elastic;
+///         Ok((energy, array![4.0 * x * (x * x - 1.0), 4.0 * y, 4.0 * z]))
+///     }
+/// }
+///
+/// let cube = [[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]];
+/// let reactant = array![-1.0, 0.0, 0.0];
+/// let product = array![1.0, 0.0, 0.0];
+/// let mut positions = linear_path(reactant.view(), product.view(), 7, None)?;
+/// positions.slice_mut(s![1..6, 1]).fill(0.2);
+/// let config = BandConfig {
+///     force_tol: 1e-3,
+///     max_move: 0.1,
+///     min_mode: None,
+///     ..BandConfig::default()
+/// };
+/// let zero = [[0.0; 3]; 3];
+/// let mut band = SolidNeb::joint(config, cube, positions, &[cube; 7], CellMask::all(), zero, 1.0)?;
+/// let mut report = band.step(&WellInCell)?;
+/// while report.status == BandStatus::Running && report.iteration < 1000 {
+///     report = band.step(&WellInCell)?;
+/// }
+///
+/// assert_eq!(report.status, BandStatus::Converged);
+/// let images = band.images().expect("a joint chart reports its images");
+/// let saddle = &images[report.ci_index.unwrap()];
+/// assert!(saddle.positions.iter().all(|c| c.abs() < 1e-2));
+/// assert!((saddle.cell[0][0] - 4.0).abs() < 1e-2);
+/// # Ok::<(), SaddleError>(())
+/// ```
 pub struct SolidNeb {
     inner: Inner,
 }

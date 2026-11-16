@@ -35,9 +35,10 @@
 //!
 //! [`IndexCheck`] is optional. When it is set, a point that meets the
 //! force tolerance is accepted only if the projected Hessian has one
-//! negative eigenvalue. The three rigid translations, and any other
-//! directions [`PointSurface::excluded_modes`] names, are removed
-//! before that count. A higher index is left along its softest negative
+//! negative eigenvalue. The directions [`PointSurface::excluded_modes`]
+//! names are removed before that count. The default names none, so a
+//! surface whose rigid translations are soft returns them there. A
+//! higher index is left along its softest negative
 //! mode, or the step is marked [`SolidDimerReport::rejected`] once the
 //! escape budget is spent. A minimum of the enthalpy is not reported as
 //! a barrier.
@@ -215,8 +216,8 @@ impl SolidDimerConfig {
 ///
 /// The lowest eigenvalues are a Lanczos decomposition of central
 /// Hessian actions. Directions from [`PointSurface::excluded_modes`]
-/// are projected out of every action, so a rigid translation is not a
-/// negative mode.
+/// are projected out of every action, so a rigid translation the
+/// surface names there is not a negative mode.
 ///
 /// Non-exhaustive: build it with [`IndexCheck::first_order`], which is
 /// also the default, and the `with_*` setters.
@@ -797,6 +798,55 @@ pub fn check_cauchy_stress<S: PointSurface>(
 /// [`PointSurface::eval`]. Any free strain runs the same session on the
 /// generalized vector of [`JointChart`]. The elastic dipole at a
 /// recorded saddle is [`SolidDimer::elastic_dipole`], `P = V σ`.
+///
+/// # Examples
+///
+/// One atom in a double well `(x² − 1)² + 2y² + 2z²` inside a cell held
+/// near a cube of side 4 by a quadratic penalty on every lattice entry.
+/// Every strain is free. The surface returns no stress, so the search
+/// finite-differences [`PointSurface::eval_in_cell`].
+///
+/// ```
+/// use ndarray::{Array1, ArrayView1, array};
+/// use rgsaddle::{
+///     IndexCheck, MinModeConfig, MinModeStatus, PointSurface, SaddleError, SolidDimer,
+///     SolidDimerConfig,
+/// };
+///
+/// const CUBE: [f64; 9] = [4.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 4.0];
+///
+/// struct WellInCell;
+///
+/// impl PointSurface for WellInCell {
+///     fn eval(&self, r: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+///         self.eval_in_cell(r, &CUBE)
+///     }
+///
+///     fn eval_in_cell(
+///         &self,
+///         r: ArrayView1<f64>,
+///         cell: &[f64; 9],
+///     ) -> Result<(f64, Array1<f64>), SaddleError> {
+///         let (x, y, z) = (r[0], r[1], r[2]);
+///         let elastic: f64 = cell.iter().zip(CUBE).map(|(h, h0)| (h - h0).powi(2)).sum();
+///         let energy = (x * x - 1.0).powi(2) + 2.0 * y * y + 2.0 * z * z + elastic;
+///         Ok((energy, array![4.0 * x * (x * x - 1.0), 4.0 * y, 4.0 * z]))
+///     }
+/// }
+///
+/// let cube = [[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]];
+/// let search = MinModeConfig { force_tol: 1e-4, max_move: 0.1, ..MinModeConfig::default() };
+/// let config = SolidDimerConfig::new(search).with_index_check(IndexCheck::default());
+/// let mut dimer = SolidDimer::new(config, array![0.3, 0.1, 0.0], cube, array![1.0, 0.5, 0.0])?;
+/// let report = dimer.run(&WellInCell, 500)?;
+///
+/// assert_eq!(report.status, MinModeStatus::Converged);
+/// assert_eq!(report.negative_modes, Some(1));
+/// assert!(!report.rejected);
+/// assert!(dimer.positions().iter().all(|c| c.abs() < 1e-3));
+/// assert!((dimer.volume() - 64.0).abs() < 1e-3);
+/// # Ok::<(), SaddleError>(())
+/// ```
 pub struct SolidDimer {
     inner: MinModeSession,
     chart: Option<JointChart>,
