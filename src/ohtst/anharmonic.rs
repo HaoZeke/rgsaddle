@@ -649,15 +649,20 @@ mod tests {
                 .sum();
             let slope = (0..3).map(|i| self.coupling[i] / self.lambda[i]).sum();
             let (v000, v0000, mu0) = (-24.0 * h, 24.0 * h, 8.0 * h);
-            let mu: Vec<f64> = (0..3).map(|i| self.lambda[i] - self.coupling[i]).collect();
             let mut reactant = -v0000 / (8.0 * mu0 * mu0) + v000 * v000 / (12.0 * mu0.powi(3));
             let mut trace0 = v000 / mu0;
-            for i in 0..3 {
-                let (a, b, k) = (self.cubic[i], self.quartic[i], self.coupling[i]);
-                reactant += -b / (8.0 * mu[i] * mu[i]);
-                reactant += (a * a / mu[i].powi(3) + 3.0 * k * k / (mu0 * mu[i] * mu[i])) / 12.0;
-                reactant += a * a / (8.0 * mu[i].powi(3));
-                trace0 += k / mu[i];
+            for (((&l, &a), &b), &k) in self
+                .lambda
+                .iter()
+                .zip(&self.cubic)
+                .zip(&self.quartic)
+                .zip(&self.coupling)
+            {
+                let mu = l - k;
+                reactant += -b / (8.0 * mu * mu);
+                reactant += (a * a / mu.powi(3) + 3.0 * k * k / (mu0 * mu * mu)) / 12.0;
+                reactant += a * a / (8.0 * mu.powi(3));
+                trace0 += k / mu;
             }
             reactant += trace0 * trace0 / (8.0 * mu0);
             (reactant, plane, slope, 4.0 * h)
