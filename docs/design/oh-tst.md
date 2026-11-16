@@ -84,7 +84,8 @@ The design reuses these existing rgsaddle pieces:
   [mishinStructuralStability2001], with NPT lattice parameters from 300 K to
   700 K.
 
-rgmin, pinned at d3f94d11c583864d980c750a9240333d1244bd00 (0.6.0), provides:
+rgmin, pinned at d3f94d11c583864d980c750a9240333d1244bd00 (0.6.0) when this
+was written, provided:
 
 - the `Manifold` trait (`project`, `egrad2rgrad`, `retract`, `transport`) and
   `Sphere`;
@@ -97,10 +98,14 @@ rgmin, pinned at d3f94d11c583864d980c750a9240333d1244bd00 (0.6.0), provides:
 - Moré–Wild noise estimation (`noise`) and a noise-floor stopping rule
   (`control::NoiseFloor`).
 
-rgmin lacks a Euclidean factor in the runtime product, per-factor metric
-weights and a stochastic-approximation driver. Section 4.6 lists what to add.
-A separate effort is deriving rgmin's product manifold, and Section 4.6 is
-written as requirements on it.
+It lacked a Euclidean factor in the runtime product, per-factor metric
+weights and a stochastic-approximation driver. Section 4.6 lists what to add,
+written as requirements on rgmin's product manifold, which was derived
+separately. rgsaddle now pins rgmin at
+919bf2a3bdaab847973d8c77e2e294b6d7885344, the 0.6.0 line with that product
+manifold: `ProductManifold` of weighted `ProductFactor`s, Euclidean factors,
+`ManifoldKind::sphere_within` and `sphere_excluding`, a `TangentMetric` per
+factor, and `rtr::minimize_rtr_gauged`.
 
 ## 2. Decisions
 

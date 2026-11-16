@@ -1,4 +1,4 @@
-rgmin is pinned at d3f94d11c583864d980c750a9240333d1244bd00, which judges an ODE12r step that no cap or bound shortened at its own length.
+From d3f94d11c583864d980c750a9240333d1244bd00 on, rgmin judges an ODE12r step that no cap or bound shortened at its own length.
 Before, rgmin recomputed every taken length as a ratio that can round a few ulps below the trial length, and an accepted step that rounded short reran that length in place of the shorter one the step controller chose.
 Which steps that hit depended on the last bits of the forces, so rgmin's switch to libm for the exponential-metric weight moved whole steps.
 On the 5-image Cu vacancy band of ~tests/makri_vacancy.rs~ ODE12r with the exponential metric takes 18.33 force evaluations per image to 1e-3 eV/A (Makri et al. 2019, Table II: 19), against 22.33 at the previous pin and 19.33 on rgmin 0.5.2.
