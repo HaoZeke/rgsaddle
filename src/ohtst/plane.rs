@@ -290,6 +290,49 @@ impl<S: PointSurface> PointSurface for MassWeighted<'_, S> {
     }
 }
 
+/// A surface evaluated in one fixed periodic cell, so that planes are
+/// sampled at a set volume, for example at the lattice parameter of each
+/// temperature. [`PointSurface::eval`] goes to
+/// [`PointSurface::eval_in_cell`] with the stored cell. Hessian actions are
+/// left to gradient differences, which see the cell; an analytic action of
+/// the inner surface might not.
+pub struct FixedCell<'a, S> {
+    surface: &'a S,
+    cell: [f64; 9],
+}
+
+impl<'a, S: PointSurface> FixedCell<'a, S> {
+    /// `cell` is row-major 3x3, the layout of
+    /// [`PointSurface::eval_in_cell`], with a nonzero volume.
+    pub fn new(surface: &'a S, cell: [f64; 9]) -> Result<Self, SaddleError> {
+        if !cell.iter().all(|v| v.is_finite()) {
+            return Err(SaddleError::NonFinite("cell"));
+        }
+        let volume = cell[0] * (cell[4] * cell[8] - cell[5] * cell[7])
+            - cell[1] * (cell[3] * cell[8] - cell[5] * cell[6])
+            + cell[2] * (cell[3] * cell[7] - cell[4] * cell[6]);
+        if volume == 0.0 {
+            return Err(SaddleError::Invalid("the cell has no volume".into()));
+        }
+        Ok(Self { surface, cell })
+    }
+
+    /// The cell, row-major.
+    pub fn cell(&self) -> &[f64; 9] {
+        &self.cell
+    }
+}
+
+impl<S: PointSurface> PointSurface for FixedCell<'_, S> {
+    fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+        self.surface.eval_in_cell(x, &self.cell)
+    }
+
+    fn excluded_modes(&self, x: ArrayView1<f64>) -> Result<Array2<f64>, SaddleError> {
+        self.surface.excluded_modes(x)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,5 +417,53 @@ mod tests {
                 .is_none()
         );
         assert!(MassWeighted::new(&Quadratic, &[1.0, 0.0]).is_err());
+    }
+
+    /// Energy `½|x|² + c₀₀`, gradient `x`: the first cell entry stands in
+    /// for a volume-dependent energy.
+    struct CellQuadratic;
+
+    impl PointSurface for CellQuadratic {
+        fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+            self.eval_in_cell(x, &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0])
+        }
+
+        fn eval_in_cell(
+            &self,
+            x: ArrayView1<f64>,
+            cell: &[f64; 9],
+        ) -> Result<(f64, Array1<f64>), SaddleError> {
+            Ok((0.5 * x.dot(&x) + cell[0], x.to_owned()))
+        }
+
+        fn hessian_vector(
+            &self,
+            _x: ArrayView1<f64>,
+            v: ArrayView1<f64>,
+        ) -> Result<Option<Array1<f64>>, SaddleError> {
+            Ok(Some(v.to_owned()))
+        }
+    }
+
+    #[test]
+    fn fixed_cell_evaluates_in_its_cell() {
+        let cell = [1.1, 0.0, 0.0, 0.0, 1.1, 0.0, 0.0, 0.0, 1.1];
+        let surface = FixedCell::new(&CellQuadratic, cell).unwrap();
+        let x = array![0.3, -0.4];
+        let (energy, gradient) = surface.eval(x.view()).unwrap();
+        assert!((energy - (0.125 + 1.1)).abs() < 1e-15);
+        assert_eq!(gradient, x);
+        assert_eq!(surface.cell(), &cell);
+        assert!(
+            surface
+                .hessian_vector(x.view(), x.view())
+                .unwrap()
+                .is_none()
+        );
+        let flat = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
+        assert!(FixedCell::new(&CellQuadratic, flat).is_err());
+        let mut broken = cell;
+        broken[4] = f64::NAN;
+        assert!(FixedCell::new(&CellQuadratic, broken).is_err());
     }
 }

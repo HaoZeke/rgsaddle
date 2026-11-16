@@ -20,9 +20,10 @@
 //! `A` depends on `p` only through `ν · p`, so the `n - 1` in-plane moves
 //! of `p` are a gauge.
 //!
-//! Nothing here names a system. The surface carries the cell, so a crystal
-//! at a fixed volume or lattice parameter for each temperature is a
-//! surface built with that cell.
+//! Nothing here names a system. A crystal at a fixed volume or lattice
+//! parameter for each temperature is a surface evaluated in that cell:
+//! wrap it in [`FixedCell`] with the cell for the temperature, then in
+//! [`MassWeighted`].
 
 mod optimize;
 mod plane;
@@ -32,7 +33,7 @@ mod sample;
 mod work;
 
 pub use optimize::{PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum, PlaneStep, PlaneTrace};
-pub use plane::{Hyperplane, MassWeighted};
+pub use plane::{FixedCell, Hyperplane, MassWeighted};
 pub use rate::{OhTstRate, flux_mass, ohtst_rate, plane_transmission};
 pub use reactant::{ReactantDensity, reactant_density};
 pub use sample::{LangevinConfig, PlaneSample, sample_plane};
