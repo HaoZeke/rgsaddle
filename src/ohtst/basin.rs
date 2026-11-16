@@ -16,6 +16,13 @@
 //! `width = 4` the neglected tails are of order `e⁻⁸` for a harmonic
 //! basin.
 //!
+//! The planes are sampled from the minimum outward, each from the last
+//! configuration of its inner neighbour. A side of the window ends at the
+//! first plane where the trapezoid rise of `A_R` passes
+//! [`BasinConfig::cap`] `kT`, and the fit and the integral stop there, so
+//! a wall inside the window (a bond compressed behind the minimum) is
+//! neither sampled nor integrated, at a relative cost of order `e^{-cap}`.
+//!
 //! This replaces the crossing estimator of Jóhannesson and Jónsson,
 //! J. Chem. Phys. 115, 9644 (2001), Eq. 22, kept as
 //! [`ReactantDensity::crossing_density`](crate::ohtst::ReactantDensity::crossing_density):
@@ -43,10 +50,14 @@ const INTERVALS: usize = 2000;
 pub struct BasinConfig {
     /// Sampler for every plane. Plane `i` uses the seed plus `i`.
     pub sampler: LangevinConfig,
-    /// Number of planes, at least two more than [`Self::degree`].
+    /// Number of planes on the full window, at least two more than
+    /// [`Self::degree`].
     pub planes: usize,
     /// Half-width of the planes, in harmonic standard deviations of `ξ`.
     pub width: f64,
+    /// Rise of the plane free energy, in `kT`, past which a side of the
+    /// window takes no more planes.
+    pub cap: f64,
     /// Degree of the polynomial fitted to the mean force; at least one.
     pub degree: usize,
     /// Gradient-difference step for Hessian actions at the minimum when
@@ -62,6 +73,7 @@ impl Default for BasinConfig {
             sampler: LangevinConfig::default(),
             planes: 11,
             width: 4.0,
+            cap: 15.0,
             degree: 5,
             hvp_step: 1.0e-4,
             tolerance: 1.0e-10,
@@ -88,6 +100,13 @@ impl BasinConfig {
     #[must_use]
     pub fn with_width(mut self, width: f64) -> Self {
         self.width = width;
+        self
+    }
+
+    /// Set [`Self::cap`].
+    #[must_use]
+    pub fn with_cap(mut self, cap: f64) -> Self {
+        self.cap = cap;
         self
     }
 
@@ -122,6 +141,11 @@ impl BasinConfig {
         if !(self.width.is_finite() && self.width > 0.0) {
             return Err(SaddleError::Invalid(
                 "the basin width must be finite and positive".into(),
+            ));
+        }
+        if !(self.cap.is_finite() && self.cap > 0.0) {
+            return Err(SaddleError::Invalid(
+                "the basin cap must be finite and positive".into(),
             ));
         }
         if !(self.hvp_step.is_finite() && self.hvp_step > 0.0) {
@@ -228,25 +252,43 @@ pub fn basin_density<S: PointSurface>(
     let kt = config.sampler.thermal;
     let spread = (kt * compliance).sqrt();
     let planes = config.planes;
-    let mut offsets = Vec::with_capacity(planes);
-    let mut slopes = Vec::with_capacity(planes);
-    let mut slope_errors = Vec::with_capacity(planes);
-    for i in 0..planes {
-        let x = config.width * (2.0 * i as f64 / (planes - 1) as f64 - 1.0);
-        let xi = x * spread;
+    let grid: Vec<f64> = (0..planes)
+        .map(|i| config.width * (2.0 * i as f64 / (planes - 1) as f64 - 1.0) * spread)
+        .collect();
+    let at = |index: usize, start: Option<ArrayView1<f64>>| {
         let mut point = minimum.to_owned();
-        point.scaled_add(xi, &direction);
+        point.scaled_add(grid[index], &direction);
         let plane = Hyperplane::new(point, direction.clone())?;
         let sampler = config
             .sampler
             .clone()
-            .with_seed(config.sampler.seed.wrapping_add(i as u64));
-        let sample = sample_plane(surface, &plane, None, &sampler)?;
-        evaluations += sample.evaluations;
-        offsets.push(xi);
-        slopes.push(-sample.normal_force);
-        slope_errors.push(sample.normal_force_error);
+            .with_seed(config.sampler.seed.wrapping_add(index as u64));
+        sample_plane(surface, &plane, start, &sampler)
+    };
+    let centre = planes / 2;
+    let first = at(centre, None)?;
+    evaluations += first.evaluations;
+    let mut rows = vec![(grid[centre], -first.normal_force, first.normal_force_error)];
+    let cap = config.cap * kt;
+    for side in [1, -1] {
+        let mut last = first.last.clone();
+        let (mut xi, mut slope, mut rise) = (grid[centre], -first.normal_force, 0.0);
+        let mut index = centre.checked_add_signed(side);
+        while let Some(i) = index.filter(|&i| i < planes && rise <= cap) {
+            let sample = at(i, Some(last.view()))?;
+            evaluations += sample.evaluations;
+            let next = -sample.normal_force;
+            rise += 0.5 * (slope + next) * (grid[i] - xi);
+            (xi, slope) = (grid[i], next);
+            rows.push((xi, next, sample.normal_force_error));
+            last = sample.last;
+            index = i.checked_add_signed(side);
+        }
     }
+    rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let offsets: Vec<f64> = rows.iter().map(|row| row.0).collect();
+    let slopes: Vec<f64> = rows.iter().map(|row| row.1).collect();
+    let slope_errors: Vec<f64> = rows.iter().map(|row| row.2).collect();
     if slope_errors.iter().any(|e| !(e.is_finite() && *e > 0.0)) {
         return Err(SaddleError::Invalid(
             "a basin plane returned no error on its mean force".into(),
@@ -254,6 +296,11 @@ pub fn basin_density<S: PointSurface>(
     }
 
     let terms = config.degree + 1;
+    if offsets.len() <= terms {
+        return Err(SaddleError::Invalid(
+            "the cap left too few basin planes for the fit; add planes or lower the degree".into(),
+        ));
+    }
     let scaled: Vec<f64> = offsets.iter().map(|xi| xi / spread).collect();
     let mut normal_matrix = vec![0.0; terms * terms];
     let mut rhs = vec![0.0; terms];
@@ -277,7 +324,7 @@ pub fn basin_density<S: PointSurface>(
         .zip(&slope_errors)
         .map(|((x, slope), error)| ((slope - fitted(*x)) / error).powi(2))
         .sum();
-    let reduced_chi_square = chi_square / (planes - terms) as f64;
+    let reduced_chi_square = chi_square / (offsets.len() - terms) as f64;
     let inflation = reduced_chi_square.max(1.0);
 
     let rise = |x: f64| -> f64 {
@@ -286,11 +333,12 @@ pub fn basin_density<S: PointSurface>(
                 .map(|k| coefficients[k] * x.powi(k as i32 + 1) / (k + 1) as f64)
                 .sum::<f64>()
     };
-    let h = 2.0 * config.width / INTERVALS as f64;
+    let (low, high) = (scaled[0], scaled[scaled.len() - 1]);
+    let h = (high - low) / INTERVALS as f64;
     let mut integral = 0.0;
     let mut moments = vec![0.0; terms];
     for i in 0..=INTERVALS {
-        let x = -config.width + i as f64 * h;
+        let x = low + i as f64 * h;
         let weight = if i == 0 || i == INTERVALS {
             1.0
         } else if i % 2 == 1 {
@@ -444,5 +492,79 @@ mod tests {
         assert!(result.density_error < 0.03 * exact);
         assert!((result.plane.normal()[2]).abs() < 1e-12);
         assert_eq!(result.offsets.len(), 5);
+    }
+
+    fn wall_profile(xi: f64) -> f64 {
+        0.5 * xi * xi - 0.3 * xi.powi(3) + 0.2 * xi.powi(4)
+    }
+
+    /// `V = U(ξ) + (y - ξ/2)²` with `U = ξ²/2 - 0.3 ξ³ + 0.2 ξ⁴`: one
+    /// minimum at the origin, steep behind it along `ξ`, and a mean force
+    /// `U'(ξ)` on every plane `ξ` = const.
+    struct Wall;
+
+    impl PointSurface for Wall {
+        fn eval(&self, q: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+            let (xi, y) = (q[0], q[1]);
+            let slope = xi - 0.9 * xi * xi + 0.8 * xi.powi(3);
+            let stretch = y - 0.5 * xi;
+            Ok((
+                wall_profile(xi) + stretch * stretch,
+                array![slope - stretch, 2.0 * stretch],
+            ))
+        }
+    }
+
+    /// At `kT = 0.25`, `σ_ξ = 0.5` and the planes sit every 0.4 on
+    /// `[-2, 2]`. `U/kT` is 6.6 at -1.2 and 15.3 at -1.6, so a cap of ten
+    /// ends the side behind the minimum at -1.6 and leaves out -2; ahead it
+    /// is 11.2 only at the last plane. The density is `1 / ∫ exp(-U/kT)`
+    /// by Simpson's rule on `[-4, 6]`.
+    #[test]
+    fn the_cap_ends_a_side_at_a_wall() {
+        let kt = 0.25;
+        let config = BasinConfig::default().with_cap(10.0).with_sampler(
+            LangevinConfig::default()
+                .with_thermal(kt)
+                .with_time_step(0.2)
+                .with_records(4000)
+                .with_seed(5),
+        );
+        let result = basin_density(
+            &Wall,
+            array![0.0, 0.0].view(),
+            array![1.0, 0.0].view(),
+            &config,
+        )
+        .unwrap();
+        assert!((result.spread - 0.5).abs() < 1e-8);
+        assert_eq!(result.offsets.len(), 10, "{:?}", result.offsets);
+        assert!((result.offsets[0] + 1.6).abs() < 1e-7);
+        assert!((result.offsets[9] - 2.0).abs() < 1e-7);
+
+        let steps = 20_000;
+        let h = 10.0 / steps as f64;
+        let integral = (0..=steps)
+            .map(|i| {
+                let weight = if i == 0 || i == steps {
+                    1.0
+                } else if i % 2 == 1 {
+                    4.0
+                } else {
+                    2.0
+                };
+                weight * (-wall_profile(-4.0 + i as f64 * h) / kt).exp()
+            })
+            .sum::<f64>()
+            * h
+            / 3.0;
+        let exact = 1.0 / integral;
+        assert!(
+            (result.density - exact).abs() < 4.0 * result.density_error,
+            "{} ± {} against {exact}",
+            result.density,
+            result.density_error
+        );
+        assert!(result.density_error < 0.02 * exact);
     }
 }
