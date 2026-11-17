@@ -2142,16 +2142,22 @@ fn random_survival_note(csv: &std::path::Path) -> String {
     let table_d = table_diffusivity(temperature);
     let measured_d = measured.map(|(d, sigma, _)| (d, sigma));
     let tracer_d = tracer.as_ref().map(|(estimate, _)| estimate.tracer);
-    let fmt_d = |d: Option<(f64, f64)>| match d {
-        Some((value, error)) => format!("{value:.3} ± {error:.3} Å²/ps"),
-        None => "not available".to_string(),
-    };
-    text.push_str(&format!(
-        "At {temperature:.0} K, Table 1 D_i = {}; measured N D* = {}; measured defect D = {}.\n\n",
-        fmt_d(table_d),
-        fmt_d(tracer_d),
-        fmt_d(measured_d)
-    ));
+    let quoted: Vec<String> = [
+        ("Table 1 D_i", table_d),
+        ("measured N D*", tracer_d),
+        ("measured defect D", measured_d),
+    ]
+    .iter()
+    .filter_map(|(label, d)| {
+        d.map(|(value, error)| format!("{label} = {value:.3} ± {error:.3} Å²/ps"))
+    })
+    .collect();
+    if !quoted.is_empty() {
+        text.push_str(&format!(
+            "At {temperature:.0} K, {}.\n\n",
+            quoted.join("; ")
+        ));
+    }
     let convert = |rate: f64, rate_sigma: f64, d: Option<(f64, f64)>| {
         let (d_i, d_sigma) = d.filter(|(d_i, _)| *d_i > 0.0)?;
         let volume = rate_to_volume(rate, lattice, d_i);
