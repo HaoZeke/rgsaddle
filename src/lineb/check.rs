@@ -17,10 +17,12 @@ use ndarray::{Array1, Array2, ArrayView1};
 use super::action::l2;
 use super::mass::Masses;
 use super::optimize::{LinebConfig, LinebPath};
-use super::path::Curve;
+use super::path::{Curve, Level};
 use crate::error::SaddleError;
 use crate::minmode::PointSurface;
-use crate::{IrcConfig, IrcDirection, IrcKind, IrcSession, continue_from_mep, exact_eigh};
+use crate::{
+    Continuation, IrcConfig, IrcDirection, IrcKind, IrcSession, continue_from_mep, exact_eigh,
+};
 
 const MB_A: [f64; 4] = [-200.0, -100.0, -170.0, 15.0];
 const MB_AA: [f64; 4] = [-1.0, -1.0, -6.5, 0.7];
@@ -81,7 +83,7 @@ fn probe<S: PointSurface>(
     let point = curve.at(lambda);
     let tangent = curve.tangent(lambda);
     let speed = l2(tangent.view());
-    if !(speed > 0.0) {
+    if speed <= 0.0 || speed.is_nan() {
         return Err(SaddleError::Invalid(
             "the reference grid hit a vanishing tangent".into(),
         ));
@@ -99,7 +101,7 @@ fn probe<S: PointSurface>(
 
 fn integrands(sample: &Sample, u: Option<f64>) -> Result<(f64, f64), SaddleError> {
     let Some(u) = u else {
-        if !(sample.sigma > 0.0) {
+        if sample.sigma <= 0.0 || sample.sigma.is_nan() {
             return Err(SaddleError::Invalid(
                 "the reference momentum vanishes inside a chord".into(),
             ));
@@ -109,14 +111,14 @@ fn integrands(sample: &Sample, u: Option<f64>) -> Result<(f64, f64), SaddleError
     let action = sample.sigma * sample.speed * 2.0 * u;
     let period = if sample.sigma > 0.0 && u > 0.0 {
         2.0 * u * sample.speed / sample.sigma
-    } else if !(u > 0.0) && !(sample.sigma > 0.0) {
-        if !(sample.slope > 0.0) {
+    } else if (u <= 0.0 || u.is_nan()) && (sample.sigma <= 0.0 || sample.sigma.is_nan()) {
+        if sample.slope <= 0.0 || sample.slope.is_nan() {
             return Err(SaddleError::Invalid(
                 "the reference potential does not rise off the turning point".into(),
             ));
         }
         2.0 * sample.speed / (2.0 * sample.slope).sqrt()
-    } else if !(u > 0.0) {
+    } else if u <= 0.0 || u.is_nan() {
         0.0
     } else {
         return Err(SaddleError::Invalid(
@@ -148,12 +150,8 @@ fn simpson(values: &[f64], width: f64) -> (f64, f64) {
 }
 
 fn chord<S: PointSurface>(
-    surface: &S,
-    masses: &Masses,
-    curve: &Curve,
-    energy: f64,
-    left: f64,
-    right: f64,
+    level: &Level<'_, S>,
+    (left, right): (f64, f64),
     panels: usize,
     end: Option<bool>,
 ) -> Result<(f64, f64, f64, f64), SaddleError> {
@@ -163,7 +161,7 @@ fn chord<S: PointSurface>(
         Some(_) => (right - left).sqrt() / panels as f64,
         None => (right - left) / panels as f64,
     };
-    if !(width > 0.0) {
+    if width <= 0.0 || width.is_nan() {
         return Err(SaddleError::Stalled(
             "a reference panel no longer advances".into(),
         ));
@@ -180,7 +178,13 @@ fn chord<S: PointSurface>(
             }
             None => (left + width * index as f64, None),
         };
-        let sample = probe(surface, masses, curve, energy, lambda)?;
+        let sample = probe(
+            level.surface,
+            level.masses,
+            level.curve,
+            level.energy,
+            lambda,
+        )?;
         let (action, period) = integrands(&sample, u)?;
         action_samples.push(action);
         period_samples.push(period);
@@ -206,6 +210,12 @@ struct Grid {
 fn fine_grid<S: PointSurface>(surface: &S, path: &LinebPath) -> Result<Grid, SaddleError> {
     let curve = Curve::new(path.weighted.view())?;
     let knots = curve.knots().to_vec();
+    let level = Level {
+        surface,
+        masses: &path.masses,
+        curve: &curve,
+        energy: path.energy,
+    };
     let last = knots.len() - 1;
     let library_panels = 2 * path.quadrature_pairs;
     let mut panels = 2usize;
@@ -225,12 +235,8 @@ fn fine_grid<S: PointSurface>(surface: &S, path: &LinebPath) -> Result<Grid, Sad
                 None
             };
             let (da, dh, aa, ha) = chord(
-                surface,
-                &path.masses,
-                &curve,
-                path.energy,
-                knots[chord_index],
-                knots[chord_index + 1],
+                &level,
+                (knots[chord_index], knots[chord_index + 1]),
                 panels,
                 end,
             )?;
@@ -248,7 +254,9 @@ fn fine_grid<S: PointSurface>(surface: &S, path: &LinebPath) -> Result<Grid, Sad
             let samples = (panels as f64) * (last as f64);
             let action_noise = action_abs * f64::EPSILON * samples;
             let half_noise = half_abs * f64::EPSILON * samples;
-            if !(action_change > action_noise) && !(half_change > half_noise) {
+            if (action_change <= action_noise || action_change.is_nan())
+                && (half_change <= half_noise || half_change.is_nan())
+            {
                 // A grid that has already settled before the library
                 // panel count is at least as fine as that count.
                 let (library_action, library_half) = match at_library {
@@ -282,7 +290,7 @@ fn descending(mode: &Array1<f64>, direction: IrcDirection, floor: f64) -> Vec<[f
         let report = session.step(&MullerBrown).unwrap();
         let position = session.position();
         points.push([position[0], position[1]]);
-        if !(report.energy > floor) || report.at_minimum {
+        if report.energy <= floor || report.energy.is_nan() || report.at_minimum {
             break;
         }
     }
@@ -358,10 +366,7 @@ fn muller_brown_action_and_period_match_a_fine_grid() {
         mep.view(),
         &masses,
         &config,
-        delta,
-        images,
-        levels,
-        800,
+        &Continuation::new(delta, images, levels).with_max_steps(800),
     )
     .unwrap();
     assert_eq!(paths.len(), levels);

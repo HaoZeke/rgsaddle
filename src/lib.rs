@@ -176,8 +176,8 @@ pub use lammps::{
 #[cfg(any(test, feature = "lineb-oracle"))]
 pub use lineb::hqtst_rate_interpolated_hessian;
 pub use lineb::{
-    HqtstRate, LinebConfig, LinebPath, LinebReport, LinebSession, LinebStatus, Masses,
-    continue_from_mep, hqtst_rate,
+    Continuation, HqtstRate, LinebConfig, LinebPath, LinebReport, LinebSession, LinebStatus,
+    Masses, continue_from_mep, hqtst_rate,
 };
 pub use minmode::{
     ArtNConfig, FiniteDifference, MinModeConfig, MinModeKind, MinModeReport, MinModeSession,
