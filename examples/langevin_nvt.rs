@@ -1243,6 +1243,48 @@ struct Group {
 
 const DUMBBELL_ALPHA: f64 = 2.0 / 3.0;
 
+/// Rate of one of the eight translation channels of a `<100>` dumbbell
+/// with defect diffusivity `diffusivity`, `ν = D / (α a²)`: the SIA
+/// migration frequency of `K_iv = V_iv D_i / (α a²) = V_iv ν` in section 1
+/// of Mwungeli, Liu, and Demkowicz.
+fn dumbbell_channel_rate(lattice: f64, diffusivity: f64) -> f64 {
+    diffusivity / (DUMBBELL_ALPHA * lattice * lattice)
+}
+
+/// `V_iv / Ω = k / (ν Ω) = 4 α k / (a D_i)` for a capture rate `k` in Å³/ps.
+fn rate_to_volume(rate: f64, lattice: f64, d_i: f64) -> f64 {
+    rate / dumbbell_channel_rate(lattice, d_i) / (lattice.powi(3) / 4.0)
+}
+
+/// Mean and standard error of `D_msd` over the `MD_MSD` replicas of
+/// `validation/direct_md_sia_d.csv` with this temperature, lattice constant,
+/// timestep, and friction, Å²/ps, and the number of replicas.
+fn replica_diffusivity(
+    temperature: f64,
+    lattice: f64,
+    dt_fs: f64,
+    gamma_per_ps: f64,
+) -> Option<(f64, f64, usize)> {
+    let text = fs::read_to_string(validation_file("direct_md_sia_d.csv")).ok()?;
+    let values: Vec<f64> = text
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split(',').collect();
+            let value = |index: usize| fields.get(index)?.parse::<f64>().ok();
+            let matches = (value(0)? - temperature).abs() < 0.5
+                && (value(1)? - lattice).abs() < 1.0e-5
+                && (value(3)? - dt_fs).abs() < 1.0e-9
+                && (value(4)? - gamma_per_ps).abs() < 1.0e-9;
+            if matches { value(12) } else { None }
+        })
+        .collect();
+    (values.len() > 1).then(|| {
+        let (mean, error) = mean_and_error(&values);
+        (mean, error, values.len())
+    })
+}
+
 fn first_method_report(csv: &std::path::Path) -> String {
     #[derive(Clone)]
     struct Trial {
@@ -1252,6 +1294,8 @@ fn first_method_report(csv: &std::path::Path) -> String {
         shell: f64,
         orientation: String,
         sites: f64,
+        dt_fs: f64,
+        gamma: f64,
         window: f64,
         captured: bool,
         time_ps: f64,
@@ -1280,6 +1324,12 @@ fn first_method_report(csv: &std::path::Path) -> String {
         let Ok(sites) = fields[9].parse::<f64>() else {
             continue;
         };
+        let Ok(dt_fs) = fields[11].parse::<f64>() else {
+            continue;
+        };
+        let Ok(gamma) = fields[12].parse::<f64>() else {
+            continue;
+        };
         let Ok(window) = fields[13].parse::<f64>() else {
             continue;
         };
@@ -1296,6 +1346,8 @@ fn first_method_report(csv: &std::path::Path) -> String {
             shell,
             orientation: fields[8].to_string(),
             sites,
+            dt_fs,
+            gamma,
             window,
             captured: captured == 1,
             time_ps,
@@ -1420,7 +1472,7 @@ fn first_method_report(csv: &std::path::Path) -> String {
             let survival = (1.0 - captured_sites / total_sites).max(1.0e-12);
             fit_times.push((*mark, survival.ln()));
         }
-        text.push_str("The first method of Mwungeli, Liu, and Demkowicz fits ln(n(t)/N) against time through the origin. The slope is -k/V_model, with V_model the 13³ cell volume. n(t)/N here counts every lattice site: a simulated shell contributes its capture fraction, and a site outside 10.8 Å is counted as not yet recombined. The recombination volume is k a² / (α D_i) with α = 2/3, divided by Ω = a³/4.\n\n");
+        text.push_str("The first method of Mwungeli, Liu, and Demkowicz fits ln(n(t)/N) against time through the origin. The slope is -k/V_model, with V_model the 13³ cell volume. n(t)/N here counts every lattice site: a simulated shell contributes its capture fraction, and a site outside 10.8 Å is counted as not yet recombined. The recombination volume is V_iv = k α a² / D_i with α = 2/3, from K_iv = V_iv D_i / (α a²) = V_iv ν in section 1 of that paper, divided by Ω = a³/4.\n\n");
         if fit_times.is_empty() {
             continue;
         }
@@ -1447,16 +1499,29 @@ fn first_method_report(csv: &std::path::Path) -> String {
         ));
         match diffusivity {
             Some((d_i, d_sigma)) if d_i > 0.0 => {
-                let volume = rate * lattice * lattice / (DUMBBELL_ALPHA * d_i);
-                let per_atom = volume / (lattice.powi(3) / 4.0);
+                let per_atom = rate_to_volume(rate, lattice, d_i);
                 let rel = ((rate_sigma / rate).powi(2) + (d_sigma / d_i).powi(2)).sqrt();
                 text.push_str(&format!(
-                    "Table 1 quotes the Ref. [12] SIA diffusivity as {d_i:.3} ± {d_sigma:.3} Å²/ps at this temperature. First-method V_iv = {per_atom:.2} ± {:.2} Ω.\n\n",
+                    "Table 1 lists D_i = {d_i:.3} ± {d_sigma:.3} Å²/ps at this temperature, 4951 D* from Ref. [12] (see `direct_md_dynamics.md`). With it, first-method V_iv = {per_atom:.2} ± {:.2} Ω.\n\n",
                     per_atom * rel
                 ));
             }
             _ => {
-                text.push_str("No Table 1 diffusivity is recorded for this temperature, so k is not converted to a volume.\n\n");
+                text.push_str("No Table 1 diffusivity is recorded for this temperature, so k is not converted with it.\n\n");
+            }
+        }
+        let dynamics = (members[0].dt_fs, members[0].gamma);
+        match replica_diffusivity(*temperature, lattice, dynamics.0, dynamics.1) {
+            Some((d_i, d_sigma, replicas)) if d_i > 0.0 => {
+                let per_atom = rate_to_volume(rate, lattice, d_i);
+                let rel = ((rate_sigma / rate).powi(2) + (d_sigma / d_i).powi(2)).sqrt();
+                text.push_str(&format!(
+                    "The defect diffusivity with these dynamics, `D_msd` of `direct_md_sia_d.md` over {replicas} replicas, is {d_i:.3} ± {d_sigma:.3} Å²/ps. With it, first-method V_iv = {per_atom:.2} ± {:.2} Ω.\n\n",
+                    per_atom * rel
+                ));
+            }
+            _ => {
+                text.push_str("No free-dumbbell replica with these dynamics is recorded for this temperature, so k is not converted with a defect diffusivity.\n\n");
             }
         }
     }
@@ -3346,6 +3411,61 @@ mod tests {
         let (positions, cell) = place_vacancy_dumbbell(13, a, shells[0].1, [0.0, 0.0, 1.0]);
         assert_eq!(positions.len() / 3, 8788);
         assert!(coordination_deficit(&positions, cell) > 0);
+    }
+
+    /// The k that [`rate_to_volume`] turns into `volume` Ω.
+    fn volume_to_rate(volume: f64, lattice: f64, d_i: f64) -> f64 {
+        volume * lattice.powi(3) / 4.0 * dumbbell_channel_rate(lattice, d_i)
+    }
+
+    #[test]
+    fn rate_to_volume_reproduces_the_published_600_k_volume() {
+        // Fig. 1 of Mwungeli, Liu, and Demkowicz fits log(n/N) = -0.00173 t
+        // (t in ps) for 8788 atoms at 600 K; Table 1 lists a = 3.649 Å,
+        // D_i = 0.728 Å²/ps, and V_iv = 186 ± 14 Ω for that model.
+        let lattice = 3.649_f64;
+        let (d_i, _) = table_diffusivity(600.0).expect("Table 1 D_i");
+        let rate = 0.00173 * (13.0 * lattice).powi(3);
+        let volume = rate_to_volume(rate, lattice, d_i);
+        assert!((volume - 185.4).abs() < 0.05, "{volume}");
+        assert!((volume - 186.0).abs() < 14.0, "{volume}");
+        let back = volume_to_rate(volume, lattice, d_i);
+        assert!((back - rate).abs() / rate < 1.0e-12, "{back} {rate}");
+        // α inverted, k a² / (α D_i Ω), gives 1/α² = 9/4 of the volume.
+        let inverted = rate * lattice * lattice / (DUMBBELL_ALPHA * d_i) / (lattice.powi(3) / 4.0);
+        assert!(
+            (inverted / volume - 2.25).abs() < 1.0e-12,
+            "{inverted} {volume}"
+        );
+        // Table 1, k-method, 8788 atoms, at its lattice parameters.
+        for (temperature, k_method, a) in [
+            (300.0, 254.0, 3.631),
+            (500.0, 185.0, 3.643),
+            (700.0, 203.0, 3.655),
+        ] {
+            let (d_i, _) = table_diffusivity(temperature).expect("Table 1 D_i");
+            let rate = volume_to_rate(k_method, a, d_i);
+            assert!((rate_to_volume(rate, a, d_i) - k_method).abs() < 1.0e-9);
+        }
+    }
+
+    #[test]
+    fn the_replica_diffusivity_is_the_free_dumbbell_note() {
+        // direct_md_sia_d.md, 10 fs and 0.1/ps: 0.278 ± 0.033, 0.860 ± 0.071
+        // and 1.886 ± 0.188 Å²/ps over 8 replicas.
+        for (temperature, d, error) in [
+            (300.0, 0.278, 0.033),
+            (500.0, 0.860, 0.071),
+            (700.0, 1.886, 0.188),
+        ] {
+            let lattice = measured_lattice(temperature);
+            let (mean, sigma, replicas) =
+                replica_diffusivity(temperature, lattice, 10.0, 0.1).expect("replicas");
+            assert_eq!(replicas, 8);
+            assert!((mean - d).abs() < 5.0e-4, "{mean}");
+            assert!((sigma - error).abs() < 5.0e-4, "{sigma}");
+        }
+        assert!(replica_diffusivity(500.0, 3.643, 10.0, 0.1).is_none());
     }
 
     #[test]
