@@ -103,3 +103,11 @@ Its ~certified~ is 1 while a certificate holds for the current point, the climbi
 A host that loads the library at run time checks ~rgsaddle_abi_version()~ for at least minor 40 before resolving these symbols.
 The C++ ~Band~, ~MinMode~ and ~Ocineb~ wrappers have ~set_saddle_check~ and ~saddle_index~, ~rgsaddle::saddle_check()~ returns the defaults and ~rgsaddle::saddle_index~ certifies one point.
 Python's ~MinMode~ reports the index in ~SessionReport.saddle_index~ and has ~saddle_index~ and ~set_saddle_check~, ~rgsaddle.saddle_index~ certifies one point, and ~rgsaddle.ase.saddle_index~ and ~rgsaddle.ase.NEB.saddle_index~ certify ASE atoms and the climbing image of an ASE band.
+
+ABI minor 45 adds the simplified string method of E, Ren, and Vanden-Eijnden, J. Chem. Phys. 126, 164103 (2007), doi:10.1063/1.2720838 @@rst::cite:`eSimplifiedImprovedString2007`@@.
+Band config bit 5, ~RGSADDLE_BAND_STRING~, read from a config stamped with minor 45 or newer, evolves interior images under the full potential force (no spring, no tangent projection) and places them at equal arc length after each step: on the not-a-knot cubic spline when ~RGSADDLE_BAND_SPLINE_REPARAM~ is also set, and on the polyline otherwise.
+An armed climbing image reflects the potential force along the tangent and stays anchored during reparametrization.
+~rgsaddle_band_set_string~ enables or clears the method on a live ~RgsaddleBand~ with an ~rgsaddle_reparametrization_t~ (~RGSADDLE_REPARAM_LINEAR~ or ~RGSADDLE_REPARAM_NOT_A_KNOT~); ~enabled = 0~ returns the band to NEB.
+~rgsaddle_band_project~ and ~rgsaddle_band_project_fixed~ also read ~RGSADDLE_BAND_STRING~.
+A host that loads the library at run time checks ~rgsaddle_abi_version()~ for at least minor 45 before resolving ~rgsaddle_band_set_string~.
+~include/rgsaddle/session.hpp~ wraps it as ~Band::set_string~, and Python exposes ~rgsaddle.Band(..., string=True)~, ~_core.project_band(..., projection="string")~, and ~rgsaddle.ase.SimplifiedString~.
