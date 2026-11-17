@@ -206,18 +206,17 @@ fn trajectory() -> (String, String) {
     (dig.finish(), dig.lines.join("\n"))
 }
 
-/// SHA-256 of the baseline dump at develop 40be7d9e. Filled after the
-/// first measurement; an empty string prints the digest and fails.
-const EXPECTED: &str = "2ff258f66fee8ae182dc9739cd912a232204cfba36fcd6bf83a5442fb771cc1a";
+/// SHA-256 of the pre-refactor baseline dump at c862cf6.
+///
+/// Measured with the same command under default, `readcon`, and
+/// `readcon,readcon-db`; all three feature sets produce this same digest.
+const EXPECTED: &str = "3eeab4198cc7626d11fc0970c8812de1844e78d238592d2354c7b9c4630cca92";
 
 #[test]
 fn trajectories_match_the_baseline_bits() {
     let (digest, dump) = trajectory();
     if let Ok(path) = std::env::var("DRY_BITS_OUT") {
         std::fs::write(&path, format!("{digest}\n{dump}\n")).expect("write dump");
-    }
-    if EXPECTED.is_empty() {
-        panic!("baseline digest {digest}");
     }
     assert_eq!(digest, EXPECTED, "trajectory bits moved");
 }
