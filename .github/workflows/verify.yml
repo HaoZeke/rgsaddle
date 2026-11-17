@@ -53,10 +53,15 @@ jobs:
           set -euo pipefail
           export PATH="$HOME/.local/bin:$PATH"
           shopt -s globstar nullglob
+          # validation/benchmark/ holds campaign drivers (optbench, eOn).
+          # They take a checkout and a long run, so they are not these checks.
           for script in validation/**/*.py tests/symbolic/*.py; do
             if [[ "$(basename "$script")" == "check_index1.py" ]]; then
               continue
             fi
+            case "$script" in
+              validation/benchmark/*) continue ;;
+            esac
             echo "== $script"
             uv run --no-project --with sympy --with mpmath --with numpy --with scipy --with z3-solver python "$script"
           done
