@@ -114,6 +114,28 @@ int main() {
         std::fprintf(stderr, "position size\n");
         return 1;
     }
+    auto certificate = band.saddle_index();
+    if (!certificate.certified || certificate.index != 1 || certificate.curvatures.size() != 3 ||
+        std::fabs(certificate.curvatures[0] + 4.0) > 0.05 || certificate.evaluations <= 0 ||
+        certificate.total_evaluations != certificate.evaluations) {
+        std::fprintf(stderr, "band saddle index %d, %zu curvatures\n", certificate.index,
+                     certificate.curvatures.size());
+        return 1;
+    }
+    auto point = rgsaddle::saddle_index(n_atoms, &out[static_cast<std::size_t>(last.ci_index * 3)],
+                                        surface, nullptr);
+    if (point.index != 1 || point.curvatures.size() != 3) {
+        std::fprintf(stderr, "point saddle index %d\n", point.index);
+        return 1;
+    }
+    auto escape = rgsaddle::saddle_check();
+    escape.escape_attempts = 1;
+    band.set_saddle_check(&escape);
+    band.set_saddle_check(nullptr);
+    if (band.saddle_index(0).certified) {
+        std::fprintf(stderr, "a cleared check kept its certificate\n");
+        return 1;
+    }
     band.reset();
 
     cfg.flags |= RGSADDLE_BAND_NO_MIN_MODE;

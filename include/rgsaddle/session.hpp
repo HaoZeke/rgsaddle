@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace rgsaddle {
@@ -69,6 +70,53 @@ struct Report {
         return status == RGSADDLE_STATUS_CONVERGED;
     }
 };
+
+// The certificate of a converged saddle, ABI minor 40. Without one,
+// certified is false and the counts are the session's.
+struct SaddleIndex {
+    bool certified = false;
+    int index = 0;
+    bool converged = false;
+    std::int64_t evaluations = 0;
+    std::int64_t total_evaluations = 0;
+    std::int64_t escapes = 0;
+    std::vector<double> curvatures;
+
+    static SaddleIndex from_c(rgsaddle_saddle_index_t const& r, std::vector<double> curvatures) {
+        SaddleIndex out;
+        out.certified = r.certified != 0;
+        out.index = r.index;
+        out.converged = r.converged != 0;
+        out.evaluations = r.evaluations;
+        out.total_evaluations = r.total_evaluations;
+        out.escapes = r.escapes;
+        const auto resolved = static_cast<std::size_t>(r.n_curvatures);
+        if (curvatures.size() > resolved) {
+            curvatures.resize(resolved);
+        }
+        out.curvatures = std::move(curvatures);
+        return out;
+    }
+};
+
+inline rgsaddle_saddle_check_t saddle_check() {
+    rgsaddle_saddle_check_t c{};
+    check(rgsaddle_saddle_check_default(&c));
+    return c;
+}
+
+// Certify one point; a null config takes saddle_check().
+inline SaddleIndex saddle_index(std::int64_t n_atoms, double const* position,
+                                rgsaddle_surface_fn surface, void* user,
+                                rgsaddle_saddle_check_t const* config = nullptr,
+                                double const* gradient = nullptr, double const* mode = nullptr,
+                                std::uint8_t const* fixed = nullptr, std::size_t capacity = 8) {
+    rgsaddle_saddle_index_t out{};
+    std::vector<double> curvatures(capacity);
+    check(rgsaddle_saddle_index(config, n_atoms, position, gradient, mode, fixed, surface, user,
+                                &out, curvatures.data(), static_cast<std::int64_t>(capacity)));
+    return SaddleIndex::from_c(out, std::move(curvatures));
+}
 
 inline rgsaddle_band_config_t band_config() {
     rgsaddle_band_config_t c{};
@@ -195,6 +243,19 @@ public:
                                             static_cast<std::int64_t>(mask.size())));
     }
 
+    // nullptr turns the check off. ABI minor 40.
+    void set_saddle_check(rgsaddle_saddle_check_t const* config) {
+        check(rgsaddle_band_set_saddle_check(handle_, config));
+    }
+
+    [[nodiscard]] SaddleIndex saddle_index(std::size_t capacity = 8) const {
+        rgsaddle_saddle_index_t out{};
+        std::vector<double> curvatures(capacity);
+        check(rgsaddle_band_saddle_index(handle_, &out, curvatures.data(),
+                                         static_cast<std::int64_t>(capacity)));
+        return SaddleIndex::from_c(out, std::move(curvatures));
+    }
+
     void set_positions(double const* positions) {
         check(rgsaddle_band_set_positions(handle_, positions));
     }
@@ -295,6 +356,19 @@ public:
     }
     void set_kappa(rgsaddle_kappa_config_t const* config) {
         check(rgsaddle_minmode_set_kappa(handle_, config));
+    }
+
+    // nullptr turns the check off. ABI minor 40.
+    void set_saddle_check(rgsaddle_saddle_check_t const* config) {
+        check(rgsaddle_minmode_set_saddle_check(handle_, config));
+    }
+
+    [[nodiscard]] SaddleIndex saddle_index(std::size_t capacity = 8) const {
+        rgsaddle_saddle_index_t out{};
+        std::vector<double> curvatures(capacity);
+        check(rgsaddle_minmode_saddle_index(handle_, &out, curvatures.data(),
+                                            static_cast<std::int64_t>(capacity)));
+        return SaddleIndex::from_c(out, std::move(curvatures));
     }
 
     void position(double* out) const {
@@ -470,6 +544,19 @@ public:
     }
 
     void reset() { check(rgsaddle_ocineb_reset(handle_)); }
+
+    // nullptr turns the check off. ABI minor 40.
+    void set_saddle_check(rgsaddle_saddle_check_t const* config) {
+        check(rgsaddle_ocineb_set_saddle_check(handle_, config));
+    }
+
+    [[nodiscard]] SaddleIndex saddle_index(std::size_t capacity = 8) const {
+        rgsaddle_saddle_index_t out{};
+        std::vector<double> curvatures(capacity);
+        check(rgsaddle_ocineb_saddle_index(handle_, &out, curvatures.data(),
+                                           static_cast<std::int64_t>(capacity)));
+        return SaddleIndex::from_c(out, std::move(curvatures));
+    }
 
     [[nodiscard]] std::vector<double> positions() const {
         std::vector<double> out(static_cast<std::size_t>(n_images_ * 3 * n_atoms_));
