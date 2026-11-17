@@ -13,8 +13,8 @@ use libloading::Library;
 use ndarray::{Array1, Array2, ArrayView1};
 use rgpot_core::profile::{ProfileRequest, encode_force_input, library_candidates};
 
-use crate::strain_rate::{parse_json, required_f64, required_str};
 use crate::ohtst::THERMODYNAMIC_DERIVATIVE;
+use crate::strain_rate::{parse_json, required_f64, required_str};
 use crate::{
     Hyperplane, HyperplaneCoordinates, HyperplaneEnsemble, HyperplaneObservation,
     HyperplaneSampleBudget, HyperplaneSampler, SaddleError,
@@ -215,8 +215,9 @@ impl LammpsSystem {
 /// Dense Taylor harmonic reference for lambda thermodynamic integration.
 ///
 /// The reference supplies `V_harm(x) = E_0 + g_0·(x-x_0) + ½ (x-x_0)ᵀ H (x-x_0)`
-/// in the sampler's mass-weighted or Cartesian coordinates. `hessian` is
-/// row-major and matches `point.len()`.
+/// in the sampler coordinates of the plane passed to lammpc. `hessian` is
+/// row-major and matches `point.len()`. The force uses the symmetric part of
+/// `hessian`, which is the gradient of [`Self::energy_at`].
 #[non_exhaustive]
 #[derive(Clone, Debug)]
 pub struct LammpsThermodynamicReference {
@@ -231,40 +232,70 @@ pub struct LammpsThermodynamicReference {
 }
 
 impl LammpsThermodynamicReference {
-    /// Evaluate the Taylor harmonic energy at `position`.
-    pub fn energy_at(&self, position: ArrayView1<f64>) -> Result<f64, SaddleError> {
+    fn check_position(&self, position: ArrayView1<f64>) -> Result<(), SaddleError> {
         if position.len() != self.point.len() {
             return Err(SaddleError::Shape(
                 "LAMMPS thermodynamic reference differs in length from the position".into(),
             ));
         }
-        if self.gradient.len() != self.point.len() || self.hessian.dim() != (position.len(), position.len()) {
+        if self.gradient.len() != self.point.len()
+            || self.hessian.dim() != (position.len(), position.len())
+        {
             return Err(SaddleError::Shape(
                 "LAMMPS thermodynamic reference has inconsistent gradient or Hessian".into(),
             ));
         }
         if !self.energy.is_finite()
+            || !position.iter().all(|value| value.is_finite())
             || !self.point.iter().all(|value| value.is_finite())
             || !self.gradient.iter().all(|value| value.is_finite())
             || !self.hessian.iter().all(|value| value.is_finite())
         {
             return Err(SaddleError::NonFinite("LAMMPS thermodynamic reference"));
         }
+        Ok(())
+    }
+
+    /// `H_sym v` with `H_sym = (H + Hᵀ) / 2`.
+    fn symmetric_action(&self, displacement: &Array1<f64>) -> Array1<f64> {
+        let forward = self.hessian.dot(displacement);
+        let backward = self.hessian.t().dot(displacement);
+        0.5 * (&forward + &backward)
+    }
+
+    /// Row-major `(H + Hᵀ) / 2` passed to the mixing hook.
+    fn symmetrized_hessian(&self) -> Array2<f64> {
+        let mut symmetric = self.hessian.clone();
+        symmetric += &self.hessian.t();
+        symmetric.mapv_inplace(|value| value * 0.5);
+        symmetric
+    }
+
+    /// Evaluate the Taylor harmonic energy at `position`.
+    pub fn energy_at(&self, position: ArrayView1<f64>) -> Result<f64, SaddleError> {
+        self.check_position(position)?;
         let displacement = position.to_owned() - &self.point;
-        let image = self.hessian.dot(&displacement);
-        Ok(self.energy + self.gradient.dot(&displacement) + 0.5 * displacement.dot(&image))
+        let image = self.symmetric_action(&displacement);
+        let value = self.energy + self.gradient.dot(&displacement) + 0.5 * displacement.dot(&image);
+        if !value.is_finite() {
+            return Err(SaddleError::NonFinite(
+                "LAMMPS thermodynamic reference energy",
+            ));
+        }
+        Ok(value)
     }
 
     /// Harmonic force `-∇V_harm` at `position`.
     pub fn force_at(&self, position: ArrayView1<f64>) -> Result<Array1<f64>, SaddleError> {
-        if position.len() != self.point.len() {
-            return Err(SaddleError::Shape(
-                "LAMMPS thermodynamic reference differs in length from the position".into(),
+        self.check_position(position)?;
+        let displacement = position.to_owned() - &self.point;
+        let force = -(&self.gradient + &self.symmetric_action(&displacement));
+        if !force.iter().all(|value| value.is_finite()) {
+            return Err(SaddleError::NonFinite(
+                "LAMMPS thermodynamic reference force",
             ));
         }
-        let displacement = position.to_owned() - &self.point;
-        let image = self.hessian.dot(&displacement);
-        Ok(-(&self.gradient + &image))
+        Ok(force)
     }
 }
 
@@ -492,25 +523,37 @@ impl HyperplaneSampler for LammpsHyperplaneSampler {
             engine.step(budget.stride)?;
             let state = engine.state(plane.dim())?;
             accounting = state.accounting;
-            let thermodynamic_derivative = if let (Some(lambda), Some(reference)) = (
-                budget.lambda,
-                self.config.thermodynamic_reference.as_ref(),
-            ) {
-                if lambda.is_finite() && (0.0..=1.0).contains(&lambda) {
-                    let position = Array1::from_vec(state.positions.clone());
-                    let harmonic = reference.energy_at(position.view())?;
-                    engine
-                        .full_potential_energy(position.view())?
-                        .map(|full| full - harmonic)
-                } else {
-                    None
+            // md_state returns Cartesian positions. The Taylor model is stored
+            // in the sampler frame of the plane, so the observable uses the
+            // same conversion as the returned record.
+            let cartesian = state.positions.clone();
+            let (position, projected_force, projected_velocity) =
+                convert_state(&self.system, budget.coordinates, state);
+            let thermodynamic_derivative = if budget.lambda.is_some() {
+                let reference = self
+                    .config
+                    .thermodynamic_reference
+                    .as_ref()
+                    .ok_or_else(|| {
+                        SaddleError::Invalid(
+                        "LAMMPS lambda sampling needs LammpsSamplerConfig::thermodynamic_reference"
+                            .into(),
+                    )
+                    })?;
+                let harmonic = reference.energy_at(position.view())?;
+                let full = engine.full_potential_energy(&cartesian)?;
+                let value = full - harmonic;
+                if !value.is_finite() {
+                    return Err(SaddleError::NonFinite("LAMMPS thermodynamic derivative"));
                 }
+                Some(value)
             } else {
                 None
             };
-            let (position, projected_force, projected_velocity) =
-                convert_state(&self.system, budget.coordinates, state);
-            let mut observables = thermostat.observables().into_iter().collect::<BTreeMap<_, _>>();
+            let mut observables = thermostat
+                .observables()
+                .into_iter()
+                .collect::<BTreeMap<_, _>>();
             if let Some(value) = thermodynamic_derivative {
                 observables.insert(THERMODYNAMIC_DERIVATIVE.into(), value);
             }
@@ -618,10 +661,10 @@ type MdSetThermodynamicCouplingFn = unsafe extern "C" fn(
     *const MdThermodynamicCoupling,
     *const f64,
     *const f64,
+    *const f64,
     usize,
 ) -> c_int;
-type MdPotentialEnergyFn =
-    unsafe extern "C" fn(*mut c_void, *const f64, usize, *mut f64) -> c_int;
+type MdPotentialEnergyFn = unsafe extern "C" fn(*mut c_void, *const f64, usize, *mut f64) -> c_int;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -752,8 +795,8 @@ impl Engine {
             SaddleError::Surface(
                 "liblammpc lacks lammpc_session_md_set_thermodynamic_coupling; \
                  thermodynamic integration needs a mixing hook that adds \
-                 (1-lambda) F_harmonic to the LAMMPS force each step, with a \
-                 dense reference gradient and Hessian passed at coupling time"
+                 (1-lambda) F_harmonic in the sampler frame each step, with the \
+                 reference geometry, gradient, and Hessian passed at coupling time"
                     .into(),
             )
         })?;
@@ -770,22 +813,26 @@ impl Engine {
                 "thermodynamic lambda must lie in [0, 1]".into(),
             ));
         }
+        reference.energy_at(reference.point.view())?;
         let coupling = MdThermodynamicCoupling {
             lambda,
             reference_energy: reference.energy,
         };
-        let gradient = reference
-            .gradient
-            .as_slice()
-            .ok_or_else(|| SaddleError::Shape("LAMMPS reference gradient must be contiguous".into()))?;
-        let hessian = reference
-            .hessian
-            .as_slice()
-            .ok_or_else(|| SaddleError::Shape("LAMMPS reference Hessian must be contiguous".into()))?;
+        let point = reference.point.as_slice().ok_or_else(|| {
+            SaddleError::Shape("LAMMPS reference geometry must be contiguous".into())
+        })?;
+        let gradient = reference.gradient.as_slice().ok_or_else(|| {
+            SaddleError::Shape("LAMMPS reference gradient must be contiguous".into())
+        })?;
+        let symmetric = reference.symmetrized_hessian();
+        let hessian = symmetric.as_slice().ok_or_else(|| {
+            SaddleError::Shape("LAMMPS reference Hessian must be contiguous".into())
+        })?;
         let status = unsafe {
             set(
                 self.session,
                 &coupling,
+                point.as_ptr(),
                 gradient.as_ptr(),
                 hessian.as_ptr(),
                 dimension,
@@ -794,24 +841,22 @@ impl Engine {
         self.check(status)
     }
 
-    fn full_potential_energy(
-        &mut self,
-        position: ArrayView1<f64>,
-    ) -> Result<Option<f64>, SaddleError> {
-        let Some(evaluate) = self.md_potential_energy else {
-            return Ok(None);
-        };
+    fn full_potential_energy(&mut self, position: &[f64]) -> Result<f64, SaddleError> {
+        let evaluate = self.md_potential_energy.ok_or_else(|| {
+            SaddleError::Surface(
+                "liblammpc lacks lammpc_session_md_potential_energy; thermodynamic \
+                 integration needs the unmixed full potential at the sampled geometry"
+                    .into(),
+            )
+        })?;
         let mut energy = 0.0;
-        let position = position
-            .as_slice()
-            .ok_or_else(|| SaddleError::Shape("LAMMPS positions must be contiguous".into()))?;
         let status =
             unsafe { evaluate(self.session, position.as_ptr(), position.len(), &mut energy) };
         self.check(status)?;
         if !energy.is_finite() {
             return Err(SaddleError::NonFinite("LAMMPS potential energy"));
         }
-        Ok(Some(energy))
+        Ok(energy)
     }
 
     fn initialize(
@@ -970,5 +1015,53 @@ mod tests {
             observables.get(LAMMPS_OBSERVABLE_EFFECTIVE_DOF),
             Some(&14.0)
         );
+    }
+
+    #[test]
+    fn taylor_force_is_the_gradient_of_the_symmetric_quadratic() {
+        let reference = LammpsThermodynamicReference {
+            point: Array1::from_vec(vec![1.0, -2.0]),
+            energy: 0.5,
+            gradient: Array1::from_vec(vec![0.2, -0.4]),
+            hessian: Array2::from_shape_vec((2, 2), vec![2.0, 0.5, -0.1, 3.0]).unwrap(),
+        };
+        let position = Array1::from_vec(vec![1.3, -1.6]);
+        let energy = reference.energy_at(position.view()).unwrap();
+        let force = reference.force_at(position.view()).unwrap();
+        assert!((energy - 0.754).abs() < 1.0e-12);
+        assert!((force[0] + 0.88).abs() < 1.0e-12);
+        assert!((force[1] + 0.86).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn mass_weighted_records_scale_cartesian_positions() {
+        let system = LammpsSystem {
+            masses: vec![4.0],
+            ..LammpsSystem::default()
+        };
+        let state = MdState {
+            positions: vec![1.5, -2.0, 0.5],
+            forces: vec![3.0, 0.0, -1.0],
+            removed_velocities: vec![0.25, 0.0, -0.5],
+            accounting: MdObservation::default(),
+        };
+        let (position, force, velocity) =
+            convert_state(&system, HyperplaneCoordinates::MassWeighted, state);
+        let scale = 2.0;
+        assert_eq!(
+            position.as_slice().unwrap(),
+            [1.5 * scale, -2.0 * scale, 0.5 * scale]
+        );
+        assert_eq!(force.as_slice().unwrap(), [3.0 / scale, 0.0, -1.0 / scale]);
+        assert_eq!(
+            velocity.as_slice().unwrap(),
+            [0.25 * scale, 0.0, -0.5 * scale]
+        );
+    }
+
+    #[test]
+    fn thermodynamic_coupling_is_two_doubles() {
+        assert_eq!(std::mem::size_of::<MdThermodynamicCoupling>(), 16);
+        assert_eq!(std::mem::align_of::<MdThermodynamicCoupling>(), 8);
     }
 }
