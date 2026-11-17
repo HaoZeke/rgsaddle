@@ -3,7 +3,10 @@
 usage: proxy.py OUTDIR HORIZONS ROWS LABEL=RUN ...
 
 RUN is the OUTPUT of one ``campaign.py`` run, whose ``.starts.jsonl``
-and ``.summary.json`` sit beside it. HORIZONS is a comma-separated list
+and ``.summary.json`` sit beside it. A run still going has neither and
+is read from the driver's checkpoint, ``.header.json`` and the finished
+lines of ``.partial.jsonl``; RGSADDLE_COMMIT names its commit, its goal
+is the catalog's 27 and it has no wall time. HORIZONS is a comma-separated list
 of search counts, ``all`` for the whole run; OUTDIR's ``summary.csv``
 has one row per run and horizon that the run reaches, with the counts
 of its first that many searches, ``export.py``'s outcome classes, and
@@ -26,12 +29,15 @@ import csv
 import hashlib
 import io
 import json
+import os
 import statistics
 import sys
 from pathlib import Path
 
 from export import SEARCH_FIELDS, number, outcome
 
+GOAL = 27
+RESUME_ONLY = ("rng_state", "saddle_x", "climb_calls")
 CLASSES = (
     "new_saddle",
     "duplicate",
@@ -46,6 +52,29 @@ CLASSES = (
 def novel(row):
     """A connected saddle no earlier search found, of any barrier."""
     return bool(row["success"]) or list(row.get("reasons") or []) == ["barrier"]
+
+
+def load(run):
+    """The searches and summary of a run, or of its checkpoint while it runs."""
+    if run.with_suffix(".starts.jsonl").is_file():
+        rows = [json.loads(text) for text in run.with_suffix(".starts.jsonl").read_text().splitlines() if text.strip()]
+        return rows, json.loads(run.with_suffix(".summary.json").read_text())
+    header = json.loads(run.with_name(run.stem + ".header.json").read_text())
+    # The driver may be writing the last line.
+    finished = run.with_name(run.stem + ".partial.jsonl").read_text().split("\n")[:-1]
+    rows = [
+        {key: value for key, value in json.loads(text).items() if key not in RESUME_ONLY}
+        for text in finished
+        if text.strip()
+    ]
+    meta = {
+        "template": header["template"],
+        "rgsaddle_commit": os.environ["RGSADDLE_COMMIT"],
+        "goal": GOAL,
+        "minimize_calls": header["minimize_calls"],
+        "wall_seconds": None,
+    }
+    return rows, meta
 
 
 def line(fields):
@@ -92,9 +121,7 @@ def main():
     summary = []
     for arg in sys.argv[4:]:
         label, run = arg.split("=", 1)
-        run = Path(run)
-        rows = [json.loads(text) for text in run.with_suffix(".starts.jsonl").read_text().splitlines() if text.strip()]
-        meta = json.loads(run.with_suffix(".summary.json").read_text())
+        rows, meta = load(Path(run))
         lines = search_lines(rows)
         kept = lines if limit == "all" else lines[: int(limit)]
         (out / f"searches_{label}.csv").write_text(header + "".join(kept))
@@ -108,7 +135,9 @@ def main():
             head = rows[:count]
             tally = {name: 0 for name in CLASSES}
             for row in head:
-                tally[outcome(row)] = tally.get(outcome(row), 0) + 1
+                if outcome(row) not in tally:
+                    raise SystemExit(f"{label}: {outcome(row)} has no column")
+                tally[outcome(row)] += 1
             calls = [int(row["force_calls"]) for row in head]
             climbs = [int(row["force_calls"]) - int(row["endpoint_calls"]) for row in head]
             connected = sum(bool(row["success"]) for row in head)
