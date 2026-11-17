@@ -49,11 +49,12 @@
 //!     -end + 2.0 * end * (i as f64) / 8.0
 //! });
 //! let spacing = turning * 2.0 / 8.0;
-//! let draft = LinebConfig::new(spacing, spacing).with_time_step(0.05);
+//! let draft = LinebConfig::new(spacing, spacing);
 //! let panels = (2 * draft.quadrature_pairs) as f64;
-//! // Endpoint force `endpoint_scale * |V−E| / |∇V|`. One Simpson panel
-//! // of a chord is the force scale of this barrier.
-//! let tol = draft.endpoint_scale * spacing / panels.powi(2);
+//! // An endpoint `δ` short of its turning point shortens the half period
+//! // by `√(2δ/|∇V|)`. Its force is `endpoint_scale * δ`, so this keeps
+//! // both ends inside the quadrature slack below.
+//! let tol = draft.endpoint_scale * spacing / (8.0 * panels.powi(4));
 //! let config = draft.with_opt_tol(tol).with_perp_tol(tol);
 //! let mut session = LinebSession::new(
 //!     config.clone(),
