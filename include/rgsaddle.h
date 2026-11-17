@@ -28,7 +28,7 @@ extern "C" {
 #endif
 
 #define RGSADDLE_ABI_MAJOR 1u
-#define RGSADDLE_ABI_MINOR 41u
+#define RGSADDLE_ABI_MINOR 42u
 
 /**
  * Band config flags bit 0. When set, each evaluation calls the surface
@@ -207,6 +207,61 @@ typedef enum {
 
 typedef struct RgsaddleBand RgsaddleBand;
 typedef struct RgsaddleMinMode RgsaddleMinMode;
+typedef struct RgsaddleHyperplaneSampler RgsaddleHyperplaneSampler;
+
+/** Hyperplane ensemble request (ABI minor 42). */
+typedef struct {
+  rgsaddle_version_t version;
+  uint64_t flags;
+  double thermal;
+  uint64_t seed;
+  int64_t thermalize;
+  int64_t stride;
+  int64_t samples;
+  double lambda;
+  int32_t positions;
+} rgsaddle_hyperplane_budget_t;
+
+/** Borrowed hyperplane observation (ABI minor 42). */
+typedef struct {
+  double constraint_force;
+  const double *position;
+  const double *projected_force;
+  double thermodynamic_derivative;
+} rgsaddle_hyperplane_observation_t;
+
+typedef int32_t (*rgsaddle_hyperplane_emit_fn)(
+    void *, const rgsaddle_hyperplane_observation_t *);
+
+typedef int32_t (*rgsaddle_sample_hyperplane_fn)(
+    void *, const double *, const double *, size_t,
+    const rgsaddle_hyperplane_budget_t *, rgsaddle_hyperplane_emit_fn, void *);
+
+typedef struct {
+  rgsaddle_version_t version;
+  uint64_t flags;
+  double thermal;
+  int64_t nodes;
+  int64_t thermalize;
+  int64_t stride;
+  int64_t samples;
+  int64_t blocks;
+  uint64_t seed;
+} rgsaddle_hyperplane_ti_config_t;
+
+typedef struct {
+  double free_energy;
+  double error;
+  int64_t evaluations;
+} rgsaddle_hyperplane_ti_result_t;
+
+RgsaddleHyperplaneSampler *rgsaddle_hyperplane_sampler_create(
+    void *, rgsaddle_sample_hyperplane_fn);
+void rgsaddle_hyperplane_sampler_free(RgsaddleHyperplaneSampler *);
+int32_t rgsaddle_hyperplane_thermodynamic_integration(
+    RgsaddleHyperplaneSampler *, const double *, const double *, size_t,
+    const rgsaddle_hyperplane_ti_config_t *,
+    rgsaddle_hyperplane_ti_result_t *);
 
 /**
  * Host-surface request. The session stamps version and flags.

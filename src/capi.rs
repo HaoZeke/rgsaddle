@@ -36,7 +36,7 @@ use crate::tangent::TangentKind;
 /// The RGSADDLE ABI MAJOR.
 pub const RGSADDLE_ABI_MAJOR: u32 = 1;
 /// The RGSADDLE ABI MINOR.
-pub const RGSADDLE_ABI_MINOR: u32 = 41;
+pub const RGSADDLE_ABI_MINOR: u32 = 42;
 
 /// A band, min-mode or OCI-NEB config of this minor or newer certifies
 /// the saddle index at convergence by default.
@@ -423,7 +423,7 @@ fn stamp_report(out: &mut RgsaddleReport) {
     out.flags = 0;
 }
 
-fn status_of(err: &SaddleError) -> i32 {
+pub(crate) fn status_of(err: &SaddleError) -> i32 {
     match err {
         SaddleError::Shape(_) => RGSADDLE_SHAPE,
         SaddleError::Surface(_) => RGSADDLE_SURFACE_FAILED,
@@ -431,6 +431,9 @@ fn status_of(err: &SaddleError) -> i32 {
         SaddleError::Solver(_) => RGSADDLE_SOLVER,
         SaddleError::Invalid(_) => RGSADDLE_INVALID_PARAMETER,
         SaddleError::Stalled(_) => RGSADDLE_STALLED,
+        SaddleError::NotEquilibrated { .. } | SaddleError::InsufficientEffectiveSamples { .. } => {
+            RGSADDLE_SOLVER
+        }
     }
 }
 
