@@ -10245,6 +10245,9 @@ fn assemble_run12() {
     let rates = catalogue_text();
     let mut out = File::create(root.join("defect_pair_run12_volume.csv")).expect("volume");
     writeln!(out, "temperature_K,method,volume_over_Omega,sigma,spontaneous_sites,kinetic_sites,demkowicz_8788,note").unwrap();
+    // Table 1 D_i in Å²/s: 4951 D* from their Ref. [12], a tracer sum over
+    // the atoms rather than the defect diffusivity
+    // (validation/direct_md_dynamics.md).
     let diffusivity = |temperature: f64| match temperature as i32 {
         300 => 0.143e12,
         500 => 0.526e12,
@@ -12856,10 +12859,12 @@ fn neighbor_translation_barrier(temperature: f64) -> Option<f64> {
     })
 }
 
-/// Tracer diffusivity per (temperature, timestep, friction) from the replica CSV.
+/// Defect diffusivity per (temperature, timestep, friction) from the replica CSV.
 ///
 /// Returns the replica mean of the multi-origin MSD slope, its standard
-/// error, the mean committed-jump diffusivity, and the replica count.
+/// error, the mean committed-jump diffusivity, and the replica count. The
+/// MSD is that of the doubly occupied site, not the tracer sum over atoms
+/// that Table 1 quotes as D_i (`validation/direct_md_dynamics.md`).
 #[allow(clippy::type_complexity)]
 fn md_replica_diffusivity() -> std::collections::BTreeMap<(i64, i64, i64), (f64, f64, f64, usize)> {
     let path = std::env::var("RUN19_DIFFUSION")
