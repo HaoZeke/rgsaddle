@@ -5,7 +5,7 @@
 #include <stddef.h>
 
 _Static_assert(RGSADDLE_ABI_MAJOR == 1u, "main ABI major");
-_Static_assert(RGSADDLE_ABI_MINOR == 39u, "ABI minor");
+_Static_assert(RGSADDLE_ABI_MINOR == 40u, "ABI minor");
 _Static_assert(RGSADDLE_BAND_NO_MIN_MODE == (1ull << 3), "band flag bit 3");
 _Static_assert(RGSADDLE_BAND_SPLINE_REPARAM == (1ull << 4), "band flag bit 4");
 _Static_assert(RGSADDLE_REPARAM_LINEAR == 0, "rgsaddle_reparametrization_t LINEAR");
@@ -392,5 +392,92 @@ _Static_assert(_Generic(&rgsaddle_indexk_free, abi35_signature_rgsaddle_indexk_f
 typedef rgsaddle_status_t (*abi35_signature_rgsaddle_reflect_force)(
     int64_t n, int64_t k, const double *force, const double *modes, double *out);
 _Static_assert(_Generic(&rgsaddle_reflect_force, abi35_signature_rgsaddle_reflect_force: 1, default: 0), "rgsaddle_reflect_force signature");
+
+typedef struct {
+  abi15_rgsaddle_version_t version;
+  uint64_t flags;
+  int32_t block;
+  int32_t lowest;
+  int32_t max_actions;
+  int32_t difference;
+  double dr;
+  double residual_tol;
+  double negative_tol;
+  uint64_t seed;
+  int32_t escape_attempts;
+  int32_t reserved;
+  double escape_push;
+} abi40_rgsaddle_saddle_check_t;
+_Static_assert(sizeof(rgsaddle_saddle_check_t) == 80, "rgsaddle_saddle_check_t size");
+_Static_assert(sizeof(rgsaddle_saddle_check_t) == sizeof(abi40_rgsaddle_saddle_check_t), "rgsaddle_saddle_check_t size");
+_Static_assert(_Alignof(rgsaddle_saddle_check_t) == _Alignof(abi40_rgsaddle_saddle_check_t), "rgsaddle_saddle_check_t alignment");
+_Static_assert(offsetof(rgsaddle_saddle_check_t, block) == offsetof(abi40_rgsaddle_saddle_check_t, block), "rgsaddle_saddle_check_t.block");
+_Static_assert(offsetof(rgsaddle_saddle_check_t, lowest) == offsetof(abi40_rgsaddle_saddle_check_t, lowest), "rgsaddle_saddle_check_t.lowest");
+_Static_assert(offsetof(rgsaddle_saddle_check_t, max_actions) == offsetof(abi40_rgsaddle_saddle_check_t, max_actions), "rgsaddle_saddle_check_t.max_actions");
+_Static_assert(offsetof(rgsaddle_saddle_check_t, difference) == offsetof(abi40_rgsaddle_saddle_check_t, difference), "rgsaddle_saddle_check_t.difference");
+_Static_assert(offsetof(rgsaddle_saddle_check_t, dr) == offsetof(abi40_rgsaddle_saddle_check_t, dr), "rgsaddle_saddle_check_t.dr");
+_Static_assert(offsetof(rgsaddle_saddle_check_t, residual_tol) == offsetof(abi40_rgsaddle_saddle_check_t, residual_tol), "rgsaddle_saddle_check_t.residual_tol");
+_Static_assert(offsetof(rgsaddle_saddle_check_t, negative_tol) == offsetof(abi40_rgsaddle_saddle_check_t, negative_tol), "rgsaddle_saddle_check_t.negative_tol");
+_Static_assert(offsetof(rgsaddle_saddle_check_t, seed) == offsetof(abi40_rgsaddle_saddle_check_t, seed), "rgsaddle_saddle_check_t.seed");
+_Static_assert(offsetof(rgsaddle_saddle_check_t, escape_attempts) == offsetof(abi40_rgsaddle_saddle_check_t, escape_attempts), "rgsaddle_saddle_check_t.escape_attempts");
+_Static_assert(offsetof(rgsaddle_saddle_check_t, escape_push) == offsetof(abi40_rgsaddle_saddle_check_t, escape_push), "rgsaddle_saddle_check_t.escape_push");
+
+typedef struct {
+  abi15_rgsaddle_version_t version;
+  uint64_t flags;
+  int32_t certified;
+  int32_t index;
+  int32_t converged;
+  int32_t n_curvatures;
+  int64_t evaluations;
+  int64_t total_evaluations;
+  int64_t escapes;
+} abi40_rgsaddle_saddle_index_t;
+_Static_assert(sizeof(rgsaddle_saddle_index_t) == 56, "rgsaddle_saddle_index_t size");
+_Static_assert(sizeof(rgsaddle_saddle_index_t) == sizeof(abi40_rgsaddle_saddle_index_t), "rgsaddle_saddle_index_t size");
+_Static_assert(_Alignof(rgsaddle_saddle_index_t) == _Alignof(abi40_rgsaddle_saddle_index_t), "rgsaddle_saddle_index_t alignment");
+_Static_assert(offsetof(rgsaddle_saddle_index_t, certified) == offsetof(abi40_rgsaddle_saddle_index_t, certified), "rgsaddle_saddle_index_t.certified");
+_Static_assert(offsetof(rgsaddle_saddle_index_t, index) == offsetof(abi40_rgsaddle_saddle_index_t, index), "rgsaddle_saddle_index_t.index");
+_Static_assert(offsetof(rgsaddle_saddle_index_t, converged) == offsetof(abi40_rgsaddle_saddle_index_t, converged), "rgsaddle_saddle_index_t.converged");
+_Static_assert(offsetof(rgsaddle_saddle_index_t, n_curvatures) == offsetof(abi40_rgsaddle_saddle_index_t, n_curvatures), "rgsaddle_saddle_index_t.n_curvatures");
+_Static_assert(offsetof(rgsaddle_saddle_index_t, evaluations) == offsetof(abi40_rgsaddle_saddle_index_t, evaluations), "rgsaddle_saddle_index_t.evaluations");
+_Static_assert(offsetof(rgsaddle_saddle_index_t, total_evaluations) == offsetof(abi40_rgsaddle_saddle_index_t, total_evaluations), "rgsaddle_saddle_index_t.total_evaluations");
+_Static_assert(offsetof(rgsaddle_saddle_index_t, escapes) == offsetof(abi40_rgsaddle_saddle_index_t, escapes), "rgsaddle_saddle_index_t.escapes");
+
+typedef rgsaddle_status_t (*abi40_signature_rgsaddle_saddle_check_default)(
+    rgsaddle_saddle_check_t *out);
+_Static_assert(_Generic(&rgsaddle_saddle_check_default, abi40_signature_rgsaddle_saddle_check_default: 1, default: 0), "rgsaddle_saddle_check_default signature");
+
+typedef rgsaddle_status_t (*abi40_signature_rgsaddle_band_set_saddle_check)(
+    RgsaddleBand *band, const rgsaddle_saddle_check_t *check);
+_Static_assert(_Generic(&rgsaddle_band_set_saddle_check, abi40_signature_rgsaddle_band_set_saddle_check: 1, default: 0), "rgsaddle_band_set_saddle_check signature");
+
+typedef rgsaddle_status_t (*abi40_signature_rgsaddle_band_saddle_index)(
+    const RgsaddleBand *band, rgsaddle_saddle_index_t *out, double *curvatures, int64_t capacity);
+_Static_assert(_Generic(&rgsaddle_band_saddle_index, abi40_signature_rgsaddle_band_saddle_index: 1, default: 0), "rgsaddle_band_saddle_index signature");
+
+typedef rgsaddle_status_t (*abi40_signature_rgsaddle_minmode_set_saddle_check)(
+    RgsaddleMinMode *session, const rgsaddle_saddle_check_t *check);
+_Static_assert(_Generic(&rgsaddle_minmode_set_saddle_check, abi40_signature_rgsaddle_minmode_set_saddle_check: 1, default: 0), "rgsaddle_minmode_set_saddle_check signature");
+
+typedef rgsaddle_status_t (*abi40_signature_rgsaddle_minmode_saddle_index)(
+    const RgsaddleMinMode *session, rgsaddle_saddle_index_t *out, double *curvatures,
+    int64_t capacity);
+_Static_assert(_Generic(&rgsaddle_minmode_saddle_index, abi40_signature_rgsaddle_minmode_saddle_index: 1, default: 0), "rgsaddle_minmode_saddle_index signature");
+
+typedef rgsaddle_status_t (*abi40_signature_rgsaddle_ocineb_set_saddle_check)(
+    RgsaddleOcineb *session, const rgsaddle_saddle_check_t *check);
+_Static_assert(_Generic(&rgsaddle_ocineb_set_saddle_check, abi40_signature_rgsaddle_ocineb_set_saddle_check: 1, default: 0), "rgsaddle_ocineb_set_saddle_check signature");
+
+typedef rgsaddle_status_t (*abi40_signature_rgsaddle_ocineb_saddle_index)(
+    const RgsaddleOcineb *session, rgsaddle_saddle_index_t *out, double *curvatures,
+    int64_t capacity);
+_Static_assert(_Generic(&rgsaddle_ocineb_saddle_index, abi40_signature_rgsaddle_ocineb_saddle_index: 1, default: 0), "rgsaddle_ocineb_saddle_index signature");
+
+typedef rgsaddle_status_t (*abi40_signature_rgsaddle_saddle_index)(
+    const rgsaddle_saddle_check_t *check, int64_t n_atoms, const double *position,
+    const double *gradient, const double *mode, const uint8_t *fixed, rgsaddle_surface_fn surface,
+    void *user, rgsaddle_saddle_index_t *out, double *curvatures, int64_t capacity);
+_Static_assert(_Generic(&rgsaddle_saddle_index, abi40_signature_rgsaddle_saddle_index: 1, default: 0), "rgsaddle_saddle_index signature");
 
 #endif

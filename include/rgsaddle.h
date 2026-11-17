@@ -28,7 +28,7 @@ extern "C" {
 #endif
 
 #define RGSADDLE_ABI_MAJOR 1u
-#define RGSADDLE_ABI_MINOR 39u
+#define RGSADDLE_ABI_MINOR 40u
 
 /**
  * Band config flags bit 0. When set, each evaluation calls the surface
@@ -1520,6 +1520,142 @@ rgsaddle_status_t rgsaddle_connect(const rgsaddle_connect_config_t *config,
                                    rgsaddle_surface_fn surface, void *user,
                                    double *position,
                                    rgsaddle_connect_report_t *report);
+
+/**
+ * Saddle-index certification, ABI minor 40. Once a band (its climbing
+ * image), a min-mode session or an OCI-NEB session converges, the
+ * lowest curvatures on the free coordinates are estimated by block
+ * Lanczos on finite-difference Hessian actions, seeded with the
+ * search's own mode and pseudo-random vectors; the index is the count
+ * under -negative_tol. Fixed atoms (rgsaddle_band_set_fixed_atoms),
+ * the rigid motions the band removes, and coordinates that are exactly
+ * zero in the gradient and in a forward difference along them, as a
+ * host that zeroes the force on its fixed atoms leaves them, are left
+ * out. The actions count in the step's evaluations. A band, min-mode
+ * or OCI-NEB config stamped with minor 40 or newer certifies by
+ * default with rgsaddle_saddle_check_default; an older config does
+ * not, until rgsaddle_*_set_saddle_check.
+ *
+ * block vectors enter the Krylov space per expansion; lowest
+ * curvatures are resolved, plus the first non-negative one past every
+ * negative curvature, to Ritz residual residual_tol within
+ * max_actions actions of displacement dr (difference is
+ * rgsaddle_difference_t). seed drives the pseudo-random start
+ * vectors. escape_attempts above 0 pushes a point of index two or more
+ * by escape_push (largest per-atom displacement; doubled on each later
+ * attempt) along its extra negative modes, each to its lower-energy
+ * side, and searches again from there seeded with the negative mode
+ * closest to the band tangent or the session's mode; the step that
+ * pushes reports RGSADDLE_STATUS_RUNNING. 0 reports the index and
+ * stops.
+ */
+typedef struct {
+  rgsaddle_version_t version;
+  uint64_t flags;
+  int32_t block;
+  int32_t lowest;
+  int32_t max_actions;
+  int32_t difference; /**< rgsaddle_difference_t */
+  double dr;
+  double residual_tol;
+  double negative_tol;
+  uint64_t seed;
+  int32_t escape_attempts;
+  int32_t reserved;
+  double escape_push;
+} rgsaddle_saddle_check_t;
+
+/** A certificate, ABI minor 40. The library stamps version and flags. */
+typedef struct {
+  rgsaddle_version_t version;
+  uint64_t flags;
+  /** 1 when a certificate holds for the current point; else 0 and the
+   * counts below are those of the session. */
+  int32_t certified;
+  /** Curvatures under -negative_tol; 1 for a first-order saddle. */
+  int32_t index;
+  /** 1 when every resolved pair met residual_tol or the Krylov space
+   * filled the free space; 0 when max_actions ran out first. */
+  int32_t converged;
+  /** Curvatures resolved, ascending; min(n_curvatures, capacity) are
+   * written. */
+  int32_t n_curvatures;
+  /** Surface evaluations of this certificate. */
+  int64_t evaluations;
+  /** Surface evaluations of every certificate and escape push of the
+   * session. */
+  int64_t total_evaluations;
+  /** Escape pushes of the session. */
+  int64_t escapes;
+} rgsaddle_saddle_index_t;
+
+/**
+ * Fill out with the default saddle check, ABI minor 40. Block 2, lowest
+ * 4, max_actions 100, forward differences, dr 1e-3, residual_tol 1e-2,
+ * negative_tol 1e-3, escape_attempts 0 and escape_push 0.1. Stamps
+ * version and zeroes flags. RGSADDLE_NULL_REPORT for a null out.
+ */
+rgsaddle_status_t rgsaddle_saddle_check_default(rgsaddle_saddle_check_t *out);
+
+/**
+ * Replace the band's saddle check between steps, ABI minor 40; NULL
+ * turns it off. The last certificate is dropped and the escape
+ * attempts start again; the session's counts stay. Returns
+ * RGSADDLE_NULL_BAND, RGSADDLE_ABI_MISMATCH for another major, or
+ * RGSADDLE_INVALID_PARAMETER for a non-positive block, lowest, dr or
+ * residual_tol, max_actions under block, a negative negative_tol,
+ * negative escape_attempts, or escape_attempts with a non-positive
+ * escape_push. On an error the band is unchanged.
+ */
+rgsaddle_status_t rgsaddle_band_set_saddle_check(RgsaddleBand *band,
+                                                 const rgsaddle_saddle_check_t *check);
+
+/**
+ * The certificate of the climbing image at its current position, ABI
+ * minor 40. curvatures may be NULL when capacity is 0. RGSADDLE_NULL_BAND or
+ * RGSADDLE_NULL_REPORT for a null band or out, RGSADDLE_SHAPE for a
+ * negative capacity or a null curvatures with a positive capacity.
+ */
+rgsaddle_status_t rgsaddle_band_saddle_index(const RgsaddleBand *band,
+                                             rgsaddle_saddle_index_t *out,
+                                             double *curvatures, int64_t capacity);
+
+/** rgsaddle_band_set_saddle_check for a min-mode session. */
+rgsaddle_status_t rgsaddle_minmode_set_saddle_check(RgsaddleMinMode *session,
+                                                    const rgsaddle_saddle_check_t *check);
+
+/** rgsaddle_band_saddle_index for a min-mode session. */
+rgsaddle_status_t rgsaddle_minmode_saddle_index(const RgsaddleMinMode *session,
+                                                rgsaddle_saddle_index_t *out,
+                                                double *curvatures, int64_t capacity);
+
+/** rgsaddle_band_set_saddle_check for an OCI-NEB session. */
+rgsaddle_status_t rgsaddle_ocineb_set_saddle_check(RgsaddleOcineb *session,
+                                                   const rgsaddle_saddle_check_t *check);
+
+/** rgsaddle_band_saddle_index for an OCI-NEB session. */
+rgsaddle_status_t rgsaddle_ocineb_saddle_index(const RgsaddleOcineb *session,
+                                               rgsaddle_saddle_index_t *out,
+                                               double *curvatures, int64_t capacity);
+
+/**
+ * Certify one point, ABI minor 40. position holds 3 * n_atoms values;
+ * gradient is its gradient or NULL (one surface call then finds it),
+ * mode a direction to seed with or NULL, and fixed n_atoms bytes (1
+ * fixed, 0 free) or NULL. surface is called as by
+ * rgsaddle_minmode_step. check NULL takes the defaults of
+ * rgsaddle_saddle_check_default; its escape fields are not read.
+ * Returns RGSADDLE_NULL_REPORT, RGSADDLE_NULL_SURFACE, RGSADDLE_SHAPE
+ * for a null position or the capacity errors of
+ * rgsaddle_band_saddle_index, RGSADDLE_INVALID_PARAMETER for a bad
+ * check or a fixed byte other than 0 or 1, or the surface's error.
+ */
+rgsaddle_status_t rgsaddle_saddle_index(const rgsaddle_saddle_check_t *check,
+                                        int64_t n_atoms, const double *position,
+                                        const double *gradient, const double *mode,
+                                        const uint8_t *fixed, rgsaddle_surface_fn surface,
+                                        void *user, rgsaddle_saddle_index_t *out,
+                                        double *curvatures, int64_t capacity);
 
 #ifdef __cplusplus
 }

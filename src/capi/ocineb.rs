@@ -251,6 +251,56 @@ pub unsafe extern "C" fn rgsaddle_ocineb_reset(session: *mut RgsaddleOcineb) -> 
     RGSADDLE_OK
 }
 
+/// Replace the OCI-NEB session's saddle check; null turns it off.
+///
+/// # Safety
+/// `session` is a live session or null; `check` is null or a live config.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_ocineb_set_saddle_check(
+    session: *mut RgsaddleOcineb,
+    check: *const super::RgsaddleSaddleCheck,
+) -> i32 {
+    if session.is_null() {
+        return RGSADDLE_NULL_SESSION;
+    }
+    let check = match unsafe { super::saddle_index::optional_check(check) } {
+        Ok(check) => check,
+        Err(rc) => return rc,
+    };
+    match unsafe { &mut *session }.session.set_saddle_check(check) {
+        Ok(()) => RGSADDLE_OK,
+        Err(e) => status_of(&e),
+    }
+}
+
+/// The certificate of the OCI-NEB climbing image.
+///
+/// # Safety
+/// `session` is a live session or null; `out` is null or writable and
+/// `curvatures` addresses `capacity` doubles when `capacity` is positive.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_ocineb_saddle_index(
+    session: *const RgsaddleOcineb,
+    out: *mut super::RgsaddleSaddleIndex,
+    curvatures: *mut f64,
+    capacity: i64,
+) -> i32 {
+    if session.is_null() {
+        return RGSADDLE_NULL_SESSION;
+    }
+    let session = &unsafe { &*session }.session;
+    unsafe {
+        super::saddle_index::write_index(
+            session.saddle_index(),
+            session.saddle_evaluations(),
+            session.saddle_escapes(),
+            out,
+            curvatures,
+            capacity,
+        )
+    }
+}
+
 /// # Safety
 /// `session` must come from [`rgsaddle_ocineb_create`] and be freed once.
 #[unsafe(no_mangle)]

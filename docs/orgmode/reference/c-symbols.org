@@ -156,3 +156,11 @@ The narrative for a session is the C and C++ how-to, not this list.
 - =rgsaddle_indexk_free=. Purpose: Declared in include/rgsaddle.h. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_reflect_force=. Purpose: Householder reflection of force through an orthonormal n-by-k block. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_connect=. Purpose: Declared in include/rgsaddle.h. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_saddle_check_default=. Purpose: Fill out with the default saddle check, ABI minor 40. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_band_set_saddle_check=. Purpose: Replace the band's saddle check between steps, ABI minor 40; NULL turns it off. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_band_saddle_index=. Purpose: The certificate of the climbing image at its current position, ABI minor 40. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_minmode_set_saddle_check=. Purpose: rgsaddle_band_set_saddle_check for a min-mode session. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_minmode_saddle_index=. Purpose: rgsaddle_band_saddle_index for a min-mode session. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_ocineb_set_saddle_check=. Purpose: rgsaddle_band_set_saddle_check for an OCI-NEB session. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_ocineb_saddle_index=. Purpose: rgsaddle_band_saddle_index for an OCI-NEB session. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_saddle_index=. Purpose: Certify one point, ABI minor 40. Parameters: the declaration. Units: the caller's.
