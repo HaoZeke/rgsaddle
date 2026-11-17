@@ -181,6 +181,7 @@ fn distinct_knots(s: &[f64], anchor: Option<usize>, tol: f64) -> Vec<usize> {
 /// Interpolating spline through knots `t` (strictly increasing) and the
 /// rows of `values`: the chord for two knots, the parabola for three,
 /// and the not-a-knot cubic spline for four or more.
+#[derive(Clone, Debug)]
 pub(crate) struct Spline {
     t: Vec<f64>,
     y: Array2<f64>,
@@ -300,7 +301,9 @@ impl Spline {
         if span.partial_cmp(&0.0) != Some(Ordering::Greater) {
             return lo;
         }
-        let mut t = lo + (hi - lo) * ((target - arc[seg]) / span).clamp(0.0, 1.0);
+        let fraction = (target - arc[seg]) / span;
+        debug_assert!((0.0..=1.0).contains(&fraction));
+        let mut t = lo + (hi - lo) * fraction;
         for _ in 0..60 {
             let miss = arc[seg] + self.arc_between(seg, self.t[seg], t) - target;
             if miss.abs() <= 1e-14 * arc[k - 1] {
@@ -323,6 +326,40 @@ impl Spline {
             }
         }
         t
+    }
+
+    /// The knots.
+    pub(crate) fn knots(&self) -> &[f64] {
+        &self.t
+    }
+
+    /// The interpolated rows, one per knot.
+    pub(crate) fn values(&self) -> &Array2<f64> {
+        &self.y
+    }
+
+    /// `S`, `dS/dt`, `d²S/dt²` and the one-sided `d³S/dt³` at `at`.
+    pub(crate) fn derivatives(&self, at: f64) -> [Array1<f64>; 4] {
+        let seg = self.segment(at);
+        let h = self.t[seg + 1] - self.t[seg];
+        let b = (at - self.t[seg]) / h;
+        let a = 1.0 - b;
+        let (bend_a, bend_b) = ((a * a * a - a) * h * h / 6.0, (b * b * b - b) * h * h / 6.0);
+        let (slope_a, slope_b) = (
+            -(3.0 * a * a - 1.0) * h / 6.0,
+            (3.0 * b * b - 1.0) * h / 6.0,
+        );
+        let (y0, y1) = (self.y.row(seg), self.y.row(seg + 1));
+        let (m0, m1) = (self.m.row(seg), self.m.row(seg + 1));
+        let n = self.y.ncols();
+        let [mut value, mut slope, mut second, mut third] = [(); 4].map(|()| Array1::zeros(n));
+        for col in 0..n {
+            value[col] = a * y0[col] + b * y1[col] + bend_a * m0[col] + bend_b * m1[col];
+            slope[col] = (y1[col] - y0[col]) / h + slope_a * m0[col] + slope_b * m1[col];
+            second[col] = a * m0[col] + b * m1[col];
+            third[col] = (m1[col] - m0[col]) / h;
+        }
+        [value, slope, second, third]
     }
 
     pub(crate) fn eval(&self, at: f64) -> Array1<f64> {
