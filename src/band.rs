@@ -26,9 +26,11 @@ mod climb;
 mod min_mode;
 mod pair_model;
 mod saddle_check;
+mod string;
 mod zoom;
 pub use min_mode::MinModeRefine;
 pub(crate) use min_mode::RefinePhase;
+pub use string::StringConfig;
 pub use zoom::ZoomConfig;
 
 /// Row-major 3x3 simulation cell: row `i` is lattice vector `a_i`.
@@ -388,6 +390,13 @@ pub struct BandConfig {
     /// tangent. `None` skips the check. A solid-state band is not
     /// checked.
     pub saddle_check: Option<SaddleIndexCheck>,
+    /// Simplified string method of E, Ren, and Vanden-Eijnden, J. Chem.
+    /// Phys. 126, 164103 (2007), doi:10.1063/1.2720838: evolve interior
+    /// images under the full potential force (no spring, no tangent
+    /// projection) and reparametrize to equal arc length after each
+    /// step, anchoring the climbing image when armed. `None`, the
+    /// default, runs the nudged elastic band.
+    pub string: Option<StringConfig>,
 }
 
 with_setters!(BandConfig {
@@ -410,6 +419,7 @@ with_setters!(BandConfig {
     with_zoom => zoom: opt ZoomConfig,
     with_fixed_atoms => fixed_atoms: val Vec<bool>,
     with_saddle_check => saddle_check: opt SaddleIndexCheck,
+    with_string => string: opt StringConfig,
 });
 
 impl BandConfig {
@@ -537,6 +547,7 @@ impl Default for BandConfig {
             zoom: None,
             fixed_atoms: Vec::new(),
             saddle_check: Some(SaddleIndexCheck::default()),
+            string: None,
         }
     }
 }
@@ -2449,6 +2460,8 @@ pub struct BandSession {
     unmoved: usize,
     zoom: zoom::ZoomState,
     saddle: saddle_check::SaddleState,
+    string_state: string::StringState,
+    highs: bool,
 }
 
 impl BandSession {
@@ -2530,6 +2543,9 @@ impl BandSession {
         if let Some(zoom) = &config.zoom {
             zoom::check_zoom(&config, zoom)?;
         }
+        if config.string.is_some() {
+            string::check_string(&config)?;
+        }
         if !(config.time_step.is_finite() && config.time_step > 0.0) {
             return Err(SaddleError::Invalid(
                 "band time step must be positive and finite".into(),
@@ -2552,6 +2568,8 @@ impl BandSession {
             unmoved: 0,
             zoom: zoom::ZoomState::default(),
             saddle: saddle_check::SaddleState::default(),
+            string_state: string::StringState::default(),
+            highs: false,
         };
         if session.config.has_fixed() {
             session.state.fixed = session.config.fixed_atoms.clone();
@@ -2867,6 +2885,7 @@ impl BandSession {
     /// Select the optional HiGHS feasible-set step; requires the `highs` feature.
     /// Disabled by default.
     pub fn set_highs(&mut self, enabled: bool) {
+        self.highs = enabled;
         self.solver.set_highs(enabled);
     }
 
@@ -2883,6 +2902,13 @@ impl BandSession {
         if self.solid.is_some() && config.is_some() {
             return Err(SaddleError::Invalid(
                 "solid-state band does not use the trust-region stepper".into(),
+            ));
+        }
+        if self.config.string.is_some() && config.is_some() {
+            return Err(SaddleError::Invalid(
+                "the simplified string method uses the band's first-order stepper, \
+                 not the trust-region stepper"
+                    .into(),
             ));
         }
         if let Some(config) = config {
@@ -2952,6 +2978,8 @@ impl BandSession {
         let segment = if self.solid.is_some() { dof + 9 } else { dof };
         let interior_dof = (self.positions.nrows() - 2) * segment;
         self.solver = build_solver(&self.config, &method, interior_dof);
+        self.highs = false;
+        self.clear_string_state();
         self.state.restart();
         self.refine = min_mode::RefineState::default();
         Ok(())
@@ -2987,6 +3015,7 @@ impl BandSession {
     /// does not inherit a stale quasi-Newton pair.
     pub(crate) fn forget_optimizer(&mut self) {
         self.solver.forget();
+        self.clear_string_state();
         if let Some(rtr) = &mut self.rtr {
             let gate = self.state.force_gate;
             *rtr = crate::rtr::BandRtr::new(rtr.config, false);
@@ -3044,6 +3073,7 @@ impl BandSession {
             self.state.drop_last();
             self.refine = min_mode::RefineState::default();
             self.saddle.forget();
+            self.clear_string_state();
         }
         Ok(())
     }
@@ -3102,6 +3132,7 @@ impl BandSession {
     /// moved images the next step evaluates only the interior images.
     pub fn restart(&mut self) {
         self.solver.forget();
+        self.clear_string_state();
         self.state.restart();
         self.refine = min_mode::RefineState::default();
         self.saddle.forget();
@@ -3205,6 +3236,9 @@ impl BandSession {
             && let Some(report) = self.refine_step(surface)?
         {
             return Ok(report);
+        }
+        if let Some(string_cfg) = self.config.string {
+            return self.step_string(surface, string_cfg);
         }
         if self.rtr.is_some() {
             return self.step_rtr(surface);
