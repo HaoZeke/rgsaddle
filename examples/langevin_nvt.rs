@@ -2107,14 +2107,21 @@ fn random_survival_note(csv: &std::path::Path) -> String {
         detector,
     } = read_random_set(csv);
     let measured = measured_diffusivity(kind, gamma, temperature, lattice);
-    let measured_name = measured
-        .map(|(_, _, file)| file.replace(".csv", ".md"))
-        .unwrap_or_else(|| "no matching campaign".to_string());
+    let defect_source = match measured {
+        Some((_, _, file)) => format!(
+            "The defect-D column uses the Wigner-Seitz defect diffusivity of those dynamics (`{}`), the D_i the relation needs.",
+            file.replace(".csv", ".md")
+        ),
+        None => "The defect-D column, the D_i the relation needs, is empty: no free-dumbbell campaign ran with these dynamics at this lattice constant.".to_string(),
+    };
     let tracer = measured_tracer(kind, gamma, dt_fs, temperature, lattice);
-    let tracer_name = tracer
-        .as_ref()
-        .map(|(_, file)| file.replace(".csv", ".md"))
-        .unwrap_or_else(|| "no matching campaign".to_string());
+    let tracer_source = match &tracer {
+        Some((_, file)) => format!(
+            "The N D* column converts our k with the tracer sum measured on free-dumbbell trajectories with the same dynamics, potential, and cell (`{}`), the convention of Table 1.",
+            file.replace(".csv", ".md")
+        ),
+        None => "The N D* column, the convention of Table 1, is empty: no tracer campaign ran with these dynamics at this lattice constant.".to_string(),
+    };
     let mut text = String::new();
     text.push_str("# Random-vacancy survival, Mishin Cu\n\n");
     text.push_str("The vacancy is the lattice site nearest the cell center. The <100> dumbbell host is drawn uniformly from the other sites of the 13³ cell, and the dumbbell axis uniformly from the three orientations. Under periodic boundaries the separation is uniform over the cell, which is the ensemble in section 2 of Mwungeli, Liu, and Demkowicz, Phys. Rev. Materials 9, 023601 (2025). The fit is ln S(t) = -(k/V_model) t through the origin, sampled every 25 ps, with V_model the cell volume and S the Kaplan-Meier survival, in which an uncaptured trajectory is censored at the end of its window; with equal windows S = n(t)/N. Samples after S reaches zero are left out. V_iv/Ω = 4 α k / (a D_i) with α = 2/3 and Ω = a³/4, from K_iv = V_iv D_i / (α a²) = V_iv ν in section 1 of that paper, where ν is the rate of one of the eight translation jumps of the dumbbell. That ν is the defect's own jump rate, so the D_i the relation needs is the diffusivity of the defect.\n\n");
@@ -2124,7 +2131,7 @@ fn random_survival_note(csv: &std::path::Path) -> String {
         ),
         _ => "Our k comes from the Langevin dynamics in the CSV.".to_string(),
     };
-    text.push_str(&format!("Table 1 of that paper converts its k with the D_i in its own Table 1 column, which it quotes from Ref. [12], B. Zhang et al., Phys. Rev. Materials 6, 053605 (2022). Ref. [12] took the mean-square displacement of every atom, its Eq. (5), and its erratum, Phys. Rev. Materials 9, 069901(E) (2025), multiplies that per-atom diffusivity by the 4951 atoms of its cell. The product is the tracer sum N D* = Σ_i ⟨|Δr_i|²⟩ / 6t, which is the defect diffusivity times the tracer correlation factor (`direct_md_dynamics.md`). The paper's own trajectories are NPH for 30 ps, then NVE with velocity rescaling, at its lattice constant. {ours} The N D* column converts our k with the tracer sum measured on free-dumbbell trajectories with the same dynamics, potential, and cell (`{tracer_name}`), the convention of Table 1. The defect-D column uses the Wigner-Seitz defect diffusivity of those dynamics (`{measured_name}`), the D_i the relation needs. σ_k is the standard deviation over 400 bootstrap resamples of the trajectories. The bootstrap σ column carries only that; the total σ columns add the relative error of the D_i used in quadrature.\n\n"));
+    text.push_str(&format!("Table 1 of that paper converts its k with the D_i in its own Table 1 column, which it quotes from Ref. [12], B. Zhang et al., Phys. Rev. Materials 6, 053605 (2022). Ref. [12] took the mean-square displacement of every atom, its Eq. (5), and its erratum, Phys. Rev. Materials 9, 069901(E) (2025), multiplies that per-atom diffusivity by the 4951 atoms of its cell. The product is the tracer sum N D* = Σ_i ⟨|Δr_i|²⟩ / 6t, which is the defect diffusivity times the tracer correlation factor (`direct_md_dynamics.md`). The paper's own trajectories are NPH for 30 ps, then NVE with velocity rescaling, at its lattice constant. {ours} {tracer_source} {defect_source} σ_k is the standard deviation over 400 bootstrap resamples of the trajectories. The bootstrap σ column carries only that; the total σ columns add the relative error of the D_i used in quadrature.\n\n"));
     if trials.is_empty() {
         text.push_str("No trajectories.\n");
         return text;
@@ -2145,59 +2152,81 @@ fn random_survival_note(csv: &std::path::Path) -> String {
         fmt_d(tracer_d),
         fmt_d(measured_d)
     ));
-    let convert = |rate: f64, rate_sigma: f64, d: Option<(f64, f64)>| -> (f64, f64, f64) {
-        match d {
-            Some((d_i, d_sigma)) if d_i > 0.0 => {
-                let volume = rate_to_volume(rate, lattice, d_i);
-                let boot = volume.abs() * rate_sigma / rate.abs();
-                let total =
-                    volume.abs() * ((rate_sigma / rate).powi(2) + (d_sigma / d_i).powi(2)).sqrt();
-                (volume, boot, total)
-            }
-            _ => (f64::NAN, f64::NAN, f64::NAN),
-        }
+    let convert = |rate: f64, rate_sigma: f64, d: Option<(f64, f64)>| {
+        let (d_i, d_sigma) = d.filter(|(d_i, _)| *d_i > 0.0)?;
+        let volume = rate_to_volume(rate, lattice, d_i);
+        let boot = volume.abs() * rate_sigma / rate.abs();
+        let total = volume.abs() * ((rate_sigma / rate).powi(2) + (d_sigma / d_i).powi(2)).sqrt();
+        Some((volume, boot, total))
     };
+    let conventions = [
+        ("the Table 1 D_i", table_d),
+        ("the measured N D*", tracer_d),
+        ("the measured defect D", measured_d),
+    ];
     let caps = [300.0_f64, 600.0, 900.0, 1200.0, 1500.0];
     text.push_str("| t_max (ps) | captured | N | k (Å³/ps) | σ_k | V_iv/Ω, Table 1 D_i | bootstrap σ | total σ | V_iv/Ω, measured N D* | total σ | V_iv/Ω, measured defect D | total σ |\n|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
     let mut rows: Vec<(f64, f64, f64)> = Vec::new();
     for cap in caps.iter().copied().filter(|cap| *cap <= window + 1.0e-6) {
         let (rate, rate_sigma) = bootstrap_rate(&trials, cap, lattice, repeats);
-        let (v_table, boot_table, total_table) = convert(rate, rate_sigma, table_d);
-        let (v_tracer, _, total_tracer) = convert(rate, rate_sigma, tracer_d);
-        let (v_measured, _, total_measured) = convert(rate, rate_sigma, measured_d);
+        let table_cells = convert(rate, rate_sigma, table_d).map_or_else(
+            || "- | - | -".to_string(),
+            |(volume, boot, total)| format!("{volume:.2} | {boot:.2} | {total:.2}"),
+        );
+        let cells = |d: Option<(f64, f64)>| {
+            convert(rate, rate_sigma, d).map_or_else(
+                || "- | -".to_string(),
+                |(volume, _, total)| format!("{volume:.2} | {total:.2}"),
+            )
+        };
         text.push_str(&format!(
-            "| {cap:.0} | {} | {} | {rate:.2} | {rate_sigma:.2} | {v_table:.2} | {boot_table:.2} | {total_table:.2} | {v_tracer:.2} | {total_tracer:.2} | {v_measured:.2} | {total_measured:.2} |\n",
+            "| {cap:.0} | {} | {} | {rate:.2} | {rate_sigma:.2} | {table_cells} | {} | {} |\n",
             trials
                 .iter()
                 .filter(|(hit, time)| *hit && *time <= cap)
                 .count(),
-            trials.len()
+            trials.len(),
+            cells(tracer_d),
+            cells(measured_d),
         ));
         rows.push((cap, rate, rate_sigma));
     }
     if let Some((cap, rate, rate_sigma)) = rows.last().copied() {
-        let (v_table, boot_table, total_table) = convert(rate, rate_sigma, table_d);
-        let (v_tracer, _, total_tracer) = convert(rate, rate_sigma, tracer_d);
-        let (v_measured, _, total_measured) = convert(rate, rate_sigma, measured_d);
         text.push_str(&format!(
-            "\nAt the longest window, {cap:.0} ps, k = {rate:.2} ± {rate_sigma:.2} Å³/ps. With the Table 1 D_i, V_iv = {v_table:.2} ± {boot_table:.2} Ω (bootstrap) or ± {total_table:.2} Ω (with D_i). With the measured N D*, V_iv = {v_tracer:.2} ± {total_tracer:.2} Ω. With the measured defect D, V_iv = {v_measured:.2} ± {total_measured:.2} Ω.\n"
+            "\nAt the longest window, {cap:.0} ps, k = {rate:.2} ± {rate_sigma:.2} Å³/ps."
         ));
+        for (index, (label, d)) in conventions.iter().enumerate() {
+            if let Some((volume, boot, total)) = convert(rate, rate_sigma, *d) {
+                text.push_str(&if index == 0 {
+                    format!(" With {label}, V_iv = {volume:.2} ± {boot:.2} Ω (bootstrap) or ± {total:.2} Ω (with D_i).")
+                } else {
+                    format!(" With {label}, V_iv = {volume:.2} ± {total:.2} Ω.")
+                });
+            }
+        }
+        text.push('\n');
         if let Some((k_ml, low, high, captures)) = censored_rate(&trials, cap, lattice, repeats) {
-            let volumes = |d: Option<(f64, f64)>| match d {
-                Some((d_i, _)) if d_i > 0.0 => format!(
-                    "{:.2} Ω (95 % {:.2} to {:.2})",
-                    rate_to_volume(k_ml, lattice, d_i),
-                    rate_to_volume(low, lattice, d_i),
-                    rate_to_volume(high, lattice, d_i)
-                ),
-                _ => "not available".to_string(),
+            let volumes: Vec<String> = conventions
+                .iter()
+                .filter_map(|(label, d)| {
+                    let (d_i, _) = d.filter(|(d_i, _)| *d_i > 0.0)?;
+                    Some(format!(
+                        "{:.2} Ω (95 % {:.2} to {:.2}) with {label}",
+                        rate_to_volume(k_ml, lattice, d_i),
+                        rate_to_volume(low, lattice, d_i),
+                        rate_to_volume(high, lattice, d_i)
+                    ))
+                })
+                .collect();
+            let volumes = match volumes.as_slice() {
+                [] => "not available".to_string(),
+                [one] => one.clone(),
+                [first, second] => format!("{first} and {second}"),
+                [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
             };
             text.push_str(&format!(
-                "The constant-hazard maximum likelihood over the same {cap:.0} ps, with every uncaptured trajectory censored at the end of its window, is k = {k_ml:.2} Å³/ps from {captures} captures in {} trajectories, 95 % interval {low:.2} to {high:.2} from ln k ± 1.96/√captures. V_iv is {} with the Table 1 D_i, {} with the measured N D*, and {} with the measured defect D; these intervals leave out the D_i error.\n",
+                "The constant-hazard maximum likelihood over the same {cap:.0} ps, with every uncaptured trajectory censored at the end of its window, is k = {k_ml:.2} Å³/ps from {captures} captures in {} trajectories, 95 % interval {low:.2} to {high:.2} from ln k ± 1.96/√captures. V_iv is {volumes}; these intervals leave out the D_i error.\n",
                 trials.len(),
-                volumes(table_d),
-                volumes(tracer_d),
-                volumes(measured_d),
             ));
         }
         if let (Some((k_mean, k_sigma, mean_time, mean_sigma)), Some((d_i, d_sigma)), Some(a_p)) = (
@@ -2211,10 +2240,16 @@ fn random_survival_note(csv: &std::path::Path) -> String {
             let ratio = rate / k_paper;
             let ratio_sigma =
                 ratio * ((rate_sigma / rate).powi(2) + (k_paper_sigma / k_paper).powi(2)).sqrt();
+            let differences: Vec<String> = conventions[..2]
+                .iter()
+                .filter_map(|(label, d)| {
+                    let (volume, _, _) = convert(rate, rate_sigma, *d)?;
+                    Some(format!("{:.2} Ω with {label}", volume - k_mean))
+                })
+                .collect();
             text.push_str(&format!(
-                "Table 1 at this temperature, 8788 atoms, is {k_mean:.0} ± {k_sigma:.0} Ω (k-method) and {mean_time:.0} ± {mean_sigma:.0} Ω (mean-time method). The k-method value with the Table 1 D_i and the paper's lattice constant {a_p:.3} Å implies k = {k_paper:.2} ± {k_paper_sigma:.2} Å³/ps. Our longest-window k over that is {ratio:.3} ± {ratio_sigma:.3}. The k-method value subtracted from our volume is {:.2} Ω with the Table 1 D_i and {:.2} Ω with the measured N D*.\n",
-                v_table - k_mean,
-                v_tracer - k_mean,
+                "Table 1 at this temperature, 8788 atoms, is {k_mean:.0} ± {k_sigma:.0} Ω (k-method) and {mean_time:.0} ± {mean_sigma:.0} Ω (mean-time method). The k-method value with the Table 1 D_i and the paper's lattice constant {a_p:.3} Å implies k = {k_paper:.2} ± {k_paper_sigma:.2} Å³/ps. Our longest-window k over that is {ratio:.3} ± {ratio_sigma:.3}. The k-method value subtracted from our volume is {}.\n",
+                differences.join(" and "),
             ));
         }
         text.push('\n');
