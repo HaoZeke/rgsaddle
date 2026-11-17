@@ -96,6 +96,7 @@
 mod anharmonic;
 mod basin;
 mod control;
+mod gaussian;
 mod mbar;
 mod optimize;
 mod path;
@@ -111,6 +112,7 @@ mod work;
 pub use anharmonic::{AnharmonicConfig, AnharmonicCorrection, anharmonic_correction};
 pub use basin::{BasinConfig, BasinDensity, BasinEnd, basin_density};
 pub use control::HarmonicReference;
+pub use gaussian::{ExactGaussianPlaneSampler, HyperplaneObservable, QuadraticModel};
 pub use optimize::{PlaneMetric, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum, PlaneTrace};
 pub use path::PlanePath;
 pub use plane::{FixedCell, Hyperplane, MassWeighted};
