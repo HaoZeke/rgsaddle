@@ -1,7 +1,7 @@
 use ndarray::{Array1, Array2, ArrayView2, array};
 use rgsaddle::{
     BandSurface, LineNebConfig, LineNebSession, LineNebStatus, NaturalCubic, SaddleError,
-    fixed_energy_action, fixed_energy_action_force,
+    fixed_energy_action, fixed_energy_action_force, fixed_energy_mep_seed,
 };
 
 fn analytic_surface(positions: ArrayView2<'_, f64>) -> (Array1<f64>, Array2<f64>) {
@@ -112,6 +112,26 @@ impl BandSurface for DoubleWell {
             gradients[(i, 1)] = 2.0 * y;
         }
         Ok(())
+    }
+}
+
+#[test]
+fn energy_sliced_seed_follows_the_double_well_mep() {
+    let path = fixed_energy_mep_seed(
+        &DoubleWell,
+        array![0.0, 0.0].view(),
+        array![1.0, 0.0].view(),
+        array![1.0, 2.0].view(),
+        1.0,
+        0.25,
+        9,
+    )
+    .unwrap();
+    assert_eq!(path.raw_dim(), ndarray::Ix2(9, 2));
+    assert!(path.column(1).iter().all(|value| *value == 0.0));
+    for endpoint in [0, 8] {
+        let x = path[(endpoint, 0)];
+        assert!(((x * x - 1.0).powi(2) - 0.25).abs() <= f64::EPSILON * 8.0);
     }
 }
 

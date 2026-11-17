@@ -490,6 +490,165 @@ impl NaturalCubic {
     }
 }
 
+fn one_surface(
+    surface: &impl BandSurface,
+    position: ArrayView1<'_, f64>,
+) -> Result<(f64, Array1<f64>), SaddleError> {
+    let positions = position.insert_axis(ndarray::Axis(0));
+    let mut energies = Array1::zeros(1);
+    let mut gradients = Array2::zeros((1, position.len()));
+    surface.eval(positions, &mut energies, &mut gradients)?;
+    if !energies[0].is_finite() || !gradients.iter().all(|value| value.is_finite()) {
+        return Err(SaddleError::NonFinite("MEP seed surface"));
+    }
+    Ok((energies[0], gradients.row(0).to_owned()))
+}
+
+fn energy_slice(
+    surface: &impl BandSurface,
+    q: ArrayView1<'_, f64>,
+    sqrt_masses: ArrayView1<'_, f64>,
+    target: f64,
+) -> Result<Array1<f64>, SaddleError> {
+    let position = &q / &sqrt_masses;
+    let (energy, gradient) = one_surface(surface, position.view())?;
+    if energy <= target {
+        return Ok(q.to_owned());
+    }
+    let force_q = -gradient / &sqrt_masses;
+    let force_norm = force_q.dot(&force_q).sqrt();
+    if !(force_norm > 0.0) {
+        return Err(SaddleError::Invalid(
+            "MEP energy slice reached a stationary point above its target".into(),
+        ));
+    }
+    let direction = force_q / force_norm;
+    let mut lower = 0.0;
+    let scale = q.iter().map(|value| value.abs()).fold(1.0_f64, f64::max);
+    let mut upper = scale.sqrt() * f64::EPSILON.sqrt();
+    if !(upper > 0.0 && upper.is_finite()) {
+        return Err(SaddleError::NonFinite("MEP energy-slice step"));
+    }
+    loop {
+        let trial_q = q.to_owned() + upper * &direction;
+        let trial = &trial_q / &sqrt_masses;
+        if one_surface(surface, trial.view())?.0 <= target {
+            break;
+        }
+        lower = upper;
+        upper += upper;
+        if !upper.is_finite() {
+            return Err(SaddleError::Invalid(
+                "MEP energy slice did not cross its target energy".into(),
+            ));
+        }
+    }
+    loop {
+        let middle = lower + 0.5 * (upper - lower);
+        if middle == lower || middle == upper {
+            break;
+        }
+        let trial_q = q.to_owned() + middle * &direction;
+        let trial = &trial_q / &sqrt_masses;
+        if one_surface(surface, trial.view())?.0 > target {
+            lower = middle;
+        } else {
+            upper = middle;
+        }
+    }
+    Ok(q.to_owned() + lower * direction)
+}
+
+/// Energy-sliced steepest-descent seed from an index-one saddle.
+///
+/// Each branch follows the mass-scaled force from the unstable mode and
+/// locates equal energy drops by bracketing, then both branches are resampled
+/// to `images` equal arc-length positions. The requested image count sets the
+/// energy resolution; there is no coordinate step or iteration limit.
+pub fn fixed_energy_mep_seed(
+    surface: &impl BandSurface,
+    saddle: ArrayView1<'_, f64>,
+    mode: ArrayView1<'_, f64>,
+    masses: ArrayView1<'_, f64>,
+    saddle_energy: f64,
+    target_energy: f64,
+    images: usize,
+) -> Result<Array2<f64>, SaddleError> {
+    if images < 3
+        || saddle.len() != mode.len()
+        || saddle.len() != masses.len()
+        || !masses.iter().all(|mass| mass.is_finite() && *mass > 0.0)
+        || !(saddle_energy.is_finite()
+            && target_energy.is_finite()
+            && target_energy < saddle_energy)
+    {
+        return Err(SaddleError::Invalid(
+            "fixed-energy MEP seed input is inconsistent".into(),
+        ));
+    }
+    let sqrt_masses = masses.mapv(f64::sqrt);
+    let saddle_q = &saddle * &sqrt_masses;
+    let mode_q = &mode * &sqrt_masses;
+    let mode_norm = mode_q.dot(&mode_q).sqrt();
+    if !(mode_norm > 0.0) {
+        return Err(SaddleError::Invalid(
+            "fixed-energy MEP seed mode must be nonzero".into(),
+        ));
+    }
+    let direction = mode_q / mode_norm;
+    let scale = saddle_q
+        .iter()
+        .map(|value| value.abs())
+        .fold(1.0_f64, f64::max);
+    let displacement = scale.sqrt() * f64::EPSILON.sqrt();
+    let mut branches = Vec::with_capacity(2);
+    for sign in [-1.0, 1.0] {
+        let mut branch = Vec::with_capacity(images);
+        branch.push(saddle_q.clone());
+        let mut q = &saddle_q + sign * displacement * &direction;
+        for slice in 1..images {
+            let fraction = slice as f64 / (images - 1) as f64;
+            let level = saddle_energy + fraction * (target_energy - saddle_energy);
+            q = energy_slice(surface, q.view(), sqrt_masses.view(), level)?;
+            branch.push(q.clone());
+        }
+        branches.push(branch);
+    }
+    branches[0].reverse();
+    let mut joined = branches.remove(0);
+    joined.extend(branches.remove(0).into_iter().skip(1));
+    let mut arc = vec![0.0; joined.len()];
+    for i in 1..joined.len() {
+        let segment = &joined[i] - &joined[i - 1];
+        arc[i] = arc[i - 1] + segment.dot(&segment).sqrt();
+    }
+    let total = *arc
+        .last()
+        .ok_or_else(|| SaddleError::Shape("empty MEP seed".into()))?;
+    if !(total > 0.0 && total.is_finite()) {
+        return Err(SaddleError::Invalid(
+            "fixed-energy MEP seed has zero arc length".into(),
+        ));
+    }
+    let mut result_q = Array2::zeros((images, saddle.len()));
+    for image in 0..images {
+        let wanted = total * image as f64 / (images - 1) as f64;
+        let right = arc
+            .partition_point(|value| *value < wanted)
+            .min(arc.len() - 1);
+        if right == 0 {
+            result_q.row_mut(image).assign(&joined[0]);
+        } else {
+            let left = right - 1;
+            let fraction = (wanted - arc[left]) / (arc[right] - arc[left]);
+            result_q
+                .row_mut(image)
+                .assign(&(&joined[left] + fraction * (&joined[right] - &joined[left])));
+        }
+    }
+    Ok(result_q / &sqrt_masses)
+}
+
 /// Fixed-image-count LI-NEB session using rgmin's global eOn
 /// quick-min velocity projection with a fixed time step.
 pub struct LineNebSession {

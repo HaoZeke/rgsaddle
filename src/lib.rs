@@ -124,7 +124,7 @@ pub use indexk::{
 };
 pub use line_neb::{
     LineNebConfig, LineNebReport, LineNebSession, LineNebStatus, NaturalCubic, fixed_energy_action,
-    fixed_energy_action_force,
+    fixed_energy_action_force, fixed_energy_mep_seed,
 };
 pub use minmode::{
     FiniteDifference, MinModeConfig, MinModeKind, MinModeReport, MinModeSession, MinModeStatus,
