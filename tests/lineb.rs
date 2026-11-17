@@ -199,11 +199,12 @@ fn constant_hessian_log_dets_agree() {
     let oracle = hqtst_rate_interpolated_hessian(&Parabola, &path, beads).unwrap();
     assert_eq!(direct.modes, beads - 1);
     assert_eq!(oracle.modes, direct.modes);
-    // Both evaluators difference the gradient with step √ε · L. The
-    // absolute noise of one Hessian entry is ε · |∇V| / step. Here
-    // |∇V| is the coordinate and the curvature is 1, so that noise is
-    // √ε. Each kept mode can move the log-determinant by that much.
-    // The bound is absolute.
+    // The oracle differences the gradient with step √ε · max|q| and the
+    // replica products with ε^{1/3} times the path length. The absolute
+    // noise of one Hessian entry is ε · |∇V| / step, at most √ε here,
+    // where |∇V| is the coordinate and the curvature is 1. Each kept
+    // mode can move the log-determinant by that much. The bound is
+    // absolute.
     let entry_noise = f64::EPSILON.sqrt();
     let roundoff = entry_noise * direct.modes as f64;
     assert!(
@@ -353,5 +354,19 @@ fn muller_brown_continuation_lowers_the_energy_and_lengthens_the_period() {
             path.half_period,
             path.half_period_dynamics
         );
+    }
+    for beads in [8, 16, 32, 64] {
+        let direct = hqtst_rate(&MullerBrown, &paths[0], beads).unwrap();
+        let oracle = hqtst_rate_interpolated_hessian(&MullerBrown, &paths[0], beads).unwrap();
+        eprintln!(
+            "Müller-Brown P = {beads}: replica products {} calls, interpolated oracle {} calls, ln k difference {:e}",
+            direct.evaluations,
+            oracle.evaluations,
+            direct.log_rate_over_reactant - oracle.log_rate_over_reactant
+        );
+        // Replicas `j` and `P − j` coincide. Each distinct replica costs
+        // one gradient and two per central product, one product per
+        // coordinate.
+        assert_eq!(direct.evaluations, (beads / 2 + 1) * (1 + 2 * 2));
     }
 }

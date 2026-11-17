@@ -7,11 +7,21 @@
 //!
 //! `κ = 1/(β_N² ℏ²)`, `β_N = τ / (ℏ P)`. Its fluctuation factor is the
 //! product of the absolute eigenvalues except the permutation mode (and,
-//! for a molecule, the rigid motions). [`hqtst_rate`] applies that
-//! operator with Hessian-vector products only. The paper's
-//! finite-difference Hessians, cubic interpolation, and dense spectrum
-//! are compiled with the `lineb-oracle` feature for tests and benches.
-//! They are not part of the default build.
+//! for a molecule, the rigid motions).
+//!
+//! [`hqtst_rate`] reads the surface through Hessian-vector products at
+//! the replicas: the surface's own product when it has one, otherwise a
+//! central gradient difference. Replicas `j` and `P − j` sit at the same
+//! point of the retraced spline, so `⌊P/2⌋ + 1` replicas are evaluated,
+//! each with one gradient and `dof` products for its mass-weighted
+//! Hessian block. The ring operator is applied from those blocks and its
+//! spectrum on the complement of the gauge modes comes from the shared
+//! full-reorthogonalization Lanczos. Surface cost is linear in `P`.
+//!
+//! The paper's finite-difference Hessians at the LI-NEB images, cubic
+//! interpolation, and dense spectrum are compiled with the
+//! `lineb-oracle` feature for tests and benches. They are not part of
+//! the default build.
 //!
 //! The rate times the reactant partition function is Richardson's
 //! ring-polymer instanton expression (Int. Rev. Phys. Chem. 37, 171
@@ -19,7 +29,11 @@
 //!
 //! `k Z_r = Λ_N^{−1} (β_N ℏ)^{−1} √B_N  Π' (β_N ℏ η_k)^{−1}  exp(−β_N U)`.
 
-use ndarray::{Array1, Array2, ArrayView1, ArrayView2, s};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[cfg(any(test, feature = "lineb-oracle"))]
+use ndarray::ArrayView2;
+use ndarray::{Array1, Array2, ArrayView1, s};
 
 use super::action::l2;
 use super::align::cross;
@@ -28,11 +42,14 @@ use super::optimize::LinebPath;
 use super::path;
 #[cfg(any(test, feature = "lineb-oracle"))]
 use super::path::Curve;
+#[cfg(any(test, feature = "lineb-oracle"))]
 use crate::eigensolve::exact_eigh;
 use crate::error::SaddleError;
+use crate::linalg::numerical_hvp;
 use crate::minmode::PointSurface;
 #[cfg(any(test, feature = "lineb-oracle"))]
 use crate::ohtst::spline::Spline;
+use crate::sparse_hessian::lanczos_spectrum;
 
 /// Ring-polymer instanton rate at the temperature of a tunneling path.
 #[derive(Clone, Debug)]
@@ -57,36 +74,66 @@ pub struct HqtstRate {
     pub evaluations: usize,
 }
 
-/// Matrix-free harmonic quantum TST rate. `beads` is `P` in `t_j = j τ / P`.
+/// Harmonic quantum TST rate from Hessian-vector products at the
+/// replicas. `beads` is `P` in `t_j = j τ / P`.
 pub fn hqtst_rate<S: PointSurface>(
     surface: &S,
     path: &LinebPath,
     beads: usize,
 ) -> Result<HqtstRate, SaddleError> {
-    let calls = std::sync::atomic::AtomicUsize::new(0);
+    let calls = AtomicUsize::new(0);
     let counted = crate::lineb::Counted {
         surface,
         calls: &calls,
     };
     let replicas = path::replicas(path.weighted.view(), &path.time_table, beads)?;
     let kappa = spring_constant(replicas.period, path.hbar, beads)?;
-    let gauges = gauge_modes(&replicas.weighted, &path.masses)?;
-    let log_abs_det = projected_log_abs_det(replicas.weighted.len(), &gauges, |vector| {
-        ring_matvec(
+    let step = difference_step(path)?;
+    let dof = replicas.weighted.ncols();
+    let distinct = beads / 2 + 1;
+    let mut energies = vec![0.0; beads];
+    let mut blocks = Vec::with_capacity(distinct);
+    for bead in 0..distinct {
+        let cartesian = path.masses.to_cartesian(replicas.weighted.row(bead))?;
+        let (energy, gradient) = counted.eval(cartesian.view())?;
+        if !energy.is_finite() || gradient.iter().any(|component| !component.is_finite()) {
+            return Err(SaddleError::NonFinite("ring-polymer replica"));
+        }
+        energies[bead] = energy;
+        energies[(beads - bead) % beads] = energy;
+        blocks.push(weighted_block(
             &counted,
             &path.masses,
-            replicas.weighted.view(),
-            vector,
-            kappa,
-        )
+            cartesian.view(),
+            gradient.view(),
+            step,
+        )?);
+    }
+    let gauges = gauge_modes(&replicas.weighted, &path.masses)?;
+    let log_abs_det = deflated_log_abs_det(beads * dof, &gauges, |vector| {
+        let mut out = Array1::zeros(vector.len());
+        for bead in 0..beads {
+            let previous = if bead == 0 { beads - 1 } else { bead - 1 };
+            let next = if bead + 1 == beads { 0 } else { bead + 1 };
+            let block = vector.slice(s![bead * dof..(bead + 1) * dof]);
+            let mut row = blocks[bead.min(beads - bead)].dot(&block);
+            row.scaled_add(2.0 * kappa, &block);
+            row.scaled_add(
+                -kappa,
+                &vector.slice(s![previous * dof..(previous + 1) * dof]),
+            );
+            row.scaled_add(-kappa, &vector.slice(s![next * dof..(next + 1) * dof]));
+            out.slice_mut(s![bead * dof..(bead + 1) * dof]).assign(&row);
+        }
+        out
     })?;
     finish(
         path,
         &replicas.weighted,
+        &energies,
         replicas.period,
         log_abs_det,
-        &calls,
-        &counted,
+        calls.load(Ordering::Relaxed),
     )
 }
 
@@ -118,34 +165,34 @@ pub fn hqtst_rate_interpolated_hessian<S: PointSurface>(
         kappa,
     )?;
     let log_abs_det = dense_kept_log_abs_det(dense.view(), &replicas.weighted, &path.masses)?;
-    finish(
-        path,
-        &replicas.weighted,
-        replicas.period,
-        log_abs_det,
-        &calls,
-        &counted,
-    )
-}
-
-fn finish<S: PointSurface>(
-    path: &LinebPath,
-    beads: &Array2<f64>,
-    period: f64,
-    log_abs_det: f64,
-    calls: &std::sync::atomic::AtomicUsize,
-    surface: &crate::lineb::Counted<'_, S>,
-) -> Result<HqtstRate, SaddleError> {
-    let mut energies = Vec::with_capacity(beads.nrows());
-    for row in beads.rows() {
+    let mut energies = Vec::with_capacity(beads);
+    for row in replicas.weighted.rows() {
         let cartesian = path.masses.to_cartesian(row)?;
-        let (energy, gradient) = surface.eval(cartesian.view())?;
+        let (energy, gradient) = counted.eval(cartesian.view())?;
         if !energy.is_finite() || gradient.iter().any(|component| !component.is_finite()) {
             return Err(SaddleError::NonFinite("ring-polymer replica"));
         }
         energies.push(energy);
     }
-    let bead_action = bead_action(beads, &energies, period, path.hbar)?;
+    finish(
+        path,
+        &replicas.weighted,
+        &energies,
+        replicas.period,
+        log_abs_det,
+        calls.load(Ordering::Relaxed),
+    )
+}
+
+fn finish(
+    path: &LinebPath,
+    beads: &Array2<f64>,
+    energies: &[f64],
+    period: f64,
+    log_abs_det: f64,
+    evaluations: usize,
+) -> Result<HqtstRate, SaddleError> {
+    let bead_action = bead_action(beads, energies, period, path.hbar)?;
     let line_action = (2.0 * path.action + path.energy * period) / path.hbar;
     let modes = beads.len() - gauge_modes(beads, &path.masses)?.len();
     let log_rate = log_rate(beads, period, path.hbar, log_abs_det, modes, bead_action)?;
@@ -162,7 +209,7 @@ fn finish<S: PointSurface>(
         modes,
         log_rate_over_reactant: log_rate,
         rate_over_reactant: rate,
-        evaluations: calls.load(std::sync::atomic::Ordering::Relaxed),
+        evaluations,
     })
 }
 
@@ -241,71 +288,66 @@ fn log_rate(
     Ok(log_rate)
 }
 
-fn ring_matvec<S: PointSurface>(
+/// Mass-weighted Hessian block `M^{−½} H M^{−½}` at one replica from
+/// `dof` Hessian-vector products, symmetrized.
+fn weighted_block<S: PointSurface>(
     surface: &S,
     masses: &Masses,
-    beads: ArrayView2<f64>,
-    vector: ArrayView1<f64>,
-    kappa: f64,
-) -> Result<Array1<f64>, SaddleError> {
-    let count = beads.nrows();
-    let dof = beads.ncols();
-    if vector.len() != count * dof {
-        return Err(SaddleError::Shape(
-            "a ring-polymer vector has one block per replica".into(),
-        ));
-    }
-    // One difference length for the whole ring, from the largest
-    // coordinate. A replica at the origin still has the path's length.
-    let step = coordinate_scale(beads.iter().copied())?;
-    let mut out = Array1::zeros(vector.len());
-    for bead in 0..count {
-        let previous = if bead == 0 { count - 1 } else { bead - 1 };
-        let next = if bead + 1 == count { 0 } else { bead + 1 };
-        let block = vector.slice(s![bead * dof..(bead + 1) * dof]);
-        let mut spring = block.to_owned();
-        spring *= 2.0;
-        spring -= &vector.slice(s![previous * dof..(previous + 1) * dof]);
-        spring -= &vector.slice(s![next * dof..(next + 1) * dof]);
-        spring *= kappa;
-        let potential = weighted_hvp(surface, masses, beads.row(bead), block, step)?;
-        spring += &potential;
-        out.slice_mut(s![bead * dof..(bead + 1) * dof])
-            .assign(&spring);
-    }
-    Ok(out)
-}
-
-fn weighted_hvp<S: PointSurface>(
-    surface: &S,
-    masses: &Masses,
-    weighted: ArrayView1<f64>,
-    vector: ArrayView1<f64>,
+    cartesian: ArrayView1<f64>,
+    gradient: ArrayView1<f64>,
     step: f64,
-) -> Result<Array1<f64>, SaddleError> {
-    let cartesian = masses.to_cartesian(weighted)?;
-    let mut cartesian_vector = vector.to_owned();
-    for (component, &root) in cartesian_vector.iter_mut().zip(masses.sqrt_mass.iter()) {
-        *component /= root;
+) -> Result<Array2<f64>, SaddleError> {
+    let dof = cartesian.len();
+    let mut block = Array2::zeros((dof, dof));
+    for column in 0..dof {
+        let mut direction = Array1::zeros(dof);
+        direction[column] = 1.0 / masses.sqrt_mass[column];
+        let product = match surface.hessian_vector(cartesian, direction.view())? {
+            Some(product) => product,
+            None => numerical_hvp(surface, cartesian, gradient, direction.view(), step, true)?,
+        };
+        if product.len() != dof {
+            return Err(SaddleError::Shape(
+                "a Hessian-vector product must match the coordinate length".into(),
+            ));
+        }
+        if product.iter().any(|component| !component.is_finite()) {
+            return Err(SaddleError::NonFinite("Hessian-vector product"));
+        }
+        for row in 0..dof {
+            block[(row, column)] = product[row] / masses.sqrt_mass[row];
+        }
     }
-    let product = match surface.hessian_vector(cartesian.view(), cartesian_vector.view())? {
-        Some(product) => product,
-        None => central_product(surface, cartesian.view(), cartesian_vector.view(), step)?,
-    };
-    if product.len() != cartesian.len() {
-        return Err(SaddleError::Shape(
-            "a Hessian-vector product must match the coordinate length".into(),
-        ));
+    for row in 0..dof {
+        for column in row + 1..dof {
+            let mean = 0.5 * (block[(row, column)] + block[(column, row)]);
+            block[(row, column)] = mean;
+            block[(column, row)] = mean;
+        }
     }
-    let mut weighted_product = product;
-    for (component, &root) in weighted_product.iter_mut().zip(masses.sqrt_mass.iter()) {
-        *component /= root;
-    }
-    Ok(weighted_product)
+    Ok(block)
 }
 
-/// `√ε` times the largest absolute coordinate. That is the roundoff-optimal
-/// central step for a second derivative on a path of this length.
+/// `ε^{1/3}` times the Cartesian length of the path: the roundoff-optimal
+/// central step for a gradient difference on a path of that length.
+fn difference_step(path: &LinebPath) -> Result<f64, SaddleError> {
+    let mut length = 0.0;
+    for j in 1..path.cartesian.nrows() {
+        let chord = &path.cartesian.row(j) - &path.cartesian.row(j - 1);
+        length += l2(chord.view());
+    }
+    if length <= 0.0 || !length.is_finite() {
+        return Err(SaddleError::Invalid(
+            "the tunneling path has no Cartesian length, so a Hessian difference has no step"
+                .into(),
+        ));
+    }
+    Ok(length * f64::EPSILON.cbrt())
+}
+
+/// `√ε` times the largest absolute coordinate, the finite-difference
+/// Hessian step of the oracle.
+#[cfg(any(test, feature = "lineb-oracle"))]
 fn coordinate_scale(values: impl IntoIterator<Item = f64>) -> Result<f64, SaddleError> {
     let mut scale = 0.0_f64;
     for value in values {
@@ -317,44 +359,6 @@ fn coordinate_scale(values: impl IntoIterator<Item = f64>) -> Result<f64, Saddle
         ));
     }
     Ok(scale * f64::EPSILON.sqrt())
-}
-
-/// Central Hessian-vector product. A zero vector is `H 0 = 0` exactly.
-/// Any other vector is displaced by `step` along its direction.
-fn central_product<S: PointSurface>(
-    surface: &S,
-    position: ArrayView1<f64>,
-    vector: ArrayView1<f64>,
-    step: f64,
-) -> Result<Array1<f64>, SaddleError> {
-    let norm = l2(vector);
-    if norm <= 0.0 || norm.is_nan() {
-        return Ok(Array1::zeros(position.len()));
-    }
-    if !(step.is_finite() && step > 0.0) {
-        return Err(SaddleError::Invalid(
-            "the Hessian difference length must be finite and positive".into(),
-        ));
-    }
-    let eta = step / norm;
-    let mut plus = position.to_owned();
-    let mut minus = position.to_owned();
-    plus.scaled_add(eta, &vector);
-    minus.scaled_add(-eta, &vector);
-    let (_, gradient_plus) = surface.eval(plus.view())?;
-    let (_, gradient_minus) = surface.eval(minus.view())?;
-    if gradient_plus.len() != position.len() || gradient_minus.len() != position.len() {
-        return Err(SaddleError::Shape(
-            "a Hessian difference changed the gradient length".into(),
-        ));
-    }
-    let mut product = gradient_plus;
-    product -= &gradient_minus;
-    product /= 2.0 * eta;
-    if product.iter().any(|component| !component.is_finite()) {
-        return Err(SaddleError::NonFinite("Hessian-vector product"));
-    }
-    Ok(product)
 }
 
 fn gauge_modes(beads: &Array2<f64>, masses: &Masses) -> Result<Vec<Array1<f64>>, SaddleError> {
@@ -443,175 +447,34 @@ fn project(vector: &mut Array1<f64>, directions: &[Array1<f64>]) {
     }
 }
 
-/// Lanczos log-absolute-determinant on the complement of `gauges`.
+/// `Σ ln|λ|` of `apply` on the complement of the orthonormal `gauges`.
 ///
-/// A Krylov chain stops when its next off-diagonal is lost in the
-/// roundoff of projecting the matvec (an invariant subspace, including
-/// a repeated eigenvalue). The search then starts again from the first
-/// coordinate axis still outside that subspace, and the determinants
-/// multiply. Each chain is diagonalized as a tridiagonal.
-fn projected_log_abs_det<F>(
+/// The spectrum is that of `Π A Π + G Gᵀ`, `Π = I − G Gᵀ`: the operator
+/// on the complement, plus a unit eigenvalue on each gauge mode, which
+/// adds nothing to the sum.
+fn deflated_log_abs_det(
     length: usize,
     gauges: &[Array1<f64>],
-    mut apply: F,
-) -> Result<f64, SaddleError>
-where
-    F: FnMut(ArrayView1<f64>) -> Result<Array1<f64>, SaddleError>,
-{
-    let dim = length.checked_sub(gauges.len()).ok_or_else(|| {
-        SaddleError::Invalid("more gauge modes than ring-polymer coordinates".into())
-    })?;
-    if dim < 1 {
+    apply: impl Fn(ArrayView1<f64>) -> Array1<f64>,
+) -> Result<f64, SaddleError> {
+    if gauges.len() >= length {
         return Err(SaddleError::Invalid(
             "the fluctuation space is empty".into(),
         ));
     }
-    let mut locked = Vec::with_capacity(dim);
-    let mut log_det = 0.0;
-    while locked.len() < dim {
-        let start = complement_direction(length, gauges, &locked)?;
-        let chain = lanczos_chain(
-            length,
-            gauges,
-            &locked,
-            start,
-            dim - locked.len(),
-            &mut apply,
-        )?;
-        log_det += tridiagonal_log_abs_det(&chain.alpha, &chain.beta)?;
-        locked.extend(chain.vectors);
-    }
-    if !log_det.is_finite() {
-        return Err(SaddleError::NonFinite("fluctuation determinant"));
-    }
-    Ok(log_det)
-}
-
-fn complement_direction(
-    length: usize,
-    gauges: &[Array1<f64>],
-    locked: &[Array1<f64>],
-) -> Result<Array1<f64>, SaddleError> {
-    let span = gauges.len() + locked.len();
-    let resolved = match span {
-        0 => f64::EPSILON,
-        _ => f64::EPSILON * (span as f64) * (span as f64),
-    };
-    for axis in 0..length {
-        let mut probe = Array1::zeros(length);
-        probe[axis] = 1.0;
-        project(&mut probe, gauges);
-        project(&mut probe, locked);
-        project(&mut probe, gauges);
-        project(&mut probe, locked);
-        let norm = l2(probe.view());
-        if norm > resolved {
-            probe /= norm;
-            return Ok(probe);
-        }
-    }
-    Err(SaddleError::Invalid(
-        "the fluctuation space closed before every mode was found".into(),
-    ))
-}
-
-struct Chain {
-    alpha: Vec<f64>,
-    beta: Vec<f64>,
-    vectors: Vec<Array1<f64>>,
-}
-
-fn lanczos_chain<F>(
-    length: usize,
-    gauges: &[Array1<f64>],
-    locked: &[Array1<f64>],
-    mut vector: Array1<f64>,
-    room: usize,
-    apply: &mut F,
-) -> Result<Chain, SaddleError>
-where
-    F: FnMut(ArrayView1<f64>) -> Result<Array1<f64>, SaddleError>,
-{
-    let mut previous = Array1::zeros(length);
-    let mut beta_prev = 0.0;
-    let mut chain = Chain {
-        alpha: Vec::new(),
-        beta: Vec::new(),
-        vectors: Vec::new(),
-    };
-    while chain.vectors.len() < room {
-        project(&mut vector, gauges);
-        project(&mut vector, locked);
-        project(&mut vector, &chain.vectors);
-        let norm = l2(vector.view());
-        if norm <= 0.0 || norm.is_nan() {
-            return Err(SaddleError::Invalid(
-                "a Lanczos vector collapsed onto the modes already removed".into(),
-            ));
-        }
-        vector /= norm;
-        chain.vectors.push(vector.clone());
-        let mut image = apply(vector.view())?;
-        if image.len() != length {
-            return Err(SaddleError::Shape(
-                "the fluctuation operator changed the vector length".into(),
-            ));
-        }
-        project(&mut image, gauges);
-        project(&mut image, locked);
-        let applied = l2(image.view());
-        let diagonal = vector.dot(&image);
-        image.scaled_add(-diagonal, &vector);
-        if !chain.alpha.is_empty() {
-            image.scaled_add(-beta_prev, &previous);
-        }
-        for _pass in 0..2 {
-            project(&mut image, gauges);
-            project(&mut image, locked);
-            project(&mut image, &chain.vectors);
-        }
-        if !diagonal.is_finite() || image.iter().any(|component| !component.is_finite()) {
-            return Err(SaddleError::NonFinite("Lanczos projection"));
-        }
-        chain.alpha.push(diagonal);
-        if chain.vectors.len() == room {
-            break;
-        }
-        let off = l2(image.view());
-        let removals = (gauges.len() + locked.len() + chain.vectors.len()) as f64;
-        let roundoff = applied * f64::EPSILON * removals * removals;
-        if off <= roundoff || off.is_nan() {
-            break;
-        }
-        chain.beta.push(off);
-        previous = vector;
-        vector = image / off;
-        beta_prev = off;
-    }
-    if chain.alpha.is_empty() {
-        return Err(SaddleError::Invalid(
-            "Lanczos produced no fluctuation direction".into(),
-        ));
-    }
-    Ok(chain)
-}
-
-fn tridiagonal_log_abs_det(alpha: &[f64], beta: &[f64]) -> Result<f64, SaddleError> {
-    if alpha.is_empty() || beta.len() + 1 != alpha.len() {
-        return Err(SaddleError::Invalid(
-            "a fluctuation determinant needs one off-diagonal between diagonals".into(),
-        ));
-    }
-    let n = alpha.len();
-    let mut tri = Array2::zeros((n, n));
-    for i in 0..n {
-        tri[(i, i)] = alpha[i];
-        if i + 1 < n {
-            tri[(i, i + 1)] = beta[i];
-            tri[(i + 1, i)] = beta[i];
-        }
-    }
-    let (values, _) = exact_eigh(tri.view())?;
+    let values = lanczos_spectrum(
+        |vector: ArrayView1<f64>| {
+            let mut kept = vector.to_owned();
+            project(&mut kept, gauges);
+            let mut out = apply(kept.view());
+            project(&mut out, gauges);
+            for gauge in gauges {
+                out.scaled_add(gauge.dot(&vector), gauge);
+            }
+            out
+        },
+        length,
+    )?;
     let mut sum = 0.0;
     for value in values.iter() {
         if *value == 0.0 || !value.is_finite() {
@@ -620,6 +483,9 @@ fn tridiagonal_log_abs_det(alpha: &[f64], beta: &[f64]) -> Result<f64, SaddleErr
             ));
         }
         sum += value.abs().ln();
+    }
+    if !sum.is_finite() {
+        return Err(SaddleError::NonFinite("fluctuation determinant"));
     }
     Ok(sum)
 }
@@ -803,12 +669,12 @@ mod tests {
                 let next = if bead + 1 == beads { 0 } else { bead + 1 };
                 out[bead] = kappa * (2.0 * vector[bead] - vector[previous] - vector[next]);
             }
-            Ok(out)
+            out
         };
         let mut constant = Array1::zeros(beads * dof);
         constant.fill(1.0);
         constant /= l2(constant.view());
-        let log_det = projected_log_abs_det(beads, &[constant], apply).unwrap();
+        let log_det = deflated_log_abs_det(beads, &[constant], apply).unwrap();
         let expected = (beads - 1) as f64 * kappa.ln() + 2.0 * (beads as f64).ln();
         // Relative to the expected log-determinant.
         let scale = expected.abs();
@@ -818,19 +684,16 @@ mod tests {
         );
     }
 
-    /// Distinct diagonal entries have a Krylov chain of length one each.
-    /// The product of the restarted chains is the product of the entries.
+    /// A diagonal operator with distinct entries, larger than the dense
+    /// Krylov cutoff of the shared Lanczos. The log-determinant is the
+    /// sum of the logs of the entries.
     #[test]
-    fn restarted_lanczos_multiplies_distinct_eigenvalues() {
-        let n = 6;
+    fn deflated_lanczos_multiplies_distinct_eigenvalues() {
+        let n = 128;
         let apply = |vector: ArrayView1<f64>| {
-            let mut out = Array1::zeros(n);
-            for index in 0..n {
-                out[index] = (index + 1) as f64 * vector[index];
-            }
-            Ok(out)
+            Array1::from_iter((0..n).map(|index| (index + 1) as f64 * vector[index]))
         };
-        let log_det = projected_log_abs_det(n, &[], apply).unwrap();
+        let log_det = deflated_log_abs_det(n, &[], apply).unwrap();
         let expected: f64 = (1..=n).map(|k| (k as f64).ln()).sum();
         // Relative to the expected log-determinant.
         let scale = expected.abs();
