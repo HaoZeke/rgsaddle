@@ -27,7 +27,7 @@ The table below lists the main types.
 | =IndexKSession=                | Index-k minimum-mode step. =k = 1= is =MinModeSession=. =indexk_step= is one shot. =reflect_force= and =translated_force= are the subspace maps |
 | =SolidDimer=                   | That search on atoms plus Jacobian-scaled cell strain. =CellMask::frozen= is the fixed-cell dimer. =stress= and =elastic_dipole= are =σ= and =V σ=. =SolidDimerConfig=, =IndexCheck=, =StressCheck=, =SolidDimerReport= and =IndexReport= are non-exhaustive |
 | =StrainResponse=               | One hop. =barrier(ε)= is the lowest symmetry image of =ΔE0 - (P_saddle - P_minimum):ε=, or =NeedsSearch= past the validity bound. =ElasticDipole::from_stress= is =-V (σ_defect - σ_bulk)=. =refine= caches an index-1 solid dimer. =to_json= is the event record |
-| =defect_pair_rates=            | One relaxed geometry and a hop catalogue. Solid dimer, index check, connectivity, fixed CI-NEB, PAFI =ΔF=, Bennett–Chandler =κ=. =k = κ ν exp(-ΔF/kT)=. =RateCatalogue= is =rgsaddle.defect_pair_rates= |
+| =defect_pair_rates=            | One relaxed geometry and a hop catalogue. Solid dimer, index check, connectivity, fixed CI-NEB, PAFI =ΔF=, forward/backward Bennett–Chandler =κ=. =k = κ ν exp(-ΔF/kT)=. =RateCatalogue= is =rgsaddle.defect_pair_rates= |
 | =PairNetwork=                  | States are orbits of (relative vector, orientation) under a caller's integer point group; hop classes are orbits of the unordered configuration pair and saddle director. =sites= takes a per-edge rate closure and returns =VolumeSite= rows and outer hops. =cubic_group= is O_h |
 | =matched_capture_radius=       | Closes a site chain at its cutoff with capture =R/d= for an outer hop to =d=, =R= matched to the mean =P r= of the outermost sites, in closed form |
 | =sensitivity_cover=            | Ranks classes by =abs(d result / d ln k)= and covers the fewest leading ones after which =spread * sum abs(sensitivity)= over the rest is below a tolerance |
@@ -35,6 +35,7 @@ The table below lists the main types.
 | =FreeEnergyProfile::reverse_barrier= | =F(dividing) - F(last)= with its trapezoid error: the reverse barrier of a path that ends in the product minimum |
 | =balanced_barriers=            | The forward and reverse barriers of one path against a known =F(last) - F(first)=: their inverse-variance mean, the reverse barrier that gap below it, the =drift= the integral adds, and half of it in the error. =FreeEnergyProfile::balanced= takes them from a profile |
 | =anchored_barriers=            | The same inputs kept on the forward barrier: the reverse barrier the gap below it, the error of the forward barrier, and the =drift= the barrier from the last plane adds. =FreeEnergyProfile::anchored= takes them from a profile |
+| =pafi_transmission=            | Selects the maximum-free-energy plane of a sampled PAFI profile and passes its retained constrained-equilibrium configurations to unconstrained forward/backward shooting. Returns =TransmissionCoefficient= with =κ=, its block error and shot counts |
 | =Hyperplane=                   | OH-TST plane: a point and a unit normal toward the product in mass-weighted coordinates. =from_min_mode= seeds it from a converged dimer or Lanczos session; =packed= and =from_packed= are its =[p; ν]= layout, the one of =PlaneSample::directional=; =from_cartesian= and =to_cartesian= convert |
 | =MassWeighted=                 | =q = M^{1/2} x= over a Cartesian =PointSurface=; =FixedCell= holds the cell of a crystal fixed per temperature. =flux_mass= is =1 / Σ nᵢ²/mᵢ=, not the 2001 Eq. 24 |
 | =sample_plane=                 | Plane-restricted Langevin sampling at =kT= by projected BAOAB or GHMC (=PlaneIntegrator=), reproducible from a seed. =PlaneSample= holds the Euclidean gradient blocks, the centroid torque and the virial, each with a block standard error; =HarmonicReference= adds Stein control variates |
@@ -103,7 +104,7 @@ A failed callback leaves it unchanged.
 Its =rotation_angle_tol= field stops a dimer rotation once the optimal angle falls under this tolerance in radians.
 The Rust default is five degrees, 0 turns the stop off, and a C config stores the value it is given.
 Both fields are read only from a config whose version minor is 5 or newer.
-=RGSADDLE_ABI_MINOR= is 40.
+=RGSADDLE_ABI_MINOR= is 42.
 From minor 24, =rgsaddle_sella_saddle_set_symmetrized_ritz= sets =SellaSaddleConfig::symmetrized_ritz= from 0 or 1.
 It returns =RGSADDLE_INVALID_PARAMETER= for any other value.
 =rgsaddle_sella_saddle_set_small_system_atom_ceiling= (minor 25) sets =SellaSaddleConfig::small_system_atom_ceiling= from 0 or 1.
@@ -115,6 +116,11 @@ Its window always reaches both neighbours of the climbing image, and the min-mod
 The value -1 infers the window from =rotation_tol= as a new session does, 0 turns it off and 1 turns it on.
 It returns =RGSADDLE_INVALID_PARAMETER= for any other value.
 From minor 41 a Lanczos session reads it too.
+From minor 42, =rgsaddle_pafi_transmission= selects the maximum of a C
+caller's PAFI free-energy array and shoots retained configurations from
+that plane; =rgsaddle_pafi_transmission_report_t= carries =κ=, its block
+error, the selected plane, assigned and unassigned shots, recrossings and
+surface evaluations.
 =rgsaddle_minmode_set_rotation_stop_length= (minor 38) calls =MinModeSession::set_rotation_stop_length=; 0 turns the stop off and a negative or non-finite length returns =RGSADDLE_INVALID_PARAMETER=.
 =rgsaddle_reparametrize= (minor 38) places a band at equal arc length with an =rgsaddle_reparametrization_t=, and band flag bit 4, =RGSADDLE_BAND_SPLINE_REPARAM=, puts the trust-region band on the not-a-knot spline.
 The request flags are =RGSADDLE_REQ_ONE_IMAGE= (bit 0) and =RGSADDLE_REQ_CLIMBING_IMAGE= (bit 1).
