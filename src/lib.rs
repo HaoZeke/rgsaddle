@@ -40,7 +40,14 @@
 //! Each entry point opens with a runnable example on a small analytic
 //! surface: [`BandSession`], [`AutoNeb`], [`OcinebSession`],
 //! [`MinModeSession`], [`Index1Session`], [`SolidDimer`], [`SolidNeb`],
-//! [`Stencil`], and the [`ohtst`] module. With the `capi` feature the C
+#![cfg_attr(
+    feature = "ohtst",
+    doc = "[`Stencil`], and the optional [`ohtst`] module (crate feature `ohtst`). With the `capi` feature the C"
+)]
+#![cfg_attr(
+    not(feature = "ohtst"),
+    doc = "[`Stencil`], and the optional `ohtst` module (crate feature `ohtst`). With the `capi` feature the C"
+)]
 //! band, min-mode and stencil handles have the same examples in `capi`.
 //! The guides and tutorials are at
 //! <https://omnipotentrpc.github.io/rgsaddle/>.

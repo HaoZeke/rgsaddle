@@ -102,6 +102,8 @@ sphinx-build -b html -n docs/source docs/build
 
 The API documentation builds with every rustdoc warning denied on each feature set CI tests, and once with private items.
 A public doc that links a private item, a broken or redundant intra-doc link, a bare URL or unclosed HTML fails the CI test job.
+The crate overview links the optional =ohtst= module only when that feature is enabled.
+A default-feature build names the module and the =ohtst= feature in code font, because the module is not compiled.
 Each entry point opens with an example on a small analytic surface, which ~cargo test~ runs.
 
 #+begin_src sh
