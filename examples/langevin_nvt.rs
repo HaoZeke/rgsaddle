@@ -1528,6 +1528,9 @@ fn first_method_report(csv: &std::path::Path) -> String {
     text
 }
 
+/// Table 1 D_i of Mwungeli, Liu, and Demkowicz and its error, Å²/ps: 4951
+/// D* from their Ref. [12], the per-atom tracer diffusivity times the atoms
+/// of its cell (`validation/direct_md_dynamics.md`).
 fn table_diffusivity(temperature: f64) -> Option<(f64, f64)> {
     // Å²/ps from Table 1 of Mwungeli, Liu, and Demkowicz, quoted there from Ref. [12].
     match temperature as i32 {
@@ -1957,7 +1960,9 @@ fn track_interstitial(
 
 const DIFFUSION_HEADER: &str = "temperature_K,lattice_A,seed,dt_fs,gamma_per_ps,window_ps,samples,rejected,site_changes,committed_jumps,jump_sq_A2,msd_end_A2,D_msd_A2_per_ps,D_end_A2_per_ps,D_jump_A2_per_ps";
 
-/// Free-interstitial tracer diffusivity from independent replicas.
+/// Free-interstitial defect diffusivity from independent replicas: the MSD
+/// of the doubly occupied site, which `MD_SIA_TRACER` sets against the
+/// tracer sum N D*.
 ///
 /// `MD_PS_BY_T=300:250,500:150` sets the production window per temperature;
 /// otherwise every temperature uses `MD_PS`. `MD_SEED_START` offsets the
