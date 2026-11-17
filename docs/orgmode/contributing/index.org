@@ -123,6 +123,42 @@ python -m pip install towncrier
 towncrier build --draft --version <version>
 towncrier build --version <version>
 #+end_src
+
+* Release to PyPI
+A ~v*~ tag publishes the crate to crates.io through ~publish.yml~ and the Python package to PyPI through ~pypi.yml~.
+~pypi.yml~ uses PyPI trusted publishing, so the repository holds no PyPI token.
+Before the first upload, the PyPI account that will own the project adds a pending publisher at https://pypi.org/manage/account/publishing/ with these values:
+
+- PyPI Project Name: ~rgsaddle~
+- Owner: ~OmniPotentRPC~
+- Repository name: ~rgsaddle~
+- Workflow name: ~pypi.yml~
+- Environment name: ~pypi~
+
+The first upload creates the project and turns the pending publisher into its trusted publisher.
+Only the ~publish~ job runs in the ~pypi~ environment and holds ~id-token: write~, so required reviewers added to that environment in the repository settings hold every upload until one approves it.
+
+To release a version:
+
+1. Set it in ~Cargo.toml~, ~pyproject.toml~ and ~meson.build~; ~tests/package_version.rs~ holds them equal.
+2. Collect the fragments with ~towncrier build --version <version>~ and commit.
+3. Push the tag ~v<version>~ on that commit.
+
+The ~versions~ job stops the run unless the tag is ~v~ followed by the version in both ~Cargo.toml~ and ~pyproject.toml~.
+The ~wheels~ job runs cibuildwheel with the ~[tool.cibuildwheel]~ table of ~pyproject.toml~ on Linux ~x86_64~ and ~aarch64~, macOS ~arm64~ and ~x86_64~, and Windows ~x86_64~, and tests every wheel.
+The ~smoke~ job installs each platform's wheels into a fresh virtual environment under CPython 3.10, 3.14 and 3.14t, and the sdist under 3.12, and imports the package.
+~publish~ uploads after every other job has passed.
+
+A pushed tag runs the workflows of the tagged commit, so a tag cut before ~pypi.yml~ existed, such as ~v0.5.0~, does not start it.
+Once ~pypi.yml~ is on the default branch, a manual run with the ~tag~ input builds and publishes such a tag:
+
+#+begin_src sh
+gh workflow run pypi.yml --ref main -f tag=v0.5.0
+#+end_src
+
+A deployment branch rule on the ~pypi~ environment must admit ~main~ for that run.
+A manual run without the input builds and smoke-tests the selected branch and uploads nothing.
+
 * Contact
 Report bugs, ask questions and propose changes on the issue tracker at https://github.com/OmniPotentRPC/rgsaddle/issues.
 The maintainer is Rohit Goswami (rgoswami@ieee.org), the author listed in ~Cargo.toml~ and ~pyproject.toml~.
