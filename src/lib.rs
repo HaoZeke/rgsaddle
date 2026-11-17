@@ -60,6 +60,8 @@ pub mod defect_pair;
 pub mod error;
 pub mod idpp;
 pub mod indexk;
+#[cfg(feature = "lammps")]
+pub mod lammps;
 pub mod minmode;
 pub mod nichols;
 pub mod occupancy;
@@ -123,6 +125,8 @@ pub use indexk::{
     BlockEigenKind, HessianProduct, IndexKConfig, IndexKReport, IndexKSession, WithHessian,
     indexk_step, reflect_force, translated_force,
 };
+#[cfg(feature = "lammps")]
+pub use lammps::{LammpsHyperplaneSampler, LammpsSamplerConfig, LammpsSystem};
 pub use minmode::{
     FiniteDifference, MinModeConfig, MinModeKind, MinModeReport, MinModeSession, MinModeStatus,
     ModeEstimate, PointSurface, RaisedStep, halve_raised_energy, rotation_force_error,
