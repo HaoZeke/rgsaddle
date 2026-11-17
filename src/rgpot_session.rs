@@ -5,7 +5,7 @@
 //! engine type to rgsaddle.
 
 use ndarray::Array1;
-use rgpot_core::md_session::{MdSession, MdSessionState};
+use rgpot_core::md_session::MdSession;
 
 use crate::SaddleError;
 use crate::ohtst::session::flux_velocity;
@@ -157,7 +157,7 @@ impl<S: MdSession> HyperplaneSampler for RgpotHyperplaneSampler<S> {
             let projected_velocity =
                 &velocities - &(plane.normal().to_owned() * plane.normal().dot(&velocities));
             let mut observation = HyperplaneObservation::default()
-                .with_constraint_force(-plane.normal().dot(&state.forces))
+                .with_constraint_force(-plane.normal().dot(&forces))
                 .with_projected_force(projected_force)
                 .with_projected_velocity(projected_velocity)
                 .with_observable("rgpot.reflections", reflections as f64);
@@ -208,7 +208,7 @@ impl<S: MdSession> HyperplaneDynamics for RgpotHyperplaneDynamics<S> {
             ));
         }
         let (velocity, reverse_velocity) =
-            flux_velocity(plane.normal(), config.thermal, config.seed)?;
+            flux_velocity(&plane.normal().to_owned(), config.thermal, config.seed)?;
         let mut reactive = 0;
         let mut recrossed = 0;
         for start in starts.iter().take(config.shots) {
@@ -241,7 +241,6 @@ impl<S: MdSession> HyperplaneDynamics for RgpotHyperplaneDynamics<S> {
                     })?,
                 )
                 .map_err(SaddleError::Solver)?;
-            let reverse_velocity = -&velocity;
             self.session
                 .set_velocities(
                     reverse_velocity.as_slice().ok_or_else(|| {
@@ -327,7 +326,7 @@ mod tests {
                     .zip(plane_point.iter())
                     .map(|((position, normal), point)| (position - point) * normal)
                     .sum::<f64>();
-                for ((position, normal), point) in self
+                for ((position, normal), _point) in self
                     .state
                     .positions
                     .iter_mut()
@@ -381,6 +380,7 @@ mod tests {
         let state = MdSessionState {
             positions: vec![0.0, 0.9],
             velocities: vec![3.0, 2.0],
+            forces: vec![0.0, 0.0],
             ..MdSessionState::default()
         };
         let mut wall_probe = MockSession {
