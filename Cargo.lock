@@ -226,6 +226,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
+name = "capnp"
+version = "0.20.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "053b81915c2ce1629b8fb964f578b18cb39b23ef9d5b24120d0dfc959569a1d9"
+dependencies = [
+ "embedded-io",
+]
+
+[[package]]
+name = "capnpc"
+version = "0.20.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1aa3d5f01e69ed11656d2c7c47bf34327ea9bfb5c85c7de787fcd7b6c5e45b61"
+dependencies = [
+ "capnp",
+]
+
+[[package]]
 name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -591,6 +609,12 @@ name = "either"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
+
+[[package]]
+name = "embedded-io"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 
 [[package]]
 name = "enum-as-inner"
@@ -1867,14 +1891,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "rgpot-core"
+version = "3.7.0"
+source = "git+https://github.com/OmniPotentRPC/rgpot?rev=97ebba0b#97ebba0b062128b7dc4637501c4b70ed4944ae9d"
+dependencies = [
+ "capnp",
+ "capnpc",
+ "dlpk",
+ "eindir-core",
+ "libloading",
+]
+
+[[package]]
 name = "rgsaddle"
 version = "0.5.0"
 dependencies = [
  "approx",
+ "capnp",
  "criterion",
  "dlpk",
  "eindir-core",
  "faer",
+ "libloading",
  "linkcell",
  "minimage",
  "ndarray",
@@ -1883,6 +1921,7 @@ dependencies = [
  "readcon-core",
  "readcon-db",
  "rgmin",
+ "rgpot-core",
  "rug",
  "sha2",
  "thiserror 2.0.21",
