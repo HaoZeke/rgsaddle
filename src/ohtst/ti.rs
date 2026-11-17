@@ -56,6 +56,17 @@ pub fn harmonic_energy_at<S: PointSurface>(
     }
     let displacement = position.to_owned() - &reference.point;
     let (energy, gradient) = surface.eval(reference.point.view())?;
+    *evaluations += 1;
+    if gradient.len() != reference.point.len() {
+        return Err(SaddleError::Shape(
+            "the harmonic reference gradient differs in length from the position".into(),
+        ));
+    }
+    if !energy.is_finite() || !gradient.iter().all(|value| value.is_finite()) {
+        return Err(SaddleError::NonFinite(
+            "energy or gradient at the harmonic reference",
+        ));
+    }
     let image = hessian_action(
         surface,
         reference.point.view(),
@@ -63,7 +74,11 @@ pub fn harmonic_energy_at<S: PointSurface>(
         reference.hvp_step,
         evaluations,
     )?;
-  Ok(energy + gradient.dot(&displacement) + 0.5 * displacement.dot(&image))
+    let value = energy + gradient.dot(&displacement) + 0.5 * displacement.dot(&image);
+    if !value.is_finite() {
+        return Err(SaddleError::NonFinite("harmonic reference energy"));
+    }
+    Ok(value)
 }
 
 impl<S: PointSurface> PointSurface for HarmonicExpansion<'_, S> {
@@ -76,6 +91,11 @@ impl<S: PointSurface> PointSurface for HarmonicExpansion<'_, S> {
         }
         let displacement = q.to_owned() - &self.reference.point;
         let (energy, gradient) = self.surface.eval(self.reference.point.view())?;
+        if gradient.len() != q.len() {
+            return Err(SaddleError::Shape(
+                "the harmonic expansion gradient differs in length from the position".into(),
+            ));
+        }
         let mut evaluations = 0;
         let image = hessian_action(
             self.surface,
@@ -86,6 +106,9 @@ impl<S: PointSurface> PointSurface for HarmonicExpansion<'_, S> {
         )?;
         let expanded = energy + gradient.dot(&displacement) + 0.5 * displacement.dot(&image);
         let expanded_gradient = &gradient + &image;
+        if !expanded.is_finite() || !expanded_gradient.iter().all(|value| value.is_finite()) {
+            return Err(SaddleError::NonFinite("harmonic expansion"));
+        }
         Ok((expanded, expanded_gradient))
     }
 
@@ -181,14 +204,13 @@ impl<'a, S> ThermodynamicDerivative<'a, S> {
 impl<S: PointSurface> HyperplaneObservable for ThermodynamicDerivative<'_, S> {
     fn observe(&self, position: ArrayView1<f64>) -> Result<f64, SaddleError> {
         let mut evaluations = 0;
-        let harmonic = harmonic_energy_at(
-            self.full,
-            &self.reference,
-            position,
-            &mut evaluations,
-        )?;
+        let harmonic = harmonic_energy_at(self.full, &self.reference, position, &mut evaluations)?;
         let (full, _) = self.full.eval(position)?;
-        Ok(full - harmonic)
+        let value = full - harmonic;
+        if !value.is_finite() {
+            return Err(SaddleError::NonFinite("thermodynamic derivative"));
+        }
+        Ok(value)
     }
 }
 
@@ -215,50 +237,52 @@ impl<'a, E, S> ThermodynamicSampler<'a, E, S> {
     }
 }
 
-impl<'a, E: HyperplaneSampler, S: PointSurface> HyperplaneSampler for ThermodynamicSampler<'a, E, S> {
+impl<'a, E: HyperplaneSampler, S: PointSurface> HyperplaneSampler
+    for ThermodynamicSampler<'a, E, S>
+{
     fn sample_hyperplane(
         &mut self,
         plane: &Hyperplane,
         budget: &HyperplaneSampleBudget,
     ) -> Result<HyperplaneEnsemble, SaddleError> {
-        let want_derivative = budget
-            .observables
-            .iter()
-            .any(|name| name == THERMODYNAMIC_DERIVATIVE);
+        let requested = budget.lambda.is_some()
+            || budget
+                .observables
+                .iter()
+                .any(|name| name == THERMODYNAMIC_DERIVATIVE);
         let mut inner_budget = budget.clone();
-        if budget.lambda.is_some() && !want_derivative {
+        if requested
+            && !inner_budget
+                .observables
+                .iter()
+                .any(|name| name == THERMODYNAMIC_DERIVATIVE)
+        {
             inner_budget
                 .observables
                 .push(THERMODYNAMIC_DERIVATIVE.to_string());
         }
-        let need_positions = want_derivative
-            || inner_budget
-                .observables
-                .iter()
-                .any(|name| name == THERMODYNAMIC_DERIVATIVE);
-        if need_positions {
+        if requested {
             inner_budget.positions = true;
         }
         let mut ensemble = self.inner.sample_hyperplane(plane, &inner_budget)?;
+        if !requested {
+            return Ok(ensemble);
+        }
         for observation in &mut ensemble.observations {
-            if observation
+            if !observation
                 .observables
                 .contains_key(THERMODYNAMIC_DERIVATIVE)
             {
-                continue;
+                let position = observation.position.as_ref().ok_or_else(|| {
+                    SaddleError::Invalid(
+                        "thermodynamic derivative needs positions in sampling records".into(),
+                    )
+                })?;
+                let value = self.derivative.observe(position.view())?;
+                observation
+                    .observables
+                    .insert(THERMODYNAMIC_DERIVATIVE.into(), value);
             }
-            let position = observation.position.as_ref().ok_or_else(|| {
-                SaddleError::Invalid(
-                    "thermodynamic derivative needs positions in sampling records".into(),
-                )
-            })?;
-            let value = self.derivative.observe(position.view())?;
-            if !value.is_finite() {
-                return Err(SaddleError::NonFinite("thermodynamic derivative"));
-            }
-            observation
-                .observables
-                .insert(THERMODYNAMIC_DERIVATIVE.into(), value);
             if !budget.positions {
                 observation.position = None;
             }
@@ -719,6 +743,7 @@ mod tests {
 
     use super::*;
     use crate::ohtst::{ExactGaussianPlaneSampler, QuadraticModel};
+    use crate::projector::HyperplaneObservation;
 
     struct Harmonic;
 
@@ -728,6 +753,7 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy)]
     struct Quartic;
 
     impl PointSurface for Quartic {
@@ -747,6 +773,70 @@ mod tests {
         let harmonic =
             harmonic_energy_at(&Quartic, &reference, position.view(), &mut evaluations).unwrap();
         assert_eq!(observed, full - harmonic);
+    }
+
+    #[test]
+    fn thermodynamic_sampler_fills_the_observable_only_when_requested() {
+        struct Bare {
+            supply_value: Option<f64>,
+        }
+
+        impl HyperplaneSampler for Bare {
+            fn sample_hyperplane(
+                &mut self,
+                _plane: &Hyperplane,
+                budget: &HyperplaneSampleBudget,
+            ) -> Result<HyperplaneEnsemble, SaddleError> {
+                let mut observation = HyperplaneObservation::default();
+                if budget.positions {
+                    observation.position = Some(array![0.0, 0.3]);
+                }
+                if let Some(value) = self.supply_value {
+                    observation
+                        .observables
+                        .insert(THERMODYNAMIC_DERIVATIVE.into(), value);
+                }
+                Ok(HyperplaneEnsemble {
+                    observations: vec![observation],
+                    evaluations: 3,
+                    acceptance: 1.0,
+                })
+            }
+        }
+
+        let derivative =
+            ThermodynamicDerivative::new(&Quartic, HarmonicReference::new(array![0.0, 0.0]));
+        let plane = Hyperplane::new(array![0.0, 0.0], array![1.0, 0.0]).unwrap();
+        let idle = HyperplaneSampleBudget::default()
+            .with_positions(false)
+            .with_samples(1);
+        let mut untouched =
+            ThermodynamicSampler::new(Bare { supply_value: None }, derivative.clone());
+        let ensemble = untouched.sample_hyperplane(&plane, &idle).unwrap();
+        assert!(ensemble.observations[0].position.is_none());
+        assert!(ensemble.observations[0].observables.is_empty());
+        assert_eq!(ensemble.evaluations, 3);
+
+        let mut filled = ThermodynamicSampler::new(Bare { supply_value: None }, derivative.clone());
+        let requested = idle.clone().with_lambda(0.25);
+        let ensemble = filled.sample_hyperplane(&plane, &requested).unwrap();
+        assert!(ensemble.observations[0].position.is_none());
+        let value = ensemble.observations[0].observables[THERMODYNAMIC_DERIVATIVE];
+        let expected = derivative.observe(array![0.0, 0.3].view()).unwrap();
+        assert_eq!(value, expected);
+
+        let mut kept = ThermodynamicSampler::new(
+            Bare {
+                supply_value: Some(1.25),
+            },
+            derivative,
+        );
+        let ensemble = kept.sample_hyperplane(&plane, &requested).unwrap();
+        assert!(ensemble.observations[0].position.is_none());
+        assert_eq!(
+            ensemble.observations[0].observables[THERMODYNAMIC_DERIVATIVE],
+            1.25
+        );
     }
 
     #[test]
