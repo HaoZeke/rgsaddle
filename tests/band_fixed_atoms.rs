@@ -1,13 +1,17 @@
 //! Fixed atoms on a band (`BandConfig::with_fixed_atoms`): a Morse
 //! fcc(100) slab with its bottom layer frozen and an adatom hopping
-//! between hollow sites. The frozen layer never moves under any stepper,
-//! the min-mode refinement keeps the climbing image on the band's
-//! mirror, the exponential metric reaches the same saddle as the plain
-//! band, and an all-false mask is the band without a mask.
+//! between hollow sites. The frozen layer never moves under any stepper.
+//! The band and its start map onto themselves through the mirror plane
+//! of the adatom's row, so the climbing image stops on that mirror, at a
+//! stationary point with three negative curvatures; the saddle check
+//! reports index 3 there for every stepper, and its escape takes the
+//! image off the mirror to the first-order saddle. An all-false mask is
+//! the band without a mask.
 
 use rgsaddle::{
-    BandConfig, BandRtr, BandSession, BandStatus, BandSurface, ExpBandPrecon, RtrConfig,
-    SaddleError, band_forces,
+    BandConfig, BandRtr, BandSession, BandStatus, BandSurface, ExpBandPrecon, MinModeConfig,
+    MinModeKind, MinModeSession, MinModeStatus, PointSurface, RtrConfig, SaddleError, SaddleEscape,
+    SaddleIndex, SaddleIndexCheck, band_forces,
 };
 
 include!(concat!(
@@ -17,6 +21,13 @@ include!(concat!(
 
 const N_IMAGES: usize = 7;
 
+/// The stationary point on the mirror; its Hessian on the free
+/// coordinates has three negative eigenvalues.
+const MIRROR_POINT: f64 = -50.6503755;
+
+/// The first-order saddle off the mirror, curvature -0.913 along the hop.
+const SADDLE: f64 = -50.6761677;
+
 fn config() -> BandConfig {
     BandConfig::default()
         .with_cell(Some(slab_cell()))
@@ -25,6 +36,10 @@ fn config() -> BandConfig {
 
 fn exp() -> ExpBandPrecon {
     ExpBandPrecon::default()
+}
+
+fn escape() -> Option<SaddleIndexCheck> {
+    Some(SaddleIndexCheck::default().with_escape(Some(SaddleEscape::default())))
 }
 
 fn frozen_bits(band: ArrayView2<f64>) -> Vec<u64> {
@@ -79,9 +94,19 @@ fn mirror_error(x: ArrayView1<f64>) -> f64 {
         .fold(0.0, f64::max)
 }
 
-/// Climbing-image energy, the free-atom gradient there, the surface
-/// rows and the climbing image after a converged run.
-fn converge(config: BandConfig, rtr: bool, band: &Array2<f64>) -> (f64, f64, usize, Array1<f64>) {
+/// A converged run: the climbing image, its energy and free-atom
+/// gradient, the surface rows and the saddle certificate.
+struct Converged {
+    energy: f64,
+    residual: f64,
+    rows: usize,
+    image: Array1<f64>,
+    index: Option<SaddleIndex>,
+    escapes: usize,
+    check_rows: usize,
+}
+
+fn converge(config: BandConfig, rtr: bool, band: &Array2<f64>) -> Converged {
     let surface = SlabSurface::new();
     let mut session = BandSession::new(config, band.clone()).expect("session");
     if rtr {
@@ -105,7 +130,20 @@ fn converge(config: BandConfig, rtr: bool, band: &Array2<f64>) -> (f64, f64, usi
     let ci = session.climbing_image().expect("climbing image");
     let image = session.positions().row(ci).to_owned();
     let (energy, gradient) = slab_energy(image.view());
-    (energy, free_max(gradient.view()), surface.rows(), image)
+    assert_eq!(session.saddle_index(), report.saddle_index.as_ref());
+    Converged {
+        energy,
+        residual: free_max(gradient.view()),
+        rows: surface.rows(),
+        image,
+        index: report.saddle_index,
+        escapes: session.saddle_escapes(),
+        check_rows: session.saddle_evaluations(),
+    }
+}
+
+fn index_of(run: &Converged) -> usize {
+    run.index.as_ref().expect("certified").index
 }
 
 #[test]
@@ -119,9 +157,20 @@ fn frozen_atoms_are_bitwise_unchanged_by_every_stepper() {
         ("RTR", rgmin::Method::fire(rgmin::FireKind::V2), true),
     ];
     for (name, method, rtr) in methods {
-        let (energy, residual, rows, _) = converge(config().with_method(method), rtr, &band);
-        eprintln!("{name}: saddle energy {energy:.9}, free |g| {residual:.2e}, {rows} rows");
-        assert!(residual <= 1e-3, "{name} climbing image is not stationary");
+        let run = converge(config().with_method(method), rtr, &band);
+        eprintln!(
+            "{name}: energy {:.9}, free |g| {:.2e}, {} rows ({} for the index), index {}",
+            run.energy,
+            run.residual,
+            run.rows,
+            run.check_rows,
+            index_of(&run)
+        );
+        assert!(
+            run.residual <= 1e-3,
+            "{name} climbing image is not stationary"
+        );
+        assert_eq!(index_of(&run), 3, "{name} stops on the mirror point");
     }
 }
 
@@ -130,16 +179,23 @@ fn fire_min_mode_refinement_keeps_the_band_mirror() {
     // The band's own climbing image converges on the mirror through the
     // adatom's row. FIRE hands it to the refinement far from convergence
     // and climbs for tens of steps, so a climb model that breaks the
-    // mirror carries the image off it, to a lower stationary point.
+    // mirror carries the image off it, to a lower stationary point. The
+    // point on the mirror is not a first-order saddle: the two modes
+    // that break the mirror are negative there too.
     let band = slab_band(N_IMAGES);
-    let (plain, ..) = converge(config().with_min_mode(None), false, &band);
-    let (energy, residual, _, image) = converge(config(), false, &band);
-    let mirror = mirror_error(image.view());
+    let plain = converge(config().with_min_mode(None), false, &band);
+    let refined = converge(config(), false, &band);
+    let mirror = mirror_error(refined.image.view());
+    let curvatures = &refined.index.as_ref().expect("certified").curvatures;
     eprintln!(
-        "FIRE climbing image {energy:.10} with the refinement, {plain:.10} without; \
-         mirror error {mirror:.2e}"
+        "FIRE climbing image {:.10} with the refinement, {:.10} without; \
+         mirror error {mirror:.2e}; curvatures {curvatures:?}",
+        refined.energy, plain.energy
     );
-    assert!(residual <= 1e-3, "the climbing image is not stationary");
+    assert!(
+        refined.residual <= 1e-3,
+        "the climbing image is not stationary"
+    );
     assert!(
         mirror < 1e-5,
         "the climbing image left the mirror by {mirror}"
@@ -147,26 +203,33 @@ fn fire_min_mode_refinement_keeps_the_band_mirror() {
     // Each run stops within tol^2 / |lambda| of the same stationary
     // point, with tol 1e-3 and |lambda| at least 0.037 there.
     assert!(
-        (energy - plain).abs() < 1e-4,
-        "FIRE with the refinement {energy} against {plain} without"
+        (refined.energy - plain.energy).abs() < 1e-4,
+        "FIRE with the refinement {} against {} without",
+        refined.energy,
+        plain.energy
     );
+    assert_eq!(index_of(&plain), 3);
+    assert_eq!(index_of(&refined), 3);
+    assert!((curvatures[0] + 1.379).abs() < 1e-2, "{curvatures:?}");
+    assert!((curvatures[1] + 0.164).abs() < 1e-2, "{curvatures:?}");
+    assert!((curvatures[2] + 0.059).abs() < 1e-2, "{curvatures:?}");
 }
 
 #[test]
-fn exp_precon_with_a_frozen_layer_reaches_the_plain_saddle() {
+fn exp_precon_with_a_frozen_layer_reaches_the_same_mirror_point() {
     let band = slab_band(N_IMAGES);
     let tol = 1e-4;
     let plain = config().with_force_tol(tol);
-    let (fire, ..) = converge(plain.clone(), false, &band);
-    let (climb_only, ..) = converge(plain.clone().with_min_mode(None), false, &band);
-    let (lbfgs, ..) = converge(
+    let fire = converge(plain.clone(), false, &band);
+    let climb_only = converge(plain.clone().with_min_mode(None), false, &band);
+    let lbfgs = converge(
         plain
             .clone()
             .with_method(rgmin::Method::lbfgs_with_memory(20)),
         false,
         &band,
     );
-    let (ode, ode_residual, ..) = converge(
+    let ode = converge(
         plain
             .clone()
             .with_method(rgmin::Method::Ode12r)
@@ -174,26 +237,147 @@ fn exp_precon_with_a_frozen_layer_reaches_the_plain_saddle() {
         false,
         &band,
     );
-    let (fire_exp, fire_residual, ..) = converge(plain.with_exp_precon(Some(exp())), false, &band);
+    let fire_exp = converge(plain.with_exp_precon(Some(exp())), false, &band);
     eprintln!(
-        "saddle energies: FIRE {fire:.10}, FIRE without the refinement {climb_only:.10}, \
-         L-BFGS {lbfgs:.10}, ODE12r-Exp {ode:.10}, FIRE-Exp {fire_exp:.10}"
+        "mirror-point energies: FIRE {:.10}, FIRE without the refinement {:.10}, \
+         L-BFGS {:.10}, ODE12r-Exp {:.10}, FIRE-Exp {:.10}",
+        fire.energy, climb_only.energy, lbfgs.energy, ode.energy, fire_exp.energy
     );
-    assert!(ode_residual <= tol && fire_residual <= tol);
+    assert!(ode.residual <= tol && fire_exp.residual <= tol);
+    assert!(
+        (fire.energy - MIRROR_POINT).abs() < 1e-6,
+        "FIRE {}",
+        fire.energy
+    );
     // A free gradient of at most tol puts the climbing image within
-    // tol / |lambda| of the saddle and its energy within tol^2 / |lambda|
-    // of the saddle energy; the softest mode here is well above 1e-2.
-    for (name, energy) in [
-        ("FIRE without the refinement", climb_only),
-        ("ODE12r-Exp", ode),
-        ("FIRE-Exp", fire_exp),
-        ("L-BFGS", lbfgs),
+    // tol / |lambda| of the stationary point and its energy within
+    // tol^2 / |lambda| of that energy; the softest mode here is well
+    // above 1e-2.
+    for (name, run) in [
+        ("FIRE", &fire),
+        ("FIRE without the refinement", &climb_only),
+        ("ODE12r-Exp", &ode),
+        ("FIRE-Exp", &fire_exp),
+        ("L-BFGS", &lbfgs),
     ] {
         assert!(
-            (energy - fire).abs() < 1e-6,
-            "{name} saddle {energy} against FIRE {fire}"
+            (run.energy - fire.energy).abs() < 1e-6,
+            "{name} stops at {} against FIRE {}",
+            run.energy,
+            fire.energy
         );
+        assert_eq!(index_of(run), 3, "{name}");
     }
+}
+
+#[test]
+fn the_escape_leaves_the_mirror_for_the_first_order_saddle() {
+    let band = slab_band(N_IMAGES);
+    let tol = 1e-4;
+    for (name, config) in [
+        ("FIRE", config().with_force_tol(tol)),
+        (
+            "ODE12r-Exp",
+            config()
+                .with_force_tol(tol)
+                .with_method(rgmin::Method::Ode12r)
+                .with_exp_precon(Some(exp())),
+        ),
+    ] {
+        let run = converge(config.with_saddle_check(escape()), false, &band);
+        let index = run.index.as_ref().expect("certified");
+        let mirror = mirror_error(run.image.view());
+        eprintln!(
+            "{name} escape: energy {:.10}, free |g| {:.2e}, {} rows ({} for the index and \
+             the push); mirror error {mirror:.3}; curvatures {:?}",
+            run.energy, run.residual, run.rows, run.check_rows, index.curvatures
+        );
+        assert_eq!(index.index, 1, "{name}: {index:?}");
+        assert_eq!(run.escapes, 1, "{name}");
+        assert!(run.residual <= tol, "{name}");
+        assert!((run.energy - SADDLE).abs() < 1e-6, "{name}: {}", run.energy);
+        assert!(
+            (index.curvatures[0] + 0.913).abs() < 1e-2,
+            "{name}: {index:?}"
+        );
+        assert!(mirror > 0.5, "{name} stayed near the mirror: {mirror}");
+    }
+}
+
+/// The slab as a point surface for a min-mode search: the frozen layer's
+/// gradient is zeroed and its coordinates are excluded from the mode.
+struct FrozenPoint;
+
+impl PointSurface for FrozenPoint {
+    fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+        let (e, mut g) = slab_energy(x);
+        let fixed = slab_fixed();
+        for (k, v) in g.iter_mut().enumerate() {
+            if fixed[k / 3] {
+                *v = 0.0;
+            }
+        }
+        Ok((e, g))
+    }
+
+    fn excluded_modes(&self, x: ArrayView1<f64>) -> Result<Array2<f64>, SaddleError> {
+        let held: Vec<usize> = (0..x.len()).filter(|k| slab_fixed()[k / 3]).collect();
+        let mut rows = Array2::zeros((held.len(), x.len()));
+        for (r, &k) in held.iter().enumerate() {
+            rows[(r, k)] = 1.0;
+        }
+        Ok(rows)
+    }
+}
+
+#[test]
+fn a_min_mode_search_from_the_mirror_point_escapes_to_the_first_order_saddle() {
+    let band = slab_band(N_IMAGES);
+    let surface = SlabSurface::new();
+    let mut session =
+        BandSession::new(config().with_saddle_check(None), band.clone()).expect("session");
+    session.run(&surface, 3000).expect("run");
+    let ci = session.climbing_image().expect("climbing image");
+    let start = session.positions().row(ci).to_owned();
+    let tangent = &session.positions().row(ci + 1) - &session.positions().row(ci - 1);
+    let config = MinModeConfig::default()
+        .with_kind(MinModeKind::Lanczos)
+        .with_force_tol(1e-4)
+        .with_saddle_check(escape());
+    let mut search = MinModeSession::new(config, start.clone(), tangent).expect("session");
+    let mut indices = Vec::new();
+    let mut evaluations = 0;
+    let mut steps = 0;
+    loop {
+        let report = search.step(&FrozenPoint).expect("step");
+        evaluations += report.evaluations;
+        steps += 1;
+        if let Some(index) = report.saddle_index {
+            indices.push(index.index);
+        }
+        if report.status == MinModeStatus::Converged || steps == 5000 {
+            break;
+        }
+    }
+    let x = search.position();
+    let (energy, gradient) = slab_energy(x);
+    eprintln!(
+        "Lanczos escape: energy {energy:.10}, free |g| {:.2e}, {steps} steps, {evaluations} \
+         evaluations ({} for the index and the push), indices {indices:?}",
+        free_max(gradient.view()),
+        search.saddle_evaluations()
+    );
+    assert_eq!(indices, [3, 1]);
+    assert_eq!(search.saddle_escapes(), 1);
+    assert!((energy - SADDLE).abs() < 1e-6, "{energy}");
+    let fixed = slab_fixed();
+    assert!(
+        x.iter()
+            .zip(start.iter())
+            .enumerate()
+            .all(|(k, (a, b))| !fixed[k / 3] || a.to_bits() == b.to_bits()),
+        "a frozen atom moved"
+    );
 }
 
 fn steps(config: BandConfig, band: &Array2<f64>, n: usize) -> (Array2<f64>, Vec<u64>) {

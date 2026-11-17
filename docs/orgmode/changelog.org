@@ -157,7 +157,7 @@
   On the 37-atom Morse fcc(100) slab of ~tests/band_fixed_atoms.rs~, whose 7.65 Å cell is below twice the pair cutoff (5.29 Å at the endpoints, 5.10 Å at the middle image), FIRE hands its climbing image over at a band force near 2, and the climb carried it 0.561 Å off the band's mirror to the first-order saddle at -50.6761677.
   The climbing image alone stops on the mirror, at the stationary point at -50.6503755 with three negative Hessian eigenvalues.
   At ~force_tol~ 1e-3 FIRE with the refinement now converges there, at -50.6503750684 in 81 force rows (-50.6761640892 in 116 before; the climbing image alone takes 342 rows), and keeps the mirror to 2.2e-8 Å.
-  At 1e-4 ODE12r with the refinement no longer stops at a third stationary point (-50.6609053567 before, -50.6503755423 now), and ~exp_precon_with_a_frozen_layer_reaches_the_plain_saddle~ now takes FIRE with the refinement as its reference.
+  At 1e-4 ODE12r with the refinement no longer stops at a third stationary point (-50.6609053567 before, -50.6503755423 now), and ~exp_precon_with_a_frozen_layer_reaches_the_same_mirror_point~ now takes FIRE with the refinement as its reference.
   L-BFGS, quick-min, ODE12r, the trust-region band, FIRE with the exponential metric and ODE12r with it, all with the refinement, had stopped up to 3.1e-3 Å off the mirror at 1e-3; they now keep it, their energies move by at most 1.6e-6, and their force rows stay within one, except ODE12r with the metric at 43 rows in place of 40.
 - linkcell and rgmin are git dependencies pinned by full rev: linkcell at 49f94dd2d2ff1e0d854cebc8a664599abe569156 (tag v0.3.5) and rgmin at 731e48b67585519f5e2807ea02134cc0900e4212 (tag v0.6.0).
   Cargo keys a git source by its reference.
