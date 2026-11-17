@@ -184,6 +184,17 @@ public:
         check(rgsaddle_band_set_highs(handle_, enabled ? 1 : 0));
     }
 
+    // One byte per atom of the band, 1 fixed and 0 free, shared by every
+    // image; all zeros clears the mask. ABI minor 39.
+    void set_fixed_atoms(std::uint8_t const* mask) {
+        check(rgsaddle_band_set_fixed_atoms(handle_, mask, n_atoms_));
+    }
+
+    void set_fixed_atoms(std::vector<std::uint8_t> const& mask) {
+        check(rgsaddle_band_set_fixed_atoms(handle_, mask.data(),
+                                            static_cast<std::int64_t>(mask.size())));
+    }
+
     void set_positions(double const* positions) {
         check(rgsaddle_band_set_positions(handle_, positions));
     }

@@ -1,0 +1,2 @@
+The C++ ~rgsaddle::Band~ of ~include/rgsaddle/session.hpp~ gains ~set_fixed_atoms~ over ~rgsaddle_band_set_fixed_atoms~ (ABI minor 39), from a pointer to the band's ~n_atoms~ bytes or from a ~std::vector<std::uint8_t>~ whose size the library checks, and throws on a failing status.
+The C ABI is unchanged.

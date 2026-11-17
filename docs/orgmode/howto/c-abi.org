@@ -81,4 +81,5 @@ Fixed atoms never move, carry no force in the report, and leave the mean force i
 ~rgsaddle_band_set_exp_precon~ then builds its matrices on the free atoms, so the exponential metric runs with fixed atoms.
 ~rgsaddle_band_project_fixed~ is ~rgsaddle_band_project~ with the same mask, or ~NULL~ for none.
 A host that loads the library at run time checks ~rgsaddle_abi_version()~ for at least minor 39 before resolving either symbol.
+The C++ ~Band~ wrapper calls it as ~set_fixed_atoms~, from a pointer to the band's ~n_atoms~ bytes or from a ~std::vector<std::uint8_t>~ whose size is passed as ~n_atoms~, and throws on a failing status.
 Python's ~project_band~ takes the mask as ~fixed~, and ~rgsaddle.ase.NEB~ reads it from ~FixAtoms~.

@@ -1,8 +1,9 @@
-/* C++ wrap over the rgsaddle C ABI: create a band, step, read
- * positions, reset, free. Built and run by tests/c_abi.rs. */
+/* C++ wrap over the rgsaddle C ABI: create a band, fix an atom, step,
+ * read positions, reset, free. Built and run by tests/cxx_abi.rs. */
 #include "rgsaddle/session.hpp"
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -26,6 +27,31 @@ static rgsaddle_status_t surface(void* user, rgsaddle_surface_request_t* req) {
     return RGSADDLE_OK;
 }
 
+/* Atom 0 in the double well and atom 1 on a spring to (0.5, 0.5, 0.5),
+ * placed off it, so a free atom 1 moves. */
+static rgsaddle_status_t pair_surface(void* user, rgsaddle_surface_request_t* req) {
+    (void)user;
+    if (req->version.major != RGSADDLE_ABI_MAJOR || req->n_atoms != 2) {
+        return RGSADDLE_NULL_SESSION;
+    }
+    for (long i = 0; i < static_cast<long>(req->n_images); ++i) {
+        const double* p = req->positions + i * 6;
+        double* g = req->gradients + i * 6;
+        const double x = p[0], y = p[1], z = p[2];
+        double e = (x * x - 1.0) * (x * x - 1.0) + 2.0 * y * y + 2.0 * z * z;
+        g[0] = 4.0 * x * (x * x - 1.0);
+        g[1] = 4.0 * y;
+        g[2] = 4.0 * z;
+        for (int c = 0; c < 3; ++c) {
+            const double d = p[3 + c] - 0.5;
+            e += 0.5 * d * d;
+            g[3 + c] = d;
+        }
+        req->energies[i] = e;
+    }
+    return RGSADDLE_OK;
+}
+
 int main() {
     if (!rgsaddle::abi_compatible()) {
         std::fprintf(stderr, "abi incompatible\n");
@@ -43,6 +69,11 @@ int main() {
     }
     if (rgsaddle_minmode_set_rotation_stop_length(nullptr, 0.0) != RGSADDLE_NULL_SESSION) {
         std::fprintf(stderr, "null rotation stop control\n");
+        return 1;
+    }
+    const std::uint8_t free_mask[1] = {0};
+    if (rgsaddle_band_set_fixed_atoms(nullptr, free_mask, 1) != RGSADDLE_NULL_BAND) {
+        std::fprintf(stderr, "null fixed-atom mask control\n");
         return 1;
     }
 
@@ -97,6 +128,59 @@ int main() {
             break;
         }
     }
+
+    std::vector<double> pair(static_cast<std::size_t>(n_images * 6));
+    for (std::size_t i = 0; i < static_cast<std::size_t>(n_images); ++i) {
+        for (std::size_t c = 0; c < 3; ++c) {
+            pair[i * 6 + c] = pos[i * 3 + c];
+            pair[i * 6 + 3 + c] = 0.2;
+        }
+    }
+    auto held_cfg = rgsaddle::band_config();
+    held_cfg.method = RGSADDLE_METHOD_FIRE;
+    held_cfg.ci_trigger_factor = 0.5;
+    rgsaddle::Band held(held_cfg, n_images, 2, pair.data());
+    auto refused = [&held](std::vector<std::uint8_t> const& mask) {
+        try {
+            held.set_fixed_atoms(mask);
+        } catch (std::runtime_error const&) {
+            return true;
+        }
+        return false;
+    };
+    if (!refused({0}) || !refused({1, 1}) || !refused({0, 2})) {
+        std::fprintf(stderr, "a malformed fixed-atom mask was accepted\n");
+        return 1;
+    }
+    const std::vector<std::uint8_t> mask{0, 1};
+    held.set_fixed_atoms(mask.data());
+    rgsaddle::Report held_last;
+    for (int i = 0; i < 200; ++i) {
+        held_last = held.step(pair_surface, nullptr);
+        if (held_last.converged()) {
+            break;
+        }
+    }
+    if (!held_last.converged() || !(held_last.curvature < 0.0)) {
+        std::fprintf(stderr, "band with a fixed atom: converged %d, curvature %g\n",
+                     held_last.converged() ? 1 : 0, held_last.curvature);
+        return 1;
+    }
+    auto settled = held.positions();
+    for (std::size_t i = 0; i < static_cast<std::size_t>(n_images); ++i) {
+        if (std::memcmp(&settled[i * 6 + 3], &pair[i * 6 + 3], 3 * sizeof(double)) != 0) {
+            std::fprintf(stderr, "the fixed atom moved in image %zu\n", i);
+            return 1;
+        }
+    }
+    held.set_fixed_atoms(std::vector<std::uint8_t>{0, 0});
+    held.step(pair_surface, nullptr);
+    auto released = held.positions();
+    if (std::memcmp(&released[6 + 3], &pair[6 + 3], 3 * sizeof(double)) == 0) {
+        std::fprintf(stderr, "a cleared mask kept atom 1 fixed\n");
+        return 1;
+    }
+
     auto ic = rgsaddle::indexk_config();
     ic.force_tol = 1e-8;
     ic.max_move = 0.1;
