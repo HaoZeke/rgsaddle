@@ -1,3 +1,0 @@
-The ASE test modules skip when ASE is missing, as the ThreadSanitizer job's image is.
-~RGSADDLE_REQUIRE_ASE=1~ turns that skip into a failure, as it does for the AutoNEB parity test.
-The Python binding workflow's ~ase~ job sets it and runs ~tests/python~ with ASE 3.29.0, which the ~test~ extra and the wheel tests now pin.

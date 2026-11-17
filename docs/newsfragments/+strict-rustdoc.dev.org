@@ -1,5 +1,0 @@
-The CI test job builds the API documentation with every rustdoc warning denied, on the default, ~capi~, ~readcon~, ~readcon,readcon-db~ and ~capi,verify~ feature sets and once with private items, through ~ci/check_rustdoc.sh~.
-The public doc of ~rotation_force_error~ no longer links the private dimer rotation, and three links in private docs resolve.
-~AutoNeb~, ~OcinebSession~, ~Index1Session~, ~SolidDimer~, ~SolidNeb~, ~Stencil~, the ~ohtst~ module and the C band, min-mode and stencil handles open with runnable examples on small analytic surfaces.
-The index check of ~SolidDimer~ removes only the directions ~PointSurface::excluded_modes~ names; the docs no longer say it always removes the rigid translations.
-~Stencil::step~ is documented as one step of the preset, not as a step index.

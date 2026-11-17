@@ -5,6 +5,57 @@ All notable changes to rgsaddle since 0.3.2 are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-11-17
+
+### Breaking
+
+- Every public configuration struct outside the C ABI, except `DirectSolver`, is `#[non_exhaustive]`.
+  A struct literal of one, including one that ends in `..Default::default()`, or an exhaustive pattern of one no longer compiles outside this crate.
+  Each config has a `#[must_use]` `with_*` setter for every public field, so `BandConfig { force_tol: 1e-3, ..BandConfig::default() }` becomes `BandConfig::default().with_force_tol(1e-3)`.
+  The fields stay public, no existing default changes, and the `#[repr(C)]` structs of the C ABI keep their layout.
+- The crate requires rgmin 0.6.0, pinned by full git rev to its v0.6.0 tag.
+  A host that passes rgmin types, such as the `Method` of `BandConfig::with_method`, takes them from that release, whose `Method` and `LineSearch` struct variants are non-exhaustive and built through constructors such as `Method::fire(FireKind::V2)`.
+  FIRE 2.0 follows Guénolé et al. (2020), Algorithm 2, so the FIRE band, dimer, Lanczos and AutoNEB trajectories move, and a FIRE band step that backs up costs two evaluations of the interior images.
+
+### Added
+
+- `BandConfig::with_fixed_atoms` and `BandSession::set_fixed_atoms` hold a per-atom mask fixed in every image of a band.
+  Fixed atoms never move under FIRE, L-BFGS, quick-min, ODE12r or the trust-region band, and are left out of the tangents, the springs, the climbing image and the min-mode refinement.
+  C ABI minor 39 adds `rgsaddle_band_set_fixed_atoms` and `rgsaddle_band_project_fixed`, the C++ `Band` gains `set_fixed_atoms`, Python's `project_band` takes `fixed`, and `rgsaddle.ase.NEB` reads `FixAtoms`.
+- `MinModeSession::set_rotation_stop_length` adds the curvature-aware rotation stop of Kästner and Sherwood, off by default.
+  C ABI minor 38 adds `rgsaddle_minmode_set_rotation_stop_length`, and the C++ and Python bindings expose it.
+- `Reparametrization::NotAKnot` places band images at equal arc length on a not-a-knot cubic spline; the polyline placement stays the default.
+  `RtrConfig::reparametrization` selects it for the trust-region band and `Mesh::RemeshSpline` for a stencil chain, `rgsaddle::reparametrize` applies either placement to a band, and C ABI minor 38 adds `rgsaddle_reparametrize`.
+- `SolidDimer` is the minimum-mode search on atoms plus cell strain, and `SolidNeb` the climbing-image band on the same chart.
+  `IndexCheck` checks that a converged solid dimer is index 1, and `StressCheck` compares a surface's Cauchy stress with finite differences of its energy before the first free-cell step.
+- `StrainResponse` estimates the barrier of one hop under strain from the elastic dipoles of its minimum and saddle, and asks for a search (`NeedsSearch`) when the estimate leaves its bounds.
+  `ElasticDipole::from_stress`, `ElasticMultipole`, `Kelvin`, `DirectSolver` and `FmmSolver` give the dipoles and the elastic fields of defects.
+- `rgsaddle::ohtst` is optimal hyperplanar transition state theory: a hyperplane seeded from a converged dimer or Lanczos session, sampled by projected BAOAB or GHMC, optimized by rgmin's Riemannian trust region, and turned into a rate with its standard error.
+  `transmission_coefficient` and `plane_transmission` give the transmission coefficient, `reversible_work_along` the reversible work along a path of planes, and `anharmonic_correction` the first-order correction to harmonic transition state theory.
+- `relax_to_tolerance` relaxes a configuration in a fixed cell until the largest per-atom force is below `RelaxConfig::force_tol`; reaching the step cap is an error, never a geometry.
+  `site_occupancy` is the Wigner–Seitz defect analysis.
+- `defect_pair_rates` searches a caller-supplied hop catalogue with the solid-state dimer and rates each hop by PAFI with a Bennett–Chandler factor.
+  `PairNetwork` builds the symmetry-resolved kinetic network of a mobile defect next to a fixed one, and `matched_capture_radius` closes its chain against the infinite crystal.
+  The Mishin copper vacancy–interstitial volumes are in `benchmarks/defect_pair_*`, and the direct-MD runs they are compared with in `validation/direct_md_*`.
+- A top-level `meson.build` provides the C and C++ headers to meson projects as a wrap subproject or through `rgsaddle-headers.pc`.
+
+### Changed
+
+- The `msrv` CI job runs clippy and the tests on the `rust-version` toolchain, 1.88, and the `readcon` job covers both readcon feature sets.
+- The API documentation builds with every rustdoc warning denied, and `ci/check_dependency_pins.py` fails when a git dependency is not pinned by full rev at the exact version of that rev.
+- The `meson-consumer` CI job builds `ci/meson-consumer` against the headers, as a wrap-git subproject and from an installed `rgsaddle-headers.pc`, and steps a climbing band through the cdylib.
+- Pushes to `develop` run the CI and docs workflows.
+
+### Fixed
+
+- The min-mode refinement's climb model counts every periodic image of a pair within the cutoff, so a cell shorter than twice the cutoff keeps the lattice's symmetry.
+  A cell more than twice the cutoff high along every wrapped axis steps as before.
+- rgmin 0.6.0 judges an ODE12r step that no cap or bound shortened at its own length, and the recorded ODE12r trajectories moved.
+  ODE12r with the exponential metric takes 18.33 force evaluations per image on the 5-image Cu vacancy band, against 19.33 with rgmin 0.5.2.
+- linkcell and rgmin are git dependencies pinned by full rev with the exact version at that rev, so a dependent that pins either by the same rev locks one copy.
+- `ConImage::forces` is documented as forces, the `fx fy fz` columns, in place of the gradient its docs named.
+  Every field of `MolecularFrame`, `ConSpecies` and `ConImage` documents its length, atom order, unit and ownership.
+
 ## [0.4.0] - 2026-11-13
 
 ### Breaking
@@ -94,5 +145,6 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   A negative `maxmove` in that control means no step cap.
   The band and minimum-mode sessions over atoms keep the rgmin 0.5.0 behaviour.
 
+[0.5.0]: https://github.com/OmniPotentRPC/rgsaddle/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/OmniPotentRPC/rgsaddle/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/OmniPotentRPC/rgsaddle/releases/tag/v0.3.2

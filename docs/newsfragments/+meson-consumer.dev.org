@@ -1,3 +1,0 @@
-The ~meson-consumer~ CI job builds ~ci/meson-consumer~ against the headers, as a wrap-git subproject and from an installed ~rgsaddle-headers.pc~, on meson 0.63.0 and the current release.
-The consumer loads the cdylib at run time and steps a climbing band on a double well to the saddle.
-~ci/meson_consumer.sh~ runs either mode locally.

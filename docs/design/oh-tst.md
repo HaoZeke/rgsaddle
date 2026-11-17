@@ -139,7 +139,7 @@ It lacked a Euclidean factor in the runtime product, per-factor metric
 weights and a stochastic-approximation driver. Section 4.6 lists what to add,
 written as requirements on rgmin's product manifold, which was derived
 separately. rgsaddle now pins rgmin at
-919bf2a3bdaab847973d8c77e2e294b6d7885344, the 0.6.0 line with that product
+731e48b67585519f5e2807ea02134cc0900e4212, tag v0.6.0, which carries that product
 manifold: `ProductManifold` of weighted `ProductFactor`s, Euclidean factors,
 `ManifoldKind::sphere_within` and `sphere_excluding`, a `TangentMetric` per
 factor, and `rtr::minimize_rtr_gauged`.

@@ -1,4 +1,0 @@
-~rgsaddle::ohtst~ is optimal hyperplanar transition state theory (Jóhannesson and Jónsson 2001; Bligaard and Jónsson 2005) on any ~PointSurface~ in mass-weighted coordinates, with ~MassWeighted~ and ~FixedCell~ for a Cartesian crystal held at a fixed cell per temperature.
-A ~Hyperplane~ is seeded from a converged dimer or Lanczos session, sampled by projected BAOAB or GHMC with optional Stein control variates, and climbed by ~PlaneOptimizer~, a Riemannian trust region on rgmin's product manifold.
-~basin_density~ normalizes the reactant over parallel planes, ~reversible_work~ integrates the work with a BAR check on rigid maps, ~ohtst_rate~ returns the rate with its error, ~plane_transmission~ the Bennett–Chandler transmission coefficient, and ~anharmonic_correction~ the first-order correction to harmonic TST from Hessian actions.
-Every estimate carries a block standard error, and ~examples/ohtst_skewed_well.rs~ runs the whole chain.

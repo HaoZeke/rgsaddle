@@ -1,3 +1,0 @@
-The minimum-mode how-to, the reference table and the sparse Hessian how-to build again under ~sphinx-build -n -W~.
-An absolute value written with literal bars split an Org table row into extra cells, and in a paragraph the exported ~|g'''|~ was an undefined reStructuredText substitution.
-The finite-difference errors, the ~seed_curvature~ scale and the optimal step are now inline maths, such as \(H_0 = 1/\lvert\lambda\rvert\) and \((3 \varepsilon_g / \lvert g''' \rvert)^{1/3}\).

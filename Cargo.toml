@@ -1,6 +1,6 @@
 [package]
 name = "rgsaddle"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -46,7 +46,8 @@ readcon-db = { version = "0.2", optional = true }
 # keys a git source by its reference, so a dependent that pins the same
 # commit by rev would otherwise lock a second copy. The exact version is
 # the crate at that rev, and crates.io packaged that release from it.
-rgmin = { version = "=0.6.0", git = "https://github.com/OmniPotentRPC/rgmin", rev = "919bf2a3bdaab847973d8c77e2e294b6d7885344" }
+# The rev is tag v0.6.0.
+rgmin = { version = "=0.6.0", git = "https://github.com/OmniPotentRPC/rgmin", rev = "731e48b67585519f5e2807ea02134cc0900e4212" }
 eindir-core = { version = "0.6.0", features = ["capi"] }
 ndarray = "0.17"
 faer = { version = "0.24.4", optional = true, default-features = false, features = ["std", "linalg"] }

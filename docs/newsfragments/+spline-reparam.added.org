@@ -1,4 +1,0 @@
-~Reparametrization::NotAKnot~ places band images at equal arc length on the not-a-knot cubic spline of the simplified string method (E, Ren, and Vanden-Eijnden, J. Chem. Phys. 126, 164103 (2007)), beside the polyline placement, which stays the default.
-~RtrConfig::reparametrization~ selects it for the trust-region band, ~Mesh::RemeshSpline~ for a stencil chain, and ~rgsaddle::reparametrize~ applies either scheme to a band.
-Two or three images fall back to the chord or the parabola, coincident images share a knot, and a periodic band is unwrapped by minimum images first.
-C ABI minor 38 adds ~rgsaddle_reparametrize~, ~rgsaddle_reparametrization_t~ and band flag ~RGSADDLE_BAND_SPLINE_REPARAM~; Python adds ~rgsaddle.reparametrize~.

@@ -1,6 +1,0 @@
-linkcell and rgmin are git dependencies pinned by full rev: linkcell at 49f94dd2d2ff1e0d854cebc8a664599abe569156 (tag v0.3.5) and rgmin at 6b5b222a2c9b4a70a92de9a46c3a41e3c2b00d16 (tag v0.5.2).
-Cargo keys a git source by its reference.
-A dependent that pinned linkcell by that rev locked a second linkcell beside the tag.
-A dependent that pinned rgmin by rev locked a second rgmin beside the crates.io release, and its ~rgmin::TrustRegion~ was not ~rgsaddle::trust::TrustRegion~.
-The requirements are the exact versions at those revs, ~=0.3.5~ and ~=0.5.2~.
-crates.io packaged both releases from the same commits, so a published rgsaddle builds the same sources.

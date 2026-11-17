@@ -82,11 +82,11 @@ fn main() -> Result<(), SaddleError> {
 }
 ```
 
-With rgsaddle 0.4.0 from crates.io, `cargo run` prints:
+With rgsaddle 0.5.0 from crates.io, `cargo run` prints:
 
 ```text
-Converged after 8 steps, max force 2.8e-4
-climbing image 4 at (0.0000, 0.0001, 0.0000)
+Converged after 8 steps, max force 2.6e-4
+climbing image 4 at (0.0000, -0.0001, 0.0000)
 ```
 
 ## Learn more
@@ -159,11 +159,11 @@ fn main() -> Result<(), SaddleError> {
 }
 ```
 
-With rgsaddle 0.4.0 from crates.io, `cargo run` prints:
+With rgsaddle 0.5.0 from crates.io, `cargo run` prints:
 
 ```text
-Converged after 8 steps, max force 2.8e-4
-climbing image 4 at (0.0000, 0.0001, 0.0000)
+Converged after 8 steps, max force 2.6e-4
+climbing image 4 at (0.0000, -0.0001, 0.0000)
 ```
 
 ## Learn more
