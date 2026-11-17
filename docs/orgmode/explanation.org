@@ -12,6 +12,14 @@ The band and the minimum-mode search assemble a force and ask =rgmin::Solver= fo
 * eOn branch structure
 Tangents, springs, projections, and the climbing-image force follow eOn's =NEBTangent= / =NEBSpringForce= / =NEBForceProjection= with the same branches. The climbing image arms when the convergence force falls under =factor * baseline= or under an absolute trigger.
 
+* Simplified string
+E, Ren, and Vanden-Eijnden, J. Chem. Phys. 126, 164103 (2007), doi:10.1063/1.2720838 @@rst::cite:`eSimplifiedImprovedString2007`@@, replace the tangent projection and spring forces of NEB with an operator split on the equal-arc-length curve manifold.
+Each step evolves the interior images under the full potential force \(-\nabla V(x_i)\) and then reparametrizes the chain to equal arc length \(\mathcal{R}(x_{\mathrm{evol}})\), on the not-a-knot cubic spline (~Reparametrization::NotAKnot~) or on the polyline (~Reparametrization::Linear~).
+Because moving along the tangent of a curve and reparametrizing back to equal arc length cancels the tangential component to first order in the step size, the fixed point \(\mathcal{R}(\mathcal{E}(x^*)) = x^*\) satisfies \(\nabla V(x)^\perp = 0\) up to the spline or polyline interpolation order without estimating tangents on non-climbing images.
+At any finite image count the discrete fixed point has \(x^{n+1} - x^n = 0\) while a chord projection of \(\nabla V\) carries the interpolation residual, so convergence and ~BandEvaluation.projected~ measure the effective string velocity \((x^{n+1} - x^n) \lVert F_{\mathrm{evol}} \rVert_2 / \lVert \Delta x_{\mathrm{evol}} \rVert_2\) in force units.
+When ~BandConfig::climbing~ arms an interior image, that image reflects \(-\nabla V\) along the path tangent and stays anchored during \(\mathcal{R}\), so each side is spaced at equal arc length on its own while the climbing image converges to \(\nabla V = 0\).
+For ~L-BFGS~ the secant pairs \((s_n, y_n)\) are taken across the reparametrized displacement \(s_n = x^{n+1} - x^n\), which keeps the initial inverse-Hessian scale \(s_n \cdot y_n / \lVert y_n \rVert^2\) on the transverse valley curvature; for ~FIRE~, ~QuickMin~, ~Bb~, and ~ODE12r~ that same transverse Rayleigh step bounds the solver time step so ~BandConfig::default()~ settles without knowing the surface stiffness in advance.
+
 * Periodicity
 Positions stay unwrapped Cartesian. =Cell= wraps per-atom differences for the band mechanics through fractional coordinates (rows are lattice vectors; a zero row is a non-periodic axis). Neighbor lists, when a surface wants them, are vesin's job.
 
