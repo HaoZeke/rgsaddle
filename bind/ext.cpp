@@ -861,7 +861,7 @@ SessionReport run_surface(nb::callable &fn, Call &&call) {
     ctx.rethrow_if_set();
   }
   if (status != RGSADDLE_OK) {
-    status_error(status);
+    status_error(static_cast<rgsaddle_status_t>(status));
   }
   return report_from(report);
 }
@@ -1265,6 +1265,75 @@ PySella make_sella(Vector x, Vector masses, std::int64_t order, double delta, do
   return out;
 }
 
+struct HyperplaneTiContext {
+  nb::callable sampler;
+  std::string error;
+};
+
+std::vector<double> copy_pointer(const double *values, std::size_t count) {
+  return std::vector<double>(values, values + count);
+}
+
+extern "C" std::int32_t hyperplane_sample_python(
+    void *raw, const double *point, const double *normal, std::size_t dimension,
+    const rgsaddle_hyperplane_budget_t *budget, rgsaddle_hyperplane_emit_fn emit, void *emit_context) {
+  auto *context = static_cast<HyperplaneTiContext *>(raw);
+  try {
+    nb::object output =
+        context->sampler(copy_vector(copy_pointer(point, dimension)), copy_vector(copy_pointer(normal, dimension)),
+                         budget->lambda, budget->thermal, budget->seed, budget->thermalize, budget->stride,
+                         budget->samples);
+    const auto values =
+        take_f64_1d(output, "hyperplane sampler result", static_cast<std::size_t>(budget->samples));
+    for (std::int64_t index = 0; index < budget->samples; ++index) {
+      rgsaddle_hyperplane_observation_t observation{};
+      observation.constraint_force = 0.0;
+      observation.thermodynamic_derivative = values(static_cast<std::size_t>(index));
+      const auto status = emit(emit_context, &observation);
+      if (status != RGSADDLE_OK) {
+        return status;
+      }
+    }
+    return RGSADDLE_OK;
+  } catch (const std::exception &error) {
+    context->error = error.what();
+    return RGSADDLE_SURFACE_FAILED;
+  }
+}
+
+nb::tuple hyperplane_ti_python(nb::callable sampler, Vector point, Vector normal, double thermal,
+                               std::int64_t nodes, std::int64_t thermalize, std::int64_t stride,
+                               std::int64_t samples, std::int64_t blocks, std::uint64_t seed) {
+  if (point.shape(0) <= 0 || normal.shape(0) != point.shape(0)) {
+    throw nb::value_error("point and normal need one nonzero length");
+  }
+  HyperplaneTiContext context{std::move(sampler), ""};
+  auto *handle = rgsaddle_hyperplane_sampler_create(&context, hyperplane_sample_python);
+  if (handle == nullptr) {
+    throw std::runtime_error("could not create the hyperplane sampler");
+  }
+  rgsaddle_hyperplane_ti_config_t config{};
+  config.version = RGSADDLE_VERSION_INIT;
+  config.thermal = thermal;
+  config.nodes = nodes;
+  config.thermalize = thermalize;
+  config.stride = stride;
+  config.samples = samples;
+  config.blocks = blocks;
+  config.seed = seed;
+  rgsaddle_hyperplane_ti_result_t result{};
+  const auto status = rgsaddle_hyperplane_thermodynamic_integration(
+      handle, point.data(), normal.data(), static_cast<std::size_t>(point.shape(0)), &config, &result);
+  rgsaddle_hyperplane_sampler_free(handle);
+  if (status != RGSADDLE_OK) {
+    if (!context.error.empty()) {
+      throw std::runtime_error(context.error);
+    }
+    status_error(static_cast<rgsaddle_status_t>(status));
+  }
+  return nb::make_tuple(result.free_energy, result.error, result.evaluations);
+}
+
 } // namespace
 
 NB_MODULE(_core, m) {
@@ -1301,6 +1370,20 @@ NB_MODULE(_core, m) {
   m.def("last_error", []() { return std::string(rgsaddle_py_last_error()); },
         "Thread-local slot reserved for the C ABI last-error text. Returns an empty "
         "string unless an error text was set. raise_status reads it and then clears it.");
+
+  m.def(
+      "hyperplane_thermodynamic_integration", &hyperplane_ti_python, nb::arg("sampler"),
+      nb::arg("point").noconvert(), nb::arg("normal").noconvert(), nb::arg("thermal") = 0.02585,
+      nb::arg("nodes") = 8, nb::arg("thermalize") = 500, nb::arg("stride") = 5,
+      nb::arg("samples") = 2000, nb::arg("blocks") = 20, nb::arg("seed") = 1,
+      nb::sig("def hyperplane_thermodynamic_integration(sampler: collections.abc.Callable[..., "
+              "numpy.typing.NDArray[numpy.float64]], point: numpy.typing.NDArray[numpy.float64], "
+              "normal: numpy.typing.NDArray[numpy.float64], thermal: float = 0.02585, nodes: int = 8, "
+              "thermalize: int = 500, stride: int = 5, samples: int = 2000, blocks: int = 20, "
+              "seed: int = 1) -> tuple[float, float, int]"),
+      "Fixed-plane lambda TI through a Python sampler. The callback receives point, normal, lambda, "
+      "thermal, seed, thermalize, stride and samples, and returns float64 C-contiguous "
+      "V_full - V_harmonic observations.");
   nb::class_<rgsaddle::StencilReport>(m, "StencilReport")
       .def_prop_ro("status", [](const rgsaddle::StencilReport &report) { return report.status; },
                    "0 while running, 1 when converged.")

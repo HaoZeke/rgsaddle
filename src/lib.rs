@@ -55,6 +55,8 @@ pub mod band;
 pub mod bennett;
 #[cfg(feature = "capi")]
 pub mod capi;
+#[cfg(all(feature = "capi", feature = "ohtst"))]
+pub mod capi_hyperplane;
 pub mod connect;
 pub mod defect_pair;
 pub mod error;
