@@ -51,6 +51,7 @@ use crate::cell_log::{M3, m3_det, m3_from_row9, m3_inv, m3_mul, m3_to_row9};
 use crate::error::SaddleError;
 use crate::minmode::{MinModeConfig, MinModeReport, MinModeSession, MinModeStatus, PointSurface};
 use crate::solid_state::{orient_lower_triangular, solid_state_jacobian, zero_upper};
+use crate::vec3::{cross3, dot3, norm3};
 
 fn not_above(value: f64, floor: f64) -> bool {
     value.partial_cmp(&floor) != Some(std::cmp::Ordering::Greater)
@@ -1822,22 +1823,6 @@ fn add(a: M3, b: M3) -> M3 {
         }
     }
     c
-}
-
-fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn norm3(a: [f64; 3]) -> f64 {
-    dot3(a, a).sqrt()
-}
-
-fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 /// Same frame as [`orient_lower_triangular`], applied to the atomic mode too.

@@ -47,6 +47,7 @@ use crate::elastic::{LocalField, Quadrupole, quadrupole_energy};
 use crate::error::SaddleError;
 use crate::minmode::{MinModeConfig, MinModeStatus, PointSurface};
 use crate::solid_dimer::{IndexCheck, SolidDimer, SolidDimerConfig};
+use crate::vec3::dot_slice;
 
 /// Absolute barrier error, in eV, used as the default validity tolerance.
 pub const LINEAR_FOLD_EV: f64 = 0.01;
@@ -1356,10 +1357,6 @@ fn translation_overlap2(mode: ArrayView1<f64>, basis: &Array2<f64>) -> f64 {
         projected += c * c;
     }
     projected / norm2
-}
-
-fn dot_slice(left: &[f64], right: &[f64]) -> f64 {
-    left.iter().zip(right).map(|(a, b)| a * b).sum()
 }
 
 fn dot_view(left: ArrayView1<f64>, right: ArrayView1<f64>) -> f64 {
