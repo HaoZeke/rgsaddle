@@ -17,7 +17,7 @@ pub fn wrap_difference(cell: &Cell, diff: &mut Array1<f64>) {
             origin[1] + diff[3 * a + 1],
             origin[2] + diff[3 * a + 2],
         ];
-        let wrapped = cell.displacement_euclidean(origin, q);
+        let wrapped = cell.displacement(origin, q);
         diff[3 * a] = wrapped[0];
         diff[3 * a + 1] = wrapped[1];
         diff[3 * a + 2] = wrapped[2];
