@@ -7,11 +7,11 @@
 
 use std::collections::BTreeMap;
 
-use ndarray::{Array1, ArrayView1, ArrayView2, Zip, s};
+use ndarray::{Array1, Array2, ArrayView1, ArrayView2, Zip, s};
 use rgmin::Manifold;
 
 use crate::SaddleError;
-use crate::minmode::{MinModeSession, ModeEstimate};
+use crate::minmode::{FiniteDifference, MinModeConfig, MinModeSession, ModeEstimate, PointSurface};
 
 /// Projection of an ambient vector onto an allowed tangent space.
 pub trait TangentProjector {
@@ -247,6 +247,20 @@ pub struct Hyperplane {
     projection_normal: Option<Array1<f64>>,
 }
 
+/// Lowest eigenpairs of a Hessian restricted to a hyperplane.
+#[non_exhaustive]
+#[derive(Clone, Debug)]
+pub struct HyperplaneModes {
+    /// Orthonormal eigenvectors, one column per mode.
+    pub modes: Array2<f64>,
+    /// Ritz values in ascending order.
+    pub curvatures: Array1<f64>,
+    /// Restricted Hessian actions performed by block Lanczos.
+    pub actions: usize,
+    /// Surface energy/gradient evaluations used by finite differences.
+    pub evaluations: usize,
+}
+
 impl Hyperplane {
     /// The plane through `point` normal to `normal`; the stored normal is
     /// normalized.
@@ -394,12 +408,179 @@ impl Hyperplane {
         )
     }
 
+    /// Apply the Hessian on the tangent space of this plane and any
+    /// additional constrained rows.
+    ///
+    /// The input is projected before the action and the result afterwards.
+    /// [`PointSurface::hessian_vector`] is used when available; otherwise
+    /// the finite difference selected by `config` is used.
+    pub fn hessian_vector<S: PointSurface>(
+        &self,
+        surface: &S,
+        vector: ArrayView1<f64>,
+        constrained_rows: ArrayView2<f64>,
+        config: &MinModeConfig,
+    ) -> Result<Array1<f64>, SaddleError> {
+        if vector.len() != self.dim() {
+            return Err(SaddleError::Shape(
+                "Hessian vector differs in length from the plane".into(),
+            ));
+        }
+        let basis = self.constraint_basis(constrained_rows)?;
+        let vector = project_rows(vector, &basis);
+        let (_, gradient) = surface.eval(self.point())?;
+        let mut evaluations = 1;
+        restricted_hessian_action(
+            surface,
+            self.point(),
+            gradient.view(),
+            vector.view(),
+            &basis,
+            config,
+            &mut evaluations,
+        )
+    }
+
+    /// Lowest `count` Hessian eigenpairs restricted to this plane and any
+    /// additional constrained rows.
+    ///
+    /// This calls the same reorthogonalized block-Lanczos workspace used by
+    /// [`crate::IndexKSession`]. The returned vectors are ambient columns
+    /// orthogonal to the plane normal and every independent constrained row.
+    pub fn lowest_modes<S: PointSurface>(
+        &self,
+        surface: &S,
+        constrained_rows: ArrayView2<f64>,
+        count: usize,
+        config: &MinModeConfig,
+    ) -> Result<HyperplaneModes, SaddleError> {
+        let basis = self.constraint_basis(constrained_rows)?;
+        let free = self.dim().saturating_sub(basis.len());
+        if count == 0 || count > free {
+            return Err(SaddleError::Invalid(format!(
+                "requested {count} hyperplane modes from {free} free directions"
+            )));
+        }
+        let mut candidates = Array2::zeros((self.dim(), self.dim()));
+        for column in 0..self.dim() {
+            let mut axis = Array1::zeros(self.dim());
+            axis[column] = 1.0;
+            candidates
+                .column_mut(column)
+                .assign(&project_rows(axis.view(), &basis));
+        }
+        let seed = crate::linalg::modified_gram_schmidt(candidates.view(), None, 1.0e-12);
+        if seed.ncols() < count {
+            return Err(SaddleError::Invalid(
+                "hyperplane constraints leave too few independent directions".into(),
+            ));
+        }
+        let seed = seed.slice(s![.., ..count]).to_owned();
+        let (_, gradient) = surface.eval(self.point())?;
+        let mut evaluations = 1;
+        let mut apply = |vector: ArrayView1<f64>| {
+            restricted_hessian_action(
+                surface,
+                self.point(),
+                gradient.view(),
+                vector,
+                &basis,
+                config,
+                &mut evaluations,
+            )
+        };
+        let (modes, curvatures, actions) = crate::indexk::block_lanczos(
+            seed.view(),
+            config.rotation_tol,
+            free.div_ceil(count).max(2),
+            &mut apply,
+        )?;
+        Ok(HyperplaneModes {
+            modes,
+            curvatures,
+            actions,
+            evaluations,
+        })
+    }
+
+    fn constraint_basis(
+        &self,
+        constrained_rows: ArrayView2<f64>,
+    ) -> Result<Vec<Array1<f64>>, SaddleError> {
+        if constrained_rows.nrows() > 0 && constrained_rows.ncols() != self.dim() {
+            return Err(SaddleError::Shape(
+                "constrained rows differ in length from the plane".into(),
+            ));
+        }
+        if constrained_rows.iter().any(|value| !value.is_finite()) {
+            return Err(SaddleError::NonFinite("hyperplane constrained rows"));
+        }
+        let mut rows = Array2::zeros((constrained_rows.nrows() + 1, self.dim()));
+        rows.row_mut(0).assign(&self.normal);
+        if constrained_rows.nrows() > 0 {
+            rows.slice_mut(s![1.., ..]).assign(&constrained_rows);
+        }
+        Ok(orthonormal_rows(rows.view(), self.dim()))
+    }
+
     fn projection(&self) -> (ArrayView1<'_, f64>, f64) {
         match &self.projection_normal {
             Some(raw) => (raw.view(), raw.dot(raw)),
             None => (self.normal.view(), 1.0),
         }
     }
+}
+
+fn project_rows(vector: ArrayView1<f64>, rows: &[Array1<f64>]) -> Array1<f64> {
+    let mut out = vector.to_owned();
+    for row in rows {
+        let coefficient = row.dot(&out);
+        out.scaled_add(-coefficient, row);
+    }
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
+fn restricted_hessian_action<S: PointSurface>(
+    surface: &S,
+    point: ArrayView1<f64>,
+    gradient: ArrayView1<f64>,
+    vector: ArrayView1<f64>,
+    constraints: &[Array1<f64>],
+    config: &MinModeConfig,
+    evaluations: &mut usize,
+) -> Result<Array1<f64>, SaddleError> {
+    let vector = project_rows(vector, constraints);
+    let action = match surface.hessian_vector(point, vector.view())? {
+        Some(action) => action,
+        None => {
+            let mut plus = point.to_owned();
+            plus.scaled_add(config.dr, &vector);
+            let (_, forward) = surface.eval(plus.view())?;
+            *evaluations += 1;
+            match config.difference {
+                FiniteDifference::Forward => (&forward - &gradient) / config.dr,
+                FiniteDifference::Central => {
+                    let mut minus = point.to_owned();
+                    minus.scaled_add(-config.dr, &vector);
+                    let (_, backward) = surface.eval(minus.view())?;
+                    *evaluations += 1;
+                    (forward - backward) / (2.0 * config.dr)
+                }
+            }
+        }
+    };
+    if action.len() != point.len() {
+        return Err(SaddleError::Shape(
+            "surface Hessian action differs in length from the plane".into(),
+        ));
+    }
+    if action.iter().any(|value| !value.is_finite()) {
+        return Err(SaddleError::NonFinite(
+            "restricted hyperplane Hessian action",
+        ));
+    }
+    Ok(project_rows(action.view(), constraints))
 }
 
 impl TangentProjector for Hyperplane {
@@ -515,6 +696,24 @@ mod tests {
     use super::*;
     use ndarray::array;
 
+    struct DiagonalHessian;
+
+    impl PointSurface for DiagonalHessian {
+        fn eval(&self, q: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+            let diagonal = array![1.0, 2.0, 4.0, 8.0];
+            let gradient = &diagonal * &q;
+            Ok((0.5 * q.dot(&gradient), gradient))
+        }
+
+        fn hessian_vector(
+            &self,
+            _q: ArrayView1<f64>,
+            vector: ArrayView1<f64>,
+        ) -> Result<Option<Array1<f64>>, SaddleError> {
+            Ok(Some(&array![1.0, 2.0, 4.0, 8.0] * &vector))
+        }
+    }
+
     #[test]
     fn projection_and_restore_satisfy_the_plane() {
         let point = array![0.4, -0.2, 0.7];
@@ -525,5 +724,34 @@ mod tests {
         let mut position = array![-0.3, 1.2, 0.1];
         plane.restore_in_place(&mut position);
         assert!((&position - &point).dot(&normal).abs() < 1e-14);
+    }
+
+    #[test]
+    fn restricted_lanczos_matches_the_projected_hessian() {
+        let plane =
+            Hyperplane::new(array![0.0, 0.0, 0.0, 0.0], array![0.0, 0.0, 0.0, 1.0]).unwrap();
+        let rows = array![[0.0, 0.0, 1.0, 0.0]];
+        let config = MinModeConfig::default().with_rotation_tol(1.0e-12);
+        let modes = plane
+            .lowest_modes(&DiagonalHessian, rows.view(), 2, &config)
+            .unwrap();
+        assert_eq!(modes.curvatures.len(), 2);
+        assert!((modes.curvatures[0] - 1.0).abs() < 1.0e-12);
+        assert!((modes.curvatures[1] - 2.0).abs() < 1.0e-12);
+        assert!(modes.modes.column(0)[0].abs() > 1.0 - 1.0e-12);
+        assert!(modes.modes.column(1)[1].abs() > 1.0 - 1.0e-12);
+        for column in modes.modes.columns() {
+            assert!(column.dot(&plane.normal()).abs() < 1.0e-12);
+            assert!(column.dot(&rows.row(0)).abs() < 1.0e-12);
+        }
+        let action = plane
+            .hessian_vector(
+                &DiagonalHessian,
+                array![3.0, -2.0, 7.0, 9.0].view(),
+                rows.view(),
+                &config,
+            )
+            .unwrap();
+        assert_eq!(action, array![3.0, -4.0, 0.0, 0.0]);
     }
 }
