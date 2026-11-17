@@ -68,7 +68,10 @@ pub struct HqtstRate {
     pub modes: usize,
     /// `ln(k Z_r)`.
     pub log_rate_over_reactant: f64,
-    /// `k Z_r`.
+    /// `k Z_r`, the exponential of the log. It carries `exp(−β_N U)` on
+    /// the surface's own energy zero, so on a total energy far from zero
+    /// it overflows to infinity or underflows to zero; the log is finite
+    /// whenever this is returned.
     pub rate_over_reactant: f64,
     /// Surface evaluations used to build the factor.
     pub evaluations: usize,
@@ -196,10 +199,6 @@ fn finish(
     let line_action = (2.0 * path.action + path.energy * period) / path.hbar;
     let modes = beads.len() - gauge_modes(beads, &path.masses)?.len();
     let log_rate = log_rate(beads, period, path.hbar, log_abs_det, modes, bead_action)?;
-    let rate = log_rate.exp();
-    if !rate.is_finite() {
-        return Err(SaddleError::NonFinite("instanton rate"));
-    }
     Ok(HqtstRate {
         temperature: path::temperature(0.5 * period, path.hbar, path.boltzmann)?,
         period,
@@ -208,7 +207,7 @@ fn finish(
         log_abs_det,
         modes,
         log_rate_over_reactant: log_rate,
-        rate_over_reactant: rate,
+        rate_over_reactant: log_rate.exp(),
         evaluations,
     })
 }
