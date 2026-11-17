@@ -1,6 +1,8 @@
 //! Eckart closed forms, a constant-Hessian head-to-head of the two rate
 //! evaluators, and energy continuation on Müller-Brown.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use ndarray::{Array1, Array2, ArrayView1};
 use rgsaddle::{
     Continuation, IrcConfig, IrcDirection, IrcKind, IrcSession, LinebConfig, LinebSession,
@@ -60,14 +62,16 @@ impl PointSurface for MullerBrown {
     }
 }
 
-/// Endpoint force `endpoint_scale * |V−E| / |∇V|`, stopped inside one
-/// Simpson panel of the converged Eckart chord.
+/// An endpoint `δ` short of its turning point shortens the half period
+/// by `√(2δ/|∇V|)` and feels the force `endpoint_scale * δ`. This
+/// tolerance keeps both ends inside the quadrature slack of the closed
+/// form test, `√(spacing / panels⁴ / |∇V|)`.
 fn eckart_force_tolerance() -> (f64, LinebConfig) {
     let turning = (1.0 / 0.25_f64).sqrt().acosh();
     let spacing = turning * 2.0 / 8.0;
-    let draft = LinebConfig::new(spacing, spacing).with_time_step(0.05);
+    let draft = LinebConfig::new(spacing, spacing);
     let panels = (2 * draft.quadrature_pairs) as f64;
-    let tol = draft.endpoint_scale * spacing / panels.powi(2);
+    let tol = draft.endpoint_scale * spacing / (8.0 * panels.powi(4));
     (tol, draft.with_opt_tol(tol).with_perp_tol(tol))
 }
 
@@ -88,6 +92,49 @@ fn eckart_path() -> rgsaddle::LinebPath {
     let report = session.run(&Eckart, 500).unwrap();
     assert_eq!(report.status, LinebStatus::Converged);
     session.path(&Eckart).unwrap()
+}
+
+/// Eckart that fails on its `fail_at`-th evaluation.
+struct FailingEckart {
+    calls: AtomicUsize,
+    fail_at: usize,
+}
+
+impl PointSurface for FailingEckart {
+    fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+        if self.calls.fetch_add(1, Ordering::Relaxed) + 1 == self.fail_at {
+            return Err(SaddleError::Surface("injected".into()));
+        }
+        Eckart.eval(x)
+    }
+}
+
+/// Only an image below `E + w` is retried. A surface error inside the
+/// objective ends the step at the failing call.
+#[test]
+fn a_surface_error_inside_a_step_is_returned() {
+    let turning = (1.0 / 0.25_f64).sqrt().acosh();
+    let images = Array2::from_shape_fn((9, 1), |(i, _)| {
+        let end = 0.5 * turning;
+        -end + 2.0 * end * i as f64 / 8.0
+    });
+    let (_, config) = eckart_force_tolerance();
+    let mut session = LinebSession::new(
+        config,
+        Masses::coordinates(Array1::ones(1).view()).unwrap(),
+        images,
+        0.25,
+    )
+    .unwrap();
+    // Nine calls fix the turning width; the failure lands in the first
+    // assembly of the objective.
+    let surface = FailingEckart {
+        calls: AtomicUsize::new(0),
+        fail_at: 12,
+    };
+    let err = session.step(&surface).unwrap_err();
+    assert!(matches!(err, SaddleError::Surface(_)), "{err}");
+    assert_eq!(surface.calls.load(Ordering::Relaxed), 12);
 }
 
 #[test]
@@ -274,9 +321,7 @@ fn muller_brown_continuation_lowers_the_energy_and_lengthens_the_period() {
         gradient_norm > 0.0,
         "the MEP bracket at the first tunneling energy has no force"
     );
-    let draft = LinebConfig::new(gradient_norm, gradient_norm)
-        .with_time_step(0.05)
-        .with_quadrature_pairs(2);
+    let draft = LinebConfig::new(gradient_norm, gradient_norm).with_quadrature_pairs(2);
     // Endpoint force `endpoint_scale * |V−E| / |∇V|`. One image's share
     // of the energy step is the energy scale of this continuation.
     let tol = draft.endpoint_scale * delta / (images as f64) / gradient_norm;
