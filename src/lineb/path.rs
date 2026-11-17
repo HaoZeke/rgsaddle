@@ -455,6 +455,12 @@ fn simpson_s<S: PointSurface>(
 /// chord squared over the path length, the resolution of the spline.
 /// The step doubles when that discrepancy is smaller by `2⁵`, the order
 /// of the local Runge–Kutta error, and halves otherwise.
+///
+/// The dynamics sees only forces, so its energy drifts by the accepted
+/// discrepancies. Into an end knot barely above `E` that drift can turn
+/// the particle short of the knot. A turn within the summed allowance of
+/// the accepted steps closes the gap `r` at the turning-point time
+/// `√(2r/|a|)`.
 fn dynamics<S: PointSurface>(
     surface: &S,
     masses: &Masses,
@@ -481,6 +487,7 @@ fn dynamics<S: PointSurface>(
     let mut dt = (2.0 * spacing / driving).sqrt() / (2 * pairs) as f64;
     let mut lambda = 0.0;
     let mut time = 0.0;
+    let mut accepted = 0.0;
     while lambda < length {
         let remaining = length - lambda;
         if remaining <= tolerance || remaining.is_nan() {
@@ -520,10 +527,20 @@ fn dynamics<S: PointSurface>(
                 lambda = advanced_to;
                 velocity = half_velocity;
                 time += dt;
+                accepted += 1.0;
                 if discrepancy * 32.0 <= tolerance || discrepancy.is_nan() {
                     dt *= 2.0;
                 }
             }
+        } else if half_velocity <= 0.0 && remaining <= (accepted + 1.0) * tolerance {
+            let accel = acceleration(surface, masses, curve, lambda, velocity)?;
+            if accel >= 0.0 || accel.is_nan() {
+                return Err(SaddleError::Invalid(
+                    "the path turns back before its end without a turning point".into(),
+                ));
+            }
+            time += (2.0 * remaining / -accel).sqrt();
+            break;
         } else {
             dt *= 0.5;
         }
