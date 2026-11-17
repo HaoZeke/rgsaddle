@@ -376,15 +376,15 @@ discard, \(\tau\), \(N_{\mathrm{eff}}\), drift, error, threshold, and
 pass/fail.  A failed guard returns =SaddleError::NotEquilibrated=; no plane
 estimate is silently emitted.
 
-** Required production backends
+** Production backends
 
-- *LAMMPS through OmniPotentRPC/lammpc.*  A lammpc-owned simulation installs
-  a fix that constrains \(\nu^T(q-p)=0\), projects force and momentum in the
-  selected coordinate convention, thermostats only tangent momentum, and
-  restores the plane after drift.  The adapter must expose the applied
-  scalar constraint force, removed momentum/velocity, position snapshots,
-  units, masses, force-call count, and deterministic seed mapping.  No
-  LAMMPS class or pointer appears in the Rust trait.
+- *LAMMPS through OmniPotentRPC/lammpc.* =LammpsHyperplaneSampler= loads the
+  pinned rgpot potential profile and creates a lammpc session. lammpc's
+  projected BAOAB stepper constrains \(\nu^T(q-p)=0\), projects force and
+  velocity in the selected coordinate convention, thermostats tangent
+  velocity, and restores the plane after each drift. It returns the scalar
+  constraint force, removed velocity, position, projected force, and force
+  call count. No LAMMPS class or pointer appears in the Rust trait.
 - *OpenMM.*  The adapter may represent the signed plane coordinate with a
   =CustomCVForce= plus a constraint-force readback, or use a
   constraint-projection integrator.  It must expose the same scalar
@@ -516,8 +516,8 @@ a reproducible test.
 4. *Mass metric as an explicit type.* Replace repeated square-root mass
    vectors in PAFI/OH-TST/IRC with a checked metric object that maps points,
    tangent vectors, and covectors distinctly.
-5. *Production engine adapters.* Implement lammpc/LAMMPS first, then OpenMM
-   and GROMACS, against =HyperplaneSampler= and the C ABI contract above.
+5. *Additional production engine adapters.* Implement OpenMM and GROMACS
+   against =HyperplaneSampler= and the C ABI contract above.
 6. *Production callback bindings.* Complete callback-owned C and Python
    engine adapters for optimization, work, TI, and shooting without exposing
    an engine pointer to Rust.
