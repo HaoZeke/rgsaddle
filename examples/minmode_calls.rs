@@ -13,8 +13,8 @@
 //! aligned root-mean-square distance is under 1e-3. The printed calls
 //! and milliseconds are the median of those matched pairs, with the
 //! interquartile range beside it. The call count leaves out the energy
-//! read taken after the search. A full run writes
-//! `validation/minmode_translator.csv`.
+//! read taken after the search, and the saddle check is off. A full run
+//! writes `validation/minmode_translator.csv`.
 //!
 //! ```text
 //! cargo run --release --example minmode_calls
@@ -370,7 +370,8 @@ fn search_stopped(
         .with_kind(kind)
         .with_method(arm.method.method())
         .with_force_tol(1e-3)
-        .with_max_move(system.max_move);
+        .with_max_move(system.max_move)
+        .with_saddle_check(None);
     let mut session = MinModeSession::new(config, start.clone(), mode.clone()).expect("session");
     session.set_fire_curvature(arm.curvature);
     session.set_cg_translate(arm.cg);

@@ -1,7 +1,8 @@
 //! Force calls and wall time to converge a climbing-image band on a
 //! Morse fcc(100) slab with its bottom layer fixed, with and without the
-//! exponential metric. One CSV row per method to stdout, and to the file
-//! named by the first argument when given.
+//! exponential metric, and with the min-mode refinement and the saddle
+//! check off. One CSV row per method to stdout, and to the file named by
+//! the first argument when given.
 //!
 //! `cargo run --release --example fixed_slab_precon -- benchmarks/fixed_slab_precon.csv`
 
@@ -35,6 +36,7 @@ fn main() {
                 .with_fixed_atoms(slab_fixed())
                 .with_force_tol(FORCE_TOL)
                 .with_min_mode(None)
+                .with_saddle_check(None)
                 .with_method(method.clone())
                 .with_exp_precon(precon);
             let surface = SlabSurface::new();

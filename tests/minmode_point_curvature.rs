@@ -42,7 +42,8 @@ fn translated_stationary_point(
         .with_dr(1e-3)
         .with_rotation_tol(1e-8)
         .with_force_tol(1e-10)
-        .with_max_move(2.0);
+        .with_max_move(2.0)
+        .with_saddle_check(None);
     let surface = Cubic {
         coefficient,
         fail_accepted_probe: false,

@@ -314,7 +314,8 @@ fn lbfgs_band_steps_once_per_evaluation_and_converges() {
         .with_force_tol(1e-3)
         .with_max_move(0.1)
         .with_method(rgmin::Method::lbfgs_with_memory(10))
-        .with_min_mode(None);
+        .with_min_mode(None)
+        .with_saddle_check(None);
     let mut session = BandSession::new(config, initial_band(n_images)).unwrap();
     let surface = Counting::new();
     let mut report = session.step(&surface).unwrap();

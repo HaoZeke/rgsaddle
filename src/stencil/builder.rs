@@ -660,7 +660,8 @@ fn mode_session(builder: &PointBuilder, mode: Array1<f64>) -> Result<MinModeSess
         .with_force_tol(builder.force_tol)
         .with_max_move(builder.max_move)
         .with_method(Method::fire(FireKind::V2))
-        .with_seed_curvature(false);
+        .with_seed_curvature(false)
+        .with_saddle_check(None);
     MinModeSession::new(config, builder.x.clone(), mode)
 }
 
@@ -677,6 +678,7 @@ fn art_mode_config(engine: &ArtEngine) -> MinModeConfig {
         .with_max_move(engine.max_move)
         .with_method(Method::fire(FireKind::V2))
         .with_seed_curvature(false)
+        .with_saddle_check(None)
 }
 
 fn force_solver(method: Method, n: usize, max_move: f64) -> Result<Solver, SaddleError> {

@@ -70,6 +70,7 @@ pub mod pair_network;
 pub mod prfo;
 pub mod projection;
 pub mod relax;
+pub mod saddle_index;
 pub mod solid_dimer;
 pub mod solid_state;
 pub mod spring;
@@ -159,6 +160,7 @@ pub use relax::{
     DEFAULT_FORCE_TOL, DEFAULT_MAX_STEPS, RelaxConfig, Relaxation, max_atom_force,
     relax_to_tolerance,
 };
+pub use saddle_index::{SaddleEscape, SaddleIndex, SaddleIndexCheck, saddle_index};
 pub use solid_dimer::{
     CellMask, IndexCheck, IndexReport, JointChart, STRAIN_VOIGT, SolidDimer, SolidDimerConfig,
     SolidDimerReport, StressCheck, check_cauchy_stress, finite_difference_cauchy_stress, index_at,

@@ -1,9 +1,10 @@
 // Copyright (c) rgsaddle developers
 //!
 //! Gradient calls and wall time of one min-mode search with the curvature
-//! seed off and on. Off is the stepper `MinModeConfig::default` uses.
-//! Each case is warmed once, then run seven times in series. The printed
-//! calls and milliseconds are the medians of those seven.
+//! seed off and on. Off is the stepper `MinModeConfig::default` uses; the
+//! saddle check is off in both. Each case is warmed once, then run seven
+//! times in series. The printed calls and milliseconds are the medians of
+//! those seven.
 //!
 //! ```text
 //! cargo run --release --example minmode_trust
@@ -152,7 +153,8 @@ impl Job {
             .with_seed_curvature(seed_curvature)
             .with_force_tol(1e-3)
             .with_max_move(0.2)
-            .with_method(self.method.method());
+            .with_method(self.method.method())
+            .with_saddle_check(None);
         let mut session =
             MinModeSession::new(config, self.start.clone(), self.seed.clone()).expect("session");
         let surface = Counting {

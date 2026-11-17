@@ -975,6 +975,7 @@ impl JointRun {
             iteration: self.iteration,
             surface_rows: self.state.rows.load(Ordering::Relaxed),
             curvature: None,
+            saddle_index: None,
         })
     }
 }

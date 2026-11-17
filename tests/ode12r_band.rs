@@ -64,12 +64,14 @@ fn relax<S: BandSurface>(
 fn ode12r_converges_the_double_well_band_to_the_saddle() {
     let n_images = 9;
     // The plain climbing band: the min-mode refinement of the climbing
-    // image has its own evaluation count and is off here.
+    // image and the saddle check have their own evaluation counts and
+    // are off here.
     let config = BandConfig::default()
         .with_force_tol(1e-3)
         .with_max_move(0.1)
         .with_method(rgmin::Method::Ode12r)
-        .with_min_mode(None);
+        .with_min_mode(None)
+        .with_saddle_check(None);
     let mut session = BandSession::new(config, initial_band(n_images)).unwrap();
     let (status, steps, rows) = relax(&mut session, &DoubleWell, 3000);
     assert_eq!(

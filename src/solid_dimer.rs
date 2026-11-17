@@ -986,7 +986,11 @@ impl SolidDimer {
                     "frozen-cell dimer mode must be the atomic mode".into(),
                 ));
             }
-            let inner = MinModeSession::new(config.search, positions.clone(), mode)?;
+            let inner = MinModeSession::new(
+                config.search.with_saddle_check(None),
+                positions.clone(),
+                mode,
+            )?;
             return Ok(Self {
                 inner,
                 chart: None,
@@ -1029,7 +1033,7 @@ impl SolidDimer {
         };
         let mut q = Array1::zeros(chart.dimension());
         q.slice_mut(s![..n]).assign(&positions);
-        let inner = MinModeSession::new(config.search, q, mode_q)?;
+        let inner = MinModeSession::new(config.search.with_saddle_check(None), q, mode_q)?;
         Ok(Self {
             inner,
             chart: Some(chart),

@@ -19,6 +19,9 @@ use rgmin::{Accept, Control, Method, Oracle, Solver};
 use crate::error::SaddleError;
 use crate::force::ForceGate;
 use crate::kappa::{Complement, KappaDimerConfig, kappa_dimer_force};
+use crate::saddle_index::{
+    Certificate, Probe, SaddleIndex, SaddleIndexCheck, certify, escape_push,
+};
 
 /// The caller's surface for a single geometry.
 pub trait PointSurface: Sync {
@@ -195,6 +198,17 @@ pub struct MinModeConfig {
     /// which returns `-λ` once the mode is negative
     /// (`https://github.com/TheochemUI/eOn/blob/v3.6.0/client/MinModeSaddleSearch.cpp`).
     pub seed_curvature: bool,
+    /// Certify the converged point: its lowest curvatures off the
+    /// directions [`PointSurface::excluded_modes`] names, by block
+    /// Lanczos on finite-difference Hessian actions seeded with the
+    /// search's mode (see [`mod@crate::saddle_index`]). The index is
+    /// [`MinModeReport::saddle_index`] and the actions count in
+    /// [`MinModeReport::evaluations`]. On by default; the search itself
+    /// steps as without it. With [`SaddleIndexCheck::escape`] set, a
+    /// point of index two or more is pushed off its extra negative
+    /// modes and the search starts again there along the negative mode
+    /// closest to its own. `None` skips the check.
+    pub saddle_check: Option<SaddleIndexCheck>,
 }
 
 with_setters!(MinModeConfig {
@@ -209,6 +223,7 @@ with_setters!(MinModeConfig {
     with_max_move => max_move: val f64,
     with_method => method: val Method,
     with_seed_curvature => seed_curvature: val bool,
+    with_saddle_check => saddle_check: opt SaddleIndexCheck,
 });
 
 impl Default for MinModeConfig {
@@ -225,6 +240,7 @@ impl Default for MinModeConfig {
             max_move: 0.2,
             method: Method::fire(rgmin::FireKind::V2),
             seed_curvature: false,
+            saddle_check: Some(SaddleIndexCheck::default()),
         }
     }
 }
@@ -253,6 +269,11 @@ pub struct MinModeReport {
     pub iteration: usize,
     /// Surface evaluations during this call, centre included.
     pub evaluations: usize,
+    /// Saddle index of the converged point
+    /// ([`MinModeConfig::saddle_check`]). `None` while the search runs
+    /// or with the check off. A step that pushes off a saddle of higher
+    /// index reports that index and runs on.
+    pub saddle_index: Option<SaddleIndex>,
 }
 
 /// A refreshed lowest mode at the current point.
@@ -1504,6 +1525,21 @@ pub struct MinModeSession {
     krylov: KrylovBlock,
     /// Buffers of the Lanczos estimate.
     lanczos_work: LanczosWork,
+    saddle: SaddleTrack,
+}
+
+/// The last certificate and the escapes taken.
+#[derive(Default)]
+struct SaddleTrack {
+    /// The position the certificate holds for.
+    certified: Option<(Array1<f64>, Certificate)>,
+    /// Pushes since the host last moved or reset the session.
+    attempts: usize,
+    /// Pushes over the session.
+    escapes: usize,
+    /// Surface evaluations the certificates and pushes spent over the
+    /// session.
+    evaluations: usize,
 }
 
 /// Solver used by the min-mode translation. `istep` is FIRE's opening
@@ -1589,6 +1625,9 @@ impl MinModeSession {
                 "max_move must be finite; a non-positive value leaves the step uncapped".into(),
             ));
         }
+        if let Some(check) = &config.saddle_check {
+            check.validate()?;
+        }
         let mode = checked_mode(mode)?;
         crate::band::check_force_driven(&config.method)?;
         let lbfgs_guards = true;
@@ -1636,6 +1675,7 @@ impl MinModeSession {
             lbfgs_project: false,
             lbfgs_shadow: VecDeque::new(),
             last_translated: None,
+            saddle: SaddleTrack::default(),
         })
     }
 
@@ -1861,8 +1901,15 @@ impl MinModeSession {
 
     /// Drop optimizer history, dimer rotation history, carried
     /// curvature, and the cached centre gradient at a surface-epoch
-    /// boundary. The mode stays as the next seed.
+    /// boundary. The mode stays as the next seed. The saddle-index
+    /// certificate and the escape count go too.
     pub fn reset(&mut self) {
+        self.forget_search();
+        self.saddle.certified = None;
+        self.saddle.attempts = 0;
+    }
+
+    fn forget_search(&mut self) {
         self.solver.forget();
         if self.fire_dt != FIRE_OPENING_DT {
             // Only a FIRE session lowers fire_dt, so the restore cannot fail.
@@ -1887,7 +1934,9 @@ impl MinModeSession {
     /// it, so a mode that still holds costs one rotation evaluation),
     /// and the optimizer history and the dimer rotational CG history
     /// stay. `gradient` is the host's energy gradient at `x` when it
-    /// has one; the next compute then skips the centre evaluation.
+    /// has one; the next compute then skips the centre evaluation. A
+    /// new position starts the escape count of
+    /// [`MinModeConfig::saddle_check`] again.
     pub fn set_position(
         &mut self,
         x: Array1<f64>,
@@ -1917,13 +1966,20 @@ impl MinModeSession {
             }
             None => None,
         };
+        if x != self.x {
+            self.saddle.attempts = 0;
+        }
+        self.place(x);
+        Ok(())
+    }
+
+    fn place(&mut self, x: Array1<f64>) {
         self.x = x;
         self.capped_fire = None;
         self.mode_fresh = false;
         self.pending_turn = 0.0;
         self.lanczos_carry = None;
         self.last_translated = None;
-        Ok(())
     }
 
     /// Replace the mode seed with a host-chosen direction.
@@ -2805,7 +2861,131 @@ impl MinModeSession {
     /// unchanged. The solver's internal state has seen the failed
     /// evaluation; a host that recovers the surface and steps again
     /// may call [`MinModeSession::reset`] first to drop it.
+    ///
+    /// A converged step certifies the point
+    /// ([`MinModeConfig::saddle_check`]) at its first convergence
+    /// there; later converged steps report the same certificate.
     pub fn step<S: PointSurface>(&mut self, surface: &S) -> Result<MinModeReport, SaddleError> {
+        let mut report = self.step_inner(surface)?;
+        if report.status == MinModeStatus::Converged {
+            self.saddle_check(surface, &mut report)?;
+        }
+        Ok(report)
+    }
+
+    /// The saddle index certified at the current position, if any.
+    #[must_use]
+    pub fn saddle_index(&self) -> Option<&SaddleIndex> {
+        let (x, certificate) = self.saddle.certified.as_ref()?;
+        (*x == self.x).then_some(&certificate.index)
+    }
+
+    /// Pushes off a saddle of higher index over the session.
+    #[must_use]
+    pub fn saddle_escapes(&self) -> usize {
+        self.saddle.escapes
+    }
+
+    /// Surface evaluations the saddle-index certificates and the escape
+    /// pushes spent over the session. Each also counts in the
+    /// [`MinModeReport::evaluations`] of the step that spent it.
+    #[must_use]
+    pub fn saddle_evaluations(&self) -> usize {
+        self.saddle.evaluations
+    }
+
+    /// Replace [`MinModeConfig::saddle_check`]; `None` turns the check
+    /// off. The last certificate and the escape count are dropped. On
+    /// an error the session is unchanged.
+    pub fn set_saddle_check(&mut self, check: Option<SaddleIndexCheck>) -> Result<(), SaddleError> {
+        if let Some(check) = &check {
+            check.validate()?;
+        }
+        self.config.saddle_check = check;
+        self.saddle.certified = None;
+        self.saddle.attempts = 0;
+        Ok(())
+    }
+
+    /// Certify a converged point, and push off a saddle of higher index
+    /// when the check carries an escape.
+    fn saddle_check<S: PointSurface>(
+        &mut self,
+        surface: &S,
+        report: &mut MinModeReport,
+    ) -> Result<(), SaddleError> {
+        let Some(check) = self.config.saddle_check else {
+            return Ok(());
+        };
+        let mut spent = 0;
+        let cached = self
+            .saddle
+            .certified
+            .as_ref()
+            .filter(|(x, _)| *x == self.x)
+            .map(|(_, certificate)| certificate.clone());
+        let certificate = match cached {
+            Some(certificate) => certificate,
+            None => {
+                let mut centre_calls = 0;
+                let gradient = match self.centre.as_ref().filter(|c| c.x == self.x) {
+                    Some(centre) => centre.gradient.clone(),
+                    None => {
+                        centre_calls = 1;
+                        surface.eval(self.x.view())?.1
+                    }
+                };
+                let rows = surface.excluded_modes(self.x.view())?;
+                if rows.nrows() > 0 && rows.ncols() != self.x.len() {
+                    return Err(SaddleError::Shape(
+                        "excluded modes must match the position".into(),
+                    ));
+                }
+                let mut certificate = certify(
+                    &check,
+                    surface,
+                    Probe {
+                        x: self.x.view(),
+                        gradient: gradient.view(),
+                        held: Vec::new(),
+                        excluded: rows.outer_iter().map(|r| r.to_owned()).collect(),
+                        hints: vec![self.mode.clone()],
+                    },
+                )?;
+                certificate.index.evaluations += centre_calls;
+                spent += certificate.index.evaluations;
+                self.saddle.certified = Some((self.x.clone(), certificate.clone()));
+                certificate
+            }
+        };
+        report.saddle_index = Some(certificate.index.clone());
+        if let Some(escape) = check.escape
+            && certificate.index.index >= 2
+            && self.saddle.attempts < escape.max_attempts
+        {
+            let push = escape_push(
+                surface,
+                self.x.view(),
+                &certificate,
+                self.mode.view(),
+                escape.push_at(self.saddle.attempts),
+            )?;
+            self.saddle.attempts += 1;
+            if let Some(push) = push {
+                spent += push.evaluations;
+                self.forget_search();
+                self.place(push.start);
+                self.set_mode(push.reaction)?;
+                self.saddle.escapes += 1;
+                report.status = MinModeStatus::Running;
+            }
+        }
+        report.evaluations += spent;
+        self.saddle.evaluations += spent;
+        Ok(())
+    }
+
+    fn step_inner<S: PointSurface>(&mut self, surface: &S) -> Result<MinModeReport, SaddleError> {
         // The translation finishes the mode itself. A partial basis
         // from push_estimate belongs to the pre-step seed.
         self.lanczos_carry = None;
@@ -2877,6 +3057,7 @@ impl MinModeSession {
                 rotations,
                 iteration: self.iteration,
                 evaluations: calls.load(Ordering::Relaxed),
+                saddle_index: None,
             });
         }
 
@@ -3008,6 +3189,7 @@ impl MinModeSession {
             rotations,
             iteration: self.iteration,
             evaluations: calls.load(Ordering::Relaxed),
+            saddle_index: None,
         })
     }
 

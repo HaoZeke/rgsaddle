@@ -13,6 +13,7 @@ use crate::cell_log::{M3, m3_det};
 use crate::error::SaddleError;
 use crate::force::ForceGate;
 use crate::projection::{ProjectionKind, climbing_image_force, dneb_component, force_perp};
+use crate::saddle_index::{SaddleIndex, SaddleIndexCheck};
 use crate::solid_state::{
     cartesian_step, cell_neb_force, joint_displacement, orient_lower_triangular, pack_joint,
     solid_state_enthalpy, solid_state_jacobian, unpack_cell,
@@ -24,6 +25,7 @@ use crate::tangent::compute_tangent;
 mod climb;
 mod min_mode;
 mod pair_model;
+mod saddle_check;
 mod zoom;
 pub use min_mode::MinModeRefine;
 pub(crate) use min_mode::RefinePhase;
@@ -373,6 +375,19 @@ pub struct BandConfig {
     /// (1e-10 per component); interior images take the first image's
     /// fixed coordinates. Refused on a solid-state band.
     pub fixed_atoms: Vec<bool>,
+    /// Certify the climbing image once the band converges: its lowest
+    /// curvatures on the free coordinates, off the rigid motions the
+    /// band removes, by block Lanczos on finite-difference Hessian
+    /// actions (see [`mod@crate::saddle_index`]). The index is
+    /// [`BandReport::saddle_index`] and the actions count in
+    /// [`BandReport::surface_rows`]. On by default; the band itself
+    /// steps as without it. With [`SaddleIndexCheck::escape`] set, a
+    /// climbing image of index two or more is pushed off its extra
+    /// negative modes and the min-mode refinement climbs again from
+    /// there, seeded with the negative mode closest to the band
+    /// tangent. `None` skips the check. A solid-state band is not
+    /// checked.
+    pub saddle_check: Option<SaddleIndexCheck>,
 }
 
 with_setters!(BandConfig {
@@ -394,6 +409,7 @@ with_setters!(BandConfig {
     with_exp_precon => exp_precon: opt ExpBandPrecon,
     with_zoom => zoom: opt ZoomConfig,
     with_fixed_atoms => fixed_atoms: val Vec<bool>,
+    with_saddle_check => saddle_check: opt SaddleIndexCheck,
 });
 
 impl BandConfig {
@@ -520,6 +536,7 @@ impl Default for BandConfig {
             exp_precon: None,
             zoom: None,
             fixed_atoms: Vec::new(),
+            saddle_check: Some(SaddleIndexCheck::default()),
         }
     }
 }
@@ -637,6 +654,12 @@ pub struct BandReport {
     /// Curvature along the climbing image's lowest mode on a step of
     /// the min-mode refinement; `None` on a band step.
     pub curvature: Option<f64>,
+    /// Saddle index of the climbing image, certified when the band
+    /// converged ([`BandConfig::saddle_check`]). `None` while the band
+    /// runs, without a climbing image, or with the check off. A step
+    /// that pushes off a saddle of higher index reports that index and
+    /// runs on.
+    pub saddle_index: Option<SaddleIndex>,
 }
 
 /// The caller's surface: fused energies and gradients for a run of
@@ -2425,6 +2448,7 @@ pub struct BandSession {
     /// Consecutive ODE12r steps that rejected their trial.
     unmoved: usize,
     zoom: zoom::ZoomState,
+    saddle: saddle_check::SaddleState,
 }
 
 impl BandSession {
@@ -2500,6 +2524,9 @@ impl BandSession {
         if let Some(refine) = &config.min_mode {
             refine.validate()?;
         }
+        if let Some(check) = &config.saddle_check {
+            check.validate()?;
+        }
         if let Some(zoom) = &config.zoom {
             zoom::check_zoom(&config, zoom)?;
         }
@@ -2524,6 +2551,7 @@ impl BandSession {
             exp: None,
             unmoved: 0,
             zoom: zoom::ZoomState::default(),
+            saddle: saddle_check::SaddleState::default(),
         };
         if session.config.has_fixed() {
             session.state.fixed = session.config.fixed_atoms.clone();
@@ -3015,6 +3043,7 @@ impl BandSession {
         if moved {
             self.state.drop_last();
             self.refine = min_mode::RefineState::default();
+            self.saddle.forget();
         }
         Ok(())
     }
@@ -3075,6 +3104,7 @@ impl BandSession {
         self.solver.forget();
         self.state.restart();
         self.refine = min_mode::RefineState::default();
+        self.saddle.forget();
         if let Some(rtr) = &mut self.rtr {
             *rtr = crate::rtr::BandRtr::new(rtr.config, false);
             rtr.set_force_gate(self.state.force_gate);
@@ -3150,7 +3180,19 @@ impl BandSession {
     /// quasi-Newton pairs) has seen the failed evaluation; a host that
     /// recovers the surface and steps again may call
     /// [`BandSession::restart`] first to drop it.
+    ///
+    /// A converged step certifies the climbing image
+    /// ([`BandConfig::saddle_check`]) at its first convergence at that
+    /// position; later converged steps report the same certificate.
     pub fn step<S: BandSurface>(&mut self, surface: &S) -> Result<BandReport, SaddleError> {
+        let mut report = self.step_inner(surface)?;
+        if report.status == BandStatus::Converged {
+            self.saddle_check(surface, &mut report)?;
+        }
+        Ok(report)
+    }
+
+    fn step_inner<S: BandSurface>(&mut self, surface: &S) -> Result<BandReport, SaddleError> {
         if self.solid.is_some() {
             if self.rtr.is_some() {
                 return Err(SaddleError::Invalid(
@@ -3267,6 +3309,7 @@ impl BandSession {
             iteration: self.iteration,
             surface_rows: self.state.rows.load(Ordering::Relaxed),
             curvature: None,
+            saddle_index: None,
         })
     }
 
@@ -3396,6 +3439,7 @@ impl BandSession {
             iteration: self.iteration,
             surface_rows: self.state.rows.load(Ordering::Relaxed),
             curvature: None,
+            saddle_index: None,
         })
     }
 
@@ -3463,6 +3507,7 @@ impl BandSession {
             iteration: self.iteration,
             surface_rows: self.state.rows.load(Ordering::Relaxed),
             curvature: None,
+            saddle_index: None,
         })
     }
 

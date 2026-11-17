@@ -462,7 +462,8 @@ fn climb_between(
         let config = MinModeConfig::default()
             .with_force_tol(settings.forcetol)
             .with_max_move(0.1)
-            .with_method(Method::lbfgs_with_memory(20));
+            .with_method(Method::lbfgs_with_memory(20))
+            .with_saddle_check(None);
         let mut session = MinModeSession::new(config, start, seed.clone())?;
         session.set_force_gate(ForceGate::L2Norm);
         let stepped = session.run(&surface, 60)?;
@@ -702,7 +703,8 @@ fn climb_lanczos(
         .with_krylov_dim(settings.lanczos_iterations.max(1))
         .with_force_tol(settings.forcetol)
         .with_max_move(settings.minmode_max_move)
-        .with_method(Method::lbfgs_with_memory(settings.minmode_memory.max(1)));
+        .with_method(Method::lbfgs_with_memory(settings.minmode_memory.max(1)))
+        .with_saddle_check(None);
     let mut session = MinModeSession::new(
         config.clone(),
         Array1::from_vec(start.to_vec()),

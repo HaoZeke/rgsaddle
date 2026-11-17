@@ -29,6 +29,7 @@ use crate::nichols::{
 };
 use crate::prfo::{PrfoKind, restricted_prfo_displacement};
 use crate::projection::ProjectionKind;
+use crate::saddle_index::SaddleIndexCheck;
 use crate::spring::SpringKind;
 use crate::tangent::TangentKind;
 
@@ -36,6 +37,10 @@ use crate::tangent::TangentKind;
 pub const RGSADDLE_ABI_MAJOR: u32 = 1;
 /// The RGSADDLE ABI MINOR.
 pub const RGSADDLE_ABI_MINOR: u32 = 39;
+
+/// A band, min-mode or OCI-NEB config of this minor or newer certifies
+/// the saddle index at convergence by default.
+pub(crate) const SADDLE_INDEX_MINOR: u32 = 40;
 
 /// Band config bit 0. The C step calls the surface once per image
 /// carried by the evaluation: every image on the first evaluation
@@ -669,7 +674,10 @@ pub(super) unsafe fn parse_band_config(
             )
             // Installed after creation through rgsaddle_band_set_exp_precon.
             .with_exp_precon(None)
-            .with_zoom(None),
+            .with_zoom(None)
+            .with_saddle_check(
+                (cfg.version.minor >= SADDLE_INDEX_MINOR).then(SaddleIndexCheck::default),
+            ),
         per_image: cfg.flags & RGSADDLE_BAND_PER_IMAGE != 0,
         method: cfg.method,
     })
@@ -1189,7 +1197,10 @@ pub unsafe extern "C" fn rgsaddle_minmode_create(
         .with_force_tol(cfg.force_tol)
         .with_max_move(cfg.max_move)
         .with_method(method_of(cfg.method, 0))
-        .with_seed_curvature(false);
+        .with_seed_curvature(false)
+        .with_saddle_check(
+            (cfg.version.minor >= SADDLE_INDEX_MINOR).then(SaddleIndexCheck::default),
+        );
     match MinModeSession::new(mm_config, x, m) {
         Ok(session) => Box::into_raw(Box::new(RgsaddleMinMode { session, n_atoms })),
         Err(_) => std::ptr::null_mut(),

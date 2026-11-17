@@ -1295,6 +1295,7 @@ impl AutoNeb {
                 .with_autoneb(None)
                 .with_min_mode(None)
                 .with_zoom(None)
+                .with_saddle_check(None)
                 .with_spring(SpringKind::Weighted { ks });
             let mut session = BandSession::new(band, sub)?;
             let last = *window.last().expect("window");

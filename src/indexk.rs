@@ -404,7 +404,7 @@ impl IndexKSession {
         let seed = prepare_seed(x.len(), config.k, modes)?;
         if config.k == 1 {
             let mode = seed.column(0).to_owned();
-            let session = MinModeSession::new(config.search, x, mode)?;
+            let session = MinModeSession::new(config.search.with_saddle_check(None), x, mode)?;
             let stored = column_matrix(session.mode());
             let curvatures = Array1::from_elem(1, f64::NAN);
             return Ok(Self {

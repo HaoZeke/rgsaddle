@@ -28,6 +28,11 @@
 //! that does not lower the force raises the threshold by the linear
 //! penalty `(1 + α) / 2`. A walk that does lower it sets the threshold
 //! to `F_new (1/2 + 2/5 F_new / F_CI)` and keeps the mode.
+//!
+//! The converged climbing image is certified by the band's
+//! [`BandConfig::saddle_check`], on by default: the report carries its
+//! saddle index, and an escape set in that check climbs again off a
+//! saddle of higher index.
 
 use ndarray::{Array1, Array2, ArrayView1};
 
@@ -37,6 +42,7 @@ use crate::band::{
 use crate::error::SaddleError;
 use crate::force::ForceGate;
 use crate::minmode::{MinModeConfig, PointSurface};
+use crate::saddle_index::{SaddleIndex, SaddleIndexCheck};
 
 /// Published floor on the tangent overlap. Below it the force inversion
 /// points away from the saddle of the path.
@@ -152,6 +158,9 @@ pub struct OcinebReport {
     pub fell_back: bool,
     /// The threshold.
     pub threshold: f64,
+    /// Saddle index of the converged climbing image; see
+    /// [`crate::BandReport::saddle_index`].
+    pub saddle_index: Option<SaddleIndex>,
 }
 
 /// Initial threshold: `max(λ F0, F_abs, 2 tol)`, with `F_abs` only when `λ` is 0.
@@ -398,6 +407,26 @@ impl OcinebSession {
         self.band.evaluation()
     }
 
+    /// See [`BandSession::saddle_index`].
+    pub fn saddle_index(&self) -> Option<&SaddleIndex> {
+        self.band.saddle_index()
+    }
+
+    /// See [`BandSession::saddle_escapes`].
+    pub fn saddle_escapes(&self) -> usize {
+        self.band.saddle_escapes()
+    }
+
+    /// See [`BandSession::saddle_evaluations`].
+    pub fn saddle_evaluations(&self) -> usize {
+        self.band.saddle_evaluations()
+    }
+
+    /// See [`BandSession::set_saddle_check`].
+    pub fn set_saddle_check(&mut self, check: Option<SaddleIndexCheck>) -> Result<(), SaddleError> {
+        self.band.set_saddle_check(check)
+    }
+
     /// A new gate restarts the band and the hand-off state.
     pub fn set_force_gate(&mut self, gate: ForceGate) {
         self.band.set_force_gate(gate);
@@ -450,6 +479,7 @@ impl OcinebSession {
             rotations: last.map_or(0, |s| s.rotations),
             fell_back: last.is_some_and(|s| s.fell_back),
             threshold: self.band.refine_threshold().unwrap_or(f64::NAN),
+            saddle_index: report.saddle_index,
         })
     }
 

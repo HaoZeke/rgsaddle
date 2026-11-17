@@ -222,10 +222,10 @@ pub(crate) struct RefineStep {
 }
 
 #[derive(Clone)]
-struct Point {
-    x: Array1<f64>,
-    energy: f64,
-    gradient: Array1<f64>,
+pub(super) struct Point {
+    pub(super) x: Array1<f64>,
+    pub(super) energy: f64,
+    pub(super) gradient: Array1<f64>,
 }
 
 struct Run {
@@ -243,6 +243,10 @@ struct Run {
     steps: usize,
     /// Climb steps since the last mode estimate.
     since_refresh: usize,
+    /// The climb starts off a saddle of higher index; its seed is the
+    /// negative mode closest to the tangent, which need not meet
+    /// `alignment_tol`.
+    escape: bool,
 }
 
 impl Run {
@@ -317,7 +321,7 @@ impl Run {
 /// translations, and the rotations too when there is no cell. With
 /// atoms fixed they are the fixed coordinates instead, so the climb
 /// model, its steps and its secant pairs live on the free block.
-fn rigid_motions(
+pub(super) fn rigid_motions(
     x: &Array1<f64>,
     cell: Option<&Cell>,
     remove_translation: bool,
@@ -351,15 +355,18 @@ pub(super) struct RefineState {
     run: Option<Run>,
     converged: bool,
     last: Option<RefineStep>,
+    /// An escape started a climb; it runs under the default controls
+    /// when the band has none.
+    escaped: bool,
 }
 
 /// One band image as a point surface.
-struct ImageSurface<'a, S: BandSurface + ?Sized> {
-    surface: &'a S,
-    image: usize,
-    rows: &'a AtomicUsize,
+pub(super) struct ImageSurface<'a, S: BandSurface + ?Sized> {
+    pub(super) surface: &'a S,
+    pub(super) image: usize,
+    pub(super) rows: &'a AtomicUsize,
     /// The band's fixed mask; those gradient components read as zero.
-    fixed: &'a [bool],
+    pub(super) fixed: &'a [bool],
 }
 
 impl<S: BandSurface + ?Sized> PointSurface for ImageSurface<'_, S> {
@@ -407,6 +414,23 @@ impl BandSession {
         self.refine.last
     }
 
+    /// The refinement controls: the band's own, or the defaults for a
+    /// climb an escape started on a band without them.
+    fn refine_config(&self) -> Option<MinModeRefine> {
+        self.config
+            .min_mode
+            .or_else(|| self.refine.escaped.then(MinModeRefine::default))
+    }
+
+    /// The mode the refinement of `image` last estimated, if one runs.
+    pub(super) fn refine_mode(&self, image: usize) -> Option<Array1<f64>> {
+        self.refine
+            .run
+            .as_ref()
+            .filter(|run| run.image == image)
+            .map(|run| run.session.mode().to_owned())
+    }
+
     /// After a band step: count the steps the climbing image held and
     /// start a refinement when the latch and the trigger allow one.
     pub(super) fn refine_latch(&mut self, status: BandStatus) -> Result<(), SaddleError> {
@@ -450,7 +474,7 @@ impl BandSession {
         surface: &S,
     ) -> Result<Option<BandReport>, SaddleError> {
         self.refine.last = None;
-        let Some(config) = self.config.min_mode else {
+        let Some(config) = self.refine_config() else {
             return Ok(None);
         };
         if self.refine.converged {
@@ -542,7 +566,8 @@ impl BandSession {
                 curvature,
             )));
         }
-        if alignment >= config.alignment_tol && run.best.as_ref().is_none_or(|(f, _, _)| gate < *f)
+        if (run.escape || alignment >= config.alignment_tol)
+            && run.best.as_ref().is_none_or(|(f, _, _)| gate < *f)
         {
             run.best = Some((gate, run.current.clone(), mode.clone()));
         }
@@ -554,7 +579,7 @@ impl BandSession {
                 curvature,
             )));
         }
-        let turned = config.climb_alignment && alignment < config.alignment_tol;
+        let turned = config.climb_alignment && !run.escape && alignment < config.alignment_tol;
         if turned || run.steps >= config.max_steps {
             let fell_back = turned;
             self.refine_finish(&config, Outcome::Leave);
@@ -617,7 +642,7 @@ impl BandSession {
             self.refine_finish(config, Outcome::Restore);
             return Ok(self.refine_stop(step, BandStatus::Running, estimate.curvature));
         }
-        if alignment < config.alignment_tol {
+        if alignment < config.alignment_tol && !run.escape {
             self.refine_finish(config, Outcome::Leave);
             return Ok(self.refine_stop(step, BandStatus::Running, estimate.curvature));
         }
@@ -677,20 +702,7 @@ impl BandSession {
             .clone()
             .unwrap_or_else(|| tangent.clone());
         let position = self.positions.row(image).to_owned();
-        let mode_config = MinModeConfig::default()
-            .with_kind(config.kind)
-            .with_dr(config.dr)
-            .with_difference(config.difference)
-            .with_rotation_tol(config.rotation_tol)
-            .with_max_rotations(config.max_rotations)
-            .with_krylov_dim(config.krylov_dim)
-            .with_force_tol(self.config.force_tol)
-            .with_max_move(self.config.max_move);
-        let mut session = MinModeSession::new(mode_config, position.clone(), seed)?;
-        if config.kind == MinModeKind::Lanczos {
-            session.set_lanczos_rel_tol(Some(config.lanczos_rel_tol))?;
-        }
-        session.set_force_gate(self.state.force_gate);
+        let session = self.refine_session(config, position.clone(), seed)?;
         let entry = Point {
             x: position,
             energy: energies[image],
@@ -709,6 +721,68 @@ impl BandSession {
             alignment: 1.0,
             steps: 0,
             since_refresh: 0,
+            escape: false,
+        });
+        Ok(())
+    }
+
+    fn refine_session(
+        &self,
+        config: &MinModeRefine,
+        position: Array1<f64>,
+        seed: Array1<f64>,
+    ) -> Result<MinModeSession, SaddleError> {
+        let mode_config = MinModeConfig::default()
+            .with_kind(config.kind)
+            .with_dr(config.dr)
+            .with_difference(config.difference)
+            .with_rotation_tol(config.rotation_tol)
+            .with_max_rotations(config.max_rotations)
+            .with_krylov_dim(config.krylov_dim)
+            .with_force_tol(self.config.force_tol)
+            .with_max_move(self.config.max_move)
+            .with_saddle_check(None);
+        let mut session = MinModeSession::new(mode_config, position, seed)?;
+        if config.kind == MinModeKind::Lanczos {
+            session.set_lanczos_rel_tol(Some(config.lanczos_rel_tol))?;
+        }
+        session.set_force_gate(self.state.force_gate);
+        Ok(session)
+    }
+
+    /// Climb `image` again from `start`, seeded with `reaction`, after a
+    /// push off a saddle of higher index at `saved`. A climb that ends
+    /// on a positive curvature puts the image back at `saved`.
+    pub(super) fn refine_escape(
+        &mut self,
+        image: usize,
+        start: Point,
+        saved: Point,
+        reaction: Array1<f64>,
+        tangent: Array1<f64>,
+    ) -> Result<(), SaddleError> {
+        self.refine.escaped = true;
+        let config = self.refine_config().unwrap_or_default();
+        let session = self.refine_session(&config, start.x.clone(), reaction)?;
+        let projected = -&start.gradient;
+        self.put_image(image, &start, projected.view());
+        self.forget_optimizer();
+        self.refine.converged = false;
+        self.refine.stable = 0;
+        self.refine.run = Some(Run {
+            image,
+            saved,
+            entry_force: max_atom(start.gradient.view()),
+            tangent,
+            session,
+            climb: None,
+            current: start,
+            previous: None,
+            best: None,
+            alignment: 1.0,
+            steps: 0,
+            since_refresh: 0,
+            escape: true,
         });
         Ok(())
     }
@@ -777,7 +851,7 @@ impl BandSession {
 
     /// Write one image and its surface answer into the band and its
     /// last evaluation. The other rows keep their cached values.
-    fn put_image(&mut self, image: usize, point: &Point, projected: ArrayView1<f64>) {
+    pub(super) fn put_image(&mut self, image: usize, point: &Point, projected: ArrayView1<f64>) {
         self.positions.row_mut(image).assign(&point.x);
         self.pin_fixed();
         let x = self.interior_flat();
@@ -795,7 +869,7 @@ impl BandSession {
         }
     }
 
-    fn image_tangent(
+    pub(super) fn image_tangent(
         &self,
         image: usize,
         energies: &Array1<f64>,
@@ -846,6 +920,7 @@ impl BandSession {
             iteration: self.iteration,
             surface_rows: rows,
             curvature,
+            saddle_index: None,
         }
     }
 }
