@@ -3,13 +3,15 @@
 //! The path length of a molecule is the mass-weighted distance after the
 //! optimal rigid motion is removed. The rotation is the Kabsch quaternion:
 //! the largest eigenvector of the 4×4 matrix built from the mass-weighted
-//! covariance, the same matrix eOn and ASE use for `align_to`. A single
-//! Jacobi sweep that no longer reduces the off-diagonal sum is the fixed
-//! point of that eigenproblem; the iteration count is not capped.
+//! covariance, the same matrix eOn and ASE use for `align_to`, from the
+//! quaternion helpers of [`crate::internal`]. The rigid projection of a
+//! force is rgmin's, in the mass-weighted chart.
 
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
+use rgmin::{RigidMode, RigidRequest, RigidWorkspace};
 
 use crate::error::SaddleError;
+use crate::internal::{jacobi4, kabsch_f};
 
 /// Rigid placement that takes one image onto the reference orientation.
 #[derive(Clone, Copy, Debug)]
@@ -67,7 +69,15 @@ pub(crate) fn restore_force(
     sqrt_mass: ArrayView1<f64>,
     atoms: usize,
 ) {
-    project_rigid_at(force, aligned, sqrt_mass, atoms);
+    let masses: Vec<f64> = (0..atoms)
+        .map(|atom| sqrt_mass[3 * atom] * sqrt_mass[3 * atom])
+        .collect();
+    if let (Some(positions), Some(values)) = (aligned.as_slice(), force.as_slice_mut()) {
+        let mut request = RigidRequest::cartesian(positions, RigidMode::TranslationRotation);
+        request.masses = Some(&masses);
+        request.mass_weighted_coords = true;
+        RigidWorkspace::new().project(values, &request);
+    }
     let mut rotated = Array1::zeros(force.len());
     for atom in 0..atoms {
         let f = [force[3 * atom], force[3 * atom + 1], force[3 * atom + 2]];
@@ -168,35 +178,23 @@ fn kabsch(
     target: &Array1<f64>,
     atoms: usize,
 ) -> Result<[[f64; 3]; 3], SaddleError> {
-    let mut cov = [[0.0; 3]; 3];
-    for atom in 0..atoms {
-        for i in 0..3 {
-            for j in 0..3 {
-                cov[i][j] += source[3 * atom + i] * target[3 * atom + j];
-            }
-        }
+    let rows =
+        |q: &Array1<f64>| Array2::from_shape_fn((atoms, 3), |(atom, axis)| q[3 * atom + axis]);
+    let (values, vectors) = jacobi4(kabsch_f(&rows(source), &rows(target)));
+    if !values.iter().all(|value| value.is_finite()) {
+        return Err(SaddleError::NonFinite("quaternion spectrum"));
     }
-    let (r11, r22, r33) = (cov[0][0], cov[1][1], cov[2][2]);
-    let (r12, r23, r31) = (cov[0][1], cov[1][2], cov[2][0]);
-    let (r13, r21, r32) = (cov[0][2], cov[1][0], cov[2][1]);
-    let f = [
-        [r11 + r22 + r33, r23 - r32, r31 - r13, r12 - r21],
-        [r23 - r32, r11 - r22 - r33, r12 + r21, r13 + r31],
-        [r31 - r13, r12 + r21, -r11 + r22 - r33, r23 + r32],
-        [r12 - r21, r13 + r31, r23 + r32, -r11 - r22 + r33],
-    ];
-    let (_evals, evecs) = jacobi4(f)?;
     let mut best = 0;
     for k in 1..4 {
-        if evecs_value(&_evals, k) > evecs_value(&_evals, best) {
+        if values[k] > values[best] {
             best = k;
         }
     }
     let mut q = [
-        evecs[0][best],
-        evecs[1][best],
-        evecs[2][best],
-        evecs[3][best],
+        vectors[0][best],
+        vectors[1][best],
+        vectors[2][best],
+        vectors[3][best],
     ];
     if q[0] < 0.0 {
         for component in &mut q {
@@ -223,81 +221,10 @@ fn kabsch(
     ])
 }
 
-fn evecs_value(evals: &[f64; 4], k: usize) -> f64 {
-    evals[k]
-}
-
-/// Cyclic Jacobi. Stops when a sweep does not reduce the off-diagonal
-/// sum of squares, which is the fixed point of the iteration.
-fn jacobi4(mut a: [[f64; 4]; 4]) -> Result<([f64; 4], [[f64; 4]; 4]), SaddleError> {
-    let mut v = [[0.0; 4]; 4];
-    for (i, row) in v.iter_mut().enumerate() {
-        row[i] = 1.0;
-    }
-    let mut off = off_diagonal(&a);
-    loop {
-        for p in 0..4 {
-            for q in (p + 1)..4 {
-                let apq = a[p][q];
-                if apq == 0.0 || apq.is_nan() {
-                    continue;
-                }
-                let theta = (a[q][q] - a[p][p]) / (2.0 * apq);
-                let sign = if theta >= 0.0 { 1.0 } else { -1.0 };
-                let t = sign / (theta.abs() + (theta * theta + 1.0).sqrt());
-                let c = 1.0 / (t * t + 1.0).sqrt();
-                let s = t * c;
-                let app = a[p][p];
-                let aqq = a[q][q];
-                a[p][p] = app - t * apq;
-                a[q][q] = aqq + t * apq;
-                a[p][q] = 0.0;
-                a[q][p] = 0.0;
-                for i in 0..4 {
-                    if i == p || i == q {
-                        continue;
-                    }
-                    let aip = a[i][p];
-                    let aiq = a[i][q];
-                    a[i][p] = c * aip - s * aiq;
-                    a[p][i] = a[i][p];
-                    a[i][q] = s * aip + c * aiq;
-                    a[q][i] = a[i][q];
-                }
-                for row in v.iter_mut() {
-                    let vip = row[p];
-                    let viq = row[q];
-                    row[p] = c * vip - s * viq;
-                    row[q] = s * vip + c * viq;
-                }
-            }
-        }
-        let next = off_diagonal(&a);
-        if next >= off || next.is_nan() {
-            break;
-        }
-        off = next;
-    }
-    let evals = [a[0][0], a[1][1], a[2][2], a[3][3]];
-    if !evals.iter().all(|value| value.is_finite()) {
-        return Err(SaddleError::NonFinite("quaternion spectrum"));
-    }
-    Ok((evals, v))
-}
-
-fn off_diagonal(a: &[[f64; 4]; 4]) -> f64 {
-    let mut sum = 0.0;
-    for (p, row) in a.iter().enumerate() {
-        for value in &row[p + 1..] {
-            sum += value * value;
-        }
-    }
-    sum
-}
-
-/// Orthonormal translations and rotations at one centred mass-weighted
-/// geometry. A mode with no length (a linear molecule about its axis)
-/// is absent.
+/// Orthonormal translations and rotations at one mass-weighted geometry.
+/// The rotations are about the origin; with the translations they span
+/// the rigid motions about any centre. A mode with no length (a linear
+/// molecule about its axis) is absent.
 pub(crate) fn rigid_directions(
     positions: ArrayView1<f64>,
     sqrt_mass: ArrayView1<f64>,
@@ -330,20 +257,6 @@ pub(crate) fn rigid_directions(
     modes
 }
 
-/// Remove translations and rotations about `positions` (mass-weighted,
-/// centred) from `force`.
-pub(crate) fn project_rigid_at(
-    force: &mut Array1<f64>,
-    positions: ArrayView1<f64>,
-    sqrt_mass: ArrayView1<f64>,
-    atoms: usize,
-) {
-    for mode in rigid_directions(positions, sqrt_mass, atoms) {
-        let coeff = mode.dot(force);
-        force.scaled_add(-coeff, &mode);
-    }
-}
-
 fn push_mode(modes: &mut Vec<Array1<f64>>, mut mode: Array1<f64>) {
     for earlier in modes.iter() {
         let coeff = earlier.dot(&mode);
@@ -356,7 +269,7 @@ fn push_mode(modes: &mut Vec<Array1<f64>>, mut mode: Array1<f64>) {
     }
 }
 
-pub(crate) fn cross(axis: usize, p: [f64; 3]) -> [f64; 3] {
+fn cross(axis: usize, p: [f64; 3]) -> [f64; 3] {
     match axis {
         0 => [0.0, -p[2], p[1]],
         1 => [p[2], 0.0, -p[0]],
@@ -384,5 +297,27 @@ mod tests {
             "{}",
             gap.dot(&gap).sqrt()
         );
+    }
+
+    /// The restored force has no component along a rigid motion of the
+    /// mass-weighted geometry it was computed on.
+    #[test]
+    fn restored_force_has_no_rigid_component() {
+        let masses = [1.0_f64, 16.0, 2.0, 12.0];
+        let sqrt_mass = Array1::from_iter((0..12).map(|i| masses[i / 3].sqrt()));
+        let aligned = Array1::from_iter((0..12).map(|i| ((i as f64) * 0.7).sin() * sqrt_mass[i]));
+        let mut force = Array1::from_iter((0..12).map(|i| ((i as f64) * 1.3).cos()));
+        let identity = Placement {
+            rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        };
+        let scale = force.dot(&force).sqrt();
+        restore_force(&mut force, &identity, aligned.view(), sqrt_mass.view(), 4);
+        for mode in rigid_directions(aligned.view(), sqrt_mass.view(), 4) {
+            assert!(
+                mode.dot(&force).abs() <= scale * f64::EPSILON * 64.0,
+                "{}",
+                mode.dot(&force)
+            );
+        }
     }
 }
