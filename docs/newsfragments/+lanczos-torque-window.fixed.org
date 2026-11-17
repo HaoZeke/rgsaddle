@@ -5,6 +5,6 @@ Before, Lanczos converged the lowest mode afresh at every translation while the 
 A session with ~set_lanczos_rel_tol~, as in the climbing-image refinement of a band and the connection driver, keeps its own stop unless the window is set on.
 On the optbench pt-island catalog (seed 20261016, =validation/benchmark/pt_island/results/torque_window=) Lanczos finds 16 connected saddles in the first 300 searches where it found 11, as many as the dimer, and 21 in 2000 where it found 17, with 74 distinct saddles of any barrier where it found 56, at 463 force calls a search instead of 620.
 Its misses are now mostly disconnected and over-barrier saddles, as the dimer's are, instead of 1743 repeats in 2000 searches, and the dimer searches are unchanged.
-Run on toward the catalog's stop, it has 26 of its 27 connected saddles by search 3776 and no 27th by search 7126.
+Run on to the catalog's stop, it reaches the 27 connected saddles at search 18171.
 On the 255-atom vacancy of ~examples/minmode_calls.rs~ the window costs more calls (=validation/minmode_lanczos_window.csv=).
 C ABI minor 41.

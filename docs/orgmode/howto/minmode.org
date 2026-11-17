@@ -362,18 +362,20 @@ in all four, so the climbs part where the estimates stop.
 | both | rotation-skip | 2000 | 23 | 721 | 388 | 868 | 0 | 86 | 445 |
 | 8bb8f88 | Lanczos L-BFGS | 2000 | 17 | 63 | 177 | 1743 | 0 | 56 | 620 |
 | 3b67101 | Lanczos L-BFGS | 2000 | 21 | 944 | 364 | 671 | 0 | 74 | 463 |
-| 3b67101 | Lanczos L-BFGS | 7126 | 26 | 3322 | 1407 | 2370 | 1 | 111 | 464 |
+| 3b67101 | Lanczos L-BFGS | 18171 | 27 | 8430 | 3663 | 6046 | 3 | 145 | 465 |
 
 In the window Lanczos misses as the dimers do, on disconnected and
 over-barrier saddles, and in 2000 searches it finds 21 connected saddles
 where it found 17 and 74 distinct ones where it found 56, at 463 force
 calls a search instead of 620.
-Run on toward the catalog's stop of 27 connected saddles or 20000
-searches, it finds its 26th at search 3776 and no 27th by search 7126,
-where ~proxy.py~ read the run's checkpoint (=saddles_lanczos_3b67101.csv=).
+Run on to the catalog's stop of 27 connected saddles or 20000
+searches, it finds its 26th at search 3776 and the 27th, a sixth
+1.49 eV saddle, at search 18171 (=saddles_lanczos_3b67101.csv=), in
+8445282 force calls.
 The dimer rows are those of both commits: their searches agree one for
 one (~searches_sha256~ in =summary.csv=).
-Three dimer FIRE searches stop short of an index-1 point.
+Three dimer FIRE searches and two of the long Lanczos run stop at the
+1000-step cap short of an index-1 point.
 Wall seconds in =summary.csv= are on one core each of a shared
 eight-core machine and are not compared.
 
@@ -381,6 +383,6 @@ eight-core machine and are not compared.
 ~OPTBENCH_ROOT~ names an optbench checkout (18fa13dca), ~RGSADDLE_LIB~
 the library and ~RGSADDLE_SRC~ its source.
 For =results/torque_window=, ~proxy.py~ wrote =summary.csv= at 300 and
-2000 searches and at the last search each run had recorded, and the
-saddles both Lanczos runs found, and ~same_saddle.py~ numbered the
-saddles of the four ~modes.py~ replays (=same_saddle.csv=).
+2000 searches and at the end of each run, and the saddles both Lanczos
+runs found, and ~same_saddle.py~ numbered the saddles of the four
+~modes.py~ replays (=same_saddle.csv=).
