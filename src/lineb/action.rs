@@ -11,7 +11,16 @@
 //! so the objective stored here is this integral. The negative gradient
 //! at an interior image, with `ξ = σ` (`ℏ = 1` in the objective), is
 //!
-//! `g = ½ [(d_prev + d_next) f / σ − (σ + σ_prev) τ_prev + (σ_next + σ) τ_next]`.
+//! `g = ½ [(d_prev + d_next) σ' f − (σ + σ_prev) τ_prev + (σ_next + σ) τ_next]`,
+//!
+//! `σ' = dσ/dV`. The optimizer uses the regularized momentum
+//!
+//! `σ_w = √(Δ + √(Δ² + w²))`, `Δ = V − E`,
+//!
+//! which is `√(2Δ)` to a relative `w²/(8Δ²)` above the turning surface,
+//! stays positive through it, and keeps `σ'` below `1/√w`. The endpoints
+//! cross `V = E` freely. An interior image below `E + w` is outside the
+//! feasible set, and [`assemble`] reports that as `Ok(None)`.
 //!
 //! The nudged force keeps the part of `g` perpendicular to the tangent
 //! and adds the parallel spring `k (|q_next − q| − |q − q_prev|) τ`.
@@ -47,7 +56,8 @@ pub(crate) fn assemble<S: PointSurface>(
     energy: f64,
     spring: f64,
     endpoint_scale: f64,
-) -> Result<Assembly, SaddleError> {
+    width: f64,
+) -> Result<Option<Assembly>, SaddleError> {
     let n = weighted.nrows();
     let dof = weighted.ncols();
     if n < 3 || dof != masses.dof() {
@@ -59,10 +69,12 @@ pub(crate) fn assemble<S: PointSurface>(
         && spring.is_finite()
         && spring > 0.0
         && endpoint_scale.is_finite()
-        && endpoint_scale > 0.0)
+        && endpoint_scale > 0.0
+        && width.is_finite()
+        && width > 0.0)
     {
         return Err(SaddleError::Invalid(
-            "tunneling energy, spring and endpoint scale must be finite, and the scales positive"
+            "tunneling energy, spring, endpoint scale and turning width must be finite, and the scales positive"
                 .into(),
         ));
     }
@@ -93,10 +105,20 @@ pub(crate) fn assemble<S: PointSurface>(
         force.row_mut(i).assign(&f);
     }
 
-    let sigma = energies
+    if energies
         .iter()
-        .map(|&v| momentum(v, energy))
-        .collect::<Result<Vec<_>, _>>()?;
+        .skip(1)
+        .take(n - 2)
+        .any(|&v| v - energy < width)
+    {
+        return Ok(None);
+    }
+    let (sigma, slope): (Vec<f64>, Vec<f64>) = energies
+        .iter()
+        .map(|&v| momentum(v - energy, width))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .unzip();
     let mut dist = Vec::with_capacity(n - 1);
     let mut step = Vec::with_capacity(n - 1);
     let mut unit = Vec::with_capacity(n - 1);
@@ -130,7 +152,7 @@ pub(crate) fn assemble<S: PointSurface>(
     for j in 1..n - 1 {
         let mut g = Array1::zeros(dof);
         let both = dist[j - 1] + dist[j];
-        g.scaled_add(0.5 * both / sigma[j], &force.row(j));
+        g.scaled_add(0.5 * both * slope[j], &force.row(j));
         g.scaled_add(-0.5 * (sigma[j] + sigma[j - 1]), &unit[j - 1]);
         g.scaled_add(0.5 * (sigma[j] + sigma[j + 1]), &unit[j]);
         let tangent = compute_tangent(
@@ -192,27 +214,30 @@ pub(crate) fn assemble<S: PointSurface>(
         }
     }
 
-    Ok(Assembly {
+    Ok(Some(Assembly {
         aligned,
         drive,
         action,
         perp_max,
         opt_max,
-    })
+    }))
 }
 
-fn momentum(potential: f64, energy: f64) -> Result<f64, SaddleError> {
-    let gap = potential - energy;
-    if gap <= 0.0 || gap.is_nan() {
-        return Err(SaddleError::Invalid(
-            "a tunneling image is not above the path energy".into(),
-        ));
-    }
-    let sigma = (2.0 * gap).sqrt();
-    if !sigma.is_finite() {
+/// `σ_w(Δ)` and `dσ_w/dΔ`.
+fn momentum(gap: f64, width: f64) -> Result<(f64, f64), SaddleError> {
+    let root = gap.hypot(width);
+    // `Δ + √(Δ² + w²)` cancels for `Δ < 0`; `w² / (√(Δ² + w²) − Δ)` does not.
+    let inner = if gap >= 0.0 {
+        gap + root
+    } else {
+        width * width / (root - gap)
+    };
+    let sigma = inner.sqrt();
+    let slope = inner / (root * 2.0 * sigma);
+    if !(sigma.is_finite() && slope.is_finite() && sigma > 0.0) {
         return Err(SaddleError::NonFinite("tunneling momentum"));
     }
-    Ok(sigma)
+    Ok((sigma, slope))
 }
 
 fn perpendicular(gradient: ArrayView1<f64>, tangent: ArrayView1<f64>) -> Array1<f64> {
@@ -256,7 +281,7 @@ pub(crate) fn unpack(flat: ArrayView1<f64>, n: usize, dof: usize) -> Array2<f64>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::{Array1, Array2, ArrayView1};
+    use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
 
     /// Eckart barrier in `x` and a harmonic valley in `y`.
     struct Valley;
@@ -286,7 +311,13 @@ mod tests {
         let energy = 0.25;
         let spring = 0.1;
         let endpoint = 0.2;
-        let assembly = assemble(&Valley, &masses, images.view(), energy, spring, endpoint).unwrap();
+        let width = 1e-3;
+        let assemble_at = |images: ArrayView2<f64>| {
+            assemble(&Valley, &masses, images, energy, spring, endpoint, width)
+                .unwrap()
+                .unwrap()
+        };
+        let assembly = assemble_at(images.view());
         for image in 1..images.nrows() - 1 {
             // The probe length is the transverse coordinate itself.
             let delta = images[(image, 1)].abs() * f64::EPSILON.sqrt();
@@ -294,12 +325,8 @@ mod tests {
             let mut minus = images.clone();
             plus[(image, 1)] += delta;
             minus[(image, 1)] -= delta;
-            let up = assemble(&Valley, &masses, plus.view(), energy, spring, endpoint)
-                .unwrap()
-                .action;
-            let down = assemble(&Valley, &masses, minus.view(), energy, spring, endpoint)
-                .unwrap()
-                .action;
+            let up = assemble_at(plus.view()).action;
+            let down = assemble_at(minus.view()).action;
             let slope = (up - down) / (2.0 * delta);
             let predicted = -assembly.drive[(image, 1)];
             // Relative to the larger of the two slopes. When both vanish,
