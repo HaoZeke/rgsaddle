@@ -138,13 +138,13 @@ pub use ocineb::{
 pub use ohtst::{
     AnharmonicConfig, AnharmonicCorrection, BasinConfig, BasinDensity, BasinEnd, Basins, Counting,
     EndState, Endpoint, FixedCell, GaussianTransport, HarmonicReference, Hyperplane,
-    LangevinConfig, MassWeighted, OhTstRate, PermutationDistance, PlaneDensity, PlaneIntegrator,
-    PlaneMetric, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum, PlanePath, PlaneSample,
-    PlaneTrace, QuenchConfig, ReactantDensity, ReversibleWork, ReversibleWorkConfig, StateDistance,
-    TransmissionCoefficient, TransmissionConfig, TransmissionEstimate, Transport, Uncontrolled,
-    WorkEstimate, WorkNode, anharmonic_correction, basin_density, flux_mass, ohtst_rate,
-    plane_transmission, reactant_density, reversible_work, reversible_work_along, sample_plane,
-    transmission_coefficient,
+    HyperplaneConstraint, LangevinConfig, MassWeighted, OhTstRate, PermutationDistance,
+    PlaneDensity, PlaneIntegrator, PlaneMetric, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum,
+    PlanePath, PlaneSample, PlaneTrace, QuenchConfig, ReactantDensity, ReversibleWork,
+    ReversibleWorkConfig, StateDistance, TransmissionCoefficient, TransmissionConfig,
+    TransmissionEstimate, Transport, Uncontrolled, WorkEstimate, WorkNode, anharmonic_correction,
+    basin_density, flux_mass, ohtst_rate, plane_transmission, reactant_density, reversible_work,
+    reversible_work_along, sample_plane, transmission_coefficient, uniform_translations,
 };
 pub use pafi::{
     ArcPath, BalancedBarriers, FramePlanes, FreeEnergyProfile, HyperplaneAverage, Integrator,

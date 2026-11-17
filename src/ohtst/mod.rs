@@ -113,7 +113,7 @@ pub use basin::{BasinConfig, BasinDensity, BasinEnd, basin_density};
 pub use control::HarmonicReference;
 pub use optimize::{PlaneMetric, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum, PlaneTrace};
 pub use path::PlanePath;
-pub use plane::{FixedCell, Hyperplane, MassWeighted};
+pub use plane::{FixedCell, Hyperplane, HyperplaneConstraint, MassWeighted, uniform_translations};
 pub use rate::{OhTstRate, PlaneDensity, flux_mass, ohtst_rate, plane_transmission};
 pub use reactant::{ReactantDensity, reactant_density};
 pub use sample::{LangevinConfig, PlaneIntegrator, PlaneSample, Uncontrolled, sample_plane};
