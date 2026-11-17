@@ -619,6 +619,12 @@ impl AutoNebTuning {
                 "AutoNEB does not carry the solid-state block".into(),
             ));
         }
+        if band.string.is_some() {
+            return Err(SaddleError::Invalid(
+                "AutoNEB windows relax with rescaled springs; the simplified string method has no springs"
+                    .into(),
+            ));
+        }
         match &band.spring {
             SpringKind::Uniform { k } if k.is_finite() => {}
             SpringKind::Uniform { .. } => {
