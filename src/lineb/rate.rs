@@ -36,7 +36,7 @@ use ndarray::ArrayView2;
 use ndarray::{Array1, Array2, ArrayView1, s};
 
 use super::action::l2;
-use super::align::cross;
+use super::align::rigid_directions;
 use super::mass::Masses;
 use super::optimize::LinebPath;
 use super::path;
@@ -365,7 +365,16 @@ fn gauge_modes(beads: &Array2<f64>, masses: &Masses) -> Result<Vec<Array1<f64>>,
     let mut modes = Vec::new();
     modes.push(velocity_mode(beads)?);
     if let Some(atoms) = masses.atoms {
-        modes.extend(rigid_modes(beads, &masses.sqrt_mass, atoms));
+        // The whole ring moves rigidly: its replicas are one molecule of
+        // `P · atoms` atoms.
+        let ring = Array1::from_iter(beads.iter().copied());
+        let sqrt_mass =
+            Array1::from_iter((0..beads.nrows()).flat_map(|_| masses.sqrt_mass.iter().copied()));
+        modes.extend(rigid_directions(
+            ring.view(),
+            sqrt_mass.view(),
+            beads.nrows() * atoms,
+        ));
     }
     Ok(orthonormalize(modes))
 }
@@ -389,39 +398,6 @@ fn velocity_mode(beads: &Array2<f64>) -> Result<Array1<f64>, SaddleError> {
     }
     mode /= norm;
     Ok(mode)
-}
-
-fn rigid_modes(beads: &Array2<f64>, sqrt_mass: &Array1<f64>, atoms: usize) -> Vec<Array1<f64>> {
-    let count = beads.nrows();
-    let dof = beads.ncols();
-    let mut modes = Vec::with_capacity(6);
-    for axis in 0..3 {
-        let mut mode = Array1::zeros(count * dof);
-        for bead in 0..count {
-            for atom in 0..atoms {
-                mode[bead * dof + 3 * atom + axis] = sqrt_mass[3 * atom];
-            }
-        }
-        modes.push(mode);
-    }
-    for axis in 0..3 {
-        let mut mode = Array1::zeros(count * dof);
-        for bead in 0..count {
-            for atom in 0..atoms {
-                let point = [
-                    beads[(bead, 3 * atom)],
-                    beads[(bead, 3 * atom + 1)],
-                    beads[(bead, 3 * atom + 2)],
-                ];
-                let turned = cross(axis, point);
-                for component in 0..3 {
-                    mode[bead * dof + 3 * atom + component] = turned[component];
-                }
-            }
-        }
-        modes.push(mode);
-    }
-    modes
 }
 
 fn orthonormalize(modes: Vec<Array1<f64>>) -> Vec<Array1<f64>> {
