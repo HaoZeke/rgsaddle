@@ -15,6 +15,11 @@
 //! Image blocks are stored by image index after every rank finishes,
 //! so the band does not depend on which block finished first.
 //!
+//! [`lineb::LinebSession`] minimizes the fixed-energy tunneling action
+//! of Ásgeirsson, Arnaldsson and Jónsson, J. Chem. Phys. 148, 102334
+//! (2018), doi:10.1063/1.5007180, and [`lineb::hqtst_rate`] turns the
+//! resulting instanton into a harmonic quantum TST rate.
+//!
 //! [`nichols::Index1Session`] is the index-1 search on a dense
 //! Hessian: Baker's restricted-step partitioned RFO (maximize the
 //! lowest mode, minimize the rest, with the step inside a Euclidean
@@ -75,6 +80,7 @@ pub mod idpp;
 pub mod indexk;
 #[cfg(feature = "lammps")]
 pub mod lammps;
+pub mod lineb;
 pub mod minmode;
 pub mod nichols;
 pub mod occupancy;
@@ -154,6 +160,12 @@ pub use indexk::{
 pub use lammps::{
     LammpsHyperplaneSampler, LammpsSamplerConfig, LammpsSystem, LammpsThermodynamicReference,
     LammpsThermostatKind, LammpsThermostatRecord,
+};
+#[cfg(any(test, feature = "lineb-oracle"))]
+pub use lineb::hqtst_rate_interpolated_hessian;
+pub use lineb::{
+    HqtstRate, LinebConfig, LinebPath, LinebReport, LinebSession, LinebStatus, Masses,
+    continue_from_mep, hqtst_rate,
 };
 pub use minmode::{
     ArtNConfig, FiniteDifference, MinModeConfig, MinModeKind, MinModeReport, MinModeSession,
