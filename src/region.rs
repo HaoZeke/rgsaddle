@@ -10,7 +10,7 @@
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use ndarray::{Array1, Array2, ArrayView1};
+use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
 
 use crate::{Hyperplane, SaddleError};
 
@@ -379,6 +379,110 @@ impl SymmetrySource for PeriodicSymmetryOperations {
     }
 }
 
+/// A three-dimensional crystal point-group operation.
+///
+/// `permutation[source] = target` describes where each atom is placed. If
+/// it is absent, [`SymmetryUniqueRegion::from_crystal_operations`] derives
+/// it by species-aware nearest-image matching against the reactant.
+#[non_exhaustive]
+#[derive(Clone, Debug, Default)]
+pub struct CrystalSymmetryOperation {
+    /// Orthogonal Cartesian matrix.
+    pub rotation: Array2<f64>,
+    /// Translation applied after rotation.
+    pub translation: Option<Array1<f64>>,
+    /// Centre about which the rotation acts.
+    pub centre: Option<Array1<f64>>,
+    /// Optional source-to-target atom permutation.
+    pub permutation: Option<Vec<usize>>,
+}
+
+impl CrystalSymmetryOperation {
+    /// Set [`Self::rotation`].
+    #[must_use]
+    pub fn with_rotation(mut self, rotation: Array2<f64>) -> Self {
+        self.rotation = rotation;
+        self
+    }
+
+    /// Set [`Self::translation`].
+    #[must_use]
+    pub fn with_translation(mut self, translation: Array1<f64>) -> Self {
+        self.translation = Some(translation);
+        self
+    }
+
+    /// Set [`Self::centre`].
+    #[must_use]
+    pub fn with_centre(mut self, centre: Array1<f64>) -> Self {
+        self.centre = Some(centre);
+        self
+    }
+
+    /// Set [`Self::permutation`].
+    #[must_use]
+    pub fn with_permutation(mut self, permutation: Vec<usize>) -> Self {
+        self.permutation = Some(permutation);
+        self
+    }
+}
+
+/// Validation and matching controls for crystal symmetry operations.
+#[non_exhaustive]
+#[derive(Clone, Debug)]
+pub struct CrystalSymmetryConfig {
+    /// Maximum absolute entry error in `R^T R - I`.
+    pub orthogonality_tolerance: f64,
+    /// Maximum atom distance when matching a transformed reactant.
+    pub matching_tolerance: f64,
+    /// Maximum atom distance for identifying two saddle images.
+    pub orbit_tolerance: f64,
+    /// Periodic cell used for every nearest-image displacement.
+    pub cell: Option<minimage::Cell>,
+}
+
+impl Default for CrystalSymmetryConfig {
+    fn default() -> Self {
+        let geometric_tolerance = 256.0 * f64::EPSILON.sqrt();
+        Self {
+            orthogonality_tolerance: 64.0 * f64::EPSILON.sqrt(),
+            matching_tolerance: geometric_tolerance,
+            orbit_tolerance: geometric_tolerance,
+            cell: None,
+        }
+    }
+}
+
+impl CrystalSymmetryConfig {
+    /// Set [`Self::orthogonality_tolerance`].
+    #[must_use]
+    pub fn with_orthogonality_tolerance(mut self, tolerance: f64) -> Self {
+        self.orthogonality_tolerance = tolerance;
+        self
+    }
+
+    /// Set [`Self::matching_tolerance`].
+    #[must_use]
+    pub fn with_matching_tolerance(mut self, tolerance: f64) -> Self {
+        self.matching_tolerance = tolerance;
+        self
+    }
+
+    /// Set [`Self::orbit_tolerance`].
+    #[must_use]
+    pub fn with_orbit_tolerance(mut self, tolerance: f64) -> Self {
+        self.orbit_tolerance = tolerance;
+        self
+    }
+
+    /// Use `cell` for periodic nearest-image matching and orbit distances.
+    #[must_use]
+    pub fn with_cell(mut self, cell: minimage::Cell) -> Self {
+        self.cell = Some(cell);
+        self
+    }
+}
+
 /// Voronoi cell of one representative among the symmetry images on a
 /// hyperplane.
 #[derive(Clone, Debug)]
@@ -389,6 +493,70 @@ pub struct SymmetryUniqueRegion {
 }
 
 impl SymmetryUniqueRegion {
+    /// Lift crystal point-group operations into a configuration-space cell.
+    ///
+    /// Only operations that stabilize `reactant` contribute. Their atom
+    /// permutations are either supplied explicitly or obtained by
+    /// species-aware nearest-image matching. The returned degeneracy is the
+    /// number of distinct saddle images under that stabilizer.
+    pub fn from_crystal_operations(
+        reactant: ArrayView2<'_, f64>,
+        saddle: ArrayView2<'_, f64>,
+        species: &[usize],
+        operations: &[CrystalSymmetryOperation],
+        config: &CrystalSymmetryConfig,
+    ) -> Result<(Self, usize), SaddleError> {
+        validate_crystal_input(reactant, saddle, species, operations, config)?;
+        let mut images = vec![flatten_geometry(saddle)];
+        let mut stabilizer_size = 0_usize;
+
+        for operation in operations {
+            validate_crystal_operation(operation, reactant.nrows(), species, config)?;
+            let transformed_reactant = transform_unpermuted(reactant, operation)?;
+            let permutation = match &operation.permutation {
+                Some(permutation) => {
+                    if !maps_reactant(transformed_reactant.view(), reactant, permutation, config)? {
+                        continue;
+                    }
+                    permutation.clone()
+                }
+                None => match derive_permutation(
+                    transformed_reactant.view(),
+                    reactant,
+                    species,
+                    config,
+                )? {
+                    Some(permutation) => permutation,
+                    None => continue,
+                },
+            };
+            stabilizer_size += 1;
+            let raw_image = permute_geometry(
+                transform_unpermuted(saddle, operation)?.view(),
+                &permutation,
+            )?;
+            let image = unwrap_against(saddle, raw_image.view(), config)?;
+            let mut distinct = true;
+            for known in &images {
+                if same_geometry(known, &image, config)? {
+                    distinct = false;
+                    break;
+                }
+            }
+            if distinct {
+                images.push(image);
+            }
+        }
+        if stabilizer_size == 0 {
+            return Err(SaddleError::Invalid(
+                "no supplied operation stabilizes the reactant".into(),
+            ));
+        }
+        let region = Self::from_images(images)?;
+        let degeneracy = region.degeneracy;
+        Ok((region, degeneracy))
+    }
+
     /// Build the cell from operations that map `plane` onto itself.
     ///
     /// Distinctness and plane-preservation tolerances are derived from
@@ -475,10 +643,331 @@ impl SymmetryUniqueRegion {
         })
     }
 
+    fn from_images(images: Vec<Array1<f64>>) -> Result<Self, SaddleError> {
+        let representative = match images.first() {
+            Some(representative) => representative.clone(),
+            None => {
+                return Err(SaddleError::Invalid(
+                    "a symmetry orbit needs a representative".into(),
+                ));
+            }
+        };
+        let mut boundaries = Vec::with_capacity(images.len().saturating_sub(1));
+        for image in images.iter().skip(1) {
+            let direction = image - &representative;
+            let midpoint = 0.5 * (image + &representative);
+            boundaries.push(PlanarBoundary::containing(
+                midpoint,
+                direction,
+                representative.view(),
+            )?);
+        }
+        Ok(Self {
+            representative,
+            boundaries,
+            degeneracy: images.len(),
+        })
+    }
+
     /// Representative configuration of this cell.
     pub fn representative(&self) -> ArrayView1<'_, f64> {
         self.representative.view()
     }
+}
+
+fn validate_crystal_input(
+    reactant: ArrayView2<'_, f64>,
+    saddle: ArrayView2<'_, f64>,
+    species: &[usize],
+    operations: &[CrystalSymmetryOperation],
+    config: &CrystalSymmetryConfig,
+) -> Result<(), SaddleError> {
+    if reactant.ncols() != 3
+        || saddle.ncols() != 3
+        || reactant.nrows() == 0
+        || reactant.raw_dim() != saddle.raw_dim()
+        || species.len() != reactant.nrows()
+    {
+        return Err(SaddleError::Shape(
+            "crystal geometries need matching nonempty N by 3 rows and one species per atom".into(),
+        ));
+    }
+    if operations.is_empty() {
+        return Err(SaddleError::Invalid(
+            "a crystal symmetry group needs at least one operation".into(),
+        ));
+    }
+    if reactant
+        .iter()
+        .chain(saddle.iter())
+        .any(|value| !value.is_finite())
+    {
+        return Err(SaddleError::NonFinite("crystal geometry"));
+    }
+    for tolerance in [
+        config.orthogonality_tolerance,
+        config.matching_tolerance,
+        config.orbit_tolerance,
+    ] {
+        if !(tolerance.is_finite() && tolerance > 0.0) {
+            return Err(SaddleError::Invalid(
+                "crystal symmetry tolerances must be finite and positive".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_crystal_operation(
+    operation: &CrystalSymmetryOperation,
+    atom_count: usize,
+    species: &[usize],
+    config: &CrystalSymmetryConfig,
+) -> Result<(), SaddleError> {
+    if operation.rotation.dim() != (3, 3) {
+        return Err(SaddleError::Shape(
+            "crystal symmetry rotations must be 3 by 3".into(),
+        ));
+    }
+    if operation.rotation.iter().any(|value| !value.is_finite()) {
+        return Err(SaddleError::NonFinite("crystal symmetry rotation"));
+    }
+    for vector in [&operation.translation, &operation.centre]
+        .into_iter()
+        .flatten()
+    {
+        if vector.len() != 3 {
+            return Err(SaddleError::Shape(
+                "crystal symmetry translations and centres need three components".into(),
+            ));
+        }
+        if vector.iter().any(|value| !value.is_finite()) {
+            return Err(SaddleError::NonFinite("crystal symmetry offset"));
+        }
+    }
+    let gram = operation.rotation.t().dot(&operation.rotation);
+    let orthogonality_error = gram
+        .indexed_iter()
+        .map(|((row, column), value)| {
+            let target = if row == column { 1.0 } else { 0.0 };
+            (value - target).abs()
+        })
+        .fold(0.0_f64, f64::max);
+    if orthogonality_error > config.orthogonality_tolerance {
+        return Err(SaddleError::Invalid(
+            "crystal symmetry rotation is not orthogonal".into(),
+        ));
+    }
+    if let Some(permutation) = &operation.permutation {
+        if permutation.len() != atom_count {
+            return Err(SaddleError::Shape(
+                "crystal symmetry permutation length differs from the atom count".into(),
+            ));
+        }
+        let mut seen = vec![false; atom_count];
+        for (source, target) in permutation.iter().copied().enumerate() {
+            if target >= atom_count || seen[target] {
+                return Err(SaddleError::Invalid(
+                    "crystal symmetry permutation is not bijective".into(),
+                ));
+            }
+            if species[source] != species[target] {
+                return Err(SaddleError::Invalid(
+                    "crystal symmetry permutation maps different species".into(),
+                ));
+            }
+            seen[target] = true;
+        }
+    }
+    Ok(())
+}
+
+fn transform_unpermuted(
+    geometry: ArrayView2<'_, f64>,
+    operation: &CrystalSymmetryOperation,
+) -> Result<Array2<f64>, SaddleError> {
+    let zero = Array1::zeros(3);
+    let centre = match &operation.centre {
+        Some(centre) => centre,
+        None => &zero,
+    };
+    let translation = match &operation.translation {
+        Some(translation) => translation,
+        None => &zero,
+    };
+    let mut transformed = Array2::zeros(geometry.raw_dim());
+    for atom in 0..geometry.nrows() {
+        let rotated = operation.rotation.dot(&(&geometry.row(atom) - centre));
+        transformed
+            .row_mut(atom)
+            .assign(&(&rotated + centre + translation));
+    }
+    Ok(transformed)
+}
+
+fn displacement3(
+    from: ArrayView1<'_, f64>,
+    to: ArrayView1<'_, f64>,
+    config: &CrystalSymmetryConfig,
+) -> Result<[f64; 3], SaddleError> {
+    if from.len() != 3 || to.len() != 3 {
+        return Err(SaddleError::Shape(
+            "nearest-image displacement needs two three-vectors".into(),
+        ));
+    }
+    match &config.cell {
+        Some(cell) => {
+            Ok(cell.displacement_euclidean([from[0], from[1], from[2]], [to[0], to[1], to[2]]))
+        }
+        None => Ok([to[0] - from[0], to[1] - from[1], to[2] - from[2]]),
+    }
+}
+
+fn distance3(
+    from: ArrayView1<'_, f64>,
+    to: ArrayView1<'_, f64>,
+    config: &CrystalSymmetryConfig,
+) -> Result<f64, SaddleError> {
+    let displacement = displacement3(from, to, config)?;
+    Ok(displacement
+        .iter()
+        .map(|value| value * value)
+        .sum::<f64>()
+        .sqrt())
+}
+
+fn maps_reactant(
+    transformed: ArrayView2<'_, f64>,
+    reactant: ArrayView2<'_, f64>,
+    permutation: &[usize],
+    config: &CrystalSymmetryConfig,
+) -> Result<bool, SaddleError> {
+    for (source, target) in permutation.iter().copied().enumerate() {
+        if distance3(transformed.row(source), reactant.row(target), config)?
+            > config.matching_tolerance
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn derive_permutation(
+    transformed: ArrayView2<'_, f64>,
+    reactant: ArrayView2<'_, f64>,
+    species: &[usize],
+    config: &CrystalSymmetryConfig,
+) -> Result<Option<Vec<usize>>, SaddleError> {
+    let atom_count = transformed.nrows();
+    let mut candidates = vec![Vec::<(usize, f64)>::new(); atom_count];
+    for source in 0..atom_count {
+        for target in 0..atom_count {
+            if species[source] == species[target] {
+                let distance = distance3(transformed.row(source), reactant.row(target), config)?;
+                if distance <= config.matching_tolerance {
+                    candidates[source].push((target, distance));
+                }
+            }
+        }
+        candidates[source].sort_by(|left, right| left.1.total_cmp(&right.1));
+        if candidates[source].is_empty() {
+            return Ok(None);
+        }
+    }
+    let mut target_to_source = vec![None; atom_count];
+    for source in 0..atom_count {
+        let mut visited = vec![false; atom_count];
+        if !augment_matching(source, &candidates, &mut target_to_source, &mut visited) {
+            return Ok(None);
+        }
+    }
+    let mut permutation = vec![0; atom_count];
+    for (target, source) in target_to_source.into_iter().enumerate() {
+        match source {
+            Some(source) => permutation[source] = target,
+            None => return Ok(None),
+        }
+    }
+    Ok(Some(permutation))
+}
+
+fn augment_matching(
+    source: usize,
+    candidates: &[Vec<(usize, f64)>],
+    target_to_source: &mut [Option<usize>],
+    visited: &mut [bool],
+) -> bool {
+    for (target, _) in &candidates[source] {
+        if visited[*target] {
+            continue;
+        }
+        visited[*target] = true;
+        let available = match target_to_source[*target] {
+            Some(previous) => augment_matching(previous, candidates, target_to_source, visited),
+            None => true,
+        };
+        if available {
+            target_to_source[*target] = Some(source);
+            return true;
+        }
+    }
+    false
+}
+
+fn permute_geometry(
+    transformed: ArrayView2<'_, f64>,
+    permutation: &[usize],
+) -> Result<Array2<f64>, SaddleError> {
+    if transformed.nrows() != permutation.len() {
+        return Err(SaddleError::Shape(
+            "transformed geometry and permutation sizes differ".into(),
+        ));
+    }
+    let mut result = Array2::zeros(transformed.raw_dim());
+    for (source, target) in permutation.iter().copied().enumerate() {
+        result.row_mut(target).assign(&transformed.row(source));
+    }
+    Ok(result)
+}
+
+fn unwrap_against(
+    reference: ArrayView2<'_, f64>,
+    image: ArrayView2<'_, f64>,
+    config: &CrystalSymmetryConfig,
+) -> Result<Array1<f64>, SaddleError> {
+    let mut unwrapped = Array1::zeros(reference.len());
+    for atom in 0..reference.nrows() {
+        let displacement = displacement3(reference.row(atom), image.row(atom), config)?;
+        for axis in 0..3 {
+            unwrapped[3 * atom + axis] = reference[[atom, axis]] + displacement[axis];
+        }
+    }
+    Ok(unwrapped)
+}
+
+fn same_geometry(
+    left: &Array1<f64>,
+    right: &Array1<f64>,
+    config: &CrystalSymmetryConfig,
+) -> Result<bool, SaddleError> {
+    if left.len() != right.len() || !left.len().is_multiple_of(3) {
+        return Err(SaddleError::Shape(
+            "saddle orbit images need matching atom triples".into(),
+        ));
+    }
+    for atom in 0..left.len() / 3 {
+        let start = 3 * atom;
+        let left_atom = left.slice(ndarray::s![start..start + 3]);
+        let right_atom = right.slice(ndarray::s![start..start + 3]);
+        if distance3(left_atom, right_atom, config)? > config.orbit_tolerance {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn flatten_geometry(geometry: ArrayView2<'_, f64>) -> Array1<f64> {
+    Array1::from_iter(geometry.iter().copied())
 }
 
 impl Region for SymmetryUniqueRegion {

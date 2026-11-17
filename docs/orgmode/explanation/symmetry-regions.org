@@ -1,0 +1,62 @@
+#+title: Crystal operations and symmetry-unique regions
+#+options: toc:2 num:t
+
+* Construction
+
+A host supplies three-dimensional orthogonal matrices, optional affine
+translations or rotation centres, and reactant and saddle Cartesian
+geometries.  An operation acts on an atom at \(x\) as
+
+\[
+x' = R(x-c)+c+t.
+\]
+
+The operation may also carry a source-to-target atom permutation.  When it
+does not, rgsaddle matches transformed reactant atoms to reactant atoms of
+the same species.  Periodic distances and the final unwrapping use
+=minimage::Cell::displacement_euclidean=.  The implementation does not
+duplicate a minimum-image convention.
+
+This is a consumer API, not a space-group finder.  The host remains
+responsible for supplying the candidate crystallographic operations.
+The affine form and the distinction between point and space-group
+operations follow the conventions in International Tables for
+Crystallography, Volume A, edited by Theo Hahn, 5th edition (2005),
+doi:10.1107/97809553602060000100.
+
+* Stabilizer and degeneracy
+
+Operations which map the reactant onto itself form the reactant stabilizer
+\(H\).  The constructor applies every member of \(H\) to the selected
+saddle and removes duplicate images.  Therefore
+
+\[
+d = |H . s| = {|H| \over |H_s|},
+\]
+
+where \(H_s\) is the subgroup that also fixes the saddle.  This is the
+orbit-stabilizer theorem; see Jean-Pierre Serre, /Linear Representations of
+Finite Groups/, Springer (1977), doi:10.1007/978-1-4684-9458-7.
+
+The returned =SymmetryUniqueRegion= is the Voronoi cell of the selected
+saddle against the other images.  Every face is the perpendicular bisector
+between the representative and one image.  An identity-only group has one
+image, no faces, and degeneracy one.  The full octahedral stabilizer of an
+fcc vacancy sends one nearest-neighbour hop to twelve distinct hop
+directions, so that fixture has degeneracy twelve.
+
+* Validation and tolerances
+
+The constructor rejects non-finite data, non-orthogonal matrices,
+non-bijective permutations, and permutations that map unlike species.
+Operations that are valid group operations but do not stabilize the
+particular reactant are omitted from \(H\).  Matching, orbit, and
+orthogonality tolerances are explicit fields of
+=CrystalSymmetryConfig=.  Callers should choose them for their coordinate
+units and structure accuracy instead of relying on a hidden physical
+tolerance.
+
+For periodic cells the nearest-image displacement is the standard
+simulation-cell convention described by Daan Frenkel and Berend Smit,
+/Understanding Molecular Simulation/, 2nd edition, Academic Press (2002),
+doi:10.1016/B978-0-12-267351-1.X5000-7.
