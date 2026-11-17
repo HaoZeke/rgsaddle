@@ -1,8 +1,9 @@
 //! Fixed atoms on a band (`BandConfig::with_fixed_atoms`): a Morse
 //! fcc(100) slab with its bottom layer frozen and an adatom hopping
 //! between hollow sites. The frozen layer never moves under any stepper,
-//! the exponential metric reaches the same saddle as the plain band, and
-//! an all-false mask is the band without a mask.
+//! the min-mode refinement keeps the climbing image on the band's
+//! mirror, the exponential metric reaches the same saddle as the plain
+//! band, and an all-false mask is the band without a mask.
 
 use rgsaddle::{
     BandConfig, BandRtr, BandSession, BandStatus, BandSurface, ExpBandPrecon, RtrConfig,
@@ -48,9 +49,39 @@ fn free_max(gradient: ndarray::ArrayView1<f64>) -> f64 {
         .fold(0.0_f64, |m, (_, v)| m.max(v.abs()))
 }
 
-/// Climbing-image energy and the free-atom gradient there after a
-/// converged run.
-fn converge(config: BandConfig, rtr: bool, band: &Array2<f64>) -> (f64, f64, usize) {
+/// Largest distance from an atom of `x`, mirrored through the plane
+/// `y = r0` of the adatom's row, to the nearest atom of `x` under the
+/// cell. The slab and the straight band map onto themselves, so this is
+/// zero on every image of the starting band.
+fn mirror_error(x: ArrayView1<f64>) -> f64 {
+    let side = slab_box();
+    let atoms = x.len() / 3;
+    (0..atoms)
+        .map(|a| {
+            let mirrored = [x[3 * a], 2.0 * SLAB_R0 - x[3 * a + 1], x[3 * a + 2]];
+            (0..atoms)
+                .map(|b| {
+                    (0..3)
+                        .map(|c| {
+                            let d = mirrored[c] - x[3 * b + c];
+                            let d = if c < 2 {
+                                d - side * (d / side).round()
+                            } else {
+                                d
+                            };
+                            d * d
+                        })
+                        .sum::<f64>()
+                        .sqrt()
+                })
+                .fold(f64::INFINITY, f64::min)
+        })
+        .fold(0.0, f64::max)
+}
+
+/// Climbing-image energy, the free-atom gradient there, the surface
+/// rows and the climbing image after a converged run.
+fn converge(config: BandConfig, rtr: bool, band: &Array2<f64>) -> (f64, f64, usize, Array1<f64>) {
     let surface = SlabSurface::new();
     let mut session = BandSession::new(config, band.clone()).expect("session");
     if rtr {
@@ -72,8 +103,9 @@ fn converge(config: BandConfig, rtr: bool, band: &Array2<f64>) -> (f64, f64, usi
         "a frozen atom moved"
     );
     let ci = session.climbing_image().expect("climbing image");
-    let (energy, gradient) = slab_energy(session.positions().row(ci));
-    (energy, free_max(gradient.view()), surface.rows())
+    let image = session.positions().row(ci).to_owned();
+    let (energy, gradient) = slab_energy(image.view());
+    (energy, free_max(gradient.view()), surface.rows(), image)
 }
 
 #[test]
@@ -87,10 +119,37 @@ fn frozen_atoms_are_bitwise_unchanged_by_every_stepper() {
         ("RTR", rgmin::Method::fire(rgmin::FireKind::V2), true),
     ];
     for (name, method, rtr) in methods {
-        let (energy, residual, rows) = converge(config().with_method(method), rtr, &band);
+        let (energy, residual, rows, _) = converge(config().with_method(method), rtr, &band);
         eprintln!("{name}: saddle energy {energy:.9}, free |g| {residual:.2e}, {rows} rows");
         assert!(residual <= 1e-3, "{name} climbing image is not stationary");
     }
+}
+
+#[test]
+fn fire_min_mode_refinement_keeps_the_band_mirror() {
+    // The band's own climbing image converges on the mirror through the
+    // adatom's row. FIRE hands it to the refinement far from convergence
+    // and climbs for tens of steps, so a climb model that breaks the
+    // mirror carries the image off it, to a lower stationary point.
+    let band = slab_band(N_IMAGES);
+    let (plain, ..) = converge(config().with_min_mode(None), false, &band);
+    let (energy, residual, _, image) = converge(config(), false, &band);
+    let mirror = mirror_error(image.view());
+    eprintln!(
+        "FIRE climbing image {energy:.10} with the refinement, {plain:.10} without; \
+         mirror error {mirror:.2e}"
+    );
+    assert!(residual <= 1e-3, "the climbing image is not stationary");
+    assert!(
+        mirror < 1e-5,
+        "the climbing image left the mirror by {mirror}"
+    );
+    // Each run stops within tol^2 / |lambda| of the same stationary
+    // point, with tol 1e-3 and |lambda| at least 0.037 there.
+    assert!(
+        (energy - plain).abs() < 1e-4,
+        "FIRE with the refinement {energy} against {plain} without"
+    );
 }
 
 #[test]
@@ -98,10 +157,8 @@ fn exp_precon_with_a_frozen_layer_reaches_the_plain_saddle() {
     let band = slab_band(N_IMAGES);
     let tol = 1e-4;
     let plain = config().with_force_tol(tol);
-    // FIRE with the min-mode refinement settles this band on a second,
-    // lower stationary point with a reshaped substrate, with or without
-    // the mask; the plain reference is the climbing image alone.
-    let (fire, ..) = converge(plain.clone().with_min_mode(None), false, &band);
+    let (fire, ..) = converge(plain.clone(), false, &band);
+    let (climb_only, ..) = converge(plain.clone().with_min_mode(None), false, &band);
     let (lbfgs, ..) = converge(
         plain
             .clone()
@@ -109,7 +166,7 @@ fn exp_precon_with_a_frozen_layer_reaches_the_plain_saddle() {
         false,
         &band,
     );
-    let (ode, ode_residual, _) = converge(
+    let (ode, ode_residual, ..) = converge(
         plain
             .clone()
             .with_method(rgmin::Method::Ode12r)
@@ -117,15 +174,17 @@ fn exp_precon_with_a_frozen_layer_reaches_the_plain_saddle() {
         false,
         &band,
     );
-    let (fire_exp, fire_residual, _) = converge(plain.with_exp_precon(Some(exp())), false, &band);
+    let (fire_exp, fire_residual, ..) = converge(plain.with_exp_precon(Some(exp())), false, &band);
     eprintln!(
-        "saddle energies: FIRE {fire:.10}, L-BFGS {lbfgs:.10}, ODE12r-Exp {ode:.10}, FIRE-Exp {fire_exp:.10}"
+        "saddle energies: FIRE {fire:.10}, FIRE without the refinement {climb_only:.10}, \
+         L-BFGS {lbfgs:.10}, ODE12r-Exp {ode:.10}, FIRE-Exp {fire_exp:.10}"
     );
     assert!(ode_residual <= tol && fire_residual <= tol);
     // A free gradient of at most tol puts the climbing image within
     // tol / |lambda| of the saddle and its energy within tol^2 / |lambda|
     // of the saddle energy; the softest mode here is well above 1e-2.
     for (name, energy) in [
+        ("FIRE without the refinement", climb_only),
         ("ODE12r-Exp", ode),
         ("FIRE-Exp", fire_exp),
         ("L-BFGS", lbfgs),

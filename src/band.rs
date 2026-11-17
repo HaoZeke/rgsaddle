@@ -113,6 +113,54 @@ impl Cell {
             }
         }
     }
+
+    /// Nonzero lattice translations, along the axes
+    /// [`Cell::minimum_image`] wraps, that can carry a wrapped
+    /// displacement to another image shorter than `cutoff`. Empty when
+    /// every wrapped axis has a cell height of more than twice the
+    /// cutoff, where the minimum image is the only image in range.
+    pub(crate) fn image_translations(&self, cutoff: f64) -> Vec<[f64; 3]> {
+        // Bounds the enumeration on a cell far thinner than the cutoff.
+        const MAX_REACH: f64 = 16.0;
+        let h = &self.0;
+        let periodic: [bool; 3] = std::array::from_fn(|i| h[i].iter().any(|v| *v != 0.0));
+        // A wrapped displacement has a fractional component of at most
+        // 1/2 along each wrapped axis, so the image n steps away along
+        // it is at least (|n| - 1/2) heights long.
+        let reach = |height: f64| (cutoff / height + 0.5).floor().clamp(0.0, MAX_REACH) as i64;
+        let mut range = [0_i64; 3];
+        if periodic.iter().all(|p| *p)
+            && let Some(inv) = self.inverse()
+        {
+            for (i, slot) in range.iter_mut().enumerate() {
+                let norm = (inv[0][i].powi(2) + inv[1][i].powi(2) + inv[2][i].powi(2)).sqrt();
+                *slot = reach(1.0 / norm);
+            }
+        } else {
+            for (c, slot) in range.iter_mut().enumerate() {
+                let l = h[c][c];
+                let axis_aligned = (0..3).all(|k| k == c || h[c][k] == 0.0);
+                if periodic[c] && axis_aligned && l > 0.0 {
+                    *slot = reach(l);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for n0 in -range[0]..=range[0] {
+            for n1 in -range[1]..=range[1] {
+                for n2 in -range[2]..=range[2] {
+                    if (n0, n1, n2) == (0, 0, 0) {
+                        continue;
+                    }
+                    let n = [n0 as f64, n1 as f64, n2 as f64];
+                    out.push(std::array::from_fn(|c| {
+                        n[0] * h[0][c] + n[1] * h[1][c] + n[2] * h[2][c]
+                    }));
+                }
+            }
+        }
+        out
+    }
 }
 
 /// Climbing-image activation, the eOn trigger rule: CI arms when the
@@ -3476,6 +3524,54 @@ mod tests {
         assert_abs_diff_eq!(d[0], -1.0, epsilon = 1e-12);
         assert_abs_diff_eq!(d[1], 2.0, epsilon = 1e-12);
         assert_abs_diff_eq!(d[2], 12.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn image_translations_reach_every_image_in_range() {
+        let cube = Cell([[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]]);
+        assert!(cube.image_translations(4.0).is_empty());
+        let slab = Cell([[5.0, 0.0, 0.0], [0.0, 5.0, 0.0], [0.0, 0.0, 0.0]]);
+        let steps = slab.image_translations(4.0);
+        assert_eq!(steps.len(), 8);
+        assert!(steps.iter().all(|t| t[2] == 0.0));
+        let thin = Cell([[1e-3, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]]);
+        assert_eq!(thin.image_translations(4.0).len(), 32);
+        // Every image of a wrapped displacement within the cutoff is the
+        // wrapped one or one of the translations from it.
+        let r3 = 3.0_f64.sqrt();
+        let hex = Cell([[4.0, 0.0, 0.0], [2.0, 2.0 * r3, 0.0], [0.0, 0.0, 10.0]]);
+        let cutoff = 4.0;
+        let steps = hex.image_translations(cutoff);
+        let fractions = [-0.5, -0.3, 0.0, 0.2, 0.5];
+        for s0 in fractions {
+            for s1 in fractions {
+                for s2 in fractions {
+                    let mut d = Array1::from_iter(
+                        (0..3).map(|c| s0 * hex.0[0][c] + s1 * hex.0[1][c] + s2 * hex.0[2][c]),
+                    );
+                    hex.minimum_image(&mut d);
+                    for n in (-3_i32..=3).flat_map(|a| {
+                        (-3_i32..=3).flat_map(move |b| (-3_i32..=3).map(move |c| [a, b, c]))
+                    }) {
+                        if n == [0, 0, 0] {
+                            continue;
+                        }
+                        let t: [f64; 3] = std::array::from_fn(|c| {
+                            (0..3).map(|k| f64::from(n[k]) * hex.0[k][c]).sum()
+                        });
+                        let r = (0..3).map(|c| (d[c] + t[c]).powi(2)).sum::<f64>().sqrt();
+                        if r < cutoff {
+                            assert!(
+                                steps
+                                    .iter()
+                                    .any(|u| (0..3).all(|c| (u[c] - t[c]).abs() < 1e-12)),
+                                "image {n:?} of {d} at {r} is missing"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     struct Prescribed {

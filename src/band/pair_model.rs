@@ -21,9 +21,12 @@ use rgmin::precon::ExpParams;
 use super::Cell;
 
 /// `C_stab I` plus `w(r) e e'` over every pair closer than `2 r_nn`,
-/// `r_nn` the largest nearest-neighbour distance of the image, pair
-/// vectors under the minimum image of `cell`. Positive semi-definite,
-/// and every row sums to `C_stab` per Cartesian axis.
+/// `r_nn` the largest nearest-neighbour distance of the image. Under
+/// `cell` a pair counts through every periodic image in range: in a
+/// cell shorter than twice the cutoff the minimum image alone misses
+/// images in range and picks one of two equidistant images at half
+/// the cell, which breaks the lattice's symmetry. Positive
+/// semi-definite, and every row sums to `C_stab` per Cartesian axis.
 pub(super) fn pair_hessian(x: &Array1<f64>, cell: Option<&Cell>) -> Array2<f64> {
     let atoms = x.len() / 3;
     let mut pairs = Vec::new();
@@ -46,11 +49,13 @@ pub(super) fn pair_hessian(x: &Array1<f64>, cell: Option<&Cell>) -> Array2<f64> 
         .filter(|v| v.is_finite())
         .fold(0.0_f64, f64::max);
     let r_nn = if r_nn > 0.0 { r_nn } else { 1.0 };
+    let cutoff = 2.0 * r_nn;
+    let translations = cell.map_or_else(Vec::new, |cell| cell.image_translations(cutoff));
     let params = ExpParams::default();
     let mut p = Array2::eye(x.len()) * params.c_stab;
-    for (i, j, r, diff) in pairs {
-        if !(r > 0.0 && r < 2.0 * r_nn) {
-            continue;
+    let mut add = |i: usize, j: usize, r: f64, diff: &Array1<f64>| {
+        if !(r > 0.0 && r < cutoff) {
+            return;
         }
         let e = diff / r;
         let w = (-params.a * (r / r_nn - 1.0)).exp();
@@ -62,6 +67,13 @@ pub(super) fn pair_hessian(x: &Array1<f64>, cell: Option<&Cell>) -> Array2<f64> 
                 p[(3 * i + a, 3 * j + b)] -= v;
                 p[(3 * j + a, 3 * i + b)] -= v;
             }
+        }
+    };
+    for (i, j, r, diff) in pairs {
+        add(i, j, r, &diff);
+        for t in &translations {
+            let image = Array1::from_iter((0..3).map(|c| diff[c] + t[c]));
+            add(i, j, image.dot(&image).sqrt(), &image);
         }
     }
     p
@@ -224,6 +236,24 @@ mod tests {
         assert!((open[(0, 6)] + (-a * (2.5 / 1.5 - 1.0)).exp()).abs() < 1e-12);
         assert!((wrapped[(0, 6)] + (-a * (0.5 - 1.0)).exp()).abs() < 1e-12);
         assert!((wrapped[(0, 3)] + 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_pair_at_half_the_cell_counts_through_both_images() {
+        // Atom 1 sits half a cell from atom 0 along x, so its images at
+        // x = 1.5 and x = -1.5 are equally near, both at r_nn. The
+        // mirror x -> -x maps the pair onto itself, and with both images
+        // the model keeps it: the x-y couplings of the two bonds cancel.
+        let x = Array1::from(vec![0.0, 0.0, 0.0, 1.5, 0.5, 0.0]);
+        let cell = Cell([[3.0, 0.0, 0.0], [0.0, 30.0, 0.0], [0.0, 0.0, 30.0]]);
+        let p = pair_hessian(&x, Some(&cell));
+        let flip = Array2::from_diag(&Array1::from(vec![-1.0, 1.0, 1.0, -1.0, 1.0, 1.0]));
+        let mirrored = flip.dot(&p).dot(&flip);
+        assert!((&mirrored - &p).iter().all(|v| v.abs() < 1e-12));
+        assert!(p[(0, 1)].abs() < 1e-12);
+        // Each image weighs 1 at r = r_nn and has e_x^2 = 2.25 / 2.5.
+        let c_stab = ExpParams::default().c_stab;
+        assert!((p[(0, 0)] - (c_stab + 2.0 * 0.9)).abs() < 1e-12);
     }
 
     #[test]
