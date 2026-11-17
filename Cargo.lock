@@ -1893,7 +1893,7 @@ dependencies = [
 [[package]]
 name = "rgpot-core"
 version = "3.7.0"
-source = "git+https://github.com/OmniPotentRPC/rgpot?rev=97ebba0b#97ebba0b062128b7dc4637501c4b70ed4944ae9d"
+source = "git+https://github.com/OmniPotentRPC/rgpot?rev=7596b52b#7596b52b543f475cba813baf1fcbbcd881addd54"
 dependencies = [
  "capnp",
  "capnpc",

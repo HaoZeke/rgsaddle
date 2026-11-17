@@ -19,7 +19,7 @@ capi = []
 par = ["rgmin/par"]
 highs = ["rgmin/highs"]
 ohtst = []
-rgpot-session = ["ohtst"]
+rgpot-session = ["ohtst", "dep:rgpot-core"]
 lammps = ["ohtst", "dep:capnp", "dep:libloading", "dep:rgpot-core"]
 readcon = ["dep:readcon-core"]
 # readcon-db 0.2 pins readcon-core = "=0.17.1", the same release as
@@ -61,7 +61,7 @@ proptest = { version = "1.6", optional = true }
 rug = { version = "1.27", optional = true }
 capnp = { version = "0.20", optional = true }
 libloading = { version = "0.8.9", optional = true }
-rgpot-core = { git = "https://github.com/OmniPotentRPC/rgpot", rev = "97ebba0b", features = ["profile"], optional = true }
+rgpot-core = { git = "https://github.com/OmniPotentRPC/rgpot", rev = "7596b52b", features = ["profile"], optional = true }
 
 [package.metadata.rgsaddle-lammps]
 lammpc-git = "https://github.com/OmniPotentRPC/lammpc"

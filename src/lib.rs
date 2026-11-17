@@ -195,10 +195,7 @@ pub use relax::{
     relax_to_tolerance,
 };
 #[cfg(feature = "rgpot-session")]
-pub use rgpot_session::{
-    RgpotHyperplaneDynamics, RgpotHyperplaneSampler, RgpotMdSession, RgpotMdState,
-    RgpotSessionConfig,
-};
+pub use rgpot_session::{RgpotHyperplaneDynamics, RgpotHyperplaneSampler, RgpotSessionConfig};
 pub use saddle_index::{SaddleEscape, SaddleIndex, SaddleIndexCheck, saddle_index};
 pub use solid_dimer::{
     CellMask, IndexCheck, IndexReport, JointChart, STRAIN_VOIGT, SolidDimer, SolidDimerConfig,
