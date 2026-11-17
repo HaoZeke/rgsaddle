@@ -15173,7 +15173,9 @@ fn same_basin(basin: &str, expect: &str, group: &[rgsaddle::Mat3i]) -> bool {
 /// backward one the same maximum above the last plane, and each attempt
 /// frequency comes from the curvature along the path at its end. A
 /// maximum on an end plane carries the error of the next plane in, not
-/// zero.
+/// zero. The walk is not held in the basin of the path: under the default
+/// [`rgsaddle::PafiConfig::max_jump`] a plane of the isolated rotation
+/// leaves that basin at 700 K more often than its stretches allow.
 #[allow(clippy::too_many_arguments)]
 fn class_pafi(
     copper: &FastCopper,
@@ -15266,7 +15268,8 @@ fn class_pafi(
         .with_samples(16)
         .with_thermalize(20)
         .with_max_rounds(4)
-        .with_target_error(0.2 * thermal);
+        .with_target_error(0.2 * thermal)
+        .with_max_jump(None);
     let (profile, _) = rgsaddle::pafi_profile(&held, &band, &band.arcs(), &pafi)
         .map_err(|error| format!("pafi {error}"))?;
     let (start, end) = band.bounds();
@@ -15321,6 +15324,10 @@ fn sci6(value: f64) -> String {
     }
 }
 
+/// Appends to `defect_pair_network_pafi.csv` the rows it does not hold yet.
+/// A hop class is rated when `defect_pair_network_sensitivity.csv` selects
+/// it or ranked it as computed, so a run into a file with only the header
+/// rates the classes of the ranking again.
 #[test]
 #[ignore = "PAFI rates of the near-shell hop classes that carry the capture weight, 8788-atom cell"]
 fn defect_pair_network_pafi() {
@@ -15347,7 +15354,7 @@ fn defect_pair_network_pafi() {
         .lines()
         .skip(1)
         .map(|line| line.split(',').collect::<Vec<_>>())
-        .filter(|f| f.len() > 10 && f[10] == "yes")
+        .filter(|f| f.len() > 10 && matches!(f[10], "yes" | "computed"))
         .filter_map(|f| Some((f[0].parse::<f64>().ok()?.round() as i64, f[2].to_string())))
         .collect();
     let (group, network) = dumbbell_network(EXPLICIT_NORM2);
@@ -15483,7 +15490,7 @@ fn defect_pair_network_pafi() {
             &group,
         );
         let columns = match &found {
-            Err(error) => format!("no_path,,,,,,,,,,,,{},", error.replace(',', ";")),
+            Err(error) => format!("no_path,,,,,,,,,,,{},", error.replace(',', ";")),
             Ok(found) => format!(
                 "{},{},{},{},{:.3e},{},{},{},{},{},{},{},{}",
                 if found.band_force <= PAFI_BAND_FORCE {
@@ -16045,7 +16052,7 @@ fn network_notes() -> String {
         let drift_rms =
             (pafi.drifts.iter().map(|d| d * d).sum::<f64>() / both_ways).sqrt() / thermal;
         notes.push(format!(
-            "T {temperature} K PAFI: the model-stage cover (sigma {} in ln k, tolerance {} Omega) selects {} of {} hop classes, and later passes rated {} more; {} hop rows, {} rated ({} through the dimer saddle, {} through the band top), {} with an unconverged band and {} without a path; {} rated directions; isolated translation {}, rotation {}; the {} classes rated both ways take the reverse barrier from the forward one and the zero-temperature energies of their ends, and their drifts, the forward less the back barrier less that gap, have mean {drift_mean:+.3} and root mean square {drift_rms:.3} kT; the isolated hops take their forward barriers, which exceed the back ones by {:+.4} eV translating and {:+.4} eV rotating; the model against the {} rated classes with a model rate: mean {mean_residual:+.4}, root mean square {} in ln k, calibrated to {}; {:.1} job-hours, the summed wall time of the jobs.",
+            "T {temperature} K PAFI: the model-stage cover (sigma {} in ln k, tolerance {} Omega) selects {} of {} hop classes, and {} more are rated; {} hop rows, {} rated ({} through the dimer saddle, {} through the band top), {} with an unconverged band and {} without a path; {} rated directions; isolated translation {}, rotation {}; the {} classes rated both ways take the reverse barrier from the forward one and the zero-temperature energies of their ends, and their drifts, the forward less the back barrier less that gap, have mean {drift_mean:+.3} and root mean square {drift_rms:.3} kT; the isolated hops take their forward barriers, which exceed the back ones by {:+.4} eV translating and {:+.4} eV rotating; the model against the {} rated classes with a model rate: mean {mean_residual:+.4}, root mean square {} in ln k, calibrated to {}; {:.1} job-hours, the summed wall time of the jobs.",
             model.first().map_or("", |f| f[11]),
             model.first().map_or("", |f| f[12]),
             model.iter().filter(|f| f[10] == "yes").count(),
