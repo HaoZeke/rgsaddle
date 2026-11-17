@@ -618,11 +618,25 @@ impl<S: PointSurface> HyperplaneSampler for AnalyticSurfaceSampler<'_, S> {
                 observables: Default::default(),
             });
         }
+        let evaluations = dynamics.evaluations;
+        let acceptance = dynamics.acceptance();
+        self.start = Some(dynamics.q.clone());
         Ok(HyperplaneEnsemble {
             observations,
-            evaluations: dynamics.evaluations,
-            acceptance: dynamics.acceptance(),
+            evaluations,
+            acceptance,
         })
+    }
+
+    fn energy(&mut self, position: ArrayView1<f64>) -> Result<Option<f64>, SaddleError> {
+        Ok(Some(self.surface.eval(position)?.0))
+    }
+
+    fn constrained_directions(
+        &mut self,
+        plane: &Hyperplane,
+    ) -> Result<Vec<Array1<f64>>, SaddleError> {
+        held_directions(self.surface, plane.point(), None, self.config.hold_excluded)
     }
 }
 

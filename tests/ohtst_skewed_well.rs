@@ -19,11 +19,11 @@
 
 use ndarray::{Array1, array};
 use rgsaddle::{
-    AnharmonicConfig, BasinConfig, BasinEnd, Basins, EndState, GaussianTransport, Hyperplane,
-    LangevinConfig, MinModeConfig, MinModeSession, MinModeStatus, PlaneOptimizer,
-    PlaneOptimizerConfig, PlanePath, ReversibleWorkConfig, TransmissionConfig, WorkEstimate,
-    anharmonic_correction, basin_density, ohtst_rate, reactant_density, reversible_work,
-    reversible_work_along, transmission_coefficient,
+    AnalyticSurfaceDynamics, AnalyticSurfaceSampler, AnharmonicConfig, BasinConfig, BasinEnd,
+    Basins, EndState, GaussianTransport, Hyperplane, LangevinConfig, MinModeConfig, MinModeSession,
+    MinModeStatus, PlaneOptimizer, PlaneOptimizerConfig, PlanePath, ReversibleWorkConfig,
+    TransmissionConfig, WorkEstimate, anharmonic_correction, basin_density, ohtst_rate,
+    reactant_density, reversible_work, reversible_work_along, transmission_coefficient,
 };
 
 include!(concat!(
@@ -301,16 +301,12 @@ fn skewed_well_optimum_and_rate_at_high_temperature() {
     );
 
     let trace = PlanePath::trace(&optimum.trace).unwrap();
-    let climb = reversible_work_along(
-        &SkewedWell,
-        &trace,
-        None,
-        &ReversibleWorkConfig::default()
-            .with_sampler(sampler(kt, 0.15).with_records(2000))
-            .with_nodes(2)
-            .with_simpson(false),
-    )
-    .unwrap();
+    let climb_config = ReversibleWorkConfig::default()
+        .with_sampler(sampler(kt, 0.15).with_records(2000))
+        .with_nodes(2)
+        .with_simpson(false);
+    let mut climb_sampler = AnalyticSurfaceSampler::new(&SkewedWell, climb_config.sampler.clone());
+    let climb = reversible_work_along(&mut climb_sampler, &trace, &climb_config).unwrap();
     let (from, to) = (trace.start().unwrap(), trace.end().unwrap());
     let exact_climb = free_energy([to.point()[0], to.point()[1]], angle_of(&to), kt)
         - free_energy([from.point()[0], from.point()[1]], angle_of(&from), kt);
@@ -342,13 +338,9 @@ fn skewed_well_optimum_and_rate_at_high_temperature() {
     let config = ReversibleWorkConfig::default()
         .with_sampler(sampler(kt, 0.1).with_records(2000))
         .with_nodes(9);
-    let work = reversible_work(
-        &SkewedWell,
-        &[start, optimal],
-        Some(reactant.view()),
-        &config,
-    )
-    .unwrap();
+    let mut work_sampler = AnalyticSurfaceSampler::new(&SkewedWell, config.sampler.clone())
+        .with_start(reactant.clone());
+    let work = reversible_work(&mut work_sampler, &[start, optimal], &config).unwrap();
     let exact_work = free_energy([shift * found.cos(), shift * found.sin()], found, kt)
         - free_energy(REACTANT, std::f64::consts::FRAC_PI_4, kt);
     let (bar, bar_error) = (work.bar_work.unwrap(), work.bar_error.unwrap());
@@ -459,7 +451,13 @@ fn skewed_well_transmission_times_tst_rate_is_line_independent() {
                 .with_shots(shots)
                 .with_blocks(32)
                 .with_end_state(end_state);
-            transmission_coefficient(&SkewedWell, &plane, &starts, &config).unwrap()
+            transmission_coefficient(
+                &mut AnalyticSurfaceDynamics::new(&SkewedWell),
+                &plane,
+                &starts,
+                &config,
+            )
+            .unwrap()
         };
         let side = run(EndState::Side);
         let quench = run(basins.clone().into());
@@ -520,12 +518,14 @@ fn skewed_well_work_along_the_minimum_energy_path() {
     let config = ReversibleWorkConfig::default()
         .with_sampler(sampler(kt, 0.15).with_records(2000))
         .with_nodes(3);
-    let rigid = reversible_work_along(&SkewedWell, &path, None, &config).unwrap();
+    let mut engine = AnalyticSurfaceSampler::new(&SkewedWell, config.sampler.clone());
+    let rigid = reversible_work_along(&mut engine, &path, &config).unwrap();
     let config = config
         .with_transport(GaussianTransport::default().into())
         .with_mbar(true)
         .with_estimate(WorkEstimate::Mbar);
-    let work = reversible_work_along(&SkewedWell, &path, None, &config).unwrap();
+    let mut engine = AnalyticSurfaceSampler::new(&SkewedWell, config.sampler.clone());
+    let work = reversible_work_along(&mut engine, &path, &config).unwrap();
     let estimates = [
         ("integration", work.integrated_work, work.integrated_error),
         ("BAR", work.bar_work.unwrap(), work.bar_error.unwrap()),

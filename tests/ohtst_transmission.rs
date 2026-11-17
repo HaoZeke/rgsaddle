@@ -22,8 +22,8 @@
 
 use ndarray::{Array1, ArrayView1, array};
 use rgsaddle::{
-    Counting, Hyperplane, MassWeighted, PointSurface, SaddleError, TransmissionConfig,
-    transmission_coefficient,
+    AnalyticSurfaceDynamics, Counting, Hyperplane, MassWeighted, PointSurface, SaddleError,
+    TransmissionConfig, transmission_coefficient,
 };
 
 struct Quadratic {
@@ -118,7 +118,7 @@ fn harmonic_saddle_against_kramers_and_turned_planes() {
             let mut errors = Vec::new();
             for counting in [Counting::Final, Counting::FirstCrossing] {
                 let result = transmission_coefficient(
-                    &surface,
+                    &mut AnalyticSurfaceDynamics::new(&surface),
                     &plane,
                     &starts,
                     &shooting(kt, friction, counting, shots),
@@ -203,16 +203,20 @@ fn cartesian_masses_follow_the_mass_weighted_trajectories() {
         for counting in [Counting::Final, Counting::FirstCrossing] {
             let config = shooting(kt, friction, counting, 4096);
             let cartesian = transmission_coefficient(
-                &surface,
+                &mut AnalyticSurfaceDynamics::new(&surface),
                 &plane,
                 &starts,
                 &config.clone().with_masses(masses.to_vec()),
             )
             .unwrap();
             if friction > 0.0 {
-                let reference =
-                    transmission_coefficient(&weighted, &weighted_plane, &weighted_starts, &config)
-                        .unwrap();
+                let reference = transmission_coefficient(
+                    &mut AnalyticSurfaceDynamics::new(&weighted),
+                    &weighted_plane,
+                    &weighted_starts,
+                    &config,
+                )
+                .unwrap();
                 assert!(
                     (cartesian.kappa - reference.kappa).abs() < 1.0e-12,
                     "{} against {}",

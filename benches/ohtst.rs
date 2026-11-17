@@ -14,8 +14,8 @@ use std::time::Duration;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use ndarray::array;
 use rgsaddle::{
-    BasinConfig, Hyperplane, LangevinConfig, MinModeConfig, MinModeSession, MinModeStatus,
-    OhTstRate, PlaneIntegrator, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum,
+    AnalyticSurfaceSampler, BasinConfig, Hyperplane, LangevinConfig, MinModeConfig, MinModeSession,
+    MinModeStatus, OhTstRate, PlaneIntegrator, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum,
     ReversibleWorkConfig, basin_density, ohtst_rate, reversible_work,
 };
 
@@ -82,10 +82,11 @@ fn converged_rate(problem: &Problem) -> (OhTstRate, usize, PlaneOptimum) {
     let config = ReversibleWorkConfig::default()
         .with_sampler(sampler(kt, 0.1, 2000))
         .with_nodes(17);
+    let mut engine =
+        AnalyticSurfaceSampler::new(&LepsHo, config.sampler.clone()).with_start(reactant);
     let work = reversible_work(
-        &LepsHo,
+        &mut engine,
         &[density.plane.clone(), optimum.plane.clone()],
-        Some(reactant.view()),
         &config,
     )
     .unwrap();

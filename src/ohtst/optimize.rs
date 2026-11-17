@@ -56,6 +56,7 @@ use crate::ohtst::sample::{
     AnalyticSurfaceSampler, LangevinConfig, PlaneSample, held_directions, mean_and_error,
     sample_plane_with_sampler,
 };
+use crate::projector::HyperplaneSampler;
 
 /// Geometry of the normal in [`PlaneOptimizer`]. The offset along the
 /// normal always has weight one.
@@ -435,12 +436,67 @@ impl PlaneOptimizer {
             normal,
             subspace,
         };
+        let mut sampler = AnalyticSurfaceSampler::new(surface, config.sampler.clone())
+            .with_start(self.plane.point().to_owned());
+        self.run_engine(&mut sampler, layout, model, metric, evaluations)
+    }
+
+    /// Climb `A` using an engine-neutral constrained sampler.
+    ///
+    /// The generic engine path uses the block metric. A harmonic metric
+    /// additionally needs Hessian actions and remains available through
+    /// [`Self::run`] for analytic [`PointSurface`] references.
+    pub fn run_with_sampler<E: HyperplaneSampler>(
+        &self,
+        sampler: &mut E,
+    ) -> Result<PlaneOptimum, SaddleError> {
+        let config = &self.config;
+        if matches!(config.metric, PlaneMetric::Harmonic(_)) {
+            return Err(SaddleError::Invalid(
+                "a generic plane sampler cannot construct the harmonic optimizer metric".into(),
+            ));
+        }
+        let dim = self.plane.dim();
+        let subspace = Subspace::new(
+            dim,
+            Vec::new(),
+            config.rotation_basis.as_ref(),
+            config.rotate,
+        )?;
+        let normal = subspace.start(self.plane.normal())?;
+        let layout = Layout {
+            dim,
+            rotate: config.rotate,
+            translate: config.translate,
+            normal,
+            subspace,
+        };
+        self.run_engine(
+            sampler,
+            layout,
+            Model::Secant {
+                rotation: 0.0,
+                offset: 0.0,
+            },
+            None,
+            0,
+        )
+    }
+
+    fn run_engine<E: HyperplaneSampler>(
+        &self,
+        sampler: &mut E,
+        layout: Layout,
+        model: Model,
+        metric: Option<Arc<HarmonicRotation>>,
+        evaluations: usize,
+    ) -> Result<PlaneOptimum, SaddleError> {
+        let config = &self.config;
         let manifold = layout.manifold(config, metric)?;
         let x0 = layout.pack(layout.normal.view(), 0.0);
         let climb = RefCell::new(Climb {
-            surface,
+            sampler,
             config,
-            start: self.plane.point().to_owned(),
             pivot: self.plane.point().to_owned(),
             layout,
             records: config.sampler.records,
@@ -498,6 +554,15 @@ impl PlaneOptimizer {
             trace: climb.trace,
         })
     }
+}
+
+/// Optimize a dividing plane through an engine-neutral constrained sampler.
+pub fn optimize_plane<E: HyperplaneSampler>(
+    sampler: &mut E,
+    initial: &Hyperplane,
+    config: &PlaneOptimizerConfig,
+) -> Result<PlaneOptimum, SaddleError> {
+    PlaneOptimizer::new(initial, config.clone())?.run_with_sampler(sampler)
 }
 
 /// The directions the normal may take.
@@ -744,12 +809,10 @@ struct Blocks {
 }
 
 /// The state the trust region's callbacks share.
-struct Climb<'a, S> {
-    surface: &'a S,
+struct Climb<'a, E> {
+    sampler: &'a mut E,
     config: &'a PlaneOptimizerConfig,
     layout: Layout,
-    /// Where every sample starts, projected onto its plane.
-    start: Array1<f64>,
     pivot: Array1<f64>,
     records: usize,
     model: Model,
@@ -766,13 +829,11 @@ struct Climb<'a, S> {
     error: Option<SaddleError>,
 }
 
-impl<S: PointSurface> Climb<'_, S> {
+impl<E: HyperplaneSampler> Climb<'_, E> {
     fn sample(&mut self, x: &Array1<f64>) -> Result<Iterate, SaddleError> {
         let plane = self.layout.plane(&self.pivot, x)?;
         let sampler = self.config.sampler.clone().with_records(self.records);
-        let mut backend = AnalyticSurfaceSampler::new(self.surface, sampler.clone())
-            .with_start(self.start.clone());
-        let sample = sample_plane_with_sampler(&mut backend, &plane, &sampler)?;
+        let sample = sample_plane_with_sampler(self.sampler, &plane, &sampler)?;
         self.samples += 1;
         self.evaluations += sample.evaluations;
         let gradient = self.layout.gradient(
@@ -1293,6 +1354,7 @@ fn spd_inverse(a: &Array2<f64>) -> Result<Array2<f64>, SaddleError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ohtst::{ExactGaussianPlaneSampler, QuadraticModel};
     use ndarray::array;
 
     /// `V = -½ x² + y² + 1.5 z²`: the free energy of a plane is
@@ -1357,6 +1419,27 @@ mod tests {
         assert_at_the_saddle_plane(&optimum);
         let first = optimum.trace[0].plane.normal();
         assert!((first.dot(&start.normal()) - 1.0).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn trait_level_optimizer_uses_exact_plane_samples() {
+        let start = Hyperplane::new(array![0.05, 0.0, 0.0], array![1.0, 0.04, -0.03]).unwrap();
+        let model = QuadraticModel::new(
+            array![0.0, 0.0, 0.0],
+            Array2::from_diag(&array![-1.0, 2.0, 3.0]),
+        );
+        let mut sampler = ExactGaussianPlaneSampler::new(model).unwrap();
+        let config = config()
+            .with_sampler(
+                LangevinConfig::default()
+                    .with_thermal(0.2)
+                    .with_records(600)
+                    .with_blocks(12),
+            )
+            .with_max_records(600)
+            .with_tolerance(2.0e-6);
+        let optimum = optimize_plane(&mut sampler, &start, &config).unwrap();
+        assert_at_the_saddle_plane(&optimum);
     }
 
     #[test]

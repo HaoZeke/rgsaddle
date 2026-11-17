@@ -12,8 +12,9 @@
 
 use ndarray::array;
 use rgsaddle::{
-    Hyperplane, LangevinConfig, PlaneOptimizer, PlaneOptimizerConfig, ReversibleWorkConfig,
-    TransmissionConfig, reversible_work, transmission_coefficient,
+    AnalyticSurfaceDynamics, AnalyticSurfaceSampler, Hyperplane, LangevinConfig, PlaneOptimizer,
+    PlaneOptimizerConfig, ReversibleWorkConfig, TransmissionConfig, reversible_work,
+    transmission_coefficient,
 };
 
 include!(concat!(
@@ -297,7 +298,8 @@ fn eckart_reversible_work_between_the_maxima() {
     let config = ReversibleWorkConfig::default()
         .with_sampler(eckart_sampler(kt, 4.0))
         .with_nodes(nodes);
-    let work = reversible_work(&EckartHo, &planes, None, &config).unwrap();
+    let mut sampler = AnalyticSurfaceSampler::new(&EckartHo, config.sampler.clone());
+    let work = reversible_work(&mut sampler, &planes, &config).unwrap();
     let (value, error) = (work.work / kt, work.error / kt);
     assert!(error < 0.06, "error {error} kT");
     assert!(
@@ -342,7 +344,13 @@ fn eckart_transmission_balances_the_free_energy_gap() {
             .with_check_every(160)
             .with_shots(shots)
             .with_blocks(32);
-        transmission_coefficient(&EckartHo, &eckart_line(degrees), &starts, &config).unwrap()
+        transmission_coefficient(
+            &mut AnalyticSurfaceDynamics::new(&EckartHo),
+            &eckart_line(degrees),
+            &starts,
+            &config,
+        )
+        .unwrap()
     };
     let (a, b) = (kappa(low), kappa(high));
     let ratio = a.kappa / b.kappa;

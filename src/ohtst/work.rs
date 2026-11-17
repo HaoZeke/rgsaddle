@@ -44,8 +44,11 @@ use crate::minmode::PointSurface;
 use crate::ohtst::mbar::{mbar, pair_overlap};
 use crate::ohtst::path::PlanePath;
 use crate::ohtst::plane::Hyperplane;
-use crate::ohtst::sample::{LangevinConfig, PlaneSample, held_directions, sample_plane};
+use crate::ohtst::sample::{
+    AnalyticSurfaceSampler, LangevinConfig, PlaneSample, sample_plane_with_sampler,
+};
 use crate::ohtst::transport::{PlaneMap, Transport};
+use crate::projector::HyperplaneSampler;
 
 /// Which estimate [`ReversibleWork::work`] holds.
 #[non_exhaustive]
@@ -305,22 +308,19 @@ struct Kept {
 }
 
 /// The work to move from `planes[0]` to the last plane on straight legs
-/// through the planes between. `start`, when given, seeds the first node.
-pub fn reversible_work<S: PointSurface>(
-    surface: &S,
+/// through the planes between.
+pub fn reversible_work<E: HyperplaneSampler>(
+    sampler: &mut E,
     planes: &[Hyperplane],
-    start: Option<ArrayView1<f64>>,
     config: &ReversibleWorkConfig,
 ) -> Result<ReversibleWork, SaddleError> {
-    reversible_work_along(surface, &PlanePath::legs(planes)?, start, config)
+    reversible_work_along(sampler, &PlanePath::legs(planes)?, config)
 }
 
 /// The work to move from the first plane of `path` to its last.
-/// `start`, when given, seeds the first node.
-pub fn reversible_work_along<S: PointSurface>(
-    surface: &S,
+pub fn reversible_work_along<E: HyperplaneSampler>(
+    sampler: &mut E,
     path: &PlanePath,
-    start: Option<ArrayView1<f64>>,
     config: &ReversibleWorkConfig,
 ) -> Result<ReversibleWork, SaddleError> {
     config.check()?;
@@ -328,7 +328,6 @@ pub fn reversible_work_along<S: PointSurface>(
     let h = 1.0 / (config.nodes - 1) as f64;
     let gaussian = matches!(config.transport, Transport::Gaussian(_));
     let retain = config.bar_samples * if gaussian { 2 } else { 1 };
-    let mut seed_from = start.map(|q| q.to_owned());
     let mut nodes: Vec<WorkNode> = Vec::new();
     // The latest sample and the weighted tangent it carries into the sum;
     // the node shared by two segments carries both segments' weights.
@@ -338,7 +337,7 @@ pub fn reversible_work_along<S: PointSurface>(
     let mut evaluations = 0;
     let mut sampled = 0u64;
     let first = path.start()?;
-    let held = held_directions(surface, first.point(), None, config.sampler.hold_excluded)?;
+    let held = sampler.constrained_directions(&first)?;
     let kt = config.sampler.thermal;
     let mut kept: Vec<Kept> = Vec::new();
     let mut maps: Vec<PlaneMap> = Vec::new();
@@ -363,22 +362,16 @@ pub fn reversible_work_along<S: PointSurface>(
                 } else {
                     config.sampler.burn_in
                 };
-                let sampler = config
+                let sampling = config
                     .sampler
                     .clone()
                     .with_seed(config.sampler.seed.wrapping_add(sampled))
                     .with_retain(config.sampler.retain.max(retain))
                     .with_burn_in(burn_in);
                 let plane = path.plane(k, s)?;
-                let sample = sample_plane(
-                    surface,
-                    &plane,
-                    seed_from.as_ref().map(|q| q.view()),
-                    &sampler,
-                )?;
+                let sample = sample_plane_with_sampler(sampler, &plane, &sampling)?;
                 sampled += 1;
                 evaluations += sample.evaluations;
-                seed_from = Some(sample.last.clone());
                 if config.bar_samples > 0 {
                     let (evaluation, fit) = if gaussian {
                         let (even, odd): (Vec<_>, Vec<_>) = sample
@@ -395,7 +388,7 @@ pub fn reversible_work_along<S: PointSurface>(
                     };
                     let energies = evaluation
                         .iter()
-                        .map(|q| energy(surface, q, &mut evaluations))
+                        .map(|q| energy(sampler, q, &mut evaluations))
                         .collect::<Result<Vec<_>, _>>()?;
                     let mut current = Kept {
                         plane: sample.plane.clone(),
@@ -418,13 +411,13 @@ pub fn reversible_work_along<S: PointSurface>(
                         let jacobian = map.log_jacobian();
                         let mut forward = Vec::with_capacity(previous.evaluation.len());
                         for (q, e) in previous.evaluation.iter().zip(&previous.energies) {
-                            let mapped = energy(surface, &map.forward(q), &mut evaluations)?;
+                            let mapped = energy(sampler, &map.forward(q), &mut evaluations)?;
                             previous.up.push(mapped);
                             forward.push((mapped - e) / kt - jacobian);
                         }
                         let mut reverse = Vec::with_capacity(current.evaluation.len());
                         for (q, e) in current.evaluation.iter().zip(&current.energies) {
-                            let mapped = energy(surface, &map.backward(q), &mut evaluations)?;
+                            let mapped = energy(sampler, &map.backward(q), &mut evaluations)?;
                             current.down.push(mapped);
                             reverse.push((mapped - e) / kt + jacobian);
                         }
@@ -498,7 +491,7 @@ pub fn reversible_work_along<S: PointSurface>(
             .iter()
             .map(|node| node.bar_work.unwrap_or(0.0) / kt)
             .collect();
-        let (u, counts) = reduced_potentials(surface, &kept, &maps, kt, &mut evaluations)?;
+        let (u, counts) = reduced_potentials(sampler, &kept, &maps, kt, &mut evaluations)?;
         let solved = mbar(&u, &counts, &initial)?;
         let last = kept.len() - 1;
         let c = &solved.covariance;
@@ -535,11 +528,47 @@ pub fn reversible_work_along<S: PointSurface>(
     })
 }
 
+/// Analytic-surface compatibility wrapper for [`reversible_work`].
+#[deprecated(
+    since = "0.5.0",
+    note = "construct AnalyticSurfaceSampler and call reversible_work"
+)]
+pub fn reversible_work_on_surface<S: PointSurface>(
+    surface: &S,
+    planes: &[Hyperplane],
+    start: Option<ArrayView1<f64>>,
+    config: &ReversibleWorkConfig,
+) -> Result<ReversibleWork, SaddleError> {
+    let mut sampler = AnalyticSurfaceSampler::new(surface, config.sampler.clone());
+    if let Some(start) = start {
+        sampler = sampler.with_start(start.to_owned());
+    }
+    reversible_work(&mut sampler, planes, config)
+}
+
+/// Analytic-surface compatibility wrapper for [`reversible_work_along`].
+#[deprecated(
+    since = "0.5.0",
+    note = "construct AnalyticSurfaceSampler and call reversible_work_along"
+)]
+pub fn reversible_work_along_on_surface<S: PointSurface>(
+    surface: &S,
+    path: &PlanePath,
+    start: Option<ArrayView1<f64>>,
+    config: &ReversibleWorkConfig,
+) -> Result<ReversibleWork, SaddleError> {
+    let mut sampler = AnalyticSurfaceSampler::new(surface, config.sampler.clone());
+    if let Some(start) = start {
+        sampler = sampler.with_start(start.to_owned());
+    }
+    reversible_work_along(&mut sampler, path, config)
+}
+
 /// `u_k = V(Φ_k Φ_i⁻¹ q) / kT - ln |det Φ_k|` for every configuration `q`
 /// of every node `i` and every node `k`, where `Φ_k` is the chain of maps
 /// from the first plane to plane `k`.
-fn reduced_potentials<S: PointSurface>(
-    surface: &S,
+fn reduced_potentials<E: HyperplaneSampler>(
+    sampler: &mut E,
     kept: &[Kept],
     maps: &[PlaneMap],
     kt: f64,
@@ -562,7 +591,7 @@ fn reduced_potentials<S: PointSurface>(
                 let e = if k == i + 1 {
                     node.up[j]
                 } else {
-                    energy_or_infinity(surface, &image, evaluations)?
+                    energy_or_infinity(sampler, &image, evaluations)?
                 };
                 u[(row, k)] = e / kt - log_jacobian[k];
             }
@@ -572,7 +601,7 @@ fn reduced_potentials<S: PointSurface>(
                 let e = if k + 1 == i {
                     node.down[j]
                 } else {
-                    energy_or_infinity(surface, &image, evaluations)?
+                    energy_or_infinity(sampler, &image, evaluations)?
                 };
                 u[(row, k)] = e / kt - log_jacobian[k];
             }
@@ -582,12 +611,14 @@ fn reduced_potentials<S: PointSurface>(
     Ok((u, counts))
 }
 
-fn energy<S: PointSurface>(
-    surface: &S,
+fn energy<E: HyperplaneSampler>(
+    sampler: &mut E,
     q: &Array1<f64>,
     evaluations: &mut usize,
 ) -> Result<f64, SaddleError> {
-    let (value, _) = surface.eval(q.view())?;
+    let value = sampler.energy(q.view())?.ok_or_else(|| {
+        SaddleError::Invalid("BAR and MBAR need sampler energy evaluations".into())
+    })?;
     *evaluations += 1;
     if value.is_finite() {
         Ok(value)
@@ -598,14 +629,14 @@ fn energy<S: PointSurface>(
 
 /// The energy of a configuration carried onto a distant plane, where an
 /// unphysical one has no weight.
-fn energy_or_infinity<S: PointSurface>(
-    surface: &S,
+fn energy_or_infinity<E: HyperplaneSampler>(
+    sampler: &mut E,
     q: &Array1<f64>,
     evaluations: &mut usize,
 ) -> Result<f64, SaddleError> {
     *evaluations += 1;
-    Ok(match surface.eval(q.view()) {
-        Ok((value, _)) if value.is_finite() => value,
+    Ok(match sampler.energy(q.view()) {
+        Ok(Some(value)) if value.is_finite() => value,
         _ => f64::INFINITY,
     })
 }
@@ -719,7 +750,8 @@ mod tests {
             Hyperplane::new(array![0.3, -0.1, 0.4], array![0.6, 0.2, 1.0]).unwrap(),
         ];
         let config = ReversibleWorkConfig::default().with_sampler(bowl_sampler(kt));
-        let result = reversible_work(&Bowl, &planes, None, &config).unwrap();
+        let mut sampler = AnalyticSurfaceSampler::new(&Bowl, config.sampler.clone());
+        let result = reversible_work(&mut sampler, &planes, &config).unwrap();
         let expected = exact(&planes[2], kt) - exact(&planes[0], kt);
         assert!(
             (result.work - expected).abs() < 4.0 * result.error + 1.0e-4,
@@ -777,7 +809,8 @@ mod tests {
             .with_mbar(true)
             .with_estimate(WorkEstimate::Mbar)
             .with_transport(GaussianTransport::default().into());
-        let result = reversible_work_along(&Bowl, &path, None, &config).unwrap();
+        let mut sampler = AnalyticSurfaceSampler::new(&Bowl, config.sampler.clone());
+        let result = reversible_work_along(&mut sampler, &path, &config).unwrap();
         assert_eq!(result.nodes.len(), 7);
         assert_eq!(result.estimate, WorkEstimate::Mbar);
         let checks = [
@@ -829,14 +862,16 @@ mod tests {
             .with_nodes(2)
             .with_simpson(false)
             .with_bar_samples(64);
-        let rigid = reversible_work(&Bowl, &planes, None, &config).unwrap();
+        let mut sampler = AnalyticSurfaceSampler::new(&Bowl, config.sampler.clone());
+        let rigid = reversible_work(&mut sampler, &planes, &config).unwrap();
         let overlap = rigid.nodes[1].overlap.unwrap();
         assert!(overlap < 0.03, "{overlap}");
         assert_eq!(rigid.warnings.len(), 1, "{:?}", rigid.warnings);
         assert!(rigid.warnings[0].contains("nodes 0 and 1"));
 
         let gaussian = config.with_transport(GaussianTransport::default().into());
-        let mapped = reversible_work(&Bowl, &planes, None, &gaussian).unwrap();
+        let mut sampler = AnalyticSurfaceSampler::new(&Bowl, gaussian.sampler.clone());
+        let mapped = reversible_work(&mut sampler, &planes, &gaussian).unwrap();
         assert!(
             mapped.nodes[1].overlap.unwrap() > 0.3,
             "{:?}",
@@ -876,15 +911,20 @@ mod tests {
         let a = Hyperplane::new(array![0.0, 0.0, 0.0], array![1.0, 0.0, 0.0]).unwrap();
         let b = Hyperplane::new(array![0.1, 0.0, 0.0], array![-1.0, 0.0, 0.0]).unwrap();
         let config = ReversibleWorkConfig::default();
-        assert!(reversible_work(&Bowl, &[a.clone(), b], None, &config).is_err());
-        assert!(reversible_work(&Bowl, std::slice::from_ref(&a), None, &config).is_err());
+        let mut sampler = AnalyticSurfaceSampler::new(&Bowl, config.sampler.clone());
+        assert!(reversible_work(&mut sampler, &[a.clone(), b], &config).is_err());
+        let mut sampler = AnalyticSurfaceSampler::new(&Bowl, config.sampler.clone());
+        assert!(reversible_work(&mut sampler, std::slice::from_ref(&a), &config).is_err());
         let c = Hyperplane::new(array![0.1, 0.0, 0.0], array![1.0, 0.1, 0.0]).unwrap();
         let pair = [a, c];
         let mbar_off = config.clone().with_estimate(WorkEstimate::Mbar);
-        assert!(reversible_work(&Bowl, &pair, None, &mbar_off).is_err());
+        let mut sampler = AnalyticSurfaceSampler::new(&Bowl, mbar_off.sampler.clone());
+        assert!(reversible_work(&mut sampler, &pair, &mbar_off).is_err());
         let no_samples = config.clone().with_bar_samples(0).with_mbar(true);
-        assert!(reversible_work(&Bowl, &pair, None, &no_samples).is_err());
+        let mut sampler = AnalyticSurfaceSampler::new(&Bowl, no_samples.sampler.clone());
+        assert!(reversible_work(&mut sampler, &pair, &no_samples).is_err());
         let overlap = config.with_min_overlap(1.0);
-        assert!(reversible_work(&Bowl, &pair, None, &overlap).is_err());
+        let mut sampler = AnalyticSurfaceSampler::new(&Bowl, overlap.sampler.clone());
+        assert!(reversible_work(&mut sampler, &pair, &overlap).is_err());
     }
 }
