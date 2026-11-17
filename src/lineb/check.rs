@@ -325,13 +325,12 @@ fn unstable_mode(saddle: [f64; 2]) -> Array1<f64> {
     vectors.column(lowest).to_owned()
 }
 
-#[test]
-fn muller_brown_action_and_period_match_a_fine_grid() {
+/// The Müller-Brown MEP through the lower saddle down to `levels + 1`
+/// energy steps below it, and the force norm where the first tunneling
+/// energy crosses it.
+fn muller_brown_mep(delta: f64, levels: usize) -> (Array2<f64>, f64) {
     let saddle = [-0.82200156, 0.62431280];
     let (saddle_energy, _) = muller_brown(saddle[0], saddle[1]);
-    let delta = 5.0;
-    let levels = 3;
-    let images = 7;
     let mode = unstable_mode(saddle);
     let floor = saddle_energy - (levels as f64 + 1.0) * delta;
     let mut reactant = descending(&mode, IrcDirection::Reverse, floor);
@@ -352,12 +351,25 @@ fn muller_brown_action_and_period_match_a_fine_grid() {
     let (_, gradient) = muller_brown(rows[bracket][0], rows[bracket][1]);
     let gradient_norm = (gradient[0] * gradient[0] + gradient[1] * gradient[1]).sqrt();
     assert!(gradient_norm > 0.0);
-    let draft = LinebConfig::new(gradient_norm, gradient_norm).with_time_step(0.05);
-    // Endpoint force `endpoint_scale * |V−E| / |∇V|`. One image's share
-    // of the energy step is the energy scale of the continuation.
-    let tol = draft.endpoint_scale * delta / (images as f64) / gradient_norm;
-    let config = draft.with_opt_tol(tol).with_perp_tol(tol);
     let mep = Array2::from_shape_fn((rows.len(), 2), |(i, k)| rows[i][k]);
+    (mep, gradient_norm)
+}
+
+/// Endpoint force `endpoint_scale * |V−E| / |∇V|`. One image's share of
+/// the energy step is the energy scale of the continuation.
+fn muller_brown_config(delta: f64, images: usize, gradient_norm: f64) -> LinebConfig {
+    let draft = LinebConfig::new(gradient_norm, gradient_norm);
+    let tol = draft.endpoint_scale * delta / (images as f64) / gradient_norm;
+    draft.with_opt_tol(tol).with_perp_tol(tol)
+}
+
+#[test]
+fn muller_brown_action_and_period_match_a_fine_grid() {
+    let delta = 5.0;
+    let levels = 3;
+    let images = 7;
+    let (mep, gradient_norm) = muller_brown_mep(delta, levels);
+    let config = muller_brown_config(delta, images, gradient_norm);
     let masses = Masses::coordinates(Array1::ones(2).view()).unwrap();
     let calls = AtomicUsize::new(0);
     let counted = Counted { calls: &calls };

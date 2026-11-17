@@ -30,7 +30,7 @@ fn converged_calls() -> usize {
         calls: AtomicUsize::new(0),
     };
     let spacing = turning * 2.0 / 8.0;
-    let draft = LinebConfig::new(spacing, spacing).with_time_step(0.05);
+    let draft = LinebConfig::new(spacing, spacing);
     let panels = (2 * draft.quadrature_pairs) as f64;
     // Endpoint force `endpoint_scale * |V−E| / |∇V|`, inside one Simpson
     // panel of the converged chord.
