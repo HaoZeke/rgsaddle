@@ -50,6 +50,8 @@
 #[macro_use]
 mod config;
 
+mod vec3;
+
 pub mod autoneb;
 pub mod band;
 pub mod bennett;
