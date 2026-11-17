@@ -24,9 +24,11 @@ The method sources are:
   (2018), doi:10.1103/PhysRevLett.120.135503 (PAFI).
 - Jóhannesson and Jónsson, /Optimization of hyperplanar transition states/,
   /The Journal of Chemical Physics/ 115, 9644--9656 (2001),
-  doi:10.1063/1.1415499 (OH-TST).  Bligaard and Jónsson, /Computer Physics
-  Communications/ 169, 284 (2005), doi:10.1016/j.cpc.2005.03.064, gives
-  two-dimensional examples.
+  doi:10.1063/1.1415499 (OH-TST).
+- Bligaard and Jónsson, /Optimization of hyperplanar transition states:
+  Application to 2D test problems/, /Computer Physics Communications/ 169,
+  284--288 (2005), doi:10.1016/j.cpc.2005.03.064 (the twisted-path
+  validation).
 - Hermes, Sargsyan, Najm, and Zádor, /Sella, an Open-Source
   Automation-Friendly Molecular Saddle Point Optimizer/, /Journal of Chemical
   Theory and Computation/ 18, 6974--6988 (2022),
@@ -159,11 +161,263 @@ followed by tangent projection.  Moving the pivot inside the plane is a
 gauge.  Recentering it at the sample centroid leaves the plane unchanged
 and expresses the rotational derivative as the corresponding covariance.
 
-The =ohtst= Cargo feature is opt-in.  =Hyperplane= implements the same
-=TangentProjector= and =ProjectedConstraint= interfaces as PAFI's affine
-plane.  The analytic two-dimensional unit test uses
+The =ohtst= Cargo feature is opt-in.  There is one shared =Hyperplane= type;
+=Hyperplane::new= stores a unit normal and =Hyperplane::from_path= retains
+PAFI's path derivative only to preserve the historical \(nn^T/(n^Tn)\)
+operation order.  The analytic two-dimensional unit test uses
 \(V(x,y)=-x^2/2+y^2\), whose constrained Gaussian has its closed-form
 optimal plane at \(x=0\), normal to the unstable mode.
+
+** Twisted-path PAFI and OH-TST observables
+
+For Bligaard and Jónsson's
+\[
+V(x,y)={V_0\over\cosh^2(\alpha x/2)}
+       +{1\over2}\mu\omega^2(y-Cx)^2 ,
+\]
+the checked analytic reference integrates each line through the saddle only
+to the stated \(V_0+22k_BT\) energy cutoff.  It scans the line orientation
+and compares free energies relative to the paper's reference orientation.
+The same test then exercises the rotation-only =PlaneOptimizer= through
+=AnalyticSurfaceSampler= and =HyperplaneSampler=.
+
+The cutoff quadrature does not reproduce every rounded angle in the paper:
+at \(T=0.01E_a/k_B\) its low-angle maximum is \(1.16954^\circ\), rather than
+the quoted \(1.24^\circ\).  This discrepancy is retained as an explicit
+validation result; the test does not weaken quadrature or manufacture the
+published number.
+
+PAFI and OH-TST answer different questions on this surface.  PAFI fixes a
+reaction path \(X(s)\), samples planes normal to that path, estimates
+\(dF/ds\), and integrates a one-dimensional potential of mean force.  It
+does not rotate those planes.  OH-TST instead holds a candidate dividing
+line through the saddle and varies its orientation to maximize its
+constrained free energy.  The abrupt low-angle/high-angle branch switch is
+therefore an OH-TST variational result; PAFI sees it only if a separately
+chosen path supplies the corresponding family of plane normals.
+
+* The constrained ensemble belongs to an MD engine
+
+rgsaddle owns plane geometry and statistical estimators, not production
+molecular dynamics.  =HyperplaneSampler= is the engine boundary.  Its input
+is a =HyperplaneSampleBudget= containing \(k_BT\), seed, equilibration,
+stride, record count, position-retention request, and an explicit coordinate
+convention.  =MassWeighted= means \(q=M^{1/2}x\), with a Euclidean unit
+normal.  =Cartesian= means the engine applies its configured masses when it
+projects momenta and forces.
+
+Each =HyperplaneObservation= reports the mechanical constraint force
+\(-\nu^T\nabla V\), an optional complete PAFI gradient record, the PAFI
+Jacobian term \(\psi\), an optional position, the force after constrained
+directions have been removed, and any velocity component removed by the
+integrator.  A general engine need only return positions and the unit-normal
+constraint force for PAFI: rgsaddle derives \(\psi\) and the path-normal
+scaling from the path geometry.  The complete PAFI record is used by the
+analytic reference backend to retain its historical floating-point operation
+order.  =HyperplaneEnsemble= adds engine force-call accounting and an
+acceptance fraction.  PAFI and OH-TST consume these records; they compute
+means, torques, Jacobian corrections, autocorrelation times, block errors,
+and retained configurations without knowing the engine handle type.
+
+=AnalyticSurfaceSampler<S: PointSurface>= is the named reference backend.
+It keeps the existing projected BAOAB/GHMC dynamics for analytic-surface
+tests only.  PAFI's historical overdamped analytic sampler also implements
+the interface so its seeded bit dump remains unchanged.  Neither is the
+production path.
+
+** Restricted MD, curvature, and thermodynamic integration
+
+The next consumer is restricted molecular dynamics and proton-transfer
+thermodynamic integration.  It must use the same boundary rather than grow a
+second constrained eigensolver or Gaussian sampler.
+
+For a plane with additional orthonormal constrained rows \(U\), define
+\[
+Q=I-\nu\nu^T-U^TU,\qquad H_{\cal H}v=QH(Qv).
+\]
+The intended API is
+
+#+begin_src rust
+Hyperplane::hessian_vector(
+    surface: &impl PointSurface,
+    vector: ArrayView1<f64>,
+    constrained_rows: ArrayView2<f64>,
+    config: &MinModeConfig,
+) -> Result<Array1<f64>, SaddleError>;
+
+Hyperplane::lowest_modes(
+    surface: &impl PointSurface,
+    constrained_rows: ArrayView2<f64>,
+    count: usize,
+    config: &MinModeConfig,
+) -> Result<ModeEstimateBlock, SaddleError>;
+#+end_src
+
+Both calls must be thin public entries to rgsaddle's existing
+=PointSurface::hessian_vector= / finite-difference action and block-Lanczos
+implementation.  They must project the trial vector before the action and
+the result afterwards.  Reimplementing Lanczos in the TI consumer is
+forbidden.  This extraction is not included in the first code piece because
+the current block-Lanczos workspace and its action counter are private to
+=IndexKSession=; copying that code onto =Hyperplane= would create exactly the
+duplication this design is meant to remove.
+
+An =ExactGaussianPlaneSampler= should implement =HyperplaneSampler= for a
+quadratic model \(V(q)=V_c+g^T(q-c)+\tfrac12(q-c)^TH(q-c)\).  It obtains the
+positive in-plane spectrum from =Hyperplane::lowest_modes=, draws independent
+normal coordinates with variance \(k_BT/\lambda_i\), and reports the same
+positions, normal constraint forces, projected forces, and Jacobian fields
+as an MD engine.  Zero or negative free curvatures are typed model errors.
+Harmonic controls in OH-TST and the spectral-instanton prototype should use
+this sampler rather than estimator-local Gaussian code.
+
+Thermodynamic integration uses
+\[
+V_\lambda=(1-\lambda)V_{\rm harmonic}+\lambda V_{\rm full},\qquad
+{dF\over d\lambda}
+=\left\langle V_{\rm full}-V_{\rm harmonic}\right\rangle_{\lambda,{\cal H}} .
+\]
+The sampler request therefore needs an extensible observable selector and
+each returned record needs named scalar observables.  The concrete follow-up
+API is:
+
+#+begin_src rust
+trait HyperplaneSampler {
+    fn sample_hyperplane(
+        &mut self,
+        plane: &Hyperplane,
+        budget: &HyperplaneSampleBudget,
+    ) -> Result<HyperplaneEnsemble, SaddleError>;
+}
+
+fn thermodynamic_integration<E: HyperplaneSampler>(
+    sampler: &mut E,
+    plane: &Hyperplane,
+    lambda: &[f64],
+    config: &ThermodynamicIntegrationConfig,
+) -> Result<ThermodynamicIntegrationEstimate, SaddleError>;
+#+end_src
+
+The TI estimator consumes the named
+\(V_{\rm full}-V_{\rm harmonic}\) series, applies the same automated
+equilibration and =block_mean= implementation as PAFI and OH-TST, and uses
+the shared checked quadrature used for path integration.  Backend-specific
+Hamiltonian interpolation remains behind the sampler.
+
+** Complete OH-TST workflow on engine traits
+
+Amsel's Cu run demonstrates why a sampled plane factor must not be labelled
+OH-TST by itself.  The complete path has three first-class operations:
+
+#+begin_src rust
+optimize_plane(&mut impl HyperplaneSampler, initial, config)
+    -> Result<PlaneOptimum, SaddleError>;
+reversible_work(&mut impl HyperplaneSampler, path, config)
+    -> Result<WorkEstimate, SaddleError>;
+transmission_coefficient(&mut impl HyperplaneDynamics, plane, config)
+    -> Result<TransmissionCoefficient, SaddleError>;
+#+end_src
+
+=PlaneOptimizer= and reversible work use repeated constrained ensembles and
+therefore depend only on =HyperplaneSampler=.  The transmission coefficient
+\(\kappa\) does not: it launches flux-weighted configurations from the plane
+and propagates unconstrained trajectories to basin commitment.  A separate
+=HyperplaneDynamics= engine trait must expose velocity drawing, launch,
+unconstrained propagation, basin classification, and deterministic seed
+mapping.  Pretending that =sample_hyperplane= can provide those operations
+would hide the missing recrossing correction.  =ohtst_rate= may combine the
+optimized free-energy factor and \(\kappa\) only when both typed results are
+present.
+
+** Derived equilibration and drift rejection
+
+=thermalize= (PAFI) and =burn_in= (OH-TST) are minimum engine warm-up floors,
+not declarations that equilibrium has been reached.  After that floor the
+estimator applies John D. Chodera, /A Simple Method for Automated
+Equilibration Detection in Molecular Simulations/, /Journal of Chemical
+Theory and Computation/ 12, 1799--1805 (2016),
+doi:10.1021/acs.jctc.5b00784.  For every candidate discard \(t_0\), it
+estimates the statistical inefficiency
+
+\[
+g(t_0)=\max(1,2\tau(t_0))
+\]
+
+and selects the tail maximizing
+
+\[
+N_{\mathrm{eff}}(t_0)={N-t_0\over g(t_0)}.
+\]
+
+The candidate scan is coarse-to-fine for bounded cost, followed by an exact
+scan around the best coarse candidate.  PAFI applies it to the plane-gradient
+series; OH-TST applies it to the constraint-force series.  Statistics are
+then computed only from the selected tail.
+
+A second, independent stationarity guard splits that tail in half.  It
+requires
+
+\[
+|\bar f_1-\bar f_2|\le 4\sqrt{\mathrm{SE}_1^2+\mathrm{SE}_2^2},
+\]
+
+where each standard error comes from correlation-length block means.  The
+factor four is a conservative four-sigma guard: it rejects visible drift
+without treating an ordinary finite-sample fluctuation as failed
+equilibration; a 32-ulp scale floor handles analytically constant series.
+=EquilibrationReport= records the floor plus selected
+discard, \(\tau\), \(N_{\mathrm{eff}}\), drift, error, threshold, and
+pass/fail.  A failed guard returns =SaddleError::NotEquilibrated=; no plane
+estimate is silently emitted.
+
+** Required production backends
+
+- *LAMMPS through OmniPotentRPC/lammpc.*  A lammpc-owned simulation installs
+  a fix that constrains \(\nu^T(q-p)=0\), projects force and momentum in the
+  selected coordinate convention, thermostats only tangent momentum, and
+  restores the plane after drift.  The adapter must expose the applied
+  scalar constraint force, removed momentum/velocity, position snapshots,
+  units, masses, force-call count, and deterministic seed mapping.  No
+  LAMMPS class or pointer appears in the Rust trait.
+- *OpenMM.*  The adapter may represent the signed plane coordinate with a
+  =CustomCVForce= plus a constraint-force readback, or use a
+  constraint-projection integrator.  It must expose the same scalar
+  constraint force, projected velocity, positions, mass/unit convention,
+  step budget, and seed mapping.  A penalty restraint without exact
+  constraint-force recovery is not equivalent.
+- *GROMACS.*  The adapter uses pull code configured for a plane coordinate,
+  reached through the supported API.  It must return the pull constraint
+  force, removed momentum or the Jacobian term, optional positions, units,
+  masses, step/evaluation accounting, and seed mapping.  Text-log scraping
+  is not an API.
+
+The future C ABI should be callback based so the engine retains ownership:
+
+#+begin_src c
+typedef struct rgsaddle_hyperplane_sampler rgsaddle_hyperplane_sampler;
+typedef struct rgsaddle_hyperplane_budget rgsaddle_hyperplane_budget;
+typedef struct rgsaddle_hyperplane_observation rgsaddle_hyperplane_observation;
+
+typedef int32_t (*rgsaddle_sample_hyperplane_fn)(
+    void *engine_context,
+    const double *point,
+    const double *unit_normal,
+    size_t dimension,
+    const rgsaddle_hyperplane_budget *budget,
+    int32_t (*emit)(void *, const rgsaddle_hyperplane_observation *),
+    void *emit_context);
+
+int32_t rgsaddle_pafi_estimate_from_sampler(
+    rgsaddle_hyperplane_sampler *, /* path geometry and output */);
+int32_t rgsaddle_ohtst_estimate_from_sampler(
+    rgsaddle_hyperplane_sampler *, /* plane and output */);
+#+end_src
+
+The opaque sampler stores the callback, engine context, coordinate
+convention, units, and masses.  The observation uses borrowed arrays valid
+only during =emit=.  Construction, destruction, error retrieval, and the
+complete fixed-layout request/result structs belong in the backend piece;
+none of these calls is implemented in this change.
 
 * Dimer, Lanczos, bands, and Sella are one operator family
 
@@ -196,12 +450,13 @@ The first shared code piece is deliberately small:
 
 - =TangentProjector= owns force/vector projection.
 - =ProjectedConstraint= adds level-set restoration.
-- =AffineHyperplane= retains PAFI's non-unit-normal arithmetic.
+- =Hyperplane= is shared by PAFI and OH-TST and retains PAFI's raw path
+  derivative only for bitwise-stable projection.
+- =HyperplaneSampler= is the engine-neutral constrained-ensemble boundary.
 - =UnitNormal= retains the historical band/dimer/Lanczos arithmetic.
 - =ManifoldTangent= binds any rgmin =Manifold=, including Sella's
   =Constraints=, at a point.
-- PAFI and =stencil::perp= use these implementations; OH-TST's
-  =Hyperplane= implements both traits.
+- PAFI, OH-TST, and =stencil::perp= use these shared implementations.
 
 The checked-in before/after bit dump covers a seeded PAFI sample and the
 unit-normal projector.  It is in addition to the existing PAFI, band,
@@ -253,9 +508,19 @@ a reproducible test.
 4. *Mass metric as an explicit type.* Replace repeated square-root mass
    vectors in PAFI/OH-TST/IRC with a checked metric object that maps points,
    tangent vectors, and covectors distinctly.
-5. *Sampler kernel reuse.* Share constrained drift/noise projection,
-   restoration, held modes, block statistics, and retained-frame handling
-   between PAFI and OH-TST without merging their different estimators.
-6. *Paper reproduction suite.* Implement the eight pinned inputs above and
+5. *Production engine adapters.* Implement lammpc/LAMMPS first, then OpenMM
+   and GROMACS, against =HyperplaneSampler= and the C ABI contract above.
+6. *Constrained curvature extraction.* Expose the existing min-mode
+   Hessian-action and block-Lanczos workspace through =Hyperplane= with
+   additional constrained rows; then migrate harmonic controls and the
+   spectral-instanton prototype.
+7. *Exact Gaussian backend and TI.* Implement
+   =ExactGaussianPlaneSampler=, named scalar observables, shared
+   \(\lambda\)-quadrature, and the proton-transfer TI estimator.
+8. *Engine-complete OH-TST workflow.* Generalize plane optimization and
+   reversible work over =HyperplaneSampler=, add =HyperplaneDynamics= for
+   flux launches and commitment, and require \(\kappa\) in the assembled
+   rate.
+9. *Paper reproduction suite.* Implement the eight pinned inputs above and
    compare paper observables only after independent quadrature references
    pass.
