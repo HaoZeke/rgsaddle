@@ -44,19 +44,19 @@ Random-vacancy ensembles as in `direct_md_random.md`: the through-origin fit of 
 
 | T (K) | dynamics | detector | CSV | N | captured | t_max (ps) | a (Å) | k (Å³/ps) | σ_k | own D (Å²/ps) | V_iv/Ω, own D | σ | V_iv/Ω, Table 1 D | σ | k / Table 1 k |
 |---:|:---|:---|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 300 | Langevin, γ = 0.1/ps | site_occupancy | `direct_md_random_sites_langevin_300K.csv` | 48 | 22 | 1500 | 3.631851 | 37.38 | 8.68 | 0.272 ± 0.016 | 227.31 | 54.40 | 431.89 | 101.92 | 1.701 ± 0.425 |
-| 300 | NPH then NVE, rescaled | site_occupancy | `direct_md_random_sites_nph_nve_300K.csv` | 48 | 23 | 1500 | 3.632563 | 43.26 | 9.48 | 0.314 ± 0.016 | 227.78 | 51.27 | 499.65 | 111.53 | 1.968 ± 0.468 |
+| 300 | Langevin, γ = 0.1/ps | site_occupancy | `direct_md_random_sites_langevin_300K.csv` | 96 | 47 | 1500 | 3.631851 | 43.01 | 6.70 | 0.272 ± 0.016 | 261.51 | 43.45 | 496.87 | 80.14 | 1.957 ± 0.355 |
+| 300 | NPH then NVE, rescaled | site_occupancy | `direct_md_random_sites_nph_nve_300K.csv` | 96 | 41 | 1500 | 3.632566 | 36.88 | 6.07 | 0.314 ± 0.016 | 194.21 | 33.46 | 426.01 | 72.37 | 1.678 ± 0.317 |
 | 300 | Table 1, k-method | - | - | 100 | - | - | 3.631 | 21.98 | 2.04 | 0.143 ± 0.006 | 254 | 21 | 254 | 21 | - |
 | 500 | Langevin, γ = 0.1/ps | coordination | `direct_md_random.csv` | 192 | 149 | 1500 | 3.638666 | 92.33 | 8.07 | 1.075 ± 0.040 | 141.62 | 13.43 | 289.44 | 25.51 | 1.563 ± 0.238 |
 | 500 | Langevin, γ = 0.1/ps | site_occupancy | `direct_md_random_sites_langevin_500K.csv` | 96 | 82 | 1500 | 3.644035 | 133.29 | 16.42 | 1.059 ± 0.045 | 207.23 | 27.00 | 417.23 | 51.63 | 2.256 ± 0.396 |
 | 500 | NPH then NVE, rescaled | site_occupancy | `direct_md_random_sites_nph_nve_500K.csv` | 96 | 77 | 1500 | 3.645023 | 130.67 | 14.47 | 1.145 ± 0.064 | 187.88 | 23.29 | 408.92 | 45.52 | 2.212 ± 0.369 |
 | 500 | Table 1, k-method | - | - | 100 | - | - | 3.643 | 59.08 | 7.38 | 0.526 ± 0.006 | 185 | 23 | 185 | 23 | - |
-| 700 | Langevin, γ = 0.1/ps | site_occupancy | `direct_md_random_sites_langevin_700K.csv` | 48 | 48 | 1500 | 3.657362 | 298.58 | 36.35 | 2.025 ± 0.123 | 241.94 | 32.92 | 538.27 | 65.91 | 2.653 ± 0.350 |
-| 700 | NPH then NVE, rescaled | site_occupancy | `direct_md_random_sites_nph_nve_700K.csv` | 48 | 46 | 1500 | 3.658699 | 216.32 | 32.34 | 2.072 ± 0.163 | 171.23 | 28.93 | 389.83 | 58.50 | 1.922 ± 0.304 |
+| 700 | Langevin, γ = 0.1/ps | site_occupancy | `direct_md_random_sites_langevin_700K.csv` | 96 | 92 | 1500 | 3.657362 | 232.40 | 30.18 | 2.025 ± 0.123 | 188.32 | 27.00 | 418.96 | 54.69 | 2.065 ± 0.288 |
+| 700 | NPH then NVE, rescaled | site_occupancy | `direct_md_random_sites_nph_nve_700K.csv` | 96 | 90 | 1500 | 3.658694 | 198.97 | 24.52 | 2.072 ± 0.163 | 157.50 | 23.03 | 358.56 | 44.44 | 1.768 ± 0.236 |
 | 700 | Table 1, k-method | - | - | 100 | - | - | 3.655 | 112.53 | 5.74 | 0.910 ± 0.012 | 203 | 10 | 203 | 10 | - |
 
-At 300 K with the site detector, NPH then NVE, rescaled over Langevin, γ = 0.1/ps: k ratio 1.157 ± 0.370 (z = 0.46).
+At 300 K with the site detector, NPH then NVE, rescaled over Langevin, γ = 0.1/ps: k ratio 0.858 ± 0.194 (z = -0.68).
 At 500 K with the site detector, NPH then NVE, rescaled over Langevin, γ = 0.1/ps: k ratio 0.980 ± 0.162 (z = -0.12).
-At 700 K with the site detector, NPH then NVE, rescaled over Langevin, γ = 0.1/ps: k ratio 0.724 ± 0.140 (z = -1.69).
+At 700 K with the site detector, NPH then NVE, rescaled over Langevin, γ = 0.1/ps: k ratio 0.856 ± 0.153 (z = -0.86).
 
 Table 1, 8788 atoms: 300 K 254 ± 21 Ω (k-method), 286 ± 28 Ω (mean-time); 500 K 185 ± 23 Ω (k-method), 161 ± 15 Ω (mean-time); 700 K 203 ± 10 Ω (k-method), 210 ± 21 Ω (mean-time).

@@ -10,14 +10,14 @@ At 700 K, Table 1 D_i = 0.910 ± 0.012 Å²/ps; measured D_i = 2.025 ± 0.123 Å
 
 | t_max (ps) | captured | N | k (Å³/ps) | σ_k | V_iv/Ω, Table 1 D_i | bootstrap σ | total σ | V_iv/Ω, measured D_i | total σ |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 300 | 22 | 48 | 229.68 | 52.95 | 414.07 | 95.46 | 95.62 | 186.11 | 44.37 |
-| 600 | 33 | 48 | 217.07 | 39.72 | 391.32 | 71.60 | 71.79 | 175.89 | 33.91 |
-| 900 | 42 | 48 | 236.04 | 40.41 | 425.53 | 72.85 | 73.06 | 191.27 | 34.74 |
-| 1200 | 47 | 48 | 291.83 | 36.15 | 526.11 | 65.17 | 65.54 | 236.48 | 32.63 |
-| 1500 | 48 | 48 | 298.58 | 36.35 | 538.27 | 65.53 | 65.91 | 241.94 | 32.92 |
+| 300 | 42 | 96 | 221.43 | 36.38 | 399.20 | 65.59 | 65.80 | 179.43 | 31.43 |
+| 600 | 64 | 96 | 203.72 | 25.84 | 367.26 | 46.58 | 46.84 | 165.08 | 23.22 |
+| 900 | 81 | 96 | 212.36 | 24.71 | 382.84 | 44.55 | 44.83 | 172.08 | 22.59 |
+| 1200 | 89 | 96 | 229.33 | 28.07 | 413.42 | 50.60 | 50.89 | 185.83 | 25.39 |
+| 1500 | 92 | 96 | 232.40 | 30.18 | 418.96 | 54.41 | 54.69 | 188.32 | 27.00 |
 
-At the longest window, 1500 ps, k = 298.58 ± 36.35 Å³/ps. With the Table 1 D_i, V_iv = 538.27 ± 65.53 Ω (bootstrap) or ± 65.91 Ω (with D_i). With the measured D_i, V_iv = 241.94 ± 32.92 Ω.
-The constant-hazard maximum likelihood over the same 1500 ps, with every uncaptured trajectory censored at the end of its window, is k = 258.39 Å³/ps from 48 captures in 48 trajectories, 95 % interval 194.72 to 342.87 from ln k ± 1.96/√captures. V_iv is 465.82 Ω (95 % 351.04 to 618.13) with the Table 1 D_i and 209.38 Ω (95 % 157.78 to 277.84) with the measured D_i; these intervals leave out the D_i error.
-Table 1 at this temperature, 8788 atoms, is 203 ± 10 Ω (k-method) and 210 ± 21 Ω (mean-time method). The k-method value with the Table 1 D_i and the paper's lattice constant 3.655 Å implies k = 112.53 ± 5.74 Å³/ps. Our longest-window k over that is 2.653 ± 0.350. The Table 1-D_i volume minus the k-method value is 335.27 Ω; the measured-D_i volume minus it is 38.94 Ω.
+At the longest window, 1500 ps, k = 232.40 ± 30.18 Å³/ps. With the Table 1 D_i, V_iv = 418.96 ± 54.41 Ω (bootstrap) or ± 54.69 Ω (with D_i). With the measured D_i, V_iv = 188.32 ± 27.00 Ω.
+The constant-hazard maximum likelihood over the same 1500 ps, with every uncaptured trajectory censored at the end of its window, is k = 220.55 Å³/ps from 92 captures in 96 trajectories, 95 % interval 179.79 to 270.56 from ln k ± 1.96/√captures. V_iv is 397.61 Ω (95 % 324.13 to 487.76) with the Table 1 D_i and 178.72 Ω (95 % 145.69 to 219.24) with the measured D_i; these intervals leave out the D_i error.
+Table 1 at this temperature, 8788 atoms, is 203 ± 10 Ω (k-method) and 210 ± 21 Ω (mean-time method). The k-method value with the Table 1 D_i and the paper's lattice constant 3.655 Å implies k = 112.53 ± 5.74 Å³/ps. Our longest-window k over that is 2.065 ± 0.288. The Table 1-D_i volume minus the k-method value is 215.96 Ω; the measured-D_i volume minus it is -14.68 Ω.
 
 Table 1, 8788 atoms, k-method then mean-time method: 300 K 254 ± 21 and 286 ± 28; 500 K 185 ± 23 and 161 ± 15; 700 K 203 ± 10 and 210 ± 21. All use the Ref. [12] D_i of Table 1: 0.143, 0.526, and 0.910 Å²/ps.
