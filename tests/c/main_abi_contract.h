@@ -12,6 +12,9 @@ _Static_assert(RGSADDLE_REPARAM_LINEAR == 0, "rgsaddle_reparametrization_t LINEA
 _Static_assert(RGSADDLE_REPARAM_NOT_A_KNOT == 1, "rgsaddle_reparametrization_t NOT_A_KNOT");
 _Static_assert(RGSADDLE_REQ_ONE_IMAGE == (1ull << 0), "request flag bit 0");
 _Static_assert(RGSADDLE_REQ_CLIMBING_IMAGE == (1ull << 1), "request flag bit 1");
+_Static_assert(RGSADDLE_NOT_EQUILIBRATED == -14, "status NOT_EQUILIBRATED");
+_Static_assert(RGSADDLE_INSUFFICIENT_EFFECTIVE_SAMPLES == -15,
+               "status INSUFFICIENT_EFFECTIVE_SAMPLES");
 
 typedef struct {
   uint32_t major;
