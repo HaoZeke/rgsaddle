@@ -20,7 +20,9 @@
 
 use ndarray::Array1;
 use rayon::prelude::*;
+use std::sync::Arc;
 
+use crate::Region;
 use crate::error::SaddleError;
 use crate::minmode::PointSurface;
 use crate::projector::{
@@ -61,6 +63,8 @@ pub struct PafiConfig {
     pub target_error: Option<f64>,
     /// Extra sampling passes used to reach [`Self::target_error`].
     pub max_rounds: usize,
+    /// Hard symmetry-unique region and optional additional predicates.
+    pub region: Option<Arc<dyn Region>>,
 }
 
 with_setters!(PafiConfig {
@@ -78,6 +82,15 @@ with_setters!(PafiConfig {
     with_max_rounds => max_rounds: val usize,
 });
 
+impl PafiConfig {
+    /// Restrict every fixed PAFI plane to a hard region.
+    #[must_use]
+    pub fn with_region(mut self, region: Arc<dyn Region>) -> Self {
+        self.region = Some(region);
+        self
+    }
+}
+
 impl Default for PafiConfig {
     fn default() -> Self {
         Self {
@@ -93,6 +106,7 @@ impl Default for PafiConfig {
             retain: 16,
             target_error: None,
             max_rounds: 4,
+            region: None,
         }
     }
 }
@@ -380,13 +394,16 @@ pub fn average_hyperplane_with_sampler<E: HyperplaneSampler>(
         return Err(SaddleError::Invalid("PAFI tangent vanishes".into()));
     }
     let plane = Hyperplane::from_path(geometry.positions.view(), geometry.tangent.view())?;
-    let budget = HyperplaneSampleBudget::default()
+    let mut budget = HyperplaneSampleBudget::default()
         .with_thermal(config.thermal)
         .with_seed(config.seed)
         .with_thermalize(config.thermalize)
         .with_stride(config.stride)
         .with_samples(config.samples)
         .with_positions(true);
+    if let Some(region) = &config.region {
+        budget = budget.with_region(Arc::clone(region));
+    }
     let ensemble = sampler.sample_hyperplane(&plane, &budget)?;
     estimate_pafi(ensemble, geometry, config)
 }
@@ -522,8 +539,30 @@ impl<S: PointSurface> HyperplaneSampler for PafiAnalyticSampler<'_, S> {
                 plane.project_in_place(&mut drift);
                 plane.project_in_place(&mut noise);
             }
-            x = &x - &(&drift * drift_scale) + &(&noise * sigma);
-            plane.restore_in_place(&mut x);
+            let mut proposal = &x - &(&drift * drift_scale) + &(&noise * sigma);
+            plane.restore_in_place(&mut proposal);
+            if let Some(region) = &budget.region
+                && let Some(violation) = region.violation(proposal.view())?
+            {
+                if let Some(penetration) = violation.penetration {
+                    let mut normal = TangentProjector::project(plane, violation.normal.view());
+                    let scale = normal.dot(&normal).sqrt();
+                    if !(scale.is_finite() && scale > 0.0) {
+                        return Err(SaddleError::Invalid(
+                            "region boundary has no PAFI in-plane normal".into(),
+                        ));
+                    }
+                    normal /= scale;
+                    proposal.scaled_add(-2.0 * penetration / scale, &normal);
+                    plane.restore_in_place(&mut proposal);
+                    if !region.contains(proposal.view())? {
+                        proposal = x.clone();
+                    }
+                } else {
+                    proposal = x.clone();
+                }
+            }
+            x = proposal;
         }
         Ok(HyperplaneEnsemble {
             observations,
@@ -799,4 +838,60 @@ pub(crate) fn remove_com(vector: &mut Array1<f64>) {
 
 fn norm(vector: &Array1<f64>) -> f64 {
     vector.dot(vector).sqrt()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndarray::array;
+
+    #[derive(Default)]
+    struct RecordingSampler {
+        planes: Vec<Hyperplane>,
+    }
+
+    impl HyperplaneSampler for RecordingSampler {
+        fn sample_hyperplane(
+            &mut self,
+            plane: &Hyperplane,
+            budget: &HyperplaneSampleBudget,
+        ) -> Result<HyperplaneEnsemble, SaddleError> {
+            self.planes.push(plane.clone());
+            let observations = (0..budget.samples)
+                .map(|_| HyperplaneObservation {
+                    constraint_force: -1.0,
+                    pafi_gradient: Some(1.0),
+                    jacobian: 0.0,
+                    position: Some(plane.point().to_owned()),
+                    projected_force: None,
+                    projected_velocity: None,
+                    observables: Default::default(),
+                })
+                .collect();
+            Ok(HyperplaneEnsemble {
+                observations,
+                evaluations: budget.samples,
+                acceptance: 1.0,
+            })
+        }
+    }
+
+    #[test]
+    fn pafi_hands_the_sampler_one_unchanged_path_plane() {
+        let geometry = PathGeometry {
+            positions: array![0.3, -0.4],
+            tangent: array![2.0, 0.0],
+            curvature: Array1::zeros(2),
+            arc: 0.7,
+        };
+        let config = PafiConfig::default()
+            .with_thermalize(0)
+            .with_samples(40)
+            .with_blocks(4);
+        let mut sampler = RecordingSampler::default();
+        average_hyperplane_with_sampler(&mut sampler, &geometry, &config).unwrap();
+        assert_eq!(sampler.planes.len(), 1);
+        assert_eq!(sampler.planes[0].point(), geometry.positions);
+        assert_eq!(sampler.planes[0].normal(), array![1.0, 0.0]);
+    }
 }

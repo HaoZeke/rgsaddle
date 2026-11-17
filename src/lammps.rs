@@ -392,6 +392,14 @@ impl HyperplaneSampler for LammpsHyperplaneSampler {
             plane.normal().as_slice().expect("hyperplane is contiguous"),
             &md_config,
         )?;
+        if let Some(region) = &budget.region {
+            let boundaries = region.planar_boundaries().ok_or_else(|| {
+                SaddleError::Invalid(
+                    "LAMMPS requires a region with engine-portable planar boundaries".into(),
+                )
+            })?;
+            engine.set_boundaries(&boundaries, plane.dim())?;
+        }
         engine.step(budget.thermalize)?;
 
         let mut observations = Vec::with_capacity(budget.samples);
@@ -491,6 +499,8 @@ type MdInitializeFn = unsafe extern "C" fn(
     *const MdConfig,
 ) -> c_int;
 type MdStepFn = unsafe extern "C" fn(*mut c_void, usize) -> c_int;
+type MdSetBoundariesFn =
+    unsafe extern "C" fn(*mut c_void, *const f64, *const f64, usize, usize) -> c_int;
 type MdStateFn = unsafe extern "C" fn(
     *mut c_void,
     *mut f64,
@@ -515,6 +525,7 @@ struct Engine {
     last_error: LastErrorFn,
     md_initialize: MdInitializeFn,
     md_step: MdStepFn,
+    md_set_boundaries: Option<MdSetBoundariesFn>,
     md_state: MdStateFn,
     _library: Library,
 }
@@ -561,6 +572,10 @@ impl Engine {
             let md_step = *library
                 .get::<MdStepFn>(b"lammpc_session_md_step\0")
                 .map_err(load_error)?;
+            let md_set_boundaries = library
+                .get::<MdSetBoundariesFn>(b"lammpc_session_md_set_boundaries\0")
+                .ok()
+                .map(|symbol| *symbol);
             let md_state = *library
                 .get::<MdStateFn>(b"lammpc_session_md_state\0")
                 .map_err(load_error)?;
@@ -587,6 +602,7 @@ impl Engine {
                 last_error,
                 md_initialize,
                 md_step,
+                md_set_boundaries,
                 md_state,
                 _library: library,
             })
@@ -616,6 +632,40 @@ impl Engine {
 
     fn step(&mut self, steps: usize) -> Result<(), SaddleError> {
         let status = unsafe { (self.md_step)(self.session, steps) };
+        self.check(status)
+    }
+
+    fn set_boundaries(
+        &mut self,
+        boundaries: &[crate::PlanarBoundary],
+        dimension: usize,
+    ) -> Result<(), SaddleError> {
+        let set = self.md_set_boundaries.ok_or_else(|| {
+            SaddleError::Surface(
+                "liblammpc lacks hard-region support; update lammpc with the generic boundary ABI"
+                    .into(),
+            )
+        })?;
+        let mut points = Vec::with_capacity(boundaries.len() * dimension);
+        let mut normals = Vec::with_capacity(boundaries.len() * dimension);
+        for boundary in boundaries {
+            if boundary.point().len() != dimension {
+                return Err(SaddleError::Shape(
+                    "LAMMPS boundary and plane dimensions differ".into(),
+                ));
+            }
+            points.extend(boundary.point());
+            normals.extend(boundary.normal());
+        }
+        let status = unsafe {
+            set(
+                self.session,
+                points.as_ptr(),
+                normals.as_ptr(),
+                boundaries.len(),
+                dimension,
+            )
+        };
         self.check(status)
     }
 

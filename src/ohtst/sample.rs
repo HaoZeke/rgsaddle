@@ -15,6 +15,8 @@
 //! reversing the velocity on a rejection or at a wall. That is generalized
 //! hybrid Monte Carlo, exact for any step, and the check on the BAOAB bias.
 
+use std::sync::Arc;
+
 use ndarray::{Array1, Array2, ArrayView1, s};
 
 use crate::error::SaddleError;
@@ -24,6 +26,7 @@ use crate::ohtst::plane::{Hyperplane, orthonormal_rows};
 use crate::projector::{
     HyperplaneEnsemble, HyperplaneObservation, HyperplaneSampleBudget, HyperplaneSampler,
 };
+use crate::region::Region;
 use crate::stats::{EquilibrationReport, Rng, autocorr_time, equilibrate};
 
 /// Random projections of `(ν · ∇V) (q - p)` whose correlation times
@@ -84,6 +87,8 @@ pub struct LangevinConfig {
     /// Hold the surface's excluded modes, such as rigid translations, at
     /// their starting values.
     pub hold_excluded: bool,
+    /// Hard symmetry-unique region and optional additional predicates.
+    pub region: Option<Arc<dyn Region>>,
 }
 
 impl Default for LangevinConfig {
@@ -101,6 +106,7 @@ impl Default for LangevinConfig {
             seed: 1,
             retain: 16,
             hold_excluded: true,
+            region: None,
         }
     }
 }
@@ -190,6 +196,13 @@ impl LangevinConfig {
         self
     }
 
+    /// Restrict constrained sampling to a hard region.
+    #[must_use]
+    pub fn with_region(mut self, region: Arc<dyn Region>) -> Self {
+        self.region = Some(region);
+        self
+    }
+
     pub(crate) fn check(&self) -> Result<(), SaddleError> {
         if !(self.thermal.is_finite() && self.thermal > 0.0) {
             return Err(SaddleError::Invalid(
@@ -261,6 +274,7 @@ pub(crate) struct Dynamics<'a, S> {
     held: Vec<Array1<f64>>,
     anchor: Vec<f64>,
     walls: Vec<Wall>,
+    region: Option<&'a dyn Region>,
     kt: f64,
     h: f64,
     decay: f64,
@@ -287,12 +301,20 @@ impl<'a, S: PointSurface> Dynamics<'a, S> {
         start: Array1<f64>,
         held: Vec<Array1<f64>>,
         walls: &'a [Hyperplane],
+        region: Option<&'a dyn Region>,
         config: &LangevinConfig,
         rng: Rng,
     ) -> Result<Self, SaddleError> {
         if walls.iter().any(|wall| wall.distance(start.view()) > 0.0) {
             return Err(SaddleError::Invalid(
                 "the starting configuration is past a wall".into(),
+            ));
+        }
+        if let Some(region) = region
+            && !region.contains(start.view())?
+        {
+            return Err(SaddleError::Invalid(
+                "the starting configuration is outside the hard region".into(),
             ));
         }
         let start = contiguous(start);
@@ -305,6 +327,7 @@ impl<'a, S: PointSurface> Dynamics<'a, S> {
             held,
             anchor,
             walls: Vec::new(),
+            region,
             kt: config.thermal,
             h: config.time_step,
             decay,
@@ -408,7 +431,8 @@ impl<'a, S: PointSurface> Dynamics<'a, S> {
     }
 
     /// Move `q` by `a v` in the plane, reflecting `q` and `v` at the walls.
-    fn drift(&mut self, q: &mut [f64], v: &mut [f64], a: f64) {
+    fn drift(&mut self, q: &mut [f64], v: &mut [f64], a: f64) -> Result<(), SaddleError> {
+        let previous = q.to_vec();
         axpy(q, a, v);
         self.constrain(q);
         let mut hits = 0;
@@ -430,6 +454,37 @@ impl<'a, S: PointSurface> Dynamics<'a, S> {
             }
         }
         self.wall_hits += hits;
+        if let Some(region) = self.region {
+            for _ in 0..REFLECTIONS {
+                let Some(violation) = region.violation(ArrayView1::from(&*q))? else {
+                    return Ok(());
+                };
+                let mut tangent = contiguous(violation.normal);
+                self.tangent(slice_mut(&mut tangent));
+                let scale = tangent.dot(&tangent).sqrt();
+                if !(scale.is_finite() && scale > 0.0) {
+                    return Err(SaddleError::Invalid(
+                        "region boundary has no in-plane normal".into(),
+                    ));
+                }
+                tangent /= scale;
+                let normal = slice(&tangent);
+                match violation.penetration {
+                    Some(penetration) => axpy(q, -2.0 * penetration / scale, normal),
+                    None => q.copy_from_slice(&previous),
+                }
+                let component = dot(normal, v);
+                axpy(v, -2.0 * component, normal);
+                self.constrain(q);
+                self.wall_hits += 1;
+            }
+            if !region.contains(ArrayView1::from(&*q))? {
+                return Err(SaddleError::Solver(
+                    "hard-region reflection did not return to the region".into(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn baoab(&mut self) -> Result<bool, SaddleError> {
@@ -437,12 +492,12 @@ impl<'a, S: PointSurface> Dynamics<'a, S> {
         let mut v = std::mem::take(&mut self.v);
         let mut q = std::mem::take(&mut self.q);
         axpy(slice_mut(&mut v), 0.5 * h, slice(&self.force));
-        self.drift(slice_mut(&mut q), slice_mut(&mut v), 0.5 * h);
+        self.drift(slice_mut(&mut q), slice_mut(&mut v), 0.5 * h)?;
         for value in slice_mut(&mut v) {
             *value = decay * *value + kick * self.rng.normal();
         }
         self.tangent(slice_mut(&mut v));
-        self.drift(slice_mut(&mut q), slice_mut(&mut v), 0.5 * h);
+        self.drift(slice_mut(&mut q), slice_mut(&mut v), 0.5 * h)?;
         self.proposed += 1;
         let evaluated = self.evaluate(q.view());
         self.q = q;
@@ -482,10 +537,13 @@ impl<'a, S: PointSurface> Dynamics<'a, S> {
             axpy(tq, h, slice(&trial_v));
             self.constrain(tq);
         }
-        let blocked = self
+        let mut blocked = self
             .walls
             .iter()
             .any(|wall| dot(slice(&wall.normal), slice(&trial)) > wall.offset);
+        if let Some(region) = self.region {
+            blocked |= !region.contains(trial.view())?;
+        }
         if blocked {
             self.wall_hits += 1;
             v.mapv_inplace(|x| -x);
@@ -599,7 +657,15 @@ impl<S: PointSurface> HyperplaneSampler for AnalyticSurfaceSampler<'_, S> {
         config.burn_in = budget.thermalize;
         config.stride = budget.stride;
         config.records = budget.samples;
-        let mut dynamics = Dynamics::new(self.surface, start, held, &walls, &config, rng)?;
+        let mut dynamics = Dynamics::new(
+            self.surface,
+            start,
+            held,
+            &walls,
+            budget.region.as_deref(),
+            &config,
+            rng,
+        )?;
         for _ in 0..budget.thermalize {
             dynamics.step()?;
         }
@@ -859,13 +925,16 @@ pub fn sample_plane_with_sampler<E: HyperplaneSampler>(
             "external hyperplane samples do not use analytic control variates".into(),
         ));
     }
-    let budget = HyperplaneSampleBudget::default()
+    let mut budget = HyperplaneSampleBudget::default()
         .with_thermal(config.thermal)
         .with_seed(config.seed)
         .with_thermalize(config.burn_in)
         .with_stride(config.stride)
         .with_samples(config.records)
         .with_positions(true);
+    if let Some(region) = &config.region {
+        budget = budget.with_region(Arc::clone(region));
+    }
     let ensemble = sampler.sample_hyperplane(plane, &budget)?;
     estimate_engine_plane(plane, config, ensemble)
 }
@@ -1066,13 +1135,16 @@ pub(crate) fn sample_plane_controlled<S: PointSurface>(
         None => None,
     };
     let columns = 2 * n + 2 + if control.is_some() { 2 * n } else { 0 };
-    let budget = HyperplaneSampleBudget::default()
+    let mut budget = HyperplaneSampleBudget::default()
         .with_thermal(config.thermal)
         .with_seed(config.seed)
         .with_thermalize(config.burn_in)
         .with_stride(config.stride)
         .with_samples(config.records)
         .with_positions(true);
+    if let Some(region) = &config.region {
+        budget = budget.with_region(Arc::clone(region));
+    }
     let mut backend = AnalyticSurfaceSampler {
         surface,
         config: config.clone(),
@@ -1311,6 +1383,7 @@ pub(crate) fn sample_plane_controlled<S: PointSurface>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{PlanarBoundary, Region};
     use ndarray::array;
 
     /// `V = ½ qᵀ K q` with a translation-like excluded row.
@@ -1521,5 +1594,66 @@ mod tests {
                 _ => assert!(sample.acceptance < 1.0),
             }
         }
+    }
+
+    #[test]
+    fn hard_half_plane_preserves_the_restricted_distribution() {
+        let surface = Bowl {
+            k: Array2::eye(2),
+            excluded: None,
+        };
+        let plane = Hyperplane::new(array![0.0, 0.0], array![1.0, 0.0]).unwrap();
+        // Interior y >= 0; the outward normal points toward negative y.
+        let region = Arc::new(PlanarBoundary::new(array![0.0, 0.0], array![0.0, -1.0]).unwrap());
+        let kt = 0.2;
+        for integrator in [PlaneIntegrator::Baoab, PlaneIntegrator::Ghmc] {
+            let config = LangevinConfig::default()
+                .with_thermal(kt)
+                .with_time_step(0.15)
+                .with_friction(1.5)
+                .with_burn_in(500)
+                .with_records(4000)
+                .with_blocks(20)
+                .with_retain(64)
+                .with_integrator(integrator)
+                .with_region(region.clone());
+            let sample = sample_plane(&surface, &plane, None, &config).unwrap();
+            let exact_mean = (2.0 * kt / std::f64::consts::PI).sqrt();
+            assert!((sample.centroid[1] - exact_mean).abs() < 0.04);
+            assert!(
+                sample
+                    .retained
+                    .iter()
+                    .chain(std::iter::once(&sample.last))
+                    .all(|point| region.contains(point.view()).unwrap())
+            );
+            if integrator == PlaneIntegrator::Ghmc {
+                assert!(sample.acceptance < 1.0);
+            }
+        }
+    }
+
+    #[test]
+    fn walker_near_a_neighbouring_plane_never_crosses_it() {
+        let surface = Bowl {
+            k: Array2::eye(2),
+            excluded: None,
+        };
+        let plane = Hyperplane::new(array![0.0, 0.09], array![1.0, 0.0]).unwrap();
+        let wall = Arc::new(PlanarBoundary::new(array![0.0, 0.1], array![0.0, 1.0]).unwrap());
+        let config = LangevinConfig::default()
+            .with_time_step(0.3)
+            .with_records(500)
+            .with_blocks(5)
+            .with_retain(500)
+            .with_region(wall);
+        let sample = sample_plane(&surface, &plane, None, &config).unwrap();
+        assert!(
+            sample
+                .retained
+                .iter()
+                .chain(std::iter::once(&sample.last))
+                .all(|point| point[1] <= 0.1)
+        );
     }
 }

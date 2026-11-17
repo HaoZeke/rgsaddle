@@ -75,6 +75,7 @@ pub mod pair_network;
 pub mod prfo;
 pub mod projection;
 pub mod projector;
+pub mod region;
 pub mod relax;
 pub mod saddle_index;
 pub mod solid_dimer;
@@ -155,15 +156,16 @@ pub use ohtst::{
     HyperplaneDynamics, HyperplaneObservable, LangevinConfig, MassWeighted, OhTstRate,
     PermutationDistance, PlaneDensity, PlaneIntegrator, PlaneMetric, PlaneOptimizer,
     PlaneOptimizerConfig, PlaneOptimizerStatus, PlaneOptimum, PlanePath, PlaneSample, PlaneTrace,
-    QuadraticModel, QuenchConfig, ReactantDensity, ReversibleWork, ReversibleWorkConfig,
-    StateDistance, THERMODYNAMIC_DERIVATIVE, ThermodynamicIntegrationConfig,
-    ThermodynamicIntegrationEstimate, ThermodynamicIntegrationNode, TransmissionCoefficient,
-    TransmissionConfig, TransmissionEstimate, Transport, Uncontrolled, WorkEstimate, WorkNode,
-    anharmonic_correction, basin_density, flux_mass, mass_weighted_rigid_translations, ohtst_rate,
-    optimize_plane, plane_transmission, reactant_density, restricted_thermodynamic_integration,
-    reversible_work, reversible_work_along, reversible_work_along_on_surface,
-    reversible_work_on_surface, sample_plane, sample_plane_with_sampler, thermodynamic_integration,
-    transmission_coefficient, transmission_coefficient_on_surface,
+    QuadraticModel, QuenchConfig, QuenchedTransitionRegion, RateMultiplicity, ReactantDensity,
+    ReversibleWork, ReversibleWorkConfig, StateDistance, THERMODYNAMIC_DERIVATIVE,
+    ThermodynamicIntegrationConfig, ThermodynamicIntegrationEstimate, ThermodynamicIntegrationNode,
+    TransmissionCoefficient, TransmissionConfig, TransmissionEstimate, Transport, Uncontrolled,
+    WorkEstimate, WorkNode, anharmonic_correction, basin_density, flux_mass,
+    mass_weighted_rigid_translations, ohtst_rate, optimize_plane, plane_transmission,
+    reactant_density, restricted_thermodynamic_integration, reversible_work, reversible_work_along,
+    reversible_work_along_on_surface, reversible_work_on_surface, sample_plane,
+    sample_plane_with_sampler, thermodynamic_integration, transmission_coefficient,
+    transmission_coefficient_on_surface,
 };
 pub use pafi::{
     ArcPath, FreeEnergyProfile, HyperplaneAverage, PafiConfig, PathFrame, PathGeometry,
@@ -180,6 +182,11 @@ pub use projector::{
     Hyperplane, HyperplaneCoordinates, HyperplaneEnsemble, HyperplaneModes, HyperplaneObservation,
     HyperplaneSampleBudget, HyperplaneSampler, ManifoldTangent, ProjectedConstraint,
     TangentProjector, UnitNormal,
+};
+pub use region::{
+    AffineSymmetry, BoundaryViolation, PathSlab, PeriodicSymmetryOperations, PlanarBoundary,
+    Region, RegionIntersection, SymmetryOperations, SymmetrySource, SymmetryUniqueRegion,
+    reflect_velocity,
 };
 pub use relax::{
     DEFAULT_FORCE_TOL, DEFAULT_MAX_STEPS, RelaxConfig, Relaxation, max_atom_force,

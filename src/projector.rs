@@ -6,12 +6,14 @@
 //! forces, while PAFI also restores each sampled configuration.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2, Zip, s};
 use rgmin::Manifold;
 
 use crate::SaddleError;
 use crate::minmode::{FiniteDifference, MinModeConfig, MinModeSession, ModeEstimate, PointSurface};
+use crate::region::Region;
 
 /// Projection of an ambient vector onto an allowed tangent space.
 pub trait TangentProjector {
@@ -60,6 +62,8 @@ pub struct HyperplaneSampleBudget {
     pub lambda: Option<f64>,
     /// Named scalar observables requested at every record.
     pub observables: Vec<String>,
+    /// Hard symmetry-unique region and any additional predicates.
+    pub region: Option<Arc<dyn Region>>,
 }
 
 impl Default for HyperplaneSampleBudget {
@@ -74,6 +78,7 @@ impl Default for HyperplaneSampleBudget {
             positions: true,
             lambda: None,
             observables: Vec::new(),
+            region: None,
         }
     }
 }
@@ -122,6 +127,12 @@ impl HyperplaneSampleBudget {
     /// Request one named scalar observable.
     pub fn with_observable(mut self, observable: impl Into<String>) -> Self {
         self.observables.push(observable.into());
+        self
+    }
+
+    /// Restrict sampling to a hard region.
+    pub fn with_region(mut self, region: Arc<dyn Region>) -> Self {
+        self.region = Some(region);
         self
     }
 }
