@@ -238,7 +238,7 @@ fn log_rate(
             length_sq += delta * delta;
         }
     }
-    if !(length_sq > 0.0) {
+    if length_sq <= 0.0 || length_sq.is_nan() {
         return Err(SaddleError::Invalid(
             "the replicas do not separate, so B_N vanishes".into(),
         ));
@@ -325,7 +325,7 @@ fn coordinate_scale(values: impl IntoIterator<Item = f64>) -> Result<f64, Saddle
     for value in values {
         scale = scale.max(value.abs());
     }
-    if !(scale > 0.0) {
+    if scale <= 0.0 || scale.is_nan() {
         return Err(SaddleError::Invalid(
             "the tunneling coordinates are all zero, so a Hessian difference has no length".into(),
         ));
@@ -342,7 +342,7 @@ fn central_product<S: PointSurface>(
     step: f64,
 ) -> Result<Array1<f64>, SaddleError> {
     let norm = l2(vector);
-    if !(norm > 0.0) {
+    if norm <= 0.0 || norm.is_nan() {
         return Ok(Array1::zeros(position.len()));
     }
     if !(step.is_finite() && step > 0.0) {
@@ -392,7 +392,7 @@ fn velocity_mode(beads: &Array2<f64>) -> Result<Array1<f64>, SaddleError> {
         }
     }
     let norm = l2(mode.view());
-    if !(norm > 0.0) {
+    if norm <= 0.0 || norm.is_nan() {
         return Err(SaddleError::Invalid(
             "the replicas do not move, so the permutation mode is undefined".into(),
         ));
@@ -558,7 +558,7 @@ where
         project(&mut vector, locked);
         project(&mut vector, &chain.vectors);
         let norm = l2(vector.view());
-        if !(norm > 0.0) {
+        if norm <= 0.0 || norm.is_nan() {
             return Err(SaddleError::Invalid(
                 "a Lanczos vector collapsed onto the modes already removed".into(),
             ));
@@ -594,7 +594,7 @@ where
         let off = l2(image.view());
         let removals = (gauges.len() + locked.len() + chain.vectors.len()) as f64;
         let roundoff = applied * f64::EPSILON * removals * removals;
-        if !(off > roundoff) {
+        if off <= roundoff || off.is_nan() {
             break;
         }
         chain.beta.push(off);
@@ -628,7 +628,7 @@ fn tridiagonal_log_abs_det(alpha: &[f64], beta: &[f64]) -> Result<f64, SaddleErr
     let (values, _) = exact_eigh(tri.view())?;
     let mut sum = 0.0;
     for value in values.iter() {
-        if !(value.abs() > 0.0) || !value.is_finite() {
+        if *value == 0.0 || !value.is_finite() {
             return Err(SaddleError::Invalid(
                 "the fluctuation operator has a vanishing eigenvalue".into(),
             ));
@@ -747,7 +747,7 @@ fn dense_kept_log_abs_det(
     let (values, _) = exact_eigh(reduced.view())?;
     let mut sum = 0.0;
     for value in values.iter() {
-        if !(value.abs() > 0.0) || !value.is_finite() {
+        if *value == 0.0 || !value.is_finite() {
             return Err(SaddleError::Invalid(
                 "a kept ring-polymer eigenvalue vanishes".into(),
             ));

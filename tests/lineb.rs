@@ -3,8 +3,8 @@
 
 use ndarray::{Array1, Array2, ArrayView1};
 use rgsaddle::{
-    IrcConfig, IrcDirection, IrcKind, IrcSession, LinebConfig, LinebSession, LinebStatus, Masses,
-    PointSurface, SaddleError, continue_from_mep, exact_eigh, hqtst_rate,
+    Continuation, IrcConfig, IrcDirection, IrcKind, IrcSession, LinebConfig, LinebSession,
+    LinebStatus, Masses, PointSurface, SaddleError, continue_from_mep, exact_eigh, hqtst_rate,
     hqtst_rate_interpolated_hessian,
 };
 
@@ -215,14 +215,14 @@ fn descending_branch(mode: &Array1<f64>, direction: IrcDirection, floor: f64) ->
         let report = session.step(&MullerBrown).unwrap();
         let position = session.position();
         points.push([position[0], position[1]]);
-        if !(report.energy > floor) || report.at_minimum {
+        if report.energy <= floor || report.energy.is_nan() || report.at_minimum {
             break;
         }
     }
     let end = points.last().copied().unwrap();
     let (energy, _) = muller_brown(end[0], end[1]);
     assert!(
-        !(energy > floor),
+        energy <= floor,
         "the reaction coordinate stopped at energy {energy}, above {floor}"
     );
     points
@@ -286,10 +286,7 @@ fn muller_brown_continuation_lowers_the_energy_and_lengthens_the_period() {
         mep.view(),
         &masses,
         &config,
-        delta,
-        images,
-        2,
-        400,
+        &Continuation::new(delta, images, 2).with_max_steps(400),
     )
     .unwrap();
     assert_eq!(paths.len(), 2);
