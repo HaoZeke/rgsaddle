@@ -1,12 +1,18 @@
 //! Müller-Brown action and period against a fine grid, and the force
 //! calls that grid's paths took.
 //!
-//! rgpot ships an EAM table for Al, Pd and Au only. It has no Cu and no
-//! H, and `rgpot-core` does not evaluate that EAM, so Cu(110)+2H is not
-//! a surface this crate can call. The two-dimensional illustration in
-//! Ásgeirsson, Arnaldsson and Jónsson, J. Chem. Phys. 148, 102334 (2018)
-//! is a Müller-Brown surface. The integrals below are a separate Simpson
-//! rule on the same cubic. The allowance is that rule's own truncation:
+//! The two-dimensional illustration in Ásgeirsson, Arnaldsson and
+//! Jónsson, J. Chem. Phys. 148, 102334 (2018) is a modified Müller-Brown
+//! surface; this one keeps the standard constants. The paper's force-call
+//! figure, an average of about 900 evaluations to compute the reactive
+//! flux at each temperature (Sec. II.E), is for H2 desorbing from a
+//! 216-atom Cu(110) slab on an empirical potential. rgpot serves a Cu-H
+//! EAM of that slab over RPC as `CuH2`. This crate does not depend on
+//! rgpot, so that comparison runs outside its tests, through a
+//! [`PointSurface`] around the RPC client.
+//!
+//! The integrals below are a separate Simpson rule on the same cubic.
+//! The allowance is that rule's own truncation:
 //! the change from the library's panel count to the grid that has
 //! settled at the roundoff of its sum.
 
