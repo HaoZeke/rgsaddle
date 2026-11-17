@@ -32,6 +32,15 @@
 //! order and therefore the trajectories.
 //! A CSV row is skipped when the same temperature, shell, orientation,
 //! seed, and window are already in the output.
+//!
+//! `MD_SIA_D=1` runs a free dumbbell for `MD_SIA_BLOCKS` blocks per seed and
+//! writes the mean squared displacement of its Wigner-Seitz site per block.
+//! `MD_SIA_TRACER=1` repeats those trajectories and writes, for every lag
+//! between block ends, the squared displacements of the site, of the
+//! dumbbell centre, and of its displaced atom, and the squared displacement
+//! summed over all atoms, which is N times the per-atom G_MSD of Zhang et
+//! al., Phys. Rev. Materials 6, 053605 (2022), Eq. (5). `MD_SIA_D_NOTE=1`
+//! rewrites the notes of both from their CSVs.
 
 use std::collections::BTreeMap;
 use std::env;
@@ -1729,8 +1738,6 @@ struct Group {
     trials: f64,
 }
 
-const DUMBBELL_ALPHA: f64 = 2.0 / 3.0;
-
 fn first_method_report(csv: &std::path::Path) -> String {
     #[derive(Clone)]
     struct Trial {
@@ -1934,7 +1941,7 @@ fn first_method_report(csv: &std::path::Path) -> String {
             let survival = (1.0 - captured_sites / total_sites).max(1.0e-12);
             fit_times.push((*mark, survival.ln()));
         }
-        text.push_str("A shell-restricted survival fit uses the same through-origin slope as section 2 of Mwungeli, Liu, and Demkowicz. The slope is -k/V_model, with V_model the 13³ cell volume. n(t)/N here counts every lattice site: a simulated shell contributes its capture fraction, and a site outside 10.8 Å is counted as not yet recombined, so this volume lies below the whole-cell ensemble. The recombination volume is k a² / (α D_i) with α = 2/3, divided by Ω = a³/4.\n\n");
+        text.push_str("A shell-restricted survival fit uses the same through-origin slope as section 2 of Mwungeli, Liu, and Demkowicz. The slope is -k/V_model, with V_model the 13³ cell volume. n(t)/N here counts every lattice site: a simulated shell contributes its capture fraction, and a site outside 10.8 Å is counted as not yet recombined, so this volume lies below the whole-cell ensemble. The recombination volume is V_iv = k α a² / D_i with α = 2/3, from K_iv = V_iv D_i / (α a²) = V_iv ν in section 1 of that paper, divided by Ω = a³/4.\n\n");
         if fit_times.is_empty() {
             continue;
         }
@@ -1961,11 +1968,10 @@ fn first_method_report(csv: &std::path::Path) -> String {
         ));
         match diffusivity {
             Some((d_i, d_sigma)) if d_i > 0.0 => {
-                let volume = rate * lattice * lattice / (DUMBBELL_ALPHA * d_i);
-                let per_atom = volume / (lattice.powi(3) / 4.0);
+                let per_atom = rate_to_volume(rate, lattice, d_i);
                 let rel = ((rate_sigma / rate).powi(2) + (d_sigma / d_i).powi(2)).sqrt();
                 text.push_str(&format!(
-                    "Table 1 quotes the Ref. [12] SIA diffusivity as {d_i:.3} ± {d_sigma:.3} Å²/ps at this temperature. First-method V_iv = {per_atom:.2} ± {:.2} Ω.\n\n",
+                    "Table 1 lists D_i = {d_i:.3} ± {d_sigma:.3} Å²/ps at this temperature, 4951 D* from Ref. [12] (see `direct_md_dynamics.md`). With it, first-method V_iv = {per_atom:.2} ± {:.2} Ω.\n\n",
                     per_atom * rel
                 ));
             }
@@ -2010,6 +2016,7 @@ struct RandomSet {
     repeats: f64,
     window: f64,
     gamma: f64,
+    dt_fs: f64,
     kind: DynamicsKind,
     dynamics: Option<(String, [f64; 4])>,
     /// Detector, confirmation window in ps, and the dynamics column index.
@@ -2026,6 +2033,7 @@ fn read_random_set(csv: &std::path::Path) -> RandomSet {
     let mut repeats = 13.0;
     let mut window = 0.0_f64;
     let mut gamma = f64::NAN;
+    let mut dt_fs = f64::NAN;
     let mut dynamics = None;
     let mut detector = (Detector::Coordination, 0.0, 19);
     let mut production_lattices = Vec::new();
@@ -2057,6 +2065,7 @@ fn read_random_set(csv: &std::path::Path) -> RandomSet {
         repeats = rep;
         window = window.max(span);
         gamma = fields[12].parse().unwrap_or(f64::NAN);
+        dt_fs = fields[11].parse().unwrap_or(f64::NAN);
         dynamics = dynamics_columns(&fields, row_detector(&fields).2);
         detector = row_detector(&fields);
         if let Some((_, [equil_ps, ..])) = &dynamics
@@ -2077,6 +2086,7 @@ fn read_random_set(csv: &std::path::Path) -> RandomSet {
         repeats,
         window,
         gamma,
+        dt_fs,
         kind,
         dynamics,
         detector,
@@ -2091,6 +2101,7 @@ fn random_survival_note(csv: &std::path::Path) -> String {
         repeats,
         window,
         gamma,
+        dt_fs,
         kind,
         dynamics,
         detector,
@@ -2099,18 +2110,21 @@ fn random_survival_note(csv: &std::path::Path) -> String {
     let measured_name = measured
         .map(|(_, _, file)| file.replace(".csv", ".md"))
         .unwrap_or_else(|| "no matching campaign".to_string());
+    let tracer = measured_tracer(kind, gamma, dt_fs, temperature, lattice);
+    let tracer_name = tracer
+        .as_ref()
+        .map(|(_, file)| file.replace(".csv", ".md"))
+        .unwrap_or_else(|| "no matching campaign".to_string());
     let mut text = String::new();
     text.push_str("# Random-vacancy survival, Mishin Cu\n\n");
-    text.push_str("The vacancy is the lattice site nearest the cell center. The <100> dumbbell host is drawn uniformly from the other sites of the 13³ cell, and the dumbbell axis uniformly from the three orientations. Under periodic boundaries the separation is uniform over the cell, which is the ensemble in section 2 of Mwungeli, Liu, and Demkowicz, Phys. Rev. Materials 9, 023601 (2025). The fit is ln S(t) = -(k/V_model) t through the origin, sampled every 25 ps, with V_model the cell volume and S the Kaplan-Meier survival, in which an uncaptured trajectory is censored at the end of its window; with equal windows S = n(t)/N. Samples after S reaches zero are left out. V_iv/Ω = 4k / (α a D_i) with α = 2/3 and Ω = a³/4.\n\n");
+    text.push_str("The vacancy is the lattice site nearest the cell center. The <100> dumbbell host is drawn uniformly from the other sites of the 13³ cell, and the dumbbell axis uniformly from the three orientations. Under periodic boundaries the separation is uniform over the cell, which is the ensemble in section 2 of Mwungeli, Liu, and Demkowicz, Phys. Rev. Materials 9, 023601 (2025). The fit is ln S(t) = -(k/V_model) t through the origin, sampled every 25 ps, with V_model the cell volume and S the Kaplan-Meier survival, in which an uncaptured trajectory is censored at the end of its window; with equal windows S = n(t)/N. Samples after S reaches zero are left out. V_iv/Ω = 4 α k / (a D_i) with α = 2/3 and Ω = a³/4, from K_iv = V_iv D_i / (α a²) = V_iv ν in section 1 of that paper, where ν is the rate of one of the eight translation jumps of the dumbbell. That ν is the defect's own jump rate, so the D_i the relation needs is the diffusivity of the defect.\n\n");
     let ours = match (kind, &dynamics) {
         (DynamicsKind::NphNve, Some((_, [equil_ps, rescale_ps, window_k, piston_ps]))) => format!(
-            "Our k comes from the CSV's own NPH-then-NVE dynamics: {equil_ps:.0} ps of isotropic zero-pressure NPH (Andersen piston, period {piston_ps:.1} ps), then NVE in the mean box of the second half of that stage, with velocities rescaled to the target temperature every {rescale_ps:.2} ps whenever it is off by more than {window_k:.1} K. The capture clock starts at the Maxwellian start, NPH stage included, and the fit uses the mean production lattice constant {lattice:.6} Å of the trajectories that reached NVE. The self-consistent volume divides k by the free-dumbbell diffusivity measured with those same dynamics, potential, and cell, in `{measured_name}`. Both conversions are listed."
+            "Our k comes from the CSV's own NPH-then-NVE dynamics: {equil_ps:.0} ps of isotropic zero-pressure NPH (Andersen piston, period {piston_ps:.1} ps), then NVE in the mean box of the second half of that stage, with velocities rescaled to the target temperature every {rescale_ps:.2} ps whenever it is off by more than {window_k:.1} K. The capture clock starts at the Maxwellian start, NPH stage included, and the fit uses the mean production lattice constant {lattice:.6} Å of the trajectories that reached NVE."
         ),
-        _ => format!(
-            "Our k comes from the Langevin dynamics in the CSV, so the self-consistent volume divides it by the free-dumbbell diffusivity measured with those same dynamics, potential, and cell, in `{measured_name}`. Both conversions are listed."
-        ),
+        _ => "Our k comes from the Langevin dynamics in the CSV.".to_string(),
     };
-    text.push_str(&format!("Table 1 of that paper divides its k by the D_i in its own Table 1 column, which it quotes from Ref. [12], B. Zhang et al., Phys. Rev. Materials 6, 053605 (2022): SIA mean-square displacements in MD. The paper's own trajectories are NPH for 30 ps, then NVE with velocity rescaling, at its lattice constant. {ours} σ_k is the standard deviation over 400 bootstrap resamples of the trajectories. The bootstrap σ column carries only that; the total σ columns add the relative error of the D_i used in quadrature.\n\n"));
+    text.push_str(&format!("Table 1 of that paper converts its k with the D_i in its own Table 1 column, which it quotes from Ref. [12], B. Zhang et al., Phys. Rev. Materials 6, 053605 (2022). Ref. [12] took the mean-square displacement of every atom, its Eq. (5), and its erratum, Phys. Rev. Materials 9, 069901(E) (2025), multiplies that per-atom diffusivity by the 4951 atoms of its cell. The product is the tracer sum N D* = Σ_i ⟨|Δr_i|²⟩ / 6t, which is the defect diffusivity times the tracer correlation factor (`direct_md_dynamics.md`). The paper's own trajectories are NPH for 30 ps, then NVE with velocity rescaling, at its lattice constant. {ours} The N D* column converts our k with the tracer sum measured on free-dumbbell trajectories with the same dynamics, potential, and cell (`{tracer_name}`), the convention of Table 1. The defect-D column uses the Wigner-Seitz defect diffusivity of those dynamics (`{measured_name}`), the D_i the relation needs. σ_k is the standard deviation over 400 bootstrap resamples of the trajectories. The bootstrap σ column carries only that; the total σ columns add the relative error of the D_i used in quadrature.\n\n"));
     if trials.is_empty() {
         text.push_str("No trajectories.\n");
         return text;
@@ -2120,13 +2134,15 @@ fn random_survival_note(csv: &std::path::Path) -> String {
     }
     let table_d = table_diffusivity(temperature);
     let measured_d = measured.map(|(d, sigma, _)| (d, sigma));
+    let tracer_d = tracer.as_ref().map(|(estimate, _)| estimate.tracer);
     let fmt_d = |d: Option<(f64, f64)>| match d {
         Some((value, error)) => format!("{value:.3} ± {error:.3} Å²/ps"),
         None => "not available".to_string(),
     };
     text.push_str(&format!(
-        "At {temperature:.0} K, Table 1 D_i = {}; measured D_i = {}.\n\n",
+        "At {temperature:.0} K, Table 1 D_i = {}; measured N D* = {}; measured defect D = {}.\n\n",
         fmt_d(table_d),
+        fmt_d(tracer_d),
         fmt_d(measured_d)
     ));
     let convert = |rate: f64, rate_sigma: f64, d: Option<(f64, f64)>| -> (f64, f64, f64) {
@@ -2142,14 +2158,15 @@ fn random_survival_note(csv: &std::path::Path) -> String {
         }
     };
     let caps = [300.0_f64, 600.0, 900.0, 1200.0, 1500.0];
-    text.push_str("| t_max (ps) | captured | N | k (Å³/ps) | σ_k | V_iv/Ω, Table 1 D_i | bootstrap σ | total σ | V_iv/Ω, measured D_i | total σ |\n|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+    text.push_str("| t_max (ps) | captured | N | k (Å³/ps) | σ_k | V_iv/Ω, Table 1 D_i | bootstrap σ | total σ | V_iv/Ω, measured N D* | total σ | V_iv/Ω, measured defect D | total σ |\n|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
     let mut rows: Vec<(f64, f64, f64)> = Vec::new();
     for cap in caps.iter().copied().filter(|cap| *cap <= window + 1.0e-6) {
         let (rate, rate_sigma) = bootstrap_rate(&trials, cap, lattice, repeats);
         let (v_table, boot_table, total_table) = convert(rate, rate_sigma, table_d);
+        let (v_tracer, _, total_tracer) = convert(rate, rate_sigma, tracer_d);
         let (v_measured, _, total_measured) = convert(rate, rate_sigma, measured_d);
         text.push_str(&format!(
-            "| {cap:.0} | {} | {} | {rate:.2} | {rate_sigma:.2} | {v_table:.2} | {boot_table:.2} | {total_table:.2} | {v_measured:.2} | {total_measured:.2} |\n",
+            "| {cap:.0} | {} | {} | {rate:.2} | {rate_sigma:.2} | {v_table:.2} | {boot_table:.2} | {total_table:.2} | {v_tracer:.2} | {total_tracer:.2} | {v_measured:.2} | {total_measured:.2} |\n",
             trials
                 .iter()
                 .filter(|(hit, time)| *hit && *time <= cap)
@@ -2160,9 +2177,10 @@ fn random_survival_note(csv: &std::path::Path) -> String {
     }
     if let Some((cap, rate, rate_sigma)) = rows.last().copied() {
         let (v_table, boot_table, total_table) = convert(rate, rate_sigma, table_d);
+        let (v_tracer, _, total_tracer) = convert(rate, rate_sigma, tracer_d);
         let (v_measured, _, total_measured) = convert(rate, rate_sigma, measured_d);
         text.push_str(&format!(
-            "\nAt the longest window, {cap:.0} ps, k = {rate:.2} ± {rate_sigma:.2} Å³/ps. With the Table 1 D_i, V_iv = {v_table:.2} ± {boot_table:.2} Ω (bootstrap) or ± {total_table:.2} Ω (with D_i). With the measured D_i, V_iv = {v_measured:.2} ± {total_measured:.2} Ω.\n"
+            "\nAt the longest window, {cap:.0} ps, k = {rate:.2} ± {rate_sigma:.2} Å³/ps. With the Table 1 D_i, V_iv = {v_table:.2} ± {boot_table:.2} Ω (bootstrap) or ± {total_table:.2} Ω (with D_i). With the measured N D*, V_iv = {v_tracer:.2} ± {total_tracer:.2} Ω. With the measured defect D, V_iv = {v_measured:.2} ± {total_measured:.2} Ω.\n"
         ));
         if let Some((k_ml, low, high, captures)) = censored_rate(&trials, cap, lattice, repeats) {
             let volumes = |d: Option<(f64, f64)>| match d {
@@ -2175,9 +2193,10 @@ fn random_survival_note(csv: &std::path::Path) -> String {
                 _ => "not available".to_string(),
             };
             text.push_str(&format!(
-                "The constant-hazard maximum likelihood over the same {cap:.0} ps, with every uncaptured trajectory censored at the end of its window, is k = {k_ml:.2} Å³/ps from {captures} captures in {} trajectories, 95 % interval {low:.2} to {high:.2} from ln k ± 1.96/√captures. V_iv is {} with the Table 1 D_i and {} with the measured D_i; these intervals leave out the D_i error.\n",
+                "The constant-hazard maximum likelihood over the same {cap:.0} ps, with every uncaptured trajectory censored at the end of its window, is k = {k_ml:.2} Å³/ps from {captures} captures in {} trajectories, 95 % interval {low:.2} to {high:.2} from ln k ± 1.96/√captures. V_iv is {} with the Table 1 D_i, {} with the measured N D*, and {} with the measured defect D; these intervals leave out the D_i error.\n",
                 trials.len(),
                 volumes(table_d),
+                volumes(tracer_d),
                 volumes(measured_d),
             ));
         }
@@ -2186,17 +2205,16 @@ fn random_survival_note(csv: &std::path::Path) -> String {
             table_d,
             table_lattice(temperature),
         ) {
-            // V Ω α D / a² with Ω = a³/4 undoes the paper's own conversion.
-            let k_paper = k_mean * a_p * DUMBBELL_ALPHA * d_i / 4.0;
+            let k_paper = volume_to_rate(k_mean, a_p, d_i);
             let k_paper_sigma =
                 k_paper * ((k_sigma / k_mean).powi(2) + (d_sigma / d_i).powi(2)).sqrt();
             let ratio = rate / k_paper;
             let ratio_sigma =
                 ratio * ((rate_sigma / rate).powi(2) + (k_paper_sigma / k_paper).powi(2)).sqrt();
             text.push_str(&format!(
-                "Table 1 at this temperature, 8788 atoms, is {k_mean:.0} ± {k_sigma:.0} Ω (k-method) and {mean_time:.0} ± {mean_sigma:.0} Ω (mean-time method). The k-method value with the Table 1 D_i and the paper's lattice constant {a_p:.3} Å implies k = {k_paper:.2} ± {k_paper_sigma:.2} Å³/ps. Our longest-window k over that is {ratio:.3} ± {ratio_sigma:.3}. The Table 1-D_i volume minus the k-method value is {:.2} Ω; the measured-D_i volume minus it is {:.2} Ω.\n",
+                "Table 1 at this temperature, 8788 atoms, is {k_mean:.0} ± {k_sigma:.0} Ω (k-method) and {mean_time:.0} ± {mean_sigma:.0} Ω (mean-time method). The k-method value with the Table 1 D_i and the paper's lattice constant {a_p:.3} Å implies k = {k_paper:.2} ± {k_paper_sigma:.2} Å³/ps. Our longest-window k over that is {ratio:.3} ± {ratio_sigma:.3}. The k-method value subtracted from our volume is {:.2} Ω with the Table 1 D_i and {:.2} Ω with the measured N D*.\n",
                 v_table - k_mean,
-                v_measured - k_mean,
+                v_tracer - k_mean,
             ));
         }
         text.push('\n');
@@ -2240,9 +2258,18 @@ fn bootstrap_rate(trials: &[(bool, f64)], t_max: f64, lattice: f64, repeats: f64
     (center, variance.sqrt())
 }
 
-/// V_iv/Ω = k a² / (α D_i Ω) with Ω = a³/4.
+/// V_iv/Ω from K_iv = V_iv ν with ν = D_i / (α a²), α = 2/3, and Ω = a³/4,
+/// which is 4 α k / (a D_i). `d_i` must be the defect diffusivity; see
+/// [`rgsaddle::dumbbell_channel_rate`].
 fn rate_to_volume(rate: f64, lattice: f64, d_i: f64) -> f64 {
-    rate * lattice * lattice / (DUMBBELL_ALPHA * d_i) / (lattice.powi(3) / 4.0)
+    let channel = rgsaddle::dumbbell_channel_rate(lattice, d_i).unwrap_or(f64::NAN);
+    rate / channel / (lattice.powi(3) / 4.0)
+}
+
+/// The k that [`rate_to_volume`] turns into `volume` Ω.
+fn volume_to_rate(volume: f64, lattice: f64, d_i: f64) -> f64 {
+    let channel = rgsaddle::dumbbell_channel_rate(lattice, d_i).unwrap_or(f64::NAN);
+    volume * lattice.powi(3) / 4.0 * channel
 }
 
 #[cfg(test)]
@@ -2620,12 +2647,28 @@ fn dumbbell_site(
     n_half: i64,
     occupancy: &mut Vec<u8>,
 ) -> Option<[i64; 3]> {
+    let mut sites = Vec::with_capacity(positions.len() / 3);
+    atom_sites(positions, shift, a, n_half, &mut sites);
+    doubly_occupied(&sites, n_half, occupancy)
+}
+
+/// Nearest ideal-lattice site of every atom, in half-lattice units wrapped
+/// to the cell, after `shift` is removed.
+fn atom_sites(positions: &[f64], shift: [f64; 3], a: f64, n_half: i64, sites: &mut Vec<[i64; 3]>) {
+    sites.clear();
+    sites.extend((0..positions.len() / 3).map(|atom| {
+        let u = [0, 1, 2].map(|axis| 2.0 * (positions[3 * atom + axis] - shift[axis]) / a);
+        fcc_site(u).map(|value| value.rem_euclid(n_half))
+    }));
+}
+
+/// The cell of [`dumbbell_site`] from sites that [`atom_sites`] has wrapped.
+fn doubly_occupied(sites: &[[i64; 3]], n_half: i64, occupancy: &mut Vec<u8>) -> Option<[i64; 3]> {
     let span = n_half as usize;
     occupancy.clear();
     occupancy.resize(span * span * span, 0);
-    for atom in 0..positions.len() / 3 {
-        let u = [0, 1, 2].map(|axis| 2.0 * (positions[3 * atom + axis] - shift[axis]) / a);
-        let site = fcc_site(u).map(|value| value.rem_euclid(n_half) as usize);
+    for site in sites {
+        let site = site.map(|value| value as usize);
         let index = (site[0] * span + site[1]) * span + site[2];
         occupancy[index] = occupancy[index].saturating_add(1);
     }
@@ -2766,6 +2809,673 @@ fn sia_d_trajectory(
         }
     }
     rows
+}
+
+/// Minimum-image difference of two wrapped half-lattice coordinates.
+fn wrap_site_delta(delta: i64, n_half: i64) -> i64 {
+    let delta = delta.rem_euclid(n_half);
+    if delta > n_half / 2 {
+        delta - n_half
+    } else {
+        delta
+    }
+}
+
+/// Snapshots of one free dumbbell at the start of production and at the
+/// end of each block, under the dynamics and seeds of [`sia_d_trajectory`].
+struct TracerRun {
+    /// Production lattice constant, Å.
+    lattice: f64,
+    tau_ps: f64,
+    unresolved: usize,
+    /// Resolved snapshots at which the sum of every atom's unwrapped site,
+    /// less the dumbbell site, differs from its value at the start.
+    sum_rule_breaks: usize,
+    /// Unwrapped doubly occupied site, half-lattice units.
+    ws: Vec<[i64; 3]>,
+    /// Midpoint of the two atoms in that site, Å.
+    centre: Vec<[f64; 3]>,
+    /// The one of those two atoms farther from the site, Å.
+    atom: Vec<[f64; 3]>,
+    /// Σ |Δr|² of the site from sample to sample since production began, Å².
+    jump_r2: Vec<f64>,
+    /// Samples since production began at which the site moved.
+    jumps: Vec<usize>,
+    /// Unwrapped nearest site of every atom, half-lattice units.
+    sites: Vec<Vec<[i64; 3]>>,
+    /// Every atom less the centre-of-mass drift, Å.
+    positions: Vec<Vec<f64>>,
+}
+
+/// Offsets from the doubly occupied `site` of the two atoms in it, Å.
+fn pair_offsets(
+    positions: &[f64],
+    shift: [f64; 3],
+    sites: &[[i64; 3]],
+    site: [i64; 3],
+    a: f64,
+    n_half: i64,
+) -> [[f64; 3]; 2] {
+    let length = n_half as f64 * 0.5 * a;
+    let mut offsets = [[0.0; 3]; 2];
+    let members = sites.iter().enumerate().filter(|(_, here)| **here == site);
+    for (slot, (atom, _)) in offsets.iter_mut().zip(members) {
+        *slot = [0, 1, 2].map(|axis| {
+            let delta = positions[3 * atom + axis] - shift[axis] - site[axis] as f64 * 0.5 * a;
+            delta - length * (delta / length).round()
+        });
+    }
+    offsets
+}
+
+fn sia_tracer_trajectory(
+    spec: &RunSpec,
+    temperature: f64,
+    seed_index: u64,
+    tau_ps: f64,
+    blocks: usize,
+) -> TracerRun {
+    let start_lattice = measured_lattice(temperature);
+    let (positions, cell) = isolated_dumbbell(spec.repeats, start_lattice);
+    let n_half = 2 * spec.repeats as i64;
+    let mut potential = MishinCu::new();
+    let dynamics = spec.dynamics(temperature);
+    let seed = mix_seed(&[temperature.to_bits(), seed_index, 0xD1FF_05EE]);
+    let mut state = MdState::new(&dynamics, &mut potential, positions, cell, seed);
+    let step_ps = spec.dt_fs * 1.0e-3;
+    let sample_steps = dynamics.steps(SIA_SAMPLE_PS).max(1);
+    let equil_steps = dynamics.steps(spec.equil_ps).div_ceil(sample_steps) * sample_steps;
+    let block_steps = dynamics.steps(tau_ps).div_ceil(sample_steps) * sample_steps;
+    let total_steps = equil_steps + blocks * block_steps;
+    let com0 = center_of_mass(&state.positions);
+    let mut occupancy = Vec::new();
+    let mut wrapped = Vec::with_capacity(state.positions.len() / 3);
+    atom_sites(
+        &state.positions,
+        [0.0; 3],
+        start_lattice,
+        n_half,
+        &mut wrapped,
+    );
+    let mut site = doubly_occupied(&wrapped, n_half, &mut occupancy)
+        .expect("the starting dumbbell occupies one site");
+    let mut pair = pair_offsets(
+        &state.positions,
+        [0.0; 3],
+        &wrapped,
+        site,
+        start_lattice,
+        n_half,
+    );
+    let mut previous = wrapped.clone();
+    let mut sites = wrapped.clone();
+    let mut unwrapped = [0i64; 3];
+    let mut jump_r2 = 0.0;
+    let mut jumps = 0usize;
+    let mut unresolved = 0usize;
+    let mut balance = None;
+    let mut run = TracerRun {
+        lattice: start_lattice,
+        tau_ps: block_steps as f64 * step_ps,
+        unresolved: 0,
+        sum_rule_breaks: 0,
+        ws: Vec::with_capacity(blocks + 1),
+        centre: Vec::with_capacity(blocks + 1),
+        atom: Vec::with_capacity(blocks + 1),
+        jump_r2: Vec::with_capacity(blocks + 1),
+        jumps: Vec::with_capacity(blocks + 1),
+        sites: Vec::with_capacity(blocks + 1),
+        positions: Vec::with_capacity(blocks + 1),
+    };
+    while state.step < total_steps {
+        state.advance(&dynamics, &mut potential);
+        let step = state.step;
+        if !step.is_multiple_of(sample_steps) {
+            continue;
+        }
+        let scale = state.dilation();
+        let lattice = start_lattice * scale;
+        let com = center_of_mass(&state.positions);
+        let shift = [0, 1, 2].map(|axis| com[axis] - com0[axis] * scale);
+        atom_sites(&state.positions, shift, lattice, n_half, &mut wrapped);
+        for ((now, before), total) in wrapped.iter().zip(&previous).zip(&mut sites) {
+            for ((value, now), before) in total.iter_mut().zip(now).zip(before) {
+                *value += wrap_site_delta(now - before, n_half);
+            }
+        }
+        previous.copy_from_slice(&wrapped);
+        let resolved = doubly_occupied(&wrapped, n_half, &mut occupancy);
+        match resolved {
+            Some(here) => {
+                let mut hop = 0.0;
+                for (axis, total) in unwrapped.iter_mut().enumerate() {
+                    let delta = wrap_site_delta(here[axis] - site[axis], n_half);
+                    *total += delta;
+                    hop += (delta as f64 * 0.5 * lattice).powi(2);
+                }
+                if step > equil_steps {
+                    jumps += usize::from(here != site);
+                    jump_r2 += hop;
+                }
+                site = here;
+                pair = pair_offsets(&state.positions, shift, &wrapped, here, lattice, n_half);
+            }
+            None => unresolved += usize::from(step > equil_steps),
+        }
+        if step == equil_steps {
+            jumps = 0;
+            jump_r2 = 0.0;
+            unresolved = 0;
+            run.lattice = lattice;
+        } else if step < equil_steps || !(step - equil_steps).is_multiple_of(block_steps) {
+            continue;
+        }
+        if resolved.is_some() {
+            let total = sites.iter().fold([0i64; 3], |sum, here| {
+                [sum[0] + here[0], sum[1] + here[1], sum[2] + here[2]]
+            });
+            let gap = [0, 1, 2].map(|axis| total[axis] - unwrapped[axis]);
+            match balance {
+                None => balance = Some(gap),
+                Some(start) => run.sum_rule_breaks += usize::from(gap != start),
+            }
+        }
+        let origin = unwrapped.map(|value| value as f64 * 0.5 * lattice);
+        let squared = |offset: [f64; 3]| offset.iter().map(|value| value * value).sum::<f64>();
+        let farther = if squared(pair[0]) >= squared(pair[1]) {
+            pair[0]
+        } else {
+            pair[1]
+        };
+        run.ws.push(unwrapped);
+        run.centre
+            .push([0, 1, 2].map(|axis| origin[axis] + 0.5 * (pair[0][axis] + pair[1][axis])));
+        run.atom
+            .push([0, 1, 2].map(|axis| origin[axis] + farther[axis]));
+        run.jump_r2.push(jump_r2);
+        run.jumps.push(jumps);
+        run.sites.push(sites.clone());
+        run.positions.push(
+            state
+                .positions
+                .iter()
+                .enumerate()
+                .map(|(index, value)| value - shift[index % 3])
+                .collect(),
+        );
+    }
+    run.unresolved = unresolved;
+    run
+}
+
+/// Squared displacements between two snapshots of a [`TracerRun`], Å².
+#[derive(Clone, Copy, Default)]
+struct TracerSums {
+    ws: f64,
+    centre: f64,
+    atom: f64,
+    /// Σ |Δr|² of the site over the samples in between.
+    jump: f64,
+    /// Samples in between at which the site moved.
+    jumps: f64,
+    /// Σ over atoms of the squared change of each atom's site.
+    site: f64,
+    /// Σ over atoms of the squared displacement along each axis.
+    tracer: [f64; 3],
+}
+
+impl TracerSums {
+    fn between(run: &TracerRun, from: usize, to: usize) -> Self {
+        let half = 0.5 * run.lattice;
+        let squared = |to: [f64; 3], from: [f64; 3]| {
+            to.iter()
+                .zip(from)
+                .map(|(to, from)| (to - from).powi(2))
+                .sum::<f64>()
+        };
+        let lattice_squared = |to: &[i64; 3], from: &[i64; 3]| {
+            to.iter()
+                .zip(from)
+                .map(|(to, from)| (to - from).pow(2))
+                .sum::<i64>()
+        };
+        let site = run.sites[to]
+            .iter()
+            .zip(&run.sites[from])
+            .map(|(to, from)| lattice_squared(to, from))
+            .sum::<i64>();
+        let mut tracer = [0.0; 3];
+        for (index, (to, from)) in run.positions[to]
+            .iter()
+            .zip(&run.positions[from])
+            .enumerate()
+        {
+            tracer[index % 3] += (to - from).powi(2);
+        }
+        Self {
+            ws: lattice_squared(&run.ws[to], &run.ws[from]) as f64 * half * half,
+            centre: squared(run.centre[to], run.centre[from]),
+            atom: squared(run.atom[to], run.atom[from]),
+            jump: run.jump_r2[to] - run.jump_r2[from],
+            jumps: (run.jumps[to] - run.jumps[from]) as f64,
+            site: site as f64 * half * half,
+            tracer,
+        }
+    }
+
+    fn values(&self) -> [f64; 9] {
+        [
+            self.ws,
+            self.centre,
+            self.atom,
+            self.jump,
+            self.jumps,
+            self.site,
+            self.tracer[0],
+            self.tracer[1],
+            self.tracer[2],
+        ]
+    }
+
+    fn from_values(values: [f64; 9]) -> Self {
+        let [ws, centre, atom, jump, jumps, site, x, y, z] = values;
+        Self {
+            ws,
+            centre,
+            atom,
+            jump,
+            jumps,
+            site,
+            tracer: [x, y, z],
+        }
+    }
+
+    fn tracer_total(&self) -> f64 {
+        self.tracer.iter().sum()
+    }
+}
+
+/// Every lag between snapshots of a run: the mean over all origins, and the
+/// value from the first snapshot alone.
+fn tracer_lags(run: &TracerRun) -> Vec<(usize, usize, TracerSums, TracerSums)> {
+    let count = run.ws.len();
+    (1..count)
+        .map(|lag| {
+            let origins = count - lag;
+            let mut sum = [0.0; 9];
+            for from in 0..origins {
+                let values = TracerSums::between(run, from, from + lag).values();
+                for (total, value) in sum.iter_mut().zip(values) {
+                    *total += value;
+                }
+            }
+            let mean = TracerSums::from_values(sum.map(|total| total / origins as f64));
+            (lag, origins, mean, TracerSums::between(run, 0, lag))
+        })
+        .collect()
+}
+
+const SIA_TRACER_HEADER: &str = "temperature_K,lattice_A,repeats,n_atoms,dt_fs,gamma_per_ps,seed,tau_ps,lag,origins,ws_A2,centre_A2,atom_A2,jump_A2,jumps,site_tracer_A2,tracer_x_A2,tracer_y_A2,tracer_z_A2,first_ws_A2,first_centre_A2,first_atom_A2,first_jump_A2,first_jumps,first_site_tracer_A2,first_tracer_x_A2,first_tracer_y_A2,first_tracer_z_A2,unresolved_samples,sum_rule_breaks";
+
+fn tracer_rows(spec: &RunSpec, temperature: f64, seed_index: u64, run: &TracerRun) -> Vec<String> {
+    let n_atoms = run
+        .positions
+        .first()
+        .map_or(0, |positions| positions.len() / 3);
+    let join = |sums: &TracerSums| {
+        sums.values()
+            .iter()
+            .map(|value| format!("{value:.6}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    tracer_lags(run)
+        .iter()
+        .map(|(lag, origins, mean, first)| {
+            format!(
+                "{temperature:.0},{:.6},{},{n_atoms},{:.4},{:.4},{seed_index},{:.4},{lag},{origins},{},{},{},{}{}",
+                run.lattice,
+                spec.repeats,
+                spec.dt_fs,
+                spec.production_gamma(),
+                run.tau_ps,
+                join(mean),
+                join(first),
+                run.unresolved,
+                run.sum_rule_breaks,
+                spec.dynamics_suffix(),
+            )
+        })
+        .collect()
+}
+
+/// One walk of a <100> dumbbell on an ideal fcc lattice by Johnson jumps
+/// alone. A jump takes one atom of the pair to one of the four nearest
+/// sites on its side of the axis; there it and that site's atom form a
+/// dumbbell along the jump's perpendicular component, with the mover on the
+/// side it came from. Returns Σ over atoms of |Δs|² and the dumbbell
+/// displacement, in half-lattice units, and Σ over atoms of Δs.
+fn johnson_walk(jumps: usize, rng: &mut SplitRng) -> (i64, [i64; 3], [i64; 3]) {
+    let mut occupant: std::collections::HashMap<[i64; 3], usize> = Default::default();
+    let mut homes = vec![[0i64; 3]; 2];
+    let mut places = vec![[0i64; 3]; 2];
+    let mut members = [0usize, 1];
+    let mut site = [0i64; 3];
+    let mut axis = 2usize;
+    for _ in 0..jumps {
+        let bits = rng.u64() >> 61;
+        let side = (bits & 1) as usize;
+        let across = [(axis + 1) % 3, (axis + 2) % 3][((bits >> 1) & 1) as usize];
+        let sign = if bits >> 2 == 0 { -1 } else { 1 };
+        let mut target = site;
+        target[axis] += if side == 1 { 1 } else { -1 };
+        target[across] += sign;
+        let mover = members[side];
+        let host = occupant.remove(&target).unwrap_or_else(|| {
+            homes.push(target);
+            places.push(target);
+            homes.len() - 1
+        });
+        occupant.insert(site, members[1 - side]);
+        places[mover] = target;
+        members = if sign > 0 {
+            [mover, host]
+        } else {
+            [host, mover]
+        };
+        site = target;
+        axis = across;
+    }
+    let mut squared = 0;
+    let mut net = [0i64; 3];
+    for (home, place) in homes.iter().zip(&places) {
+        for ((total, home), place) in net.iter_mut().zip(home).zip(place) {
+            *total += place - home;
+            squared += (place - home).pow(2);
+        }
+    }
+    (squared, site, net)
+}
+
+/// Tracer correlation factor of [`johnson_walk`]: Σ|Δs|² over n λ² after
+/// `jumps` jumps, mean and standard error over `walks` walks.
+fn johnson_correlation(walks: usize, jumps: usize, seed: u64) -> (f64, f64) {
+    let mut rng = SplitRng::new(seed);
+    let values: Vec<f64> = (0..walks)
+        .map(|_| johnson_walk(jumps, &mut rng).0 as f64 / (2.0 * jumps as f64))
+        .collect();
+    mean_and_error(&values)
+}
+
+/// Mean and standard error of the mean; the error is NaN for one value.
+fn mean_and_error(values: &[f64]) -> (f64, f64) {
+    let n = values.len() as f64;
+    let mean = values.iter().sum::<f64>() / n;
+    if values.len() < 2 {
+        return (mean, f64::NAN);
+    }
+    let variance = values
+        .iter()
+        .map(|value| (value - mean).powi(2))
+        .sum::<f64>()
+        / (n - 1.0);
+    (mean, (variance / n).sqrt())
+}
+
+/// Least-squares slope of `(x, y)` points with a free intercept.
+fn fitted_slope(points: &[(f64, f64)]) -> f64 {
+    let n = points.len() as f64;
+    let mean_x = points.iter().map(|(x, _)| x).sum::<f64>() / n;
+    let mean_y = points.iter().map(|(_, y)| y).sum::<f64>() / n;
+    let covariance = points
+        .iter()
+        .map(|(x, y)| (x - mean_x) * (y - mean_y))
+        .sum::<f64>();
+    let spread = points
+        .iter()
+        .map(|(x, _)| (x - mean_x).powi(2))
+        .sum::<f64>();
+    covariance / spread
+}
+
+struct TracerRow {
+    temperature: f64,
+    lattice: f64,
+    dt_fs: f64,
+    gamma: f64,
+    seed: u64,
+    tau: f64,
+    lag: usize,
+    mean: TracerSums,
+    first: TracerSums,
+    unresolved: f64,
+    breaks: f64,
+    dynamics: Option<(String, [f64; 4])>,
+}
+
+fn read_tracer_rows(csv: &std::path::Path) -> Vec<TracerRow> {
+    let Ok(file) = File::open(csv) else {
+        return Vec::new();
+    };
+    let mut rows = Vec::new();
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        let fields: Vec<&str> = line.split(',').collect();
+        if fields.len() < 30 {
+            continue;
+        }
+        let sums = |start: usize| -> Option<TracerSums> {
+            let mut values = [0.0; 9];
+            for (slot, text) in values.iter_mut().zip(&fields[start..start + 9]) {
+                *slot = text.parse().ok()?;
+            }
+            Some(TracerSums::from_values(values))
+        };
+        let parsed: Option<TracerRow> = (|| {
+            Some(TracerRow {
+                temperature: fields[0].parse().ok()?,
+                lattice: fields[1].parse().ok()?,
+                dt_fs: fields[4].parse().ok()?,
+                gamma: fields[5].parse().ok()?,
+                seed: fields[6].parse().ok()?,
+                tau: fields[7].parse().ok()?,
+                lag: fields[8].parse().ok()?,
+                mean: sums(10)?,
+                first: sums(19)?,
+                unresolved: fields[28].parse().ok()?,
+                breaks: fields[29].parse().ok()?,
+                dynamics: dynamics_columns(&fields, 30),
+            })
+        })();
+        if let Some(row) = parsed {
+            rows.push(row);
+        }
+    }
+    rows
+}
+
+/// Diffusivities of one trajectory, Å²/ps. `block` values are the lag-one
+/// mean over 6τ; `slope` values fit the multi-origin mean from lag L/8 to
+/// L/2 of L. The Ref. [12] values fit 2 D t to the per-axis sum from the
+/// first snapshot over every lag and average the three axes.
+struct TracerSeed {
+    lattice: f64,
+    tau: f64,
+    lags: usize,
+    jumps_per_ps: f64,
+    ws: f64,
+    centre: f64,
+    atom: f64,
+    jump: f64,
+    ws_slope: f64,
+    ws_reference: f64,
+    site: f64,
+    site_slope: f64,
+    tracer_slope: f64,
+    reference: f64,
+    unresolved: f64,
+    breaks: f64,
+}
+
+fn tracer_seeds(rows: &[TracerRow], temperature: f64) -> Vec<TracerSeed> {
+    let mut by_seed: BTreeMap<u64, Vec<&TracerRow>> = BTreeMap::new();
+    for row in rows.iter().filter(|row| row.temperature == temperature) {
+        by_seed.entry(row.seed).or_default().push(row);
+    }
+    let mut seeds = Vec::new();
+    for group in by_seed.values_mut() {
+        group.sort_by_key(|row| row.lag);
+        let lags = group.len();
+        let Some(one) = group.iter().find(|row| row.lag == 1) else {
+            continue;
+        };
+        let tau = one.tau;
+        let low = (lags / 8).max(1);
+        let high = (lags / 2).max(low + 1);
+        let window: Vec<&&TracerRow> = group
+            .iter()
+            .filter(|row| (low..=high).contains(&row.lag))
+            .collect();
+        let slope = |value: &dyn Fn(&TracerSums) -> f64, rows: &[&&TracerRow]| {
+            let points: Vec<(f64, f64)> = rows
+                .iter()
+                .map(|row| (row.lag as f64 * tau, value(&row.mean)))
+                .collect();
+            fitted_slope(&points)
+        };
+        let first = |value: &dyn Fn(&TracerSums) -> f64| {
+            let points: Vec<(f64, f64)> = group
+                .iter()
+                .map(|row| (row.lag as f64 * tau, value(&row.first)))
+                .collect();
+            fitted_slope(&points)
+        };
+        let axes = [0, 1, 2].map(|axis| first(&|sums: &TracerSums| sums.tracer[axis]) / 2.0);
+        let block = 6.0 * tau;
+        seeds.push(TracerSeed {
+            lattice: one.lattice,
+            tau,
+            lags,
+            jumps_per_ps: one.mean.jumps / tau,
+            ws: one.mean.ws / block,
+            centre: one.mean.centre / block,
+            atom: one.mean.atom / block,
+            jump: one.mean.jump / block,
+            ws_slope: slope(&|sums: &TracerSums| sums.ws, &window) / 6.0,
+            ws_reference: first(&|sums: &TracerSums| sums.ws) / 6.0,
+            site: one.mean.site / block,
+            site_slope: slope(&|sums: &TracerSums| sums.site, &window) / 6.0,
+            tracer_slope: slope(&|sums: &TracerSums| sums.tracer_total(), &window) / 6.0,
+            reference: axes.iter().sum::<f64>() / 3.0,
+            unresolved: one.unresolved,
+            breaks: one.breaks,
+        });
+    }
+    seeds
+}
+
+/// Mean and standard error across trajectories of a [`TracerSeed`] value.
+fn across_seeds(seeds: &[TracerSeed], value: impl Fn(&TracerSeed) -> f64) -> (f64, f64) {
+    mean_and_error(&seeds.iter().map(value).collect::<Vec<_>>())
+}
+
+fn sia_tracer_note(csv: &std::path::Path) -> String {
+    let rows = read_tracer_rows(csv);
+    let mut text = String::new();
+    let Some(head) = rows.first() else {
+        text.push_str("# Free dumbbell tracer diffusivity, Mishin Cu\n\nNo trajectories.\n");
+        return text;
+    };
+    let dynamics = match (kind_of(&head.dynamics), &head.dynamics) {
+        (DynamicsKind::NphNve, Some((_, [equil_ps, rescale_ps, _, piston_ps]))) => format!(
+            "{equil_ps:.0} ps of isotropic zero-pressure NPH (Andersen piston, period {piston_ps:.1} ps), then NVE in the mean box of the second half of that stage, both rescaled to the target temperature every {rescale_ps:.2} ps"
+        ),
+        _ => format!(
+            "2 ps of Langevin at γ = 1/ps, then Langevin at γ = {}/ps, at the zero-total-pressure lattice constant of `direct_md_lattice.csv`",
+            head.gamma
+        ),
+    };
+    text.push_str("# Free dumbbell tracer diffusivity, Mishin Cu\n\n");
+    text.push_str(&format!("One <100> dumbbell in the perfect 13×13×13 cell (8789 atoms) on the Mishin EAM1 of `tests/mishin_cu.rs`, with the seeds, sampling, and blocks of the free-dumbbell D campaigns: Maxwellian start, {dynamics}, timestep {} fs. Every 0.1 ps the centre-of-mass drift is removed and every atom is assigned its nearest ideal-lattice site. The defect is located three ways: the one doubly occupied Wigner-Seitz cell (as in `direct_md_sia_d_*.md`), the midpoint of the two atoms in it, and the one of those two farther from the site. Each atom's site is unwrapped from sample to sample, and every atom's position less the drift is stored at the start of production and at the end of each block of τ.\n\n", head.dt_fs));
+    text.push_str("Two diffusivities are measured from the same trajectories. The defect diffusivity is the mean-square displacement of the defect over 6t. The tracer quantity is Σ_i |Δr_i|² over 6t, summed over every atom i; this is N D*, with D* the per-atom self-diffusivity that Eq. (5) of Ref. [12] (B. Zhang et al., Phys. Rev. Materials 6, 053605 (2022)) computes, G_MSD = (1/N) Σ_i Δx_i Δx_j with 2Dt = G_MSD at long times. Its erratum (Phys. Rev. Materials 9, 069901(E) (2025)) multiplies that D* by N = 4951 to report an SIA diffusivity, and Table 1 of Mwungeli, Liu, and Demkowicz lists those values. N D* is measured from atom sites (one atom changes site by λ = a/√2 per dumbbell jump, so the vibrational term is absent) and from the drift-removed positions. Every displacement is in the frame of the centre of mass.\n\n");
+    text.push_str("Block values are the lag-τ mean over every block. Slope values fit the mean over all origins against lag, with an intercept, from lag L/8 to L/2 of the L blocks. The Ref. [12] column follows that paper: one origin, the start of production; each axis fitted as 2Dt with an intercept over every lag; the three axes averaged. f is the slope N D* from sites over the slope D of the Wigner-Seitz site, per trajectory; f (Ref. [12]) is the Ref. [12] value over the one-origin fit of the Wigner-Seitz site. The jump column sums |Δr|² of the Wigner-Seitz site from sample to sample over 6t: the jump rate times λ²/6 when every move is one nearest-neighbour jump. Every value is the mean over trajectories ± the standard error across them.\n\n");
+    let mut temperatures: Vec<f64> = rows.iter().map(|row| row.temperature).collect();
+    temperatures.sort_by(f64::total_cmp);
+    temperatures.dedup();
+    let cell = |value: (f64, f64)| format!("{:.4} ± {:.4}", value.0, value.1);
+    text.push_str("## Defect position\n\n| T (K) | a (Å) | seeds | blocks | τ (ps) | site changes/ps | D, Wigner-Seitz (Å²/ps) | D, pair midpoint | D, farther atom | D, jump sum | D, Wigner-Seitz slope |\n|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+    for temperature in &temperatures {
+        let seeds = tracer_seeds(&rows, *temperature);
+        if seeds.is_empty() {
+            continue;
+        }
+        text.push_str(&format!(
+            "| {temperature:.0} | {:.6} | {} | {} | {:.1} | {:.3} | {} | {} | {} | {} | {} |\n",
+            seeds[0].lattice,
+            seeds.len(),
+            seeds[0].lags,
+            seeds[0].tau,
+            across_seeds(&seeds, |seed| seed.jumps_per_ps).0,
+            cell(across_seeds(&seeds, |seed| seed.ws)),
+            cell(across_seeds(&seeds, |seed| seed.centre)),
+            cell(across_seeds(&seeds, |seed| seed.atom)),
+            cell(across_seeds(&seeds, |seed| seed.jump)),
+            cell(across_seeds(&seeds, |seed| seed.ws_slope)),
+        ));
+    }
+    text.push_str("\n## Tracer\n\n| T (K) | N D*, sites, block (Å²/ps) | N D*, sites, slope | N D*, positions, slope | N D*, Ref. [12] fit | Table 1 D_i [12] | Ref. [12] fit / Table 1 | z | f | f (Ref. [12]) | sum-rule breaks | unresolved samples |\n|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+    for temperature in &temperatures {
+        let seeds = tracer_seeds(&rows, *temperature);
+        if seeds.is_empty() {
+            continue;
+        }
+        let reference = across_seeds(&seeds, |seed| seed.reference);
+        let table = table_diffusivity(*temperature);
+        let versus = table.map_or("- | - | -".to_string(), |paper| {
+            let (ratio, error, z) = ratio_with_error(reference, paper);
+            format!(
+                "{:.3} ± {:.3} | {ratio:.3} ± {error:.3} | {z:.2}",
+                paper.0, paper.1
+            )
+        });
+        text.push_str(&format!(
+            "| {temperature:.0} | {} | {} | {} | {} | {versus} | {} | {} | {:.0} | {:.0} |\n",
+            cell(across_seeds(&seeds, |seed| seed.site)),
+            cell(across_seeds(&seeds, |seed| seed.site_slope)),
+            cell(across_seeds(&seeds, |seed| seed.tracer_slope)),
+            cell(reference),
+            cell(across_seeds(&seeds, |seed| seed.site_slope / seed.ws_slope)),
+            cell(across_seeds(&seeds, |seed| seed.reference / seed.ws_reference)),
+            seeds.iter().map(|seed| seed.breaks).sum::<f64>(),
+            seeds.iter().map(|seed| seed.unresolved).sum::<f64>(),
+        ));
+    }
+    text.push_str("\n## Lag dependence\n\nMeans over trajectories of the multi-origin mean at each lag t, over 6t.\n\n| T (K) | t (ps) | origins | site changes | D, Wigner-Seitz (Å²/ps) | N D*, sites | ratio |\n|---:|---:|---:|---:|---:|---:|---:|\n");
+    for temperature in &temperatures {
+        let mut by_lag: BTreeMap<usize, Vec<&TracerRow>> = BTreeMap::new();
+        for row in rows.iter().filter(|row| row.temperature == *temperature) {
+            by_lag.entry(row.lag).or_default().push(row);
+        }
+        let count = by_lag.len();
+        for (lag, group) in &by_lag {
+            if !(lag.is_power_of_two() || *lag == count / 2 || *lag == count) {
+                continue;
+            }
+            let time = *lag as f64 * group[0].tau;
+            let mean = |value: &dyn Fn(&TracerSums) -> f64| {
+                group.iter().map(|row| value(&row.mean)).sum::<f64>() / group.len() as f64
+            };
+            let ws = mean(&|sums: &TracerSums| sums.ws) / (6.0 * time);
+            let site = mean(&|sums: &TracerSums| sums.site) / (6.0 * time);
+            text.push_str(&format!(
+                "| {temperature:.0} | {time:.0} | {} | {:.1} | {ws:.4} | {site:.4} | {:.3} |\n",
+                count + 1 - lag,
+                mean(&|sums: &TracerSums| sums.jumps),
+                site / ws,
+            ));
+        }
+    }
+    text.push_str("\nRaw lag statistics per trajectory are the CSV this note was written from.\n");
+    text
 }
 
 fn validation_file(name: &str) -> PathBuf {
@@ -3008,6 +3718,77 @@ fn measured_diffusivity(
         })
 }
 
+/// The tracer campaigns, which rerun the trajectories of the free-dumbbell
+/// campaign with the same dynamics; the last repeats 500 K at a 2 fs step.
+const SIA_TRACER_CAMPAIGNS: [SiaCampaign; 3] = [
+    SiaCampaign {
+        kind: DynamicsKind::Langevin,
+        gamma: 0.1,
+        file: "direct_md_sia_tracer_p0_gamma0.1_dt10fs.csv",
+        label: "Langevin, γ = 0.1/ps, zero total pressure",
+    },
+    SiaCampaign {
+        kind: DynamicsKind::NphNve,
+        gamma: 0.0,
+        file: "direct_md_sia_tracer_nph_nve_dt10fs.csv",
+        label: "NPH then NVE, rescaled",
+    },
+    SiaCampaign {
+        kind: DynamicsKind::Langevin,
+        gamma: 0.1,
+        file: "direct_md_sia_tracer_p0_gamma0.1_dt2fs.csv",
+        label: "Langevin, γ = 0.1/ps, zero total pressure, 2 fs",
+    },
+];
+
+/// Defect and tracer diffusivities of one temperature, mean ± standard error
+/// across trajectories, Å²/ps.
+struct TracerEstimate {
+    lattice: f64,
+    dt_fs: f64,
+    seeds: usize,
+    /// Wigner-Seitz site, block.
+    defect: (f64, f64),
+    /// N D*, the Ref. [12] fit.
+    tracer: (f64, f64),
+    /// N D* from sites over D of the Wigner-Seitz site, both slopes, per trajectory.
+    correlation: (f64, f64),
+}
+
+fn tracer_estimate(rows: &[TracerRow], temperature: f64) -> Option<TracerEstimate> {
+    let seeds = tracer_seeds(rows, temperature);
+    let head = rows.iter().find(|row| row.temperature == temperature)?;
+    (!seeds.is_empty()).then(|| TracerEstimate {
+        lattice: seeds[0].lattice,
+        dt_fs: head.dt_fs,
+        seeds: seeds.len(),
+        defect: across_seeds(&seeds, |seed| seed.ws),
+        tracer: across_seeds(&seeds, |seed| seed.reference),
+        correlation: across_seeds(&seeds, |seed| seed.site_slope / seed.ws_slope),
+    })
+}
+
+/// The tracer campaign with the given dynamics and timestep, as
+/// [`measured_diffusivity`] matches free-dumbbell campaigns.
+fn measured_tracer(
+    kind: DynamicsKind,
+    gamma_per_ps: f64,
+    dt_fs: f64,
+    temperature: f64,
+    lattice: f64,
+) -> Option<(TracerEstimate, &'static str)> {
+    SIA_TRACER_CAMPAIGNS
+        .iter()
+        .filter(|campaign| campaign.kind == kind && (campaign.gamma - gamma_per_ps).abs() < 1.0e-9)
+        .find_map(|campaign| {
+            let rows = read_tracer_rows(&validation_file(campaign.file));
+            let estimate = tracer_estimate(&rows, temperature)?;
+            let matches = (estimate.dt_fs - dt_fs).abs() < 1.0e-9
+                && (kind == DynamicsKind::NphNve || (estimate.lattice - lattice).abs() < 1.0e-5);
+            matches.then_some((estimate, campaign.file))
+        })
+}
+
 fn defect_pair_diffusivity(temperature: f64) -> Option<(f64, f64)> {
     // Å²/ps, the free-dumbbell MD diffusivity quoted by the defect-pair rate work.
     match temperature as i32 {
@@ -3086,7 +3867,7 @@ fn sia_d_note(csv: &std::path::Path) -> String {
         estimates.push((*temperature, estimate));
     }
     text.push_str("\n## Cross-check\n\n");
-    text.push_str("Table 1 of Mwungeli, Liu, and Demkowicz lists D_i from their Ref. [12], B. Zhang et al., Phys. Rev. Materials 6, 053605 (2022), which took D_i from the mean-square displacement of SIAs in MD. Table 1 divides each measured rate coefficient by that D_i: V_iv = k a² / (α D_i) with α = 2/3. The defect-pair column is the free-dumbbell MD diffusivity quoted by the defect-pair rate work. z is the difference over the two errors in quadrature.\n\n");
+    text.push_str("Table 1 of Mwungeli, Liu, and Demkowicz lists D_i from their Ref. [12], B. Zhang et al., Phys. Rev. Materials 6, 053605 (2022), and converts each measured rate coefficient with it: V_iv = k α a² / D_i with α = 2/3. Ref. [12] took the mean-square displacement of every atom (its Eq. (5)), and its erratum, Phys. Rev. Materials 9, 069901(E) (2025), multiplies that per-atom diffusivity by the 4951 atoms of its cell. The product is the tracer sum Σ_i ⟨|Δr_i|²⟩ / 6t, which is the defect diffusivity in this note times the tracer correlation factor, so the two columns are different quantities; `direct_md_dynamics.md` measures both on the same trajectories. The defect-pair column is the free-dumbbell MD diffusivity quoted by the defect-pair rate work. z is the difference over the two errors in quadrature.\n\n");
     text.push_str("| T (K) | this run | Table 1 [12] | this/Table 1 | z | defect-pair MD | this/defect-pair | z |\n|---:|---:|---:|---:|---:|---:|---:|---:|\n");
     for (temperature, estimate) in &estimates {
         let cell = |other: Option<(f64, f64)>| -> String {
@@ -3133,7 +3914,7 @@ fn ratio_with_error(top: (f64, f64), bottom: (f64, f64)) -> (f64, f64, f64) {
     (ratio, error, z)
 }
 
-/// Every free-dumbbell note, then the cross-dynamics comparison.
+/// Every free-dumbbell and tracer note, then the cross-dynamics comparison.
 fn write_sia_d_notes() {
     for campaign in &SIA_D_CAMPAIGNS {
         let path = validation_file(campaign.file);
@@ -3141,15 +3922,126 @@ fn write_sia_d_notes() {
             fs::write(note_path(&path), sia_d_note(&path)).expect("note");
         }
     }
+    for campaign in &SIA_TRACER_CAMPAIGNS {
+        let path = validation_file(campaign.file);
+        if path.exists() {
+            fs::write(note_path(&path), sia_tracer_note(&path)).expect("note");
+        }
+    }
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("validation/direct_md_dynamics.md");
     fs::write(path, dynamics_note()).expect("note");
+}
+
+/// Jump counts and walk counts of the lattice correlation factor in the notes.
+const JOHNSON_WALKS: [(usize, usize); 5] = [
+    (10, 40_000),
+    (100, 10_000),
+    (1_000, 2_000),
+    (10_000, 400),
+    (100_000, 100),
+];
+
+/// What the D_i of Table 1 is, from the papers and from the tracer campaigns.
+fn table_d_section(temperatures: &[f64]) -> String {
+    let mut text = String::new();
+    text.push_str("## What the Table 1 D_i is\n\n");
+    text.push_str("Page numbers are those of the accepted manuscripts on OSTI: Mwungeli, Liu, and Demkowicz, Phys. Rev. Materials 9, 023601 (2025), OSTI 2513909; B. Zhang et al., Phys. Rev. Materials 6, 053605 (2022), their Ref. [12], OSTI 1870695.\n\n");
+    text.push_str("- Section 1 (p. 2): \"The recombination rate coefficient K_iv may be written as K_iv = V_iv D_i/(αa²), where V_iv is the vacancy-SIA recombination volume, D_i is SIA diffusivity, a is the cubic lattice parameter, and α is a numerical factor that depends on the SIA migration mechanism (α = 2/3 for [100] split dumbbell SIAs in Cu [10]). The quotient D_i/(αa²) is just the SIA migration frequency, ν.\"\n");
+    text.push_str("- Section 2 (p. 5): \"we calculate the corresponding recombination volume as V_iv = K_iv αa²/D_i. The values of SIA diffusivity D_i for the temperatures of interest are taken from Ref. [12], which obtained D_i directly from mean squared displacements of SIAs in MD simulations\". With Ω = a³/4 this is V_iv/Ω = 4αK_iv/(aD_i); α multiplies K_iv.\n");
+    text.push_str("- Section 5 (p. 10), after Eq. (4), K_iv = (1/3)Ω Σ_j ν_j over the Johnson jump paths that lead to recombination: \"If we further assume that all the migration rates ν_j equal ν—the rate of SIA migration in the interior of a perfect crystal, far from any other defects—then, from the relation K_iv = V_iv D_i/(αa²) = V_iv ν (see section 1), we get V_iv = (1/3)Ωs\". ν is the rate of one jump path of the defect, and D_i = (2/3)a²ν is the diffusivity of the defect for eight uncorrelated jumps of length a/√2; section 6 (p. 15) writes the same D_i = (2/3)a²ν₀^i e^(−ΔE_i/k_BT) for TST.\n");
+    text.push_str("- Ref. [12], Eq. (5) (p. 4): the \"generalized mean square displacement (MSD) per atom matrix\" G_MSD = (1/N) Σ_i [Δx_i², Δx_iΔy_i, …], with \"displacements of individual atoms from their initial positions\", \"2Dt = G_MSD in the limit of a long time\", and \"linear least-squares-fits to the corresponding elements of G_MSD over time\" after the first 1 ps. The cell has 4951 atoms with the SIA (p. 3); the volume follows thermal expansion and the runs are 2 ns of NVE (p. 4).\n");
+    text.push_str("- Erratum, Phys. Rev. Materials 9, 069901(E) (2025), doi:10.1103/8hb2-86lm, replaces the p. 4 sentence that this D \"is the SIA diffusivity\" with \"The diffusivity thereby obtained is the self-diffusivity of Cu, not the SIA diffusivity, because G_MSD is computed on a per-atom basis\", and states that the diffusivities of Figs. 4 and 5(b) \"may be converted to SIA diffusivities by multiplying them by the number of atoms in the model, i.e., 4951.\" Fig. 4 of Ref. [12] (p. 9) plots those diffusivities at 700 K in µm²/s; at zero strain the components read 1.84 µm²/s = 1.84×10⁻⁴ Å²/ps, and 4951 times that is 0.911 Å²/ps, the 700 K D_i of Table 1 (0.910 ± 0.012).\n");
+    text.push_str("- Potential: section 3 (p. 6), \"All atomistic simulations are carried out using the embedded atom method (EAM) potential for Cu by Mishin et al. [32]\"; Ref. [12] (p. 3), \"an embedded atom method (EAM) [24] potential for Cu developed by Mishin et al. [25]\". Both references are Y. Mishin, M. J. Mehl, D. A. Papaconstantopoulos, A. F. Voter, and J. D. Kress, Phys. Rev. B 63, 224106 (2001), the EAM1 of `tests/mishin_cu.rs` that every campaign here uses.\n\n");
+    text.push_str("Table 1 D_i is therefore 4951 D*, with D* the per-atom diffusivity of Eq. (5): N D* = Σ_i ⟨Δx_i²⟩/2t, a sum of tracer displacements. One Johnson jump moves one atom by the defect's own jump vector, so N D* would equal the defect diffusivity only if successive jumps moved uncorrelated atoms. They do not: the atom that has just moved is one of the two atoms of the new dumbbell, so it moves again at the next jump with probability 1/2, and that move points back along its last one on average. N D* = f D_defect defines the tracer correlation factor f of the mechanism, while the ν of section 1 needs D_defect itself. Both are measured below on the same free-dumbbell trajectories, with the dynamics of the whole-cell k ensembles (`direct_md_sia_tracer_*.md`). N D* is the Ref. [12] fit of drift-removed positions; defect D is the Wigner-Seitz block value of `direct_md_sia_d_*.md`; f is the per-trajectory ratio of the two slopes from atom sites. Ratios carry both errors in quadrature, and z is the difference over the two errors in quadrature.\n\n");
+    text.push_str("| T (K) | dynamics | CSV | seeds | N D*, Ref. [12] fit (Å²/ps) | Table 1 D_i [12] | N D* / Table 1 | z | defect D (Å²/ps) | defect D / Table 1 | f |\n|---:|:---|:---|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+    let mut tracer_ratios = Vec::new();
+    let mut defect_ratios = Vec::new();
+    let mut factors = Vec::new();
+    for temperature in temperatures {
+        let Some(table) = table_diffusivity(*temperature) else {
+            continue;
+        };
+        for campaign in SIA_TRACER_CAMPAIGNS.iter().take(2) {
+            let rows = read_tracer_rows(&validation_file(campaign.file));
+            let Some(estimate) = tracer_estimate(&rows, *temperature) else {
+                continue;
+            };
+            let (tracer_ratio, tracer_error, z) = ratio_with_error(estimate.tracer, table);
+            let (defect_ratio, defect_error, _) = ratio_with_error(estimate.defect, table);
+            text.push_str(&format!(
+                "| {temperature:.0} | {} | `{}` | {} | {:.4} ± {:.4} | {:.3} ± {:.3} | {tracer_ratio:.3} ± {tracer_error:.3} | {z:.2} | {:.4} ± {:.4} | {defect_ratio:.3} ± {defect_error:.3} | {:.4} ± {:.4} |\n",
+                campaign.label,
+                campaign.file,
+                estimate.seeds,
+                estimate.tracer.0,
+                estimate.tracer.1,
+                table.0,
+                table.1,
+                estimate.defect.0,
+                estimate.defect.1,
+                estimate.correlation.0,
+                estimate.correlation.1,
+            ));
+            tracer_ratios.push(tracer_ratio);
+            defect_ratios.push(defect_ratio);
+            factors.push(estimate.correlation.0);
+        }
+    }
+    let span = |values: &[f64]| {
+        let low = values.iter().copied().fold(f64::INFINITY, f64::min);
+        let high = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        format!("{low:.3} to {high:.3}")
+    };
+    if !tracer_ratios.is_empty() {
+        text.push_str(&format!(
+            "\nAcross these rows N D* / Table 1 runs {}, defect D / Table 1 runs {}, and f runs {}.\n",
+            span(&tracer_ratios),
+            span(&defect_ratios),
+            span(&factors)
+        ));
+    }
+    text.push_str("\nThe same correlation on an ideal lattice: a <100> dumbbell that moves only by Johnson jumps, the moving atom ending on the near side of the new dumbbell (`johnson_walk`). f(n) is Σ_i |Δs_i|² over n λ² after n jumps, mean ± standard error over the walks, seed 0x5EED. The lattice value is not an input to any number above.\n\n| jumps n | walks | f(n) |\n|---:|---:|---:|\n");
+    for (jumps, walks) in JOHNSON_WALKS {
+        let (factor, error) = johnson_correlation(walks, jumps, 0x5EED);
+        text.push_str(&format!(
+            "| {jumps} | {walks} | {factor:.4} ± {error:.4} |\n"
+        ));
+    }
+    let coarse = read_tracer_rows(&validation_file(SIA_TRACER_CAMPAIGNS[0].file));
+    let fine = read_tracer_rows(&validation_file(SIA_TRACER_CAMPAIGNS[2].file));
+    let mut steps = String::new();
+    for temperature in temperatures {
+        let (Some(wide), Some(narrow)) = (
+            tracer_estimate(&coarse, *temperature),
+            tracer_estimate(&fine, *temperature),
+        ) else {
+            continue;
+        };
+        for (label, top, bottom) in [
+            ("defect D", narrow.defect, wide.defect),
+            ("N D*, Ref. [12] fit", narrow.tracer, wide.tracer),
+            ("f", narrow.correlation, wide.correlation),
+        ] {
+            let (ratio, error, z) = ratio_with_error(top, bottom);
+            steps.push_str(&format!(
+                "| {temperature:.0} | {label} | {:.4} ± {:.4} ({} seeds) | {:.4} ± {:.4} ({} seeds) | {ratio:.3} ± {error:.3} | {z:.2} |\n",
+                top.0, top.1, narrow.seeds, bottom.0, bottom.1, wide.seeds
+            ));
+        }
+    }
+    if !steps.is_empty() {
+        text.push_str(&format!("\n## Timestep\n\nEvery campaign above integrates at {:.0} fs. `{}` repeats the Langevin campaign at {:.0} fs with the same seeds and τ and half the blocks.\n\n| T (K) | quantity | {:.0} fs | {:.0} fs | ratio | z |\n|---:|:---|---:|---:|---:|---:|\n{steps}", coarse[0].dt_fs, SIA_TRACER_CAMPAIGNS[2].file, fine[0].dt_fs, fine[0].dt_fs, coarse[0].dt_fs));
+    }
+    text.push('\n');
+    text
 }
 
 fn dynamics_note() -> String {
     let temperatures = [300.0_f64, 500.0, 700.0];
     let mut text = String::new();
     text.push_str("# Thermostat, lattice, and detector tests, Mishin Cu\n\n");
-    text.push_str("Our free-dumbbell D under Langevin at γ = 0.1/ps is larger than the Table 1 D_i of Mwungeli, Liu, and Demkowicz, Phys. Rev. Materials 9, 023601 (2025), which they quote from Ref. [12], B. Zhang et al., Phys. Rev. Materials 6, 053605 (2022), and our first whole-cell k at 500 K is larger than the k implied by their Table 1. Their trajectories are NPH for 30 ps, then NVE with velocity rescaling, at zero pressure. This note repeats the D measurement under that protocol, under Langevin with ten times weaker friction, and under Langevin at the zero-total-pressure lattice; and the whole-cell k with a Wigner-Seitz capture test under Langevin and NPH-then-NVE. Every campaign uses the same potential, 13³ cell, timestep, seeds, and blocks. Each number below is read from the CSV named in its row.\n\n");
+    text.push_str("Our free-dumbbell defect D is about twice the Table 1 D_i of Mwungeli, Liu, and Demkowicz, Phys. Rev. Materials 9, 023601 (2025), which they quote from Ref. [12], B. Zhang et al., Phys. Rev. Materials 6, 053605 (2022). The first section shows from both papers and from our own trajectories that the two are different quantities. The rest repeats the D measurement under the paper's protocol (NPH for 30 ps, then NVE with velocity rescaling, at zero pressure), under Langevin with ten times weaker friction, and under Langevin at the zero-total-pressure lattice; and the whole-cell k with a Wigner-Seitz capture test under Langevin and NPH-then-NVE. Every campaign uses the same potential, 13³ cell, seeds, and blocks, and the timestep of the section that lists it. Each number below is read from the CSV named in its row.\n\n");
+    text.push_str(&table_d_section(&temperatures));
     text.push_str("## Free dumbbell diffusivity\n\n");
     text.push_str("D for one trajectory is the block mean of |Δr|² over 6τ of the doubly occupied Wigner-Seitz cell; σ is the standard error across trajectories. Ratios carry both errors in quadrature, and z is the difference over the two errors in quadrature. The reference for the last two columns is the first campaign.\n\n");
     let sources: Vec<(&SiaCampaign, Vec<SiaBlock>)> = SIA_D_CAMPAIGNS
@@ -3280,8 +4172,9 @@ fn dynamics_note() -> String {
         ));
     }
     text.push_str("\n## Whole-cell k\n\n");
-    text.push_str("Random-vacancy ensembles as in `direct_md_random.md`: the through-origin fit of ln(n/N) every 25 ps up to the longest window, σ_k from 400 bootstrap resamples. V_iv/Ω = 4k / (α a D_i) with α = 2/3; the total σ adds the D_i error in quadrature. Own D is the free-dumbbell D measured with the same dynamics at the same lattice constant. The coordination detector calls a trajectory captured at the first sample at which every atom has 12 neighbours inside 3.1 Å; the site detector when every Wigner-Seitz site of the ideal lattice holds one atom for the confirmation window, dated to the first sample of that window. An ensemble with fewer trajectories than the others is a partial run of the same seeds. The Table 1 row backs k out of the k-method volume with the Table 1 D_i and the paper's lattice constant.\n\n");
-    text.push_str("| T (K) | dynamics | detector | CSV | N | captured | t_max (ps) | a (Å) | k (Å³/ps) | σ_k | own D (Å²/ps) | V_iv/Ω, own D | σ | V_iv/Ω, Table 1 D | σ | k / Table 1 k |\n|---:|:---|:---|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+    text.push_str("Random-vacancy ensembles as in `direct_md_random.md`: the through-origin fit of ln(n/N) every 25 ps up to the longest window, σ_k from 400 bootstrap resamples. The coordination detector calls a trajectory captured at the first sample at which every atom has 12 neighbours inside 3.1 Å; the site detector when every Wigner-Seitz site of the ideal lattice holds one atom for the confirmation window, dated to the first sample of that window. An ensemble with fewer trajectories than the others is a partial run of the same seeds. The Table 1 row backs k out of the k-method volume with V_iv/Ω = 4αk/(aD_i), the Table 1 D_i, and the paper's lattice constant.\n\n");
+    text.push_str("| T (K) | dynamics | detector | CSV | N | captured | t_max (ps) | a (Å) | k (Å³/ps) | σ_k | k / Table 1 k |\n|---:|:---|:---|:---|---:|---:|---:|---:|---:|---:|---:|\n");
+    let mut volumes = String::new();
     let mut ratios = Vec::new();
     for temperature in temperatures {
         let paper = match (
@@ -3290,7 +4183,7 @@ fn dynamics_note() -> String {
             table_lattice(temperature),
         ) {
             (Some((k_mean, k_sigma, _, _)), Some((d_i, d_sigma)), Some(a_p)) => {
-                let k_paper = k_mean * a_p * DUMBBELL_ALPHA * d_i / 4.0;
+                let k_paper = volume_to_rate(k_mean, a_p, d_i);
                 let k_paper_sigma =
                     k_paper * ((k_sigma / k_mean).powi(2) + (d_sigma / d_i).powi(2)).sqrt();
                 Some((k_mean, k_sigma, d_i, d_sigma, a_p, k_paper, k_paper_sigma))
@@ -3317,17 +4210,21 @@ fn dynamics_note() -> String {
                     let volume = rate_to_volume(rate, set.lattice, d_i);
                     let total =
                         volume * ((rate_sigma / rate).powi(2) + (d_sigma / d_i).powi(2)).sqrt();
-                    (
-                        format!("{d_i:.3} ± {d_sigma:.3}"),
-                        format!("{volume:.2} | {total:.2}"),
-                    )
+                    format!("{volume:.1} ± {total:.1}")
                 }
-                None => ("-".to_string(), "- | -".to_string()),
+                None => "-".to_string(),
             };
-            let own = measured_diffusivity(set.kind, set.gamma, temperature, set.lattice)
+            let defect = measured_diffusivity(set.kind, set.gamma, temperature, set.lattice)
                 .map(|(d, sigma, _)| (d, sigma));
-            let (own_d, own_v) = convert(own);
-            let (_, table_v) = convert(table_diffusivity(temperature));
+            let tracer = measured_tracer(set.kind, set.gamma, set.dt_fs, temperature, set.lattice)
+                .map(|(estimate, _)| estimate.tracer);
+            let inverted = defect.map_or("-".to_string(), |(d_i, d_sigma)| {
+                let volume = rate * set.lattice * set.lattice
+                    / ((2.0 / 3.0) * d_i)
+                    / (set.lattice.powi(3) / 4.0);
+                let total = volume * ((rate_sigma / rate).powi(2) + (d_sigma / d_i).powi(2)).sqrt();
+                format!("{volume:.1} ± {total:.1}")
+            });
             let versus = paper.map_or("-".to_string(), |(.., k_paper, k_paper_sigma)| {
                 let (ratio, error, _) =
                     ratio_with_error((rate, rate_sigma), (k_paper, k_paper_sigma));
@@ -3336,17 +4233,26 @@ fn dynamics_note() -> String {
             let label = campaign_label(set.kind, set.gamma);
             let detector = set.detector.0.label();
             text.push_str(&format!(
-                "| {temperature:.0} | {label} | {detector} | `{}` | {} | {} | {t_max:.0} | {:.6} | {rate:.2} | {rate_sigma:.2} | {own_d} | {own_v} | {table_v} | {versus} |\n",
+                "| {temperature:.0} | {label} | {detector} | `{}` | {} | {} | {t_max:.0} | {:.6} | {rate:.2} | {rate_sigma:.2} | {versus} |\n",
                 path.file_name().and_then(|name| name.to_str()).unwrap_or(""),
                 set.trials.len(),
                 set.trials.iter().filter(|(hit, time)| *hit && *time <= t_max).count(),
                 set.lattice,
             ));
+            volumes.push_str(&format!(
+                "| {temperature:.0} | {label} | {detector} | {} | {} | {} | {inverted} | {} |\n",
+                convert(table_diffusivity(temperature)),
+                convert(tracer),
+                convert(defect),
+                paper.map_or("-".to_string(), |(k_mean, k_sigma, ..)| format!(
+                    "{k_mean:.0} ± {k_sigma:.0}"
+                )),
+            ));
             rates.push((label, set.detector.0, (rate, rate_sigma)));
         }
-        if let Some((k_mean, k_sigma, d_i, d_sigma, a_p, k_paper, k_paper_sigma)) = paper {
+        if let Some((_, _, d_i, d_sigma, a_p, k_paper, k_paper_sigma)) = paper {
             text.push_str(&format!(
-                "| {temperature:.0} | Table 1, k-method | - | - | {PAPER_TRIALS} | - | - | {a_p:.3} | {k_paper:.2} | {k_paper_sigma:.2} | {d_i:.3} ± {d_sigma:.3} | {k_mean:.0} | {k_sigma:.0} | {k_mean:.0} | {k_sigma:.0} | - |\n"
+                "| {temperature:.0} | Table 1, k-method, D_i {d_i:.3} ± {d_sigma:.3} | - | - | {PAPER_TRIALS} | - | - | {a_p:.3} | {k_paper:.2} | {k_paper_sigma:.2} | - |\n"
             ));
         }
         let sites: Vec<_> = rates
@@ -3365,6 +4271,26 @@ fn dynamics_note() -> String {
     for line in ratios {
         text.push_str(&line);
         text.push('\n');
+    }
+    text.push_str("\n## V_iv by D_i convention\n\nV_iv/Ω = 4αk/(aD_i) with α = 2/3 and the k of the table above, for three D_i: the Table 1 value, which is 4951 D* from Ref. [12]; N D* measured on our trajectories with the dynamics of the ensemble; and the defect D of those dynamics, which is the D_i of ν = D_i/(αa²). σ adds the relative errors of k and D_i in quadrature. The previous column is the conversion this driver used before, k a²/(α D_i Ω), with the defect D: α was inverted, which multiplies V by 1/α² = 9/4. The last column is Table 1, k-method, 8788 atoms.\n\n| T (K) | dynamics | detector | Table 1 D_i | N D*, ours | defect D, ours | previous: k a²/(αD), defect D | Table 1 |\n|---:|:---|:---|---:|---:|---:|---:|---:|\n");
+    text.push_str(&volumes);
+    let factors: Vec<f64> = temperatures
+        .iter()
+        .flat_map(|temperature| {
+            SIA_TRACER_CAMPAIGNS.iter().take(2).filter_map(|campaign| {
+                let rows = read_tracer_rows(&validation_file(campaign.file));
+                tracer_estimate(&rows, *temperature).map(|estimate| estimate.correlation.0)
+            })
+        })
+        .collect();
+    if !factors.is_empty() {
+        let low = factors.iter().copied().fold(f64::INFINITY, f64::min);
+        let high = factors.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        text.push_str(&format!(
+            "\nThe previous column over the N D* column is (9/4) f. With the measured f between {low:.3} and {high:.3}, that is {:.3} to {:.3}.\n",
+            2.25 * low,
+            2.25 * high
+        ));
     }
     let quoted: Vec<String> = temperatures
         .iter()
@@ -3488,22 +4414,98 @@ fn run_sia_d() {
     let spec = run_spec();
     let blocks = env_u64("MD_SIA_BLOCKS", 40) as usize;
     let path = sia_d_path(&spec);
+    let done = read_sia_blocks(&path)
+        .iter()
+        .map(|row| (row.temperature as i64, row.seed))
+        .collect();
+    run_sia_jobs(
+        &spec,
+        &path,
+        SIA_D_HEADER,
+        &done,
+        blocks,
+        &|temperature, seed, tau| {
+            let rows = sia_d_trajectory(&spec, temperature, seed, tau, blocks);
+            let msd = rows
+                .iter()
+                .filter_map(|row| row.split(',').nth(12)?.parse::<f64>().ok())
+                .sum::<f64>()
+                / rows.len().max(1) as f64;
+            (rows, format!("D {:.4}", msd / (6.0 * tau)))
+        },
+    );
+    fs::write(note_path(&path), sia_d_note(&path)).expect("note");
+    write_sia_d_notes();
+}
+
+/// Output of a free-dumbbell tracer campaign.
+fn sia_tracer_path(spec: &RunSpec) -> PathBuf {
+    if let Ok(over) = env::var("MD_SIA_OUT") {
+        return PathBuf::from(over);
+    }
+    let dynamics = match spec.kind {
+        DynamicsKind::Langevin => format!("p0_gamma{}", spec.gamma_per_ps),
+        DynamicsKind::NphNve => DynamicsKind::NphNve.label().to_string(),
+    };
+    validation_file(&format!(
+        "direct_md_sia_tracer_{dynamics}_dt{}fs.csv",
+        spec.dt_fs
+    ))
+}
+
+fn run_sia_tracer() {
+    let spec = run_spec();
+    let blocks = env_u64("MD_SIA_BLOCKS", 40) as usize;
+    let path = sia_tracer_path(&spec);
+    let done = read_tracer_rows(&path)
+        .iter()
+        .map(|row| (row.temperature as i64, row.seed))
+        .collect();
+    run_sia_jobs(
+        &spec,
+        &path,
+        SIA_TRACER_HEADER,
+        &done,
+        blocks,
+        &|temperature, seed, tau| {
+            let run = sia_tracer_trajectory(&spec, temperature, seed, tau, blocks);
+            let first = TracerSums::between(&run, 0, 1);
+            let summary = format!(
+                "D_ws {:.4} N D*_site {:.4} breaks {} unresolved {}",
+                first.ws / (6.0 * run.tau_ps),
+                first.site / (6.0 * run.tau_ps),
+                run.sum_rule_breaks,
+                run.unresolved
+            );
+            (tracer_rows(&spec, temperature, seed, &run), summary)
+        },
+    );
+    fs::write(note_path(&path), sia_tracer_note(&path)).expect("note");
+}
+
+/// Runs `trajectory` for every temperature and seed of `spec` that `done`
+/// does not hold, longest blocks first, one per core, and appends the rows
+/// it returns to `path` under `header`.
+fn run_sia_jobs(
+    spec: &RunSpec,
+    path: &std::path::Path,
+    header: &str,
+    done: &std::collections::BTreeSet<(i64, u64)>,
+    blocks: usize,
+    trajectory: &(dyn Fn(f64, u64, f64) -> (Vec<String>, String) + Sync),
+) {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).expect("validation dir");
     }
     if !path.exists() {
-        let mut header = File::create(&path).expect("csv");
+        let mut file = File::create(path).expect("csv");
         let extra = if spec.kind == DynamicsKind::Langevin {
             ""
         } else {
             DYNAMICS_HEADER
         };
-        writeln!(header, "{SIA_D_HEADER}{extra}").unwrap();
+        writeln!(file, "{header}{extra}").unwrap();
     }
-    let done: std::collections::BTreeSet<(i64, u64)> = read_sia_blocks(&path)
-        .iter()
-        .map(|row| (row.temperature as i64, row.seed))
-        .collect();
     let mut jobs: Vec<(f64, u64, f64)> = Vec::new();
     for &temperature in &spec.temps {
         for seed in 0..spec.seeds {
@@ -3514,7 +4516,7 @@ fn run_sia_d() {
     }
     jobs.sort_by(|left, right| right.2.total_cmp(&left.2));
     println!(
-        "sia_d jobs {} temps {:?} seeds {} blocks {blocks} dt_fs {} gamma {} dynamics {}",
+        "sia jobs {} temps {:?} seeds {} blocks {blocks} dt_fs {} gamma {} dynamics {}",
         jobs.len(),
         spec.temps,
         spec.seeds,
@@ -3522,7 +4524,7 @@ fn run_sia_d() {
         spec.gamma_per_ps,
         spec.kind.label()
     );
-    let file = Mutex::new(OpenOptions::new().append(true).open(&path).expect("append"));
+    let file = Mutex::new(OpenOptions::new().append(true).open(path).expect("append"));
     let cursor = AtomicUsize::new(0);
     let workers = thread::available_parallelism()
         .map(|n| n.get())
@@ -3531,35 +4533,27 @@ fn run_sia_d() {
     let started = Instant::now();
     thread::scope(|scope| {
         for _ in 0..workers {
-            let (jobs, cursor, file, spec) = (&jobs, &cursor, &file, &spec);
+            let (jobs, cursor, file) = (&jobs, &cursor, &file);
             scope.spawn(move || {
                 loop {
                     let index = cursor.fetch_add(1, Ordering::Relaxed);
                     let Some(&(temperature, seed, tau)) = jobs.get(index) else {
                         break;
                     };
-                    let rows = sia_d_trajectory(spec, temperature, seed, tau, blocks);
-                    let msd = rows
-                        .iter()
-                        .filter_map(|row| row.split(',').nth(12)?.parse::<f64>().ok())
-                        .sum::<f64>()
-                        / rows.len().max(1) as f64;
+                    let (rows, summary) = trajectory(temperature, seed, tau);
                     let mut handle = file.lock().expect("csv lock");
                     for row in &rows {
                         writeln!(handle, "{row}").unwrap();
                     }
                     println!(
-                        "{}/{} T {temperature:.0} seed {seed} tau {tau} D {:.4}",
+                        "{}/{} T {temperature:.0} seed {seed} tau {tau} {summary}",
                         index + 1,
                         jobs.len(),
-                        msd / (6.0 * tau)
                     );
                 }
             });
         }
     });
-    fs::write(note_path(&path), sia_d_note(&path)).expect("note");
-    write_sia_d_notes();
     println!(
         "wrote {} in {:.1}s",
         path.display(),
@@ -3670,6 +4664,10 @@ fn main() {
 
     if env::var("MD_SIA_D").ok().as_deref() == Some("1") {
         run_sia_d();
+        return;
+    }
+    if env::var("MD_SIA_TRACER").ok().as_deref() == Some("1") {
+        run_sia_tracer();
         return;
     }
     if env::var("MD_SIA_D_NOTE").ok().as_deref() == Some("1") {
@@ -4036,9 +5034,114 @@ mod tests {
         }
         let volume = survival_volume(&trials, 1500.0, lattice, repeats, d_i);
         let model = (repeats * lattice).powi(3);
-        let expected = 4.0 * (lambda * model) / (DUMBBELL_ALPHA * lattice * d_i);
+        let expected = 4.0 * (2.0 / 3.0) * (lambda * model) / (lattice * d_i);
         let miss = (volume - expected).abs() / expected;
         assert!(miss < 0.03, "{volume} {expected} {miss}");
+    }
+
+    #[test]
+    fn rate_to_volume_reproduces_the_published_600_k_volume() {
+        // Fig. 1 of Mwungeli, Liu, and Demkowicz fits log(n/N) = -0.00173 t
+        // (t in ps) for 8788 atoms at 600 K; Table 1 lists a = 3.649 Å,
+        // D_i = 0.728 Å²/ps, and V_iv = 186 ± 14 Ω for that model.
+        let (lattice, d_i) = (3.649_f64, 0.728);
+        let rate = 0.00173 * (13.0 * lattice).powi(3);
+        let volume = rate_to_volume(rate, lattice, d_i);
+        assert!((volume - 186.0).abs() < 14.0, "{volume}");
+        let back = volume_to_rate(volume, lattice, d_i);
+        assert!((back - rate).abs() / rate < 1.0e-12, "{back} {rate}");
+        for temperature in [300.0, 500.0, 700.0] {
+            let (k_method, ..) = table_volume(temperature).expect("Table 1 row");
+            let (d_i, _) = table_diffusivity(temperature).expect("Table 1 D_i");
+            let a = table_lattice(temperature).expect("Table 1 lattice");
+            let rate = volume_to_rate(k_method, a, d_i);
+            assert!((rate_to_volume(rate, a, d_i) - k_method).abs() < 1.0e-9);
+        }
+    }
+
+    #[test]
+    fn site_deltas_take_the_minimum_image() {
+        for (delta, wrapped) in [
+            (0, 0),
+            (1, 1),
+            (13, 13),
+            (14, -12),
+            (25, -1),
+            (-25, 1),
+            (-13, 13),
+        ] {
+            assert_eq!(wrap_site_delta(delta, 26), wrapped, "{delta}");
+        }
+    }
+
+    #[test]
+    fn tracer_lags_average_over_every_origin() {
+        let lattice = 2.0;
+        let run = TracerRun {
+            lattice,
+            tau_ps: 5.0,
+            unresolved: 0,
+            sum_rule_breaks: 0,
+            ws: vec![[0, 0, 0], [1, 1, 0], [1, 1, 2]],
+            centre: vec![[0.0; 3], [1.0, 0.0, 0.0], [1.0, 2.0, 0.0]],
+            atom: vec![[0.0; 3], [0.0, 3.0, 0.0], [0.0, 3.0, 4.0]],
+            jump_r2: vec![0.0, 2.0, 6.0],
+            jumps: vec![0, 1, 3],
+            sites: vec![
+                vec![[0, 0, 0], [2, 0, 0]],
+                vec![[1, 1, 0], [2, 0, 0]],
+                vec![[1, 1, 0], [2, 0, 2]],
+            ],
+            positions: vec![
+                vec![0.0, 0.0, 0.0, 2.0, 0.0, 0.0],
+                vec![1.0, 1.0, 0.0, 2.0, 0.0, 0.0],
+                vec![1.0, 1.0, 0.0, 2.0, 0.0, 2.0],
+            ],
+        };
+        let lags = tracer_lags(&run);
+        assert_eq!(lags.len(), 2);
+        let (lag, origins, mean, first) = &lags[0];
+        assert_eq!((*lag, *origins), (1, 2));
+        // Half-lattice units are a/2 = 1 Å here.
+        assert!((mean.ws - (2.0 + 4.0) / 2.0).abs() < 1.0e-12);
+        assert!((first.ws - 2.0).abs() < 1.0e-12);
+        assert!((mean.centre - (1.0 + 4.0) / 2.0).abs() < 1.0e-12);
+        assert!((mean.atom - (9.0 + 16.0) / 2.0).abs() < 1.0e-12);
+        assert!((mean.jump - (2.0 + 4.0) / 2.0).abs() < 1.0e-12);
+        assert!((mean.jumps - 1.5).abs() < 1.0e-12);
+        assert!((mean.site - (2.0 + 4.0) / 2.0).abs() < 1.0e-12);
+        assert!((mean.tracer_total() - (2.0 + 4.0) / 2.0).abs() < 1.0e-12);
+        assert!((first.tracer[0] - 1.0).abs() < 1.0e-12);
+        let (lag, origins, mean, first) = &lags[1];
+        assert_eq!((*lag, *origins), (2, 1));
+        assert!((mean.ws - 6.0).abs() < 1.0e-12 && (first.ws - 6.0).abs() < 1.0e-12);
+        assert!((mean.site - 6.0).abs() < 1.0e-12);
+        assert!((mean.tracer[2] - 4.0).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn a_johnson_walk_moves_the_atoms_by_the_dumbbell_displacement() {
+        let mut rng = SplitRng::new(7);
+        let jumps = 200;
+        let walks = 400;
+        let mut defect = 0.0;
+        for _ in 0..walks {
+            let (squared, site, net) = johnson_walk(jumps, &mut rng);
+            assert_eq!(site, net);
+            assert_eq!(squared % 2, 0);
+            assert_eq!(site.iter().sum::<i64>().rem_euclid(2), 0);
+            defect += site.iter().map(|value| (value * value) as f64).sum::<f64>();
+        }
+        // Uncorrelated jumps of λ² = 2 half-lattice units: ⟨|R|²⟩ = 2n.
+        let ratio = defect / walks as f64 / (2.0 * jumps as f64);
+        assert!((ratio - 1.0).abs() < 0.15, "{ratio}");
+    }
+
+    #[test]
+    fn the_johnson_tracer_correlation_lies_below_one_half() {
+        let (factor, error) = johnson_correlation(400, 1_000, 3);
+        assert!(error < 0.01, "{error}");
+        assert!(factor > 0.35 && factor < 0.5, "{factor} ± {error}");
     }
 
     #[test]
