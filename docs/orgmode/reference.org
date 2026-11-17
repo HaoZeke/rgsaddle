@@ -23,7 +23,7 @@ The table below lists the main types.
 | =BandReport=                   | =status=, =max_force=, =ci_index=, =iteration=, =surface_rows=, =curvature= (refinement steps only), =saddle_index= (converged steps) |
 | =SaddleIndexCheck=             | The saddle-index check of a converged band, min-mode or OCI-NEB search, on =BandConfig::saddle_check= and =MinModeConfig::saddle_check=, on by default. Non-exhaustive. Block 2, lowest 4, residual 1e-2, curvature threshold -1e-3, 100 forward actions of 1e-3. =escape= takes a =SaddleEscape= (push 0.1, two attempts) |
 | =SaddleIndex=                  | =index=, ascending =curvatures= and their =residuals=, =converged=, =evaluations=. =saddle_index= certifies one point on a =PointSurface= |
-| =MinModeSession=               | Dimer or Lanczos lowest-mode search, same stepping contract; =set_position=, =set_mode=, =estimate_mode= for reuse; =set_torque_window= sets the dimer and Lanczos torque window apart from =rotation_tol=; =set_rotation_stop_length= turns on the curvature-aware rotation stop |
+| =MinModeSession=               | Dimer or Lanczos lowest-mode search, same stepping contract; =set_position=, =set_mode=, =estimate_mode= for reuse; =set_torque_window= sets the dimer and Lanczos torque window apart from =rotation_tol=; =set_rotation_stop_length= turns on the curvature-aware rotation stop; =set_artn= enables or disables the ART nouveau protocol |
 | =IndexKSession=                | Index-k minimum-mode step. =k = 1= is =MinModeSession=. =indexk_step= is one shot. =reflect_force= and =translated_force= are the subspace maps |
 | =SolidDimer=                   | That search on atoms plus Jacobian-scaled cell strain. =CellMask::frozen= is the fixed-cell dimer. =stress= and =elastic_dipole= are =σ= and =V σ=. =SolidDimerConfig=, =IndexCheck=, =StressCheck=, =SolidDimerReport= and =IndexReport= are non-exhaustive |
 | =StrainResponse=               | One hop. =barrier(ε)= is the lowest symmetry image of =ΔE0 - (P_saddle - P_minimum):ε=, or =NeedsSearch= past the validity bound. =ElasticDipole::from_stress= is =-V (σ_defect - σ_bulk)=. =refine= caches an index-1 solid dimer. =to_json= is the event record |
@@ -98,7 +98,7 @@ A failed callback leaves it unchanged.
 Its =rotation_angle_tol= field stops a dimer rotation once the optimal angle falls under this tolerance in radians.
 The Rust default is five degrees, 0 turns the stop off, and a C config stores the value it is given.
 Both fields are read only from a config whose version minor is 5 or newer.
-=RGSADDLE_ABI_MINOR= is 40.
+=RGSADDLE_ABI_MINOR= is 42.
 From minor 24, =rgsaddle_sella_saddle_set_symmetrized_ritz= sets =SellaSaddleConfig::symmetrized_ritz= from 0 or 1.
 It returns =RGSADDLE_INVALID_PARAMETER= for any other value.
 =rgsaddle_sella_saddle_set_small_system_atom_ceiling= (minor 25) sets =SellaSaddleConfig::small_system_atom_ceiling= from 0 or 1.
@@ -111,6 +111,7 @@ The value -1 infers the window from =rotation_tol= as a new session does, 0 turn
 It returns =RGSADDLE_INVALID_PARAMETER= for any other value.
 From minor 41 a Lanczos session reads it too.
 =rgsaddle_minmode_set_rotation_stop_length= (minor 38) calls =MinModeSession::set_rotation_stop_length=; 0 turns the stop off and a negative or non-finite length returns =RGSADDLE_INVALID_PARAMETER=.
+From minor 42, =rgsaddle_artn_config_default= fills =rgsaddle_artn_config_t= with the published defaults and =rgsaddle_minmode_set_artn= enables them on a Lanczos session or disables them with NULL.
 =rgsaddle_reparametrize= (minor 38) places a band at equal arc length with an =rgsaddle_reparametrization_t=, and band flag bit 4, =RGSADDLE_BAND_SPLINE_REPARAM=, puts the trust-region band on the not-a-knot spline.
 The request flags are =RGSADDLE_REQ_ONE_IMAGE= (bit 0) and =RGSADDLE_REQ_CLIMBING_IMAGE= (bit 1).
 From a band config at minor 22, the refinement's one-image requests also set bit 1.

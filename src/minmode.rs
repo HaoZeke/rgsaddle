@@ -141,6 +141,106 @@ impl MinModeKind {
     }
 }
 
+/// Controls the opt-in ART nouveau push--relax protocol.
+///
+/// The defaults reproduce the generic parts of the published ARTn
+/// workflow rather than any system-specific atom selection: delay the
+/// first Lanczos solve for three pushes, take six perpendicular
+/// relaxation steps while leaving the basin, use five during activation,
+/// cap a mode-following push at 0.2 Angstrom, and use 16 Lanczos actions.
+/// Jay et al., J. Chem. Theory Comput. 16, 6726 (2020),
+/// doi:10.1021/acs.jctc.0c00541, "Previous ARTn workflow" and
+/// "ARTn parameters".
+///
+/// The initial `mode` passed to [`MinModeSession::new`] is the random
+/// basin-exit direction. ARTn keeps it for basin pushes while Lanczos,
+/// once enabled, is warm-started from the previous lowest direction.
+/// Length and curvature defaults use Angstrom, eV/Angstrom, and
+/// eV/Angstrom squared; callers using other units must rescale them.
+///
+/// Non-exhaustive: start from [`ArtNConfig::default`] and chain the
+/// `with_*` setters.
+#[non_exhaustive]
+#[derive(Clone, Debug)]
+pub struct ArtNConfig {
+    /// Start Lanczos after this many random-direction pushes.
+    pub lanczos_start: usize,
+    /// Enter activation once the lowest eigenvalue is below this value.
+    pub eigenvalue_threshold: f64,
+    /// Length of each random-direction basin push.
+    pub basin_push: f64,
+    /// Perpendicular steepest-descent steps after each basin push.
+    pub basin_relaxations: usize,
+    /// Perpendicular steepest-descent steps after each activation push.
+    pub activation_relaxations: usize,
+    /// Scale multiplying the projected gradient during relaxation.
+    pub relaxation_step: f64,
+    /// Most Lanczos Hessian actions per geometry.
+    pub lanczos_actions: usize,
+    /// Lower bound on `|lambda|` in the activation Newton step.
+    pub curvature_floor: f64,
+}
+
+with_setters!(ArtNConfig {
+    with_lanczos_start => lanczos_start: val usize,
+    with_eigenvalue_threshold => eigenvalue_threshold: val f64,
+    with_basin_push => basin_push: val f64,
+    with_basin_relaxations => basin_relaxations: val usize,
+    with_activation_relaxations => activation_relaxations: val usize,
+    with_relaxation_step => relaxation_step: val f64,
+    with_lanczos_actions => lanczos_actions: val usize,
+    with_curvature_floor => curvature_floor: val f64,
+});
+
+impl Default for ArtNConfig {
+    fn default() -> Self {
+        Self {
+            lanczos_start: 3,
+            eigenvalue_threshold: -0.01,
+            basin_push: 0.2,
+            basin_relaxations: 6,
+            activation_relaxations: 5,
+            relaxation_step: 0.1,
+            lanczos_actions: 16,
+            curvature_floor: 0.5,
+        }
+    }
+}
+
+fn validate_artn(kind: MinModeKind, artn: &ArtNConfig) -> Result<(), SaddleError> {
+    if kind != MinModeKind::Lanczos {
+        return Err(SaddleError::Invalid(
+            "ARTn requires the Lanczos minimum-mode estimator".into(),
+        ));
+    }
+    if !(artn.eigenvalue_threshold.is_finite() && artn.eigenvalue_threshold <= 0.0) {
+        return Err(SaddleError::Invalid(
+            "ARTn eigenvalue threshold must be finite and non-positive".into(),
+        ));
+    }
+    if !(artn.basin_push.is_finite() && artn.basin_push > 0.0) {
+        return Err(SaddleError::Invalid(
+            "ARTn basin push must be positive and finite".into(),
+        ));
+    }
+    if !(artn.relaxation_step.is_finite() && artn.relaxation_step > 0.0) {
+        return Err(SaddleError::Invalid(
+            "ARTn relaxation step must be positive and finite".into(),
+        ));
+    }
+    if artn.lanczos_actions == 0 {
+        return Err(SaddleError::Invalid(
+            "ARTn Lanczos actions must be at least 1".into(),
+        ));
+    }
+    if !(artn.curvature_floor.is_finite() && artn.curvature_floor > 0.0) {
+        return Err(SaddleError::Invalid(
+            "ARTn curvature floor must be positive and finite".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 /// The MinModeConfig.
 ///
@@ -211,6 +311,9 @@ pub struct MinModeConfig {
     /// modes and the search starts again there along the negative mode
     /// closest to its own. `None` skips the check.
     pub saddle_check: Option<SaddleIndexCheck>,
+    /// ART nouveau push--relax controls. `None` keeps ordinary
+    /// minimum-mode following byte-for-byte unchanged.
+    pub artn: Option<ArtNConfig>,
 }
 
 with_setters!(MinModeConfig {
@@ -228,6 +331,15 @@ with_setters!(MinModeConfig {
     with_saddle_check => saddle_check: opt SaddleIndexCheck,
 });
 
+impl MinModeConfig {
+    /// Enable the ART nouveau push--relax protocol.
+    #[must_use]
+    pub fn with_artn(mut self, artn: ArtNConfig) -> Self {
+        self.artn = Some(artn);
+        self
+    }
+}
+
 impl Default for MinModeConfig {
     fn default() -> Self {
         Self {
@@ -243,6 +355,7 @@ impl Default for MinModeConfig {
             method: Method::fire(rgmin::FireKind::V2),
             seed_curvature: false,
             saddle_check: Some(SaddleIndexCheck::default()),
+            artn: None,
         }
     }
 }
@@ -1425,6 +1538,16 @@ struct CappedFireStep {
     curvature: f64,
 }
 
+/// Mutable phase of an opt-in ART nouveau search.
+struct ArtNState {
+    /// Fixed random direction used to leave the basin.
+    push_direction: Array1<f64>,
+    /// Completed random-direction pushes.
+    basin_pushes: usize,
+    /// Whether the lowest eigenvalue crossed the configured threshold.
+    activated: bool,
+}
+
 /// Stepping minimum-mode saddle search.
 ///
 /// # Examples
@@ -1547,6 +1670,8 @@ pub struct MinModeSession {
     /// Buffers of the Lanczos estimate.
     lanczos_work: LanczosWork,
     saddle: SaddleTrack,
+    /// ART nouveau phase state; absent for the ordinary min-mode driver.
+    artn: Option<ArtNState>,
 }
 
 /// The last certificate and the escapes taken.
@@ -1649,7 +1774,15 @@ impl MinModeSession {
         if let Some(check) = &config.saddle_check {
             check.validate()?;
         }
+        if let Some(artn) = &config.artn {
+            validate_artn(config.kind, artn)?;
+        }
         let mode = checked_mode(mode)?;
+        let artn = config.artn.as_ref().map(|_| ArtNState {
+            push_direction: mode.clone(),
+            basin_pushes: 0,
+            activated: false,
+        });
         crate::band::check_force_driven(&config.method)?;
         let lbfgs_guards = true;
         let solver = build_solver(
@@ -1696,6 +1829,7 @@ impl MinModeSession {
             lbfgs_project: false,
             lbfgs_shadow: VecDeque::new(),
             last_translated: None,
+            artn,
             saddle: SaddleTrack::default(),
         })
     }
@@ -1819,6 +1953,27 @@ impl MinModeSession {
     /// also the Lanczos estimate that runs to its residual.
     pub fn set_torque_window(&mut self, window: Option<bool>) {
         self.torque_window = window;
+    }
+
+    /// Enable or disable the ART nouveau protocol on this session.
+    ///
+    /// Enabling requires a Lanczos session. The current mode becomes
+    /// the fixed basin-exit direction, and either change restarts the
+    /// search state while retaining the current position and mode.
+    pub fn set_artn(&mut self, artn: Option<ArtNConfig>) -> Result<(), SaddleError> {
+        if let Some(config) = &artn {
+            validate_artn(self.config.kind, config)?;
+        }
+        self.config.artn = artn;
+        self.artn = self.config.artn.as_ref().map(|_| ArtNState {
+            push_direction: self.mode.clone(),
+            basin_pushes: 0,
+            activated: false,
+        });
+        self.forget_search();
+        self.saddle.certified = None;
+        self.saddle.attempts = 0;
+        Ok(())
     }
 
     /// Stop a rotation once the force error it could still remove is
@@ -1954,6 +2109,11 @@ impl MinModeSession {
         self.pending_turn = 0.0;
         self.lanczos_carry = None;
         self.last_translated = None;
+        if let Some(artn) = &mut self.artn {
+            artn.push_direction = self.mode.clone();
+            artn.basin_pushes = 0;
+            artn.activated = false;
+        }
     }
 
     /// Move to `x` and keep the session: the mode stays as the next
@@ -2028,6 +2188,11 @@ impl MinModeSession {
         self.lanczos_ready = false;
         self.lanczos_carry = None;
         self.last_translated = None;
+        if let Some(artn) = &mut self.artn {
+            artn.push_direction = self.mode.clone();
+            artn.basin_pushes = 0;
+            artn.activated = false;
+        }
         Ok(())
     }
 
@@ -2300,19 +2465,34 @@ impl MinModeSession {
         replaced_seed: bool,
         block: Option<&mut KrylovBlock>,
     ) -> Result<(Array1<f64>, f64, usize, bool), SaddleError> {
+        let artn_config = self.config.artn.as_ref();
+        let mut configured;
+        let config = if let Some(artn) = artn_config {
+            configured = self.config.clone();
+            // ARTn uses a fixed, small Lanczos budget at every geometry.
+            // Its previous eigenvector is the seed, not a one-product
+            // quit-early certificate.
+            configured.max_rotations = artn.lanczos_actions;
+            configured.krylov_dim = artn.lanczos_actions;
+            configured.rotation_tol = 0.0;
+            &configured
+        } else {
+            &self.config
+        };
         // A seed invented because the old mode was eliminated does not
         // carry that mode's curvature into quit-early.
-        let previous = if replaced_seed {
+        let previous = if replaced_seed || artn_config.is_some() {
             f64::NAN
         } else {
             self.curvature
         };
-        let early = !replaced_seed && self.lanczos_ready;
+        let early = artn_config.is_none() && !replaced_seed && self.lanczos_ready;
         // A host relative tolerance is that host's own stop, so only an
         // explicit window applies on top of it.
-        let window = match self.lanczos_rel_tol {
-            Some(_) => self.torque_window == Some(true),
-            None => torque_window_on(&self.config, self.torque_window),
+        let window = match (artn_config, self.lanczos_rel_tol) {
+            (Some(_), _) => false,
+            (None, Some(_)) => self.torque_window == Some(true),
+            (None, None) => torque_window_on(&self.config, self.torque_window),
         };
         let mut work = std::mem::take(&mut self.lanczos_work);
         let answer = lanczos_mode(
@@ -2320,7 +2500,7 @@ impl MinModeSession {
             position,
             gradient,
             seed,
-            &self.config,
+            config,
             LanczosStop {
                 rel_tol: self.lanczos_rel_tol,
                 previous,
@@ -2889,6 +3069,166 @@ impl MinModeSession {
         Ok((x, at_new))
     }
 
+    /// Apply one ARTn push and its bounded perpendicular steepest-descent
+    /// relaxations, leaving the final gradient cached.
+    fn artn_push_relax<S: PointSurface>(
+        &mut self,
+        counted: &Counted<'_, S>,
+        direction: &Array1<f64>,
+        push: f64,
+        relaxations: usize,
+        relaxation_step: f64,
+    ) -> Result<(), SaddleError> {
+        let origin = self.x.clone();
+        let mut trial = &origin + &(direction * push);
+        shorten_to_atom_cap(origin.view(), &mut trial, push.abs());
+        let (mut energy, mut gradient) = counted.eval(trial.view())?;
+        self.x = trial;
+        for _ in 0..relaxations {
+            let mut perpendicular = gradient.clone();
+            perp_in_place(&mut perpendicular, direction);
+            if self.force_gate.value(perpendicular.view()) <= self.config.force_tol {
+                break;
+            }
+            let origin = self.x.clone();
+            let mut relaxed = &origin - &(perpendicular * relaxation_step);
+            shorten_to_atom_cap(origin.view(), &mut relaxed, self.config.max_move);
+            if largest_atom_move(origin.view(), relaxed.view()) <= 1e-15 {
+                break;
+            }
+            (energy, gradient) = counted.eval(relaxed.view())?;
+            self.x = relaxed;
+        }
+        self.centre = Some(PointEval {
+            x: self.x.clone(),
+            energy: Some(energy),
+            gradient,
+        });
+        Ok(())
+    }
+
+    /// One outer iteration of the opt-in ART nouveau protocol.
+    fn step_artn<S: PointSurface>(&mut self, surface: &S) -> Result<MinModeReport, SaddleError> {
+        let artn_config = self
+            .config
+            .artn
+            .clone()
+            .ok_or_else(|| SaddleError::Invalid("ARTn controls are not configured".into()))?;
+        let calls = AtomicUsize::new(0);
+        let counted = Counted {
+            shifted: Default::default(),
+            surface,
+            calls: &calls,
+            space: None,
+        };
+        let gradient = self.centre_gradient(&counted)?;
+        let (activated, basin_pushes, basin_direction) = {
+            let state = self
+                .artn
+                .as_ref()
+                .ok_or_else(|| SaddleError::Invalid("ARTn phase state is absent".into()))?;
+            (
+                state.activated,
+                state.basin_pushes,
+                state.push_direction.clone(),
+            )
+        };
+
+        let mut rotations = 0;
+        if !activated {
+            if basin_pushes >= artn_config.lanczos_start {
+                let (curvature, used) = self.refresh_mode(&counted, gradient.view())?;
+                rotations = used;
+                if curvature < artn_config.eigenvalue_threshold
+                    && let Some(state) = &mut self.artn
+                {
+                    state.activated = true;
+                }
+            }
+            if self.artn.as_ref().is_some_and(|state| !state.activated) {
+                self.artn_push_relax(
+                    &counted,
+                    &basin_direction,
+                    artn_config.basin_push,
+                    artn_config.basin_relaxations,
+                    artn_config.relaxation_step,
+                )?;
+                if let Some(state) = &mut self.artn {
+                    state.basin_pushes += 1;
+                }
+                self.iteration += 1;
+                let max_force = self.centre.as_ref().map_or(f64::NAN, |point| {
+                    self.force_gate.value(point.gradient.view())
+                });
+                return Ok(MinModeReport {
+                    status: MinModeStatus::Running,
+                    max_force,
+                    curvature: self.curvature,
+                    rotations,
+                    iteration: self.iteration,
+                    evaluations: calls.load(Ordering::Relaxed),
+                    saddle_index: None,
+                });
+            }
+        }
+
+        // The threshold-crossing estimate is already current. Later
+        // activation iterations refresh it, seeded by the previous mode.
+        let curvature = if activated {
+            let (curvature, used) = self.refresh_mode(&counted, gradient.view())?;
+            rotations = used;
+            curvature
+        } else {
+            self.curvature
+        };
+        let max_force = self.force_gate.value(gradient.view());
+        if converged(max_force, curvature, self.config.force_tol) {
+            return Ok(MinModeReport {
+                status: MinModeStatus::Converged,
+                max_force,
+                curvature,
+                rotations,
+                iteration: self.iteration,
+                evaluations: calls.load(Ordering::Relaxed),
+                saddle_index: None,
+            });
+        }
+
+        // Choose the arbitrary Lanczos sign toward the force, then use
+        // Jay et al.'s bounded |F_parallel|/max(|lambda|, floor) push.
+        let mut direction = self.mode.clone();
+        if gradient.dot(&direction) > 0.0 {
+            direction.mapv_inplace(|value| -value);
+            self.mode = direction.clone();
+        }
+        let parallel_force = (-gradient.dot(&direction)).max(0.0);
+        let mut push = parallel_force / curvature.abs().max(artn_config.curvature_floor);
+        if self.config.max_move > 0.0 {
+            push = push.min(self.config.max_move);
+        }
+        self.artn_push_relax(
+            &counted,
+            &direction,
+            -push,
+            artn_config.activation_relaxations,
+            artn_config.relaxation_step,
+        )?;
+        self.last_translated = Some(translated_gradient(&gradient, &direction, curvature));
+        self.iteration += 1;
+        let arrived_force = self.centre.as_ref().map_or(max_force, |point| {
+            self.force_gate.value(point.gradient.view())
+        });
+        Ok(MinModeReport {
+            status: MinModeStatus::Running,
+            max_force: arrived_force,
+            curvature,
+            rotations,
+            iteration: self.iteration,
+            evaluations: calls.load(Ordering::Relaxed),
+            saddle_index: None,
+        })
+    }
+
     /// One min-mode step: refresh the lowest mode, invert the force
     /// along it, take one solver step.
     ///
@@ -3021,6 +3361,9 @@ impl MinModeSession {
     }
 
     fn step_inner<S: PointSurface>(&mut self, surface: &S) -> Result<MinModeReport, SaddleError> {
+        if self.config.artn.is_some() {
+            return self.step_artn(surface);
+        }
         // The translation finishes the mode itself. A partial basis
         // from push_estimate belongs to the pre-step seed.
         self.lanczos_carry = None;
@@ -3245,8 +3588,8 @@ impl MinModeSession {
 #[cfg(test)]
 mod tests {
     use super::{
-        MinModeConfig, MinModeKind, MinModeSession, PointSurface, rotation_force_converged,
-        rotation_force_error, translated_gradient,
+        ArtNConfig, MinModeConfig, MinModeKind, MinModeSession, PointSurface,
+        rotation_force_converged, rotation_force_error, translated_gradient,
     };
     use crate::error::SaddleError;
     use approx::assert_abs_diff_eq;
@@ -3281,6 +3624,71 @@ mod tests {
         assert!(super::curvature_scale(0.0).is_none());
         assert!(super::curvature_scale(1.5).is_none());
         assert!(super::curvature_scale(f64::NAN).is_none());
+    }
+
+    #[test]
+    fn artn_defaults_are_pinned() {
+        let artn = ArtNConfig::default();
+        assert_eq!(artn.lanczos_start, 3);
+        assert_eq!(artn.basin_relaxations, 6);
+        assert_eq!(artn.activation_relaxations, 5);
+        assert_eq!(artn.lanczos_actions, 16);
+        assert_eq!(artn.basin_push.to_bits(), 0.2_f64.to_bits());
+        assert_eq!(artn.curvature_floor.to_bits(), 0.5_f64.to_bits());
+        assert_eq!(artn.eigenvalue_threshold.to_bits(), (-0.01_f64).to_bits());
+    }
+
+    #[test]
+    fn artn_is_lanczos_only() {
+        let config = MinModeConfig::default().with_artn(ArtNConfig::default());
+        let error = MinModeSession::new(config, array![0.0, 0.0], array![1.0, 0.0])
+            .err()
+            .expect("a dimer ARTn configuration is invalid");
+        assert!(error.to_string().contains("Lanczos"));
+    }
+
+    #[test]
+    fn artn_delays_lanczos_and_relaxes_perpendicular_to_the_push() {
+        let artn = ArtNConfig::default()
+            .with_lanczos_start(2)
+            .with_basin_relaxations(2);
+        let config = MinModeConfig::default()
+            .with_kind(MinModeKind::Lanczos)
+            .with_artn(artn);
+        let mut session = MinModeSession::new(config, array![0.0, 0.3], array![1.0, 0.0]).unwrap();
+        let first = session.step(&RotatingQuadratic).unwrap();
+        assert_eq!(first.rotations, 0);
+        assert!(first.curvature.is_nan());
+        assert_abs_diff_eq!(session.position()[0], 0.2, epsilon = 1e-12);
+        assert!(
+            session.position()[1].abs() < 0.3,
+            "the perpendicular coordinate was relaxed"
+        );
+        let second = session.step(&RotatingQuadratic).unwrap();
+        assert_eq!(second.rotations, 0);
+        let third = session.step(&RotatingQuadratic).unwrap();
+        assert!(third.rotations > 0, "Lanczos starts after two pushes");
+    }
+
+    #[test]
+    fn artn_activation_follows_the_warm_lanczos_mode() {
+        let artn = ArtNConfig::default()
+            .with_lanczos_start(0)
+            .with_activation_relaxations(2);
+        let config = MinModeConfig::default()
+            .with_kind(MinModeKind::Lanczos)
+            .with_force_tol(1e-10)
+            .with_artn(artn);
+        let mut session = MinModeSession::new(config, array![0.3, 0.2], array![1.0, 0.1]).unwrap();
+        let first = session.step(&RotatingQuadratic).unwrap();
+        assert!(first.rotations > 0);
+        assert!(first.curvature < -0.01);
+        assert!(session.position()[0].abs() < 0.3);
+        assert!(session.position()[1].abs() < 0.2);
+        let previous = session.mode().to_owned();
+        let second = session.step(&RotatingQuadratic).unwrap();
+        assert!(second.rotations > 0);
+        assert!(session.mode().dot(&previous).abs() > 0.99);
     }
 
     #[test]

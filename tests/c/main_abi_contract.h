@@ -5,7 +5,7 @@
 #include <stddef.h>
 
 _Static_assert(RGSADDLE_ABI_MAJOR == 1u, "main ABI major");
-_Static_assert(RGSADDLE_ABI_MINOR == 41u, "ABI minor");
+_Static_assert(RGSADDLE_ABI_MINOR == 42u, "ABI minor");
 _Static_assert(RGSADDLE_BAND_NO_MIN_MODE == (1ull << 3), "band flag bit 3");
 _Static_assert(RGSADDLE_BAND_SPLINE_REPARAM == (1ull << 4), "band flag bit 4");
 _Static_assert(RGSADDLE_REPARAM_LINEAR == 0, "rgsaddle_reparametrization_t LINEAR");
@@ -145,6 +145,31 @@ _Static_assert(offsetof(rgsaddle_minmode_config_t, max_move) == offsetof(abi15_r
 _Static_assert(offsetof(rgsaddle_minmode_config_t, rotation_angle_tol) == offsetof(abi15_rgsaddle_minmode_config_t, rotation_angle_tol), "rgsaddle_minmode_config_t.rotation_angle_tol");
 _Static_assert(offsetof(rgsaddle_minmode_config_t, difference) == offsetof(abi15_rgsaddle_minmode_config_t, difference), "rgsaddle_minmode_config_t.difference");
 _Static_assert(offsetof(rgsaddle_minmode_config_t, reserved) == offsetof(abi15_rgsaddle_minmode_config_t, reserved), "rgsaddle_minmode_config_t.reserved");
+
+typedef struct {
+  abi15_rgsaddle_version_t version;
+  uint64_t flags;
+  int64_t lanczos_start;
+  double eigenvalue_threshold;
+  double basin_push;
+  int64_t basin_relaxations;
+  int64_t activation_relaxations;
+  double relaxation_step;
+  int64_t lanczos_actions;
+  double curvature_floor;
+} abi42_rgsaddle_artn_config_t;
+_Static_assert(sizeof(rgsaddle_artn_config_t) == sizeof(abi42_rgsaddle_artn_config_t), "rgsaddle_artn_config_t size");
+_Static_assert(_Alignof(rgsaddle_artn_config_t) == _Alignof(abi42_rgsaddle_artn_config_t), "rgsaddle_artn_config_t alignment");
+_Static_assert(offsetof(rgsaddle_artn_config_t, version) == offsetof(abi42_rgsaddle_artn_config_t, version), "rgsaddle_artn_config_t.version");
+_Static_assert(offsetof(rgsaddle_artn_config_t, flags) == offsetof(abi42_rgsaddle_artn_config_t, flags), "rgsaddle_artn_config_t.flags");
+_Static_assert(offsetof(rgsaddle_artn_config_t, lanczos_start) == offsetof(abi42_rgsaddle_artn_config_t, lanczos_start), "rgsaddle_artn_config_t.lanczos_start");
+_Static_assert(offsetof(rgsaddle_artn_config_t, eigenvalue_threshold) == offsetof(abi42_rgsaddle_artn_config_t, eigenvalue_threshold), "rgsaddle_artn_config_t.eigenvalue_threshold");
+_Static_assert(offsetof(rgsaddle_artn_config_t, basin_push) == offsetof(abi42_rgsaddle_artn_config_t, basin_push), "rgsaddle_artn_config_t.basin_push");
+_Static_assert(offsetof(rgsaddle_artn_config_t, basin_relaxations) == offsetof(abi42_rgsaddle_artn_config_t, basin_relaxations), "rgsaddle_artn_config_t.basin_relaxations");
+_Static_assert(offsetof(rgsaddle_artn_config_t, activation_relaxations) == offsetof(abi42_rgsaddle_artn_config_t, activation_relaxations), "rgsaddle_artn_config_t.activation_relaxations");
+_Static_assert(offsetof(rgsaddle_artn_config_t, relaxation_step) == offsetof(abi42_rgsaddle_artn_config_t, relaxation_step), "rgsaddle_artn_config_t.relaxation_step");
+_Static_assert(offsetof(rgsaddle_artn_config_t, lanczos_actions) == offsetof(abi42_rgsaddle_artn_config_t, lanczos_actions), "rgsaddle_artn_config_t.lanczos_actions");
+_Static_assert(offsetof(rgsaddle_artn_config_t, curvature_floor) == offsetof(abi42_rgsaddle_artn_config_t, curvature_floor), "rgsaddle_artn_config_t.curvature_floor");
 
 typedef struct {
   abi15_rgsaddle_version_t version;
@@ -344,6 +369,14 @@ _Static_assert(_Generic(&rgsaddle_minmode_set_torque_window, abi32_signature_rgs
 typedef rgsaddle_status_t (*abi38_signature_rgsaddle_minmode_set_rotation_stop_length)(
     RgsaddleMinMode *session, double length);
 _Static_assert(_Generic(&rgsaddle_minmode_set_rotation_stop_length, abi38_signature_rgsaddle_minmode_set_rotation_stop_length: 1, default: 0), "rgsaddle_minmode_set_rotation_stop_length signature");
+
+typedef rgsaddle_status_t (*abi42_signature_rgsaddle_artn_config_default)(
+    rgsaddle_artn_config_t *config);
+_Static_assert(_Generic(&rgsaddle_artn_config_default, abi42_signature_rgsaddle_artn_config_default: 1, default: 0), "rgsaddle_artn_config_default signature");
+
+typedef rgsaddle_status_t (*abi42_signature_rgsaddle_minmode_set_artn)(
+    RgsaddleMinMode *session, const rgsaddle_artn_config_t *config);
+_Static_assert(_Generic(&rgsaddle_minmode_set_artn, abi42_signature_rgsaddle_minmode_set_artn: 1, default: 0), "rgsaddle_minmode_set_artn signature");
 
 typedef rgsaddle_status_t (*abi38_signature_rgsaddle_reparametrize)(
     int64_t n_images, int64_t n_atoms, double *positions, int64_t anchor, const double *cell,
