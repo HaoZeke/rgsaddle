@@ -191,9 +191,9 @@ pub use projector::{
     TangentProjector, UnitNormal,
 };
 pub use region::{
-    AffineSymmetry, BoundaryViolation, CrystalSymmetryConfig, CrystalSymmetryOperation, PathSlab,
-    PeriodicSymmetryOperations, PlanarBoundary, Region, RegionIntersection, SymmetryOperations,
-    SymmetrySource, SymmetryUniqueRegion, reflect_velocity,
+    AffineSymmetry, BoundaryViolation, CrystalSymmetryConfig, CrystalSymmetryOperation,
+    CrystalSymmetryRegion, PathSlab, PeriodicSymmetryOperations, PlanarBoundary, Region,
+    RegionIntersection, SymmetryOperations, SymmetrySource, SymmetryUniqueRegion, reflect_velocity,
 };
 pub use relax::{
     DEFAULT_FORCE_TOL, DEFAULT_MAX_STEPS, RelaxConfig, Relaxation, max_atom_force,
