@@ -93,6 +93,7 @@ fn band_forces_with_gate<S: BandSurface + ?Sized>(
     if !energies.iter().all(|e| e.is_finite()) {
         return Err(SaddleError::NonFinite("band energies"));
     }
+    let is_string = config.string.is_some();
     let springs = config.spring.at_band(energies.view(), gradients.view());
     let mut tangents = Array2::zeros((n_images - 2, dof));
     let mut force = Array1::zeros((n_images - 2) * dof);
@@ -107,35 +108,68 @@ fn band_forces_with_gate<S: BandSurface + ?Sized>(
         zero_fixed(&config.fixed_atoms, &mut pos_diff_prev);
         let dist_next = nrm2(pos_diff_next.view());
         let dist_prev = nrm2(pos_diff_prev.view());
-        let tangent = compute_tangent(
-            config.tangent,
-            pos_diff_next.view(),
-            pos_diff_prev.view(),
-            energies[i],
-            energies[i - 1],
-            energies[i + 1],
-        )?;
         let true_force = -&gradients.row(i);
-        let spring = springs.compute(
-            i,
-            tangent.view(),
-            dist_next,
-            dist_prev,
-            pos_diff_next.view(),
-            pos_diff_prev.view(),
-        )?;
-        let mut image_force = if ci == Some(i) {
-            let dneb = if config.projection == ProjectionKind::DoublyNudged {
-                let fp = force_perp(true_force.view(), tangent.view());
-                dneb_component(spring.full.view(), tangent.view(), fp.view())
+        let (tangent, mut image_force) = if is_string {
+            if ci == Some(i) {
+                let tangent = compute_tangent(
+                    config.tangent,
+                    pos_diff_next.view(),
+                    pos_diff_prev.view(),
+                    energies[i],
+                    energies[i - 1],
+                    energies[i + 1],
+                )?;
+                let reflected = climbing_image_force(
+                    true_force.view(),
+                    tangent.view(),
+                    Array1::zeros(dof).view(),
+                );
+                (tangent, reflected)
             } else {
-                Array1::zeros(dof)
-            };
-            climbing_image_force(true_force.view(), tangent.view(), dneb.view())
+                let tangent = match compute_tangent(
+                    config.tangent,
+                    pos_diff_next.view(),
+                    pos_diff_prev.view(),
+                    energies[i],
+                    energies[i - 1],
+                    energies[i + 1],
+                ) {
+                    Ok(t) => t,
+                    Err(_) => Array1::zeros(dof),
+                };
+                (tangent, true_force)
+            }
         } else {
-            config
-                .projection
-                .project(true_force.view(), tangent.view(), &spring)
+            let tangent = compute_tangent(
+                config.tangent,
+                pos_diff_next.view(),
+                pos_diff_prev.view(),
+                energies[i],
+                energies[i - 1],
+                energies[i + 1],
+            )?;
+            let spring = springs.compute(
+                i,
+                tangent.view(),
+                dist_next,
+                dist_prev,
+                pos_diff_next.view(),
+                pos_diff_prev.view(),
+            )?;
+            let projected = if ci == Some(i) {
+                let dneb = if config.projection == ProjectionKind::DoublyNudged {
+                    let fp = force_perp(true_force.view(), tangent.view());
+                    dneb_component(spring.full.view(), tangent.view(), fp.view())
+                } else {
+                    Array1::zeros(dof)
+                };
+                climbing_image_force(true_force.view(), tangent.view(), dneb.view())
+            } else {
+                config
+                    .projection
+                    .project(true_force.view(), tangent.view(), &spring)
+            };
+            (tangent, projected)
         };
         zero_fixed(&config.fixed_atoms, &mut image_force);
         if config.drops_translation() {
