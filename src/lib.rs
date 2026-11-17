@@ -77,6 +77,8 @@ pub mod projection;
 pub mod projector;
 pub mod region;
 pub mod relax;
+#[cfg(feature = "rgpot-session")]
+pub mod rgpot_session;
 pub mod saddle_index;
 pub mod solid_dimer;
 pub mod solid_state;
@@ -191,6 +193,11 @@ pub use region::{
 pub use relax::{
     DEFAULT_FORCE_TOL, DEFAULT_MAX_STEPS, RelaxConfig, Relaxation, max_atom_force,
     relax_to_tolerance,
+};
+#[cfg(feature = "rgpot-session")]
+pub use rgpot_session::{
+    RgpotHyperplaneDynamics, RgpotHyperplaneSampler, RgpotMdSession, RgpotMdState,
+    RgpotSessionConfig,
 };
 pub use saddle_index::{SaddleEscape, SaddleIndex, SaddleIndexCheck, saddle_index};
 pub use solid_dimer::{

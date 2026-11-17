@@ -1,0 +1,12 @@
+#+title: Use an rgpot MD session for hyperplanes
+#+options: toc:2 num:nil
+
+The optional =rgpot-session= feature contains no engine code. It defines
+=RgpotMdSession=, the narrow session interface implemented by an rgpot
+binding, and adapters for =HyperplaneSampler= and =HyperplaneDynamics=.
+OpenMM, GROMACS nblib, and other engines can share this path.
+
+The session owns its units and coordinate convention. It supplies positions,
+velocities, forces, projected BAOAB steps with planar walls, deterministic NVE
+steps, and state readback. Rgsaddle only supplies the plane, budget, region,
+and transmission policy.

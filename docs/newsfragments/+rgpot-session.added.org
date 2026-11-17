@@ -1,0 +1,2 @@
+Add an engine-neutral rgpot MD-session adapter for hyperplane sampling and
+NVE shooting; engine bindings implement the session trait.

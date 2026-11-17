@@ -19,6 +19,7 @@ capi = []
 par = ["rgmin/par"]
 highs = ["rgmin/highs"]
 ohtst = []
+rgpot-session = ["ohtst"]
 lammps = ["ohtst", "dep:capnp", "dep:libloading", "dep:rgpot-core"]
 readcon = ["dep:readcon-core"]
 # readcon-db 0.2 pins readcon-core = "=0.17.1", the same release as
