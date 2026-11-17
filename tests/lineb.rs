@@ -287,6 +287,34 @@ fn turning_knots_on_a_lowered_surface_keep_the_clock_cheap() {
     );
 }
 
+/// Lowering every energy by a constant moves `ln(k Z_r)` by `−τ SHIFT / ℏ`
+/// and nothing else, even where `k Z_r` itself overflows.
+#[test]
+fn an_energy_offset_moves_only_the_log_rate() {
+    let raised = straight_path(&Parabola, 0.3, 0.5);
+    let lowered = straight_path(&LoweredParabola, 0.3, 0.5 + SHIFT);
+    let beads = 10;
+    let reference = hqtst_rate(&Parabola, &raised, beads).unwrap();
+    let rate = hqtst_rate(&LoweredParabola, &lowered, beads).unwrap();
+    assert_eq!(rate.rate_over_reactant, f64::INFINITY);
+    assert!(rate.log_rate_over_reactant.is_finite());
+    let expected = -rate.period * SHIFT;
+    let moved = rate.log_rate_over_reactant - reference.log_rate_over_reactant;
+    // Each bead energy rounds at `ε |SHIFT|`, and the period and the
+    // replicas at the relative `ε |SHIFT| / (V − E)` of the gap.
+    let relative = 64.0 * f64::EPSILON * SHIFT.abs();
+    assert!(
+        (moved - expected).abs() <= relative * expected.abs(),
+        "moved {moved}, expected {expected}"
+    );
+    assert!(
+        (rate.log_abs_det - reference.log_abs_det).abs() <= relative * reference.log_abs_det.abs(),
+        "{} vs {}",
+        rate.log_abs_det,
+        reference.log_abs_det
+    );
+}
+
 fn unstable_mode(saddle: [f64; 2]) -> (Array1<f64>, f64) {
     let scale = saddle[0].abs().max(saddle[1].abs());
     let step = scale * f64::EPSILON.sqrt();
