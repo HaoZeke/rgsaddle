@@ -53,10 +53,17 @@ jobs:
           set -euo pipefail
           export PATH="$HOME/.local/bin:$PATH"
           shopt -s globstar nullglob
+          # validation/benchmark/ holds the pt-island campaign drivers
+          # (optbench and eOn). Each one takes a checkout and a long run,
+          # so it is not one of these checks. The drivers stay in the tree
+          # and run from their own entry points.
           for script in validation/**/*.py tests/symbolic/*.py; do
             if [[ "$(basename "$script")" == "check_index1.py" ]]; then
               continue
             fi
+            case "$script" in
+              validation/benchmark/*) continue ;;
+            esac
             echo "== $script"
             uv run --no-project --with sympy --with mpmath --with numpy --with scipy --with z3-solver python "$script"
           done
