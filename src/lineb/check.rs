@@ -56,17 +56,6 @@ impl PointSurface for MullerBrown {
     }
 }
 
-struct Counted<'a> {
-    calls: &'a AtomicUsize,
-}
-
-impl PointSurface for Counted<'_> {
-    fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
-        self.calls.fetch_add(1, Ordering::Relaxed);
-        MullerBrown.eval(x)
-    }
-}
-
 struct Sample {
     sigma: f64,
     speed: f64,
@@ -372,7 +361,10 @@ fn muller_brown_action_and_period_match_a_fine_grid() {
     let config = muller_brown_config(delta, images, gradient_norm);
     let masses = Masses::coordinates(Array1::ones(2).view()).unwrap();
     let calls = AtomicUsize::new(0);
-    let counted = Counted { calls: &calls };
+    let counted = crate::lineb::Counted {
+        surface: &MullerBrown,
+        calls: &calls,
+    };
     let paths = continue_from_mep(
         &counted,
         mep.view(),
