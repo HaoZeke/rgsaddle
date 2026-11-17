@@ -12,12 +12,111 @@ use libloading::Library;
 use ndarray::Array1;
 use rgpot_core::profile::{ProfileRequest, encode_force_input, library_candidates};
 
+use crate::strain_rate::{parse_json, required_f64, required_str};
 use crate::{
     Hyperplane, HyperplaneCoordinates, HyperplaneEnsemble, HyperplaneObservation,
     HyperplaneSampleBudget, HyperplaneSampler, SaddleError,
 };
 
 const LAMMPC_ABI_VERSION: c_int = 0;
+const LAMMPS_THERMOSTAT_RECORD_FORMAT: &str = "rgsaddle.lammps_thermostat";
+const LAMMPS_OBSERVABLE_THERMOSTAT: &str = "lammps.thermostat";
+const LAMMPS_OBSERVABLE_EFFECTIVE_DOF: &str = "lammps.effective_degrees_of_freedom";
+
+/// Thermostat used by the constrained LAMMPS backend.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LammpsThermostatKind {
+    /// Projected BAOAB Langevin thermostat.
+    #[default]
+    BaoabLangevin,
+}
+
+impl LammpsThermostatKind {
+    /// Stable string value used in records.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::BaoabLangevin => "baoab_langevin",
+        }
+    }
+
+    fn observable_code(self) -> f64 {
+        match self {
+            Self::BaoabLangevin => 1.0,
+        }
+    }
+}
+
+impl std::str::FromStr for LammpsThermostatKind {
+    type Err = SaddleError;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        match text {
+            "baoab_langevin" => Ok(Self::BaoabLangevin),
+            _ => Err(SaddleError::Invalid(format!(
+                "unsupported LAMMPS thermostat {text}"
+            ))),
+        }
+    }
+}
+
+/// Thermostat metadata written with each LAMMPS sample record.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LammpsThermostatRecord {
+    /// Thermostat kind used to generate the record.
+    pub thermostat: LammpsThermostatKind,
+    /// Effective constrained degrees of freedom, `3N - 1 - excluded_modes`.
+    pub effective_degrees_of_freedom: usize,
+}
+
+impl LammpsThermostatRecord {
+    /// Serialize this metadata to JSON.
+    pub fn to_json(&self) -> String {
+        format!(
+            "{{\"format\":\"{LAMMPS_THERMOSTAT_RECORD_FORMAT}\",\"thermostat\":\"{}\",\"effective_degrees_of_freedom\":{}}}",
+            self.thermostat.as_str(),
+            self.effective_degrees_of_freedom
+        )
+    }
+
+    /// Parse a document written by [`Self::to_json`].
+    pub fn from_json(text: &str) -> Result<Self, SaddleError> {
+        let value = parse_json(text)?;
+        let object = value.as_object().ok_or_else(|| {
+            SaddleError::Invalid("LAMMPS thermostat record json must be an object".into())
+        })?;
+        if required_str(object, "format")? != LAMMPS_THERMOSTAT_RECORD_FORMAT {
+            return Err(SaddleError::Invalid(
+                "json format is not rgsaddle.lammps_thermostat".into(),
+            ));
+        }
+        let thermostat = required_str(object, "thermostat")?.parse()?;
+        let dof = required_f64(object, "effective_degrees_of_freedom")?;
+        if !dof.is_finite() || dof < 0.0 || dof.fract() != 0.0 {
+            return Err(SaddleError::Invalid(
+                "effective_degrees_of_freedom must be a nonnegative integer".into(),
+            ));
+        }
+        Ok(Self {
+            thermostat,
+            effective_degrees_of_freedom: dof as usize,
+        })
+    }
+
+    fn observables(&self) -> [(String, f64); 2] {
+        [
+            (
+                LAMMPS_OBSERVABLE_THERMOSTAT.to_string(),
+                self.thermostat.observable_code(),
+            ),
+            (
+                LAMMPS_OBSERVABLE_EFFECTIVE_DOF.to_string(),
+                self.effective_degrees_of_freedom as f64,
+            ),
+        ]
+    }
+}
 
 /// Atomistic geometry and lammpc interaction-model configuration.
 ///
@@ -121,6 +220,10 @@ pub struct LammpsSamplerConfig {
     pub time_step_ps: f64,
     /// Langevin friction in inverse ps.
     pub friction_per_ps: f64,
+    /// Thermostat used by the constrained dynamics.
+    pub thermostat: LammpsThermostatKind,
+    /// Modes held by the plane construction in addition to the plane normal.
+    pub excluded_modes: usize,
 }
 
 impl Default for LammpsSamplerConfig {
@@ -129,6 +232,8 @@ impl Default for LammpsSamplerConfig {
             library_path: None,
             time_step_ps: 0.001,
             friction_per_ps: 1.0,
+            thermostat: LammpsThermostatKind::BaoabLangevin,
+            excluded_modes: 0,
         }
     }
 }
@@ -153,6 +258,43 @@ impl LammpsSamplerConfig {
     pub fn with_friction_per_ps(mut self, friction_per_ps: f64) -> Self {
         self.friction_per_ps = friction_per_ps;
         self
+    }
+
+    /// Set [`Self::thermostat`].
+    #[must_use]
+    pub fn with_thermostat(mut self, thermostat: LammpsThermostatKind) -> Self {
+        self.thermostat = thermostat;
+        self
+    }
+
+    /// Set [`Self::excluded_modes`].
+    #[must_use]
+    pub fn with_excluded_modes(mut self, excluded_modes: usize) -> Self {
+        self.excluded_modes = excluded_modes;
+        self
+    }
+
+    /// Effective constrained degrees of freedom, `3N - 1 - excluded_modes`.
+    pub fn effective_degrees_of_freedom(&self, n_atoms: usize) -> Result<usize, SaddleError> {
+        let cartesian = n_atoms
+            .checked_mul(3)
+            .ok_or_else(|| SaddleError::Invalid("LAMMPS atom count overflow".into()))?;
+        let constrained = 1usize
+            .checked_add(self.excluded_modes)
+            .ok_or_else(|| SaddleError::Invalid("LAMMPS excluded-mode count overflow".into()))?;
+        cartesian.checked_sub(constrained).ok_or_else(|| {
+            SaddleError::Invalid(format!(
+                "LAMMPS needs 3N > 1 + excluded_modes, got N={n_atoms}, excluded_modes={}",
+                self.excluded_modes
+            ))
+        })
+    }
+
+    fn thermostat_record(&self, n_atoms: usize) -> Result<LammpsThermostatRecord, SaddleError> {
+        Ok(LammpsThermostatRecord {
+            thermostat: self.thermostat,
+            effective_degrees_of_freedom: self.effective_degrees_of_freedom(n_atoms)?,
+        })
     }
 
     fn check(&self) -> Result<(), SaddleError> {
@@ -206,6 +348,7 @@ impl HyperplaneSampler for LammpsHyperplaneSampler {
                 "LAMMPS system and hyperplane dimensions differ".into(),
             ));
         }
+        let thermostat = self.config.thermostat_record(self.system.masses.len())?;
         if !(budget.thermal.is_finite() && budget.thermal > 0.0) {
             return Err(SaddleError::Invalid(
                 "LAMMPS kT must be finite and positive".into(),
@@ -259,6 +402,7 @@ impl HyperplaneSampler for LammpsHyperplaneSampler {
             accounting = state.accounting;
             let (position, projected_force, projected_velocity) =
                 convert_state(&self.system, budget.coordinates, state);
+            let observables = thermostat.observables().into_iter().collect();
             observations.push(HyperplaneObservation {
                 constraint_force: accounting.constraint_force,
                 pafi_gradient: None,
@@ -266,7 +410,7 @@ impl HyperplaneSampler for LammpsHyperplaneSampler {
                 position: budget.positions.then_some(position),
                 projected_force: Some(projected_force),
                 projected_velocity: Some(projected_velocity),
-                observables: Default::default(),
+                observables,
             });
         }
         Ok(HyperplaneEnsemble {
@@ -532,5 +676,44 @@ fn last_error_message(last_error: LastErrorFn) -> String {
         unsafe { CStr::from_ptr(pointer) }
             .to_string_lossy()
             .into_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn thermostat_record_round_trips() {
+        let config = LammpsSamplerConfig::default().with_excluded_modes(2);
+        let record = config.thermostat_record(4).unwrap();
+        assert_eq!(record.thermostat, LammpsThermostatKind::BaoabLangevin);
+        assert_eq!(record.effective_degrees_of_freedom, 9);
+        let text = record.to_json();
+        assert_eq!(LammpsThermostatRecord::from_json(&text).unwrap(), record);
+    }
+
+    #[test]
+    fn effective_degrees_of_freedom_rejects_overconstrained_systems() {
+        let error = LammpsSamplerConfig::default()
+            .with_excluded_modes(3)
+            .effective_degrees_of_freedom(1)
+            .expect_err("3N - 1 - excluded_modes must be nonnegative");
+        assert!(matches!(error, SaddleError::Invalid(_)));
+    }
+
+    #[test]
+    fn thermostat_metadata_maps_to_record_observables() {
+        let record = LammpsThermostatRecord {
+            thermostat: LammpsThermostatKind::BaoabLangevin,
+            effective_degrees_of_freedom: 14,
+        };
+        let observables: BTreeMap<_, _> = record.observables().into_iter().collect();
+        assert_eq!(observables.get(LAMMPS_OBSERVABLE_THERMOSTAT), Some(&1.0));
+        assert_eq!(
+            observables.get(LAMMPS_OBSERVABLE_EFFECTIVE_DOF),
+            Some(&14.0)
+        );
     }
 }
