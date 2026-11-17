@@ -198,10 +198,13 @@ projected by \(P_\nu=I-\nu\nu^T\), and the retraction is
 replace the sphere by rgmin's =SubspaceSphere=.  The offset is a Euclidean
 factor.  =PlaneOptimizer= assembles those factors as an rgmin
 =ProductManifold= and minimizes \(-A\) with its Riemannian trust region.
-In ambient dimension \(D=3N\), orientation has \(D-1=3N-1\) degrees of
-freedom and the signed offset has one.  The combined family therefore has
-\(D\) degrees of freedom before held rigid modes; \(3N-2\) is not the
-dimension stated by the OH-TST formulation.
+In ambient dimension \(D=3N\), a unit normal on \(S^{D-1}\) has \(D-1=3N-1\)
+degrees of freedom and the signed offset has one, so the combined family has
+\(D\) degrees of freedom before held rigid modes. =PlaneOptimizer= optimizes
+all \(D-1\) orientational ones. Johannesson and Jonsson (2001) describe the
+orientational optimization as \(D-2\) dimensional, as a size comparison with
+the one-dimensional translation along the reaction coordinate; they do not
+say which direction that count leaves out.
 
 Sample sizing and convergence are separate.  The gradient norm test may grow
 the constrained ensemble up to =max_records=.  It does not decide
