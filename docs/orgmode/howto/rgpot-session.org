@@ -1,12 +1,37 @@
 #+title: Use an rgpot MD session for hyperplanes
 #+options: toc:2 num:nil
 
-The optional =rgpot-session= feature contains no engine code. It defines
-=RgpotMdSession=, the narrow session interface implemented by an rgpot
-binding, and adapters for =HyperplaneSampler= and =HyperplaneDynamics=.
-OpenMM, GROMACS nblib, and other engines can share this path.
+The optional =rgpot-session= feature contains no engine code and requires no
+=dlopen= or Cap'n Proto toolchain. It wraps =rgpot_core::md_session::MdSession=
+in =RgpotHyperplaneSampler= (implementing =HyperplaneSampler=) and
+=RgpotHyperplaneDynamics= (implementing =HyperplaneDynamics=), configured by
+=RgpotSessionConfig=. OpenMM, GROMACS nblib, and LAMMPS engines implement
+=MdSession= inside =rgpot=.
 
-The session owns its units and coordinate convention. It supplies positions,
-velocities, forces, projected BAOAB steps with planar walls, deterministic NVE
-steps, and state readback. Rgsaddle only supplies the plane, budget, region,
-and transmission policy.
+* Units and coordinates
+
+All values across =MdSession= use rgpot units:
+
+| Quantity       | Unit        |
+|----------------+-------------|
+| position       | Angstrom    |
+| velocity       | Angstrom/ps |
+| force          | eV/Angstrom |
+| energy, kT     | eV          |
+| time step      | ps          |
+| friction       | ps^-1       |
+| particle mass  | amu         |
+
+=RgpotHyperplaneSampler= queries =MdSession::masses= to map between
+=HyperplaneCoordinates::MassWeighted= (\(q = M^{1/2} x\)) and the engine's
+Cartesian frame, runs =budget.thermalize= projected BAOAB steps before
+collecting =budget.samples= separated by =budget.stride=, projects forces and
+velocities onto the plane, sets =constraint_force = n · F=, and records wall
+reflection counts in =rgpot.reflections=.
+
+=RgpotHyperplaneDynamics= draws flux-weighted Maxwell–Boltzmann velocities in
+Angstrom/ps using =AMU_A2_PS2_PER_EV= and particle masses, integrates forward
+and backward halves across =TransmissionConfig= checkpoints using
+=MdSession::step_nve= at =TransmissionConfig::time_step=, and computes
+=κ(t)= and block standard errors for =Counting::FirstCrossing= and
+=Counting::Final= with =EndState::Side= and zero friction.

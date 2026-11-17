@@ -1,2 +1,3 @@
-Add an engine-neutral rgpot MD-session adapter for hyperplane sampling and
-NVE shooting; engine bindings implement the session trait.
+Add an engine-neutral rgpot MD-session adapter (=RgpotHyperplaneSampler=,
+=RgpotHyperplaneDynamics=, =RgpotSessionConfig=) over =rgpot_core::md_session::MdSession=
+in Angstrom/eV/ps/amu units without requiring Cap'n Proto or dlopen.
