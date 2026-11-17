@@ -133,7 +133,11 @@ typedef enum {
    * A band step left the band unchanged while its largest force
    * component is above force_tol; the band is unchanged. ABI minor 17.
    */
-  RGSADDLE_STALLED = -13
+  RGSADDLE_STALLED = -13,
+  /** The constrained-ensemble tail still drifts after equilibration. ABI minor 42. */
+  RGSADDLE_NOT_EQUILIBRATED = -14,
+  /** The constrained-ensemble tail has too few effective samples. ABI minor 42. */
+  RGSADDLE_INSUFFICIENT_EFFECTIVE_SAMPLES = -15
 } rgsaddle_status_t;
 
 typedef enum {

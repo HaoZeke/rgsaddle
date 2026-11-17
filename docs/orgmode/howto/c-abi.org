@@ -4,6 +4,7 @@
 ~include/rgsaddle.h~ declares the C application binary interface (ABI), major 1, minor 42. It preserves the main band, minimum-mode and index-1 layouts and adds intrinsic reaction coordinate (IRC), Sella, constraint and geometry controls. Include this header rather than duplicating its structures. Check ~rgsaddle_abi_stamp~ before constructing a session. A meson project takes the headers from the top-level ~meson.build~; see @@rst::doc:`the meson how-to <meson>`@@.
 
 A surface callback returns ~rgsaddle_status_t~ and receives one ~rgsaddle_surface_request_t~. Positions and gradients are image-major Cartesian triples. The host supplies the energy and gradient arrays for every requested image; the library performs no Message Passing Interface (MPI) communication.
+From ABI minor 42, ~RGSADDLE_NOT_EQUILIBRATED~ and ~RGSADDLE_INSUFFICIENT_EFFECTIVE_SAMPLES~ report constrained-ensemble tails that fail the drift or effective-sample guards.
 
 ~rgsaddle_halve_raised_energy~ and ~rgsaddle_trust_update~ (ABI minor 36) are the two decisions a host can take from energies it already holds. The first compares a trial energy with the energy before the step and returns the step length, halved when the trial is more than 1e-4 higher. The second updates a trust radius from a predicted energy change and the change that occurred, using the Sella schedule; a prediction below 1e-14 in absolute value leaves the radius as it was. Neither call evaluates a surface.
 

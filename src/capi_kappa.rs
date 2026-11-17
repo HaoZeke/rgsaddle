@@ -185,9 +185,10 @@ pub unsafe extern "C" fn rgsaddle_kappa_dimer_force(
         Err(SaddleError::Surface(_)) => RGSADDLE_SURFACE_FAILED,
         Err(SaddleError::Invalid(_)) => RGSADDLE_INVALID_PARAMETER,
         Err(SaddleError::Stalled(_)) => crate::capi::RGSADDLE_STALLED,
-        Err(
-            SaddleError::NotEquilibrated { .. } | SaddleError::InsufficientEffectiveSamples { .. },
-        ) => RGSADDLE_SOLVER,
+        Err(SaddleError::NotEquilibrated { .. }) => crate::capi::RGSADDLE_NOT_EQUILIBRATED,
+        Err(SaddleError::InsufficientEffectiveSamples { .. }) => {
+            crate::capi::RGSADDLE_INSUFFICIENT_EFFECTIVE_SAMPLES
+        }
         Err(SaddleError::Solver(message)) => {
             eprintln!("kappa eigensolver: {message}");
             RGSADDLE_SOLVER
