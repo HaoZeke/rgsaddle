@@ -145,12 +145,12 @@ From 600 to 900 ps the shell sum rose 51.17 Ω. The standard error at 900 ps is 
 From 900 to 1200 ps the shell sum rose 23.50 Ω. The standard error at 1200 ps is 10.33 Ω. That rise is larger than one standard error.
 From 1200 to 1500 ps the shell sum rose 10.00 Ω. The standard error at 1500 ps is 9.84 Ω. That rise is larger than one standard error.
 
-A shell-restricted survival fit uses the same through-origin slope as section 2 of Mwungeli, Liu, and Demkowicz. The slope is -k/V_model, with V_model the 13³ cell volume. n(t)/N here counts every lattice site: a simulated shell contributes its capture fraction, and a site outside 10.8 Å is counted as not yet recombined, so this volume lies below the whole-cell ensemble. The recombination volume is k a² / (α D_i) with α = 2/3, divided by Ω = a³/4.
+A shell-restricted survival fit uses the same through-origin slope as section 2 of Mwungeli, Liu, and Demkowicz. The slope is -k/V_model, with V_model the 13³ cell volume. n(t)/N here counts every lattice site: a simulated shell contributes its capture fraction, and a site outside 10.8 Å is counted as not yet recombined, so this volume lies below the whole-cell ensemble. The recombination volume is V_iv = k α a² / D_i with α = 2/3, from K_iv = V_iv D_i / (α a²) = V_iv ν in section 1 of that paper, divided by Ω = a³/4.
 
 Fit on 15 samples up to 1500 ps: slope -4.013711e-5 ± 4.900659e-6 /ps, k 4.248178e0 ± 5.186939e-1 Å³/ps.
 
-Table 1 quotes the Ref. [12] SIA diffusivity as 0.526 ± 0.006 Å²/ps at this temperature. First-method V_iv = 13.32 ± 1.63 Ω.
+Table 1 lists D_i = 0.526 ± 0.006 Å²/ps at this temperature, 4951 D* from Ref. [12] (see `direct_md_dynamics.md`). With it, first-method V_iv = 5.92 ± 0.73 Ω.
 
-The free-dumbbell diffusivity measured with these dynamics (`direct_md_sia_d_long.md`) is 1.075 ± 0.040 Å²/ps. With it, first-method V_iv = 6.52 ± 0.83 Ω.
+The free-dumbbell diffusivity measured with these dynamics (`direct_md_sia_d_long.md`) is 1.075 ± 0.040 Å²/ps. With it, first-method V_iv = 2.90 ± 0.37 Ω.
 
 Raw per-trajectory outcomes are the CSV this note was written from.

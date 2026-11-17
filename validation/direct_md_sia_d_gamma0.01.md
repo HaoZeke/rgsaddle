@@ -12,7 +12,7 @@ D for one trajectory is the mean of |Δr|² over its blocks divided by 6τ. The 
 
 ## Cross-check
 
-Table 1 of Mwungeli, Liu, and Demkowicz lists D_i from their Ref. [12], B. Zhang et al., Phys. Rev. Materials 6, 053605 (2022), which took D_i from the mean-square displacement of SIAs in MD. Table 1 divides each measured rate coefficient by that D_i: V_iv = k a² / (α D_i) with α = 2/3. The defect-pair column is the free-dumbbell MD diffusivity quoted by the defect-pair rate work. z is the difference over the two errors in quadrature.
+Table 1 of Mwungeli, Liu, and Demkowicz lists D_i from their Ref. [12], B. Zhang et al., Phys. Rev. Materials 6, 053605 (2022), and converts each measured rate coefficient with it: V_iv = k α a² / D_i with α = 2/3. Ref. [12] took the mean-square displacement of every atom (its Eq. (5)), and its erratum, Phys. Rev. Materials 9, 069901(E) (2025), multiplies that per-atom diffusivity by the 4951 atoms of its cell. The product is the tracer sum Σ_i ⟨|Δr_i|²⟩ / 6t, which is the defect diffusivity in this note times the tracer correlation factor, so the two columns are different quantities; `direct_md_dynamics.md` measures both on the same trajectories. The defect-pair column is the free-dumbbell MD diffusivity quoted by the defect-pair rate work. z is the difference over the two errors in quadrature.
 
 | T (K) | this run | Table 1 [12] | this/Table 1 | z | defect-pair MD | this/defect-pair | z |
 |---:|---:|---:|---:|---:|---:|---:|---:|
