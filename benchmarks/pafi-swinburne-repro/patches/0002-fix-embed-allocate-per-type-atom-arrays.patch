@@ -1,0 +1,25 @@
+From 56b3c696e0f7009bf5411b43d94ff1667f01336d Mon Sep 17 00:00:00 2001
+From: Rohit Goswami <rgoswami@ieee.org>
+Date: Tue, 17 Nov 2026 16:55:32 +0000
+Subject: [PATCH] fix(embed): allocate per-type atom arrays
+
+Mirror create_box before assigning masses so LAMMPS potential-only sessions have valid per-type storage.
+---
+ src/lammpc_embed.cpp | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/lammpc_embed.cpp b/src/lammpc_embed.cpp
+index 344ecd4..3f8f9c7 100644
+--- a/src/lammpc_embed.cpp
++++ b/src/lammpc_embed.cpp
+@@ -239,6 +239,7 @@ int build_instance(LammpcSession *session, size_t n_atoms,
+ 
+     lmp->atom->create_avec(p.atom_style.c_str(), 0, nullptr, 1);
+     lmp->atom->ntypes = (int)p.type_to_z.size();
++    lmp->atom->allocate_type_arrays();
+ 
+     /* Box: fields plus the same call sequence CreateBox::command runs. */
+     double lo[3] = {0, 0, 0};
+-- 
+2.43.0
+
