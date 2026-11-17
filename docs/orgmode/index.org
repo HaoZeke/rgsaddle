@@ -92,6 +92,7 @@ while report.status != BandStatus::Converged {
    explanation/one-stencil
    explanation/hyperplane-methods
    explanation/symmetry-regions
+   explanation/elastic-dipole
    reference/architecture
    reference/lammps-hyperplane
    reference/bibliography
