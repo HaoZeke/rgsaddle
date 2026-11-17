@@ -163,8 +163,28 @@ pub struct LinebReport {
     pub opt_max: f64,
     /// Steps completed, counting this one.
     pub iteration: usize,
-    /// Surface evaluations so far.
+    /// Surface evaluations inside optimizer steps so far.
     pub evaluations: usize,
+}
+
+/// Surface evaluations behind one [`LinebPath`], by phase.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct LinebCalls {
+    /// Inside [`LinebSession::step`], over the whole session.
+    pub optimizer: usize,
+    /// In [`LinebSession::path`]: the final force assembly, the action
+    /// and period quadrature, and the imaginary-time table.
+    pub measure: usize,
+    /// In [`LinebSession::path`]: the Runge–Kutta constrained dynamics.
+    pub dynamics: usize,
+}
+
+impl LinebCalls {
+    /// Every evaluation.
+    pub fn total(&self) -> usize {
+        self.optimizer + self.measure + self.dynamics
+    }
 }
 
 /// A converged (or inspected) optimal tunneling path and both periods.
@@ -186,8 +206,13 @@ pub struct LinebPath {
     pub temperature: f64,
     /// `ℏ / (k_B τ)` from [`Self::half_period_dynamics`].
     pub temperature_dynamics: f64,
+    /// Surface evaluations by phase.
+    pub calls: LinebCalls,
     pub(crate) weighted: Array2<f64>,
+    /// `(λ, t)` imaginary time along the spline, for the replicas.
+    pub(crate) time_table: path::TimeTable,
     pub(crate) masses: Masses,
+    #[cfg(test)]
     pub(crate) quadrature_pairs: usize,
     pub(crate) hbar: f64,
     pub(crate) boltzmann: f64,
@@ -455,8 +480,18 @@ impl LinebSession {
     /// Spline action, both half periods and both temperatures of the
     /// current images.
     pub fn path<S: PointSurface>(&self, surface: &S) -> Result<LinebPath, SaddleError> {
-        let assembly = action::assemble(
+        let measure_calls = AtomicUsize::new(0);
+        let dynamics_calls = AtomicUsize::new(0);
+        let measured = crate::lineb::Counted {
             surface,
+            calls: &measure_calls,
+        };
+        let dynamics = crate::lineb::Counted {
+            surface,
+            calls: &dynamics_calls,
+        };
+        let assembly = action::assemble(
+            &measured,
             &self.masses,
             self.weighted.view(),
             self.energy,
@@ -464,7 +499,8 @@ impl LinebSession {
             self.config.endpoint_scale,
         )?;
         let periods: Periods = path::measure(
-            surface,
+            &measured,
+            &dynamics,
             &self.masses,
             assembly.aligned.view(),
             self.energy,
@@ -493,8 +529,15 @@ impl LinebSession {
                 self.config.hbar,
                 self.config.boltzmann,
             )?,
+            calls: LinebCalls {
+                optimizer: self.evaluations.load(Ordering::Relaxed),
+                measure: measure_calls.load(Ordering::Relaxed),
+                dynamics: dynamics_calls.load(Ordering::Relaxed),
+            },
             weighted: assembly.aligned,
+            time_table: periods.time_table,
             masses: self.masses.clone(),
+            #[cfg(test)]
             quadrature_pairs: self.config.quadrature_pairs,
             hbar: self.config.hbar,
             boltzmann: self.config.boltzmann,
