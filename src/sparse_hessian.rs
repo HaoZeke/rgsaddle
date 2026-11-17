@@ -1574,6 +1574,22 @@ fn chunk_dot(x: ArrayView1<f64>, y: ArrayView1<f64>, start: usize) -> f64 {
     sum
 }
 
+/// Every eigenvalue of a symmetric operator of size `n`, ascending:
+/// the Lanczos of [`lanczos_lowest`] with full reorthogonalization run
+/// for all `n` steps. The thick restart there sizes its cycle for a few
+/// wanted pairs and cannot return all of them. Memory is `n²`.
+pub(crate) fn lanczos_spectrum(
+    apply: impl Fn(ArrayView1<f64>) -> Array1<f64>,
+    n: usize,
+) -> Result<Array1<f64>, SaddleError> {
+    if n == 0 {
+        return Err(SaddleError::Invalid(
+            "the Lanczos spectrum needs a non-empty operator".into(),
+        ));
+    }
+    Ok(lanczos_full(&apply, n, n)?.values)
+}
+
 fn lanczos_lowest(
     apply: impl Fn(ArrayView1<f64>) -> Array1<f64>,
     n: usize,
