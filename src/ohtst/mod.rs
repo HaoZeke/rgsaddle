@@ -125,7 +125,8 @@ pub use sample::{
 };
 pub use ti::{
     AnalyticThermodynamicSampler, THERMODYNAMIC_DERIVATIVE, ThermodynamicIntegrationConfig,
-    ThermodynamicIntegrationEstimate, ThermodynamicIntegrationNode, thermodynamic_integration,
+    ThermodynamicIntegrationEstimate, ThermodynamicIntegrationNode,
+    restricted_thermodynamic_integration, thermodynamic_integration,
 };
 pub use transmission::{
     Basins, Counting, EndState, Endpoint, PermutationDistance, QuenchConfig, StateDistance,

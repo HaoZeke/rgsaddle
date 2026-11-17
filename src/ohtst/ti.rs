@@ -234,6 +234,23 @@ pub fn thermodynamic_integration<E: HyperplaneSampler>(
     })
 }
 
+/// Amsel-style restricted molecular-dynamics TI on a fixed plane.
+///
+/// This is the fixed-plane spelling of [`thermodynamic_integration`].
+/// The engine samples
+/// `V_lambda = (1-lambda) V_harmonic + lambda V_full` while preserving the
+/// plane constraint and emits [`THERMODYNAMIC_DERIVATIVE`] (or the
+/// configured observable). The estimator deliberately does not move or
+/// optimize the plane: callers first choose the dividing plane, then use
+/// this operation for its anharmonic free-energy factor.
+pub fn restricted_thermodynamic_integration<E: HyperplaneSampler>(
+    sampler: &mut E,
+    plane: &Hyperplane,
+    config: &ThermodynamicIntegrationConfig,
+) -> Result<ThermodynamicIntegrationEstimate, SaddleError> {
+    thermodynamic_integration(sampler, plane, config)
+}
+
 /// Analytic reference backend for
 /// `V_lambda = (1-lambda) V_harmonic + lambda V_full`.
 pub struct AnalyticThermodynamicSampler<'a, H, F> {
@@ -414,6 +431,22 @@ mod tests {
         let estimate = thermodynamic_integration(&mut sampler, &plane, &config).unwrap();
         assert_eq!(estimate.free_energy, 0.0);
         assert_eq!(estimate.error, 0.0);
+    }
+
+    #[test]
+    fn restricted_spelling_uses_the_same_sampler_estimator() {
+        let model = QuadraticModel::new(array![0.0, 0.0], array![[1.0, 0.0], [0.0, 2.0]]);
+        let difference = |_q: ArrayView1<f64>| Ok(0.0);
+        let mut sampler = ExactGaussianPlaneSampler::new(model)
+            .unwrap()
+            .with_observable(THERMODYNAMIC_DERIVATIVE, &difference);
+        let plane = Hyperplane::new(array![0.0, 0.0], array![1.0, 0.0]).unwrap();
+        let config = ThermodynamicIntegrationConfig::default()
+            .with_nodes(2)
+            .with_samples(100)
+            .with_blocks(4);
+        let estimate = restricted_thermodynamic_integration(&mut sampler, &plane, &config).unwrap();
+        assert_eq!(estimate.free_energy, 0.0);
     }
 
     #[test]
