@@ -34,6 +34,8 @@ use super::align::{self, Placement};
 use super::mass::Masses;
 use crate::error::SaddleError;
 use crate::minmode::PointSurface;
+use crate::projection::{ProjectionKind, force_perp};
+use crate::spring::SpringKind;
 use crate::tangent::{TangentKind, compute_tangent};
 
 #[derive(Clone, Debug)]
@@ -163,11 +165,16 @@ pub(crate) fn assemble<S: PointSurface>(
             energies[j - 1],
             energies[j + 1],
         )?;
-        let perp = perpendicular(g.view(), tangent.view());
-        perp_max = perp_max.max(l2(perp.view()));
-        let mut nudged = perp;
-        let stretch = spring * (dist[j] - dist[j - 1]);
-        nudged.scaled_add(stretch, &tangent);
+        perp_max = perp_max.max(l2(force_perp(g.view(), tangent.view()).view()));
+        let springs = SpringKind::Uniform { k: spring }.compute(
+            j,
+            tangent.view(),
+            dist[j],
+            dist[j - 1],
+            step[j].view(),
+            step[j - 1].view(),
+        )?;
+        let nudged = ProjectionKind::Neb.project(g.view(), tangent.view(), &springs);
         opt_max = opt_max.max(l2(nudged.view()));
         drive_aligned.row_mut(j).assign(&nudged);
     }
@@ -238,13 +245,6 @@ fn momentum(gap: f64, width: f64) -> Result<(f64, f64), SaddleError> {
         return Err(SaddleError::NonFinite("tunneling momentum"));
     }
     Ok((sigma, slope))
-}
-
-fn perpendicular(gradient: ArrayView1<f64>, tangent: ArrayView1<f64>) -> Array1<f64> {
-    let mut out = gradient.to_owned();
-    let coeff = tangent.dot(&gradient);
-    out.scaled_add(-coeff, &tangent);
-    out
 }
 
 /// `R` maps the stored centred frame onto the aligned frame, so a
