@@ -11,9 +11,11 @@ from __future__ import annotations
 from enum import IntEnum
 
 from rgsaddle._core import (
+    Band as Band,
     ConnectReport as ConnectReport,
     NumericalError as NumericalError,
     SaddleIndex as SaddleIndex,
+    SessionReport as SessionReport,
     Stencil as Stencil,
     StencilReport as StencilReport,
     connect as connect,
@@ -95,6 +97,7 @@ class RestrictedKind(IntEnum):
 
 
 __all__ = [
+    "Band",
     "CellChart",
     "ConnectReport",
     "EigenDevice",
@@ -106,6 +109,7 @@ __all__ = [
     "NumericalError",
     "RestrictedKind",
     "SaddleIndex",
+    "SessionReport",
     "Stencil",
     "StencilReport",
     "THERMODYNAMIC_DERIVATIVE",
