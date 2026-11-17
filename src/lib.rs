@@ -141,8 +141,9 @@ pub use lammps::{
     LammpsThermostatKind, LammpsThermostatRecord,
 };
 pub use minmode::{
-    FiniteDifference, MinModeConfig, MinModeKind, MinModeReport, MinModeSession, MinModeStatus,
-    ModeEstimate, PointSurface, RaisedStep, halve_raised_energy, rotation_force_error,
+    ArtNConfig, FiniteDifference, MinModeConfig, MinModeKind, MinModeReport, MinModeSession,
+    MinModeStatus, ModeEstimate, PointSurface, RaisedStep, halve_raised_energy,
+    rotation_force_error,
 };
 pub use nichols::{
     HessianUpdate, Index1Config, Index1Report, Index1Session, Index1Status, NicholsMode,

@@ -3404,6 +3404,85 @@ pub unsafe extern "C" fn rgsaddle_minmode_set_rotation_stop_length(
     }
 }
 
+/// Write the published ART nouveau defaults.
+///
+/// # Safety
+/// `config` points to one writable configuration.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_artn_config_default(config: *mut RgsaddleArtNConfig) -> i32 {
+    if config.is_null() {
+        return RGSADDLE_INVALID_PARAMETER;
+    }
+    let default = ArtNConfig::default();
+    unsafe {
+        *config = RgsaddleArtNConfig {
+            version: RgsaddleVersion {
+                major: RGSADDLE_ABI_MAJOR,
+                minor: RGSADDLE_ABI_MINOR,
+            },
+            flags: 0,
+            lanczos_start: default.lanczos_start as i64,
+            eigenvalue_threshold: default.eigenvalue_threshold,
+            basin_push: default.basin_push,
+            basin_relaxations: default.basin_relaxations as i64,
+            activation_relaxations: default.activation_relaxations as i64,
+            relaxation_step: default.relaxation_step,
+            lanczos_actions: default.lanczos_actions as i64,
+            curvature_floor: default.curvature_floor,
+        };
+    }
+    RGSADDLE_OK
+}
+
+/// Enable ART nouveau controls, or disable them with a null config.
+///
+/// # Safety
+/// `session` is a live session or null. A non-null `config` points to
+/// one initialized [`RgsaddleArtNConfig`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_minmode_set_artn(
+    session: *mut RgsaddleMinMode,
+    config: *const RgsaddleArtNConfig,
+) -> i32 {
+    if session.is_null() {
+        return RGSADDLE_NULL_SESSION;
+    }
+    let config = if config.is_null() {
+        None
+    } else {
+        let config = unsafe { &*config };
+        if config.version.major != RGSADDLE_ABI_MAJOR {
+            return RGSADDLE_ABI_MISMATCH;
+        }
+        if config.flags != 0 {
+            return RGSADDLE_INVALID_PARAMETER;
+        }
+        let (Ok(lanczos_start), Ok(basin_relaxations), Ok(activation_relaxations), Ok(actions)) = (
+            usize::try_from(config.lanczos_start),
+            usize::try_from(config.basin_relaxations),
+            usize::try_from(config.activation_relaxations),
+            usize::try_from(config.lanczos_actions),
+        ) else {
+            return RGSADDLE_INVALID_PARAMETER;
+        };
+        Some(
+            ArtNConfig::default()
+                .with_lanczos_start(lanczos_start)
+                .with_eigenvalue_threshold(config.eigenvalue_threshold)
+                .with_basin_push(config.basin_push)
+                .with_basin_relaxations(basin_relaxations)
+                .with_activation_relaxations(activation_relaxations)
+                .with_relaxation_step(config.relaxation_step)
+                .with_lanczos_actions(actions)
+                .with_curvature_floor(config.curvature_floor),
+        )
+    };
+    match unsafe { (*session).session.set_artn(config) } {
+        Ok(()) => RGSADDLE_OK,
+        Err(_) => RGSADDLE_INVALID_PARAMETER,
+    }
+}
+
 #[cfg(test)]
 mod torque_window_abi_tests {
     use super::*;
@@ -3476,6 +3555,57 @@ mod torque_window_abi_tests {
         assert_eq!(status, RGSADDLE_OK);
         unsafe { rgsaddle_minmode_free(sess) };
         unsafe { report.assume_init() }.rotations
+    }
+
+    #[test]
+    fn artn_abi_defaults_and_opt_in_are_pinned() {
+        let mut config = std::mem::MaybeUninit::<RgsaddleArtNConfig>::uninit();
+        assert_eq!(
+            unsafe { rgsaddle_artn_config_default(config.as_mut_ptr()) },
+            RGSADDLE_OK
+        );
+        let config = unsafe { config.assume_init() };
+        assert_eq!(config.version.major, RGSADDLE_ABI_MAJOR);
+        assert_eq!(config.version.minor, RGSADDLE_ABI_MINOR);
+        assert_eq!(config.flags, 0);
+        assert_eq!(config.lanczos_start, 3);
+        assert_eq!(config.basin_relaxations, 6);
+        assert_eq!(config.activation_relaxations, 5);
+        assert_eq!(config.lanczos_actions, 16);
+        assert_eq!(config.eigenvalue_threshold.to_bits(), (-0.01_f64).to_bits());
+        assert_eq!(config.basin_push.to_bits(), 0.2_f64.to_bits());
+        assert_eq!(config.curvature_floor.to_bits(), 0.5_f64.to_bits());
+
+        let lanczos = session_of(1, 1e-4);
+        assert_eq!(
+            unsafe { rgsaddle_minmode_set_artn(lanczos, &config) },
+            RGSADDLE_OK
+        );
+        let mut report = std::mem::MaybeUninit::<RgsaddleReport>::zeroed();
+        assert_eq!(
+            unsafe {
+                rgsaddle_minmode_step(
+                    lanczos,
+                    Some(quadratic_cb),
+                    std::ptr::null_mut(),
+                    report.as_mut_ptr(),
+                )
+            },
+            RGSADDLE_OK
+        );
+        assert_eq!(unsafe { report.assume_init() }.rotations, 0);
+        assert_eq!(
+            unsafe { rgsaddle_minmode_set_artn(lanczos, std::ptr::null()) },
+            RGSADDLE_OK
+        );
+        unsafe { rgsaddle_minmode_free(lanczos) };
+
+        let dimer = session_of(0, 1e-4);
+        assert_eq!(
+            unsafe { rgsaddle_minmode_set_artn(dimer, &config) },
+            RGSADDLE_INVALID_PARAMETER
+        );
+        unsafe { rgsaddle_minmode_free(dimer) };
     }
 
     #[test]

@@ -28,7 +28,7 @@ extern "C" {
 #endif
 
 #define RGSADDLE_ABI_MAJOR 1u
-#define RGSADDLE_ABI_MINOR 42u
+#define RGSADDLE_ABI_MINOR 43u
 
 /**
  * Band config flags bit 0. When set, each evaluation calls the surface
@@ -576,6 +576,24 @@ typedef struct {
   int32_t difference;
   int32_t reserved;
 } rgsaddle_minmode_config_t;
+
+/**
+ * ART nouveau protocol controls, ABI minor 43.
+ * Initialize with rgsaddle_artn_config_default before changing fields.
+ * Length and curvature values use the host's units.
+ */
+typedef struct {
+  rgsaddle_version_t version;
+  uint64_t flags; /**< Reserved; set to zero. */
+  int64_t lanczos_start;
+  double eigenvalue_threshold;
+  double basin_push;
+  int64_t basin_relaxations;
+  int64_t activation_relaxations;
+  double relaxation_step;
+  int64_t lanczos_actions;
+  double curvature_floor;
+} rgsaddle_artn_config_t;
 
 /**
  * Create a minimum-mode session at one geometry with an initial mode
@@ -1298,6 +1316,21 @@ rgsaddle_status_t rgsaddle_minmode_set_torque_window(RgsaddleMinMode *session,
  */
 rgsaddle_status_t rgsaddle_minmode_set_rotation_stop_length(RgsaddleMinMode *session,
                                                             double length);
+
+/**
+ * ABI minor 43. Write the published ART nouveau defaults.
+ */
+rgsaddle_status_t rgsaddle_artn_config_default(rgsaddle_artn_config_t *config);
+
+/**
+ * ABI minor 43. Enable the ART nouveau push-relax protocol on a
+ * Lanczos session. config NULL disables it. Enabling on a dimer or
+ * passing invalid controls returns RGSADDLE_INVALID_PARAMETER and
+ * leaves the session unchanged. Either successful change restarts
+ * search history at the current position and mode.
+ */
+rgsaddle_status_t rgsaddle_minmode_set_artn(
+    RgsaddleMinMode *session, const rgsaddle_artn_config_t *config);
 
 /**
  * Per-image exponential metric (Packwood et al. 2016) inside the band

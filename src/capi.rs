@@ -20,8 +20,8 @@ use crate::connect::{ConnectConfig, connect};
 use crate::error::SaddleError;
 use crate::geom::{TrustSchedule, trust_update};
 use crate::minmode::{
-    FiniteDifference, MinModeConfig, MinModeKind, MinModeSession, MinModeStatus, PointSurface,
-    halve_raised_energy,
+    ArtNConfig, FiniteDifference, MinModeConfig, MinModeKind, MinModeSession, MinModeStatus,
+    PointSurface, halve_raised_energy,
 };
 use crate::nichols::{
     HessianUpdate, Index1Config, Index1Session, Index1Status, NicholsMode, bofill_update,
@@ -36,7 +36,7 @@ use crate::tangent::TangentKind;
 /// The RGSADDLE ABI MAJOR.
 pub const RGSADDLE_ABI_MAJOR: u32 = 1;
 /// The RGSADDLE ABI MINOR.
-pub const RGSADDLE_ABI_MINOR: u32 = 42;
+pub const RGSADDLE_ABI_MINOR: u32 = 43;
 
 /// A band, min-mode or OCI-NEB config of this minor or newer certifies
 /// the saddle index at convergence by default.
@@ -216,6 +216,31 @@ pub struct RgsaddleMinModeConfig {
     pub difference: i32,
     /// The reserved.
     pub reserved: i32,
+}
+
+#[repr(C)]
+/// ART nouveau controls added in ABI minor 43.
+pub struct RgsaddleArtNConfig {
+    /// ABI version this value was built against.
+    pub version: RgsaddleVersion,
+    /// Reserved flags; set to zero.
+    pub flags: u64,
+    /// Start Lanczos after this many basin pushes.
+    pub lanczos_start: i64,
+    /// Enter activation below this lowest eigenvalue.
+    pub eigenvalue_threshold: f64,
+    /// Length of each basin push.
+    pub basin_push: f64,
+    /// Perpendicular relaxation steps after a basin push.
+    pub basin_relaxations: i64,
+    /// Perpendicular relaxation steps after an activation push.
+    pub activation_relaxations: i64,
+    /// Scale multiplying the projected gradient.
+    pub relaxation_step: f64,
+    /// Most Lanczos Hessian actions at one geometry.
+    pub lanczos_actions: i64,
+    /// Lower bound on the activation step's curvature magnitude.
+    pub curvature_floor: f64,
 }
 
 #[repr(C)]

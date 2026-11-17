@@ -17,13 +17,9 @@ use rgmin::{Accept, Control, FireKind, Method, Oracle, Solver};
 use crate::error::SaddleError;
 use crate::force::ForceGate;
 use crate::minmode::{
-    FiniteDifference, MinModeConfig, MinModeKind, MinModeSession, MinModeStatus,
+    ArtNConfig, FiniteDifference, MinModeConfig, MinModeKind, MinModeSession, MinModeStatus,
     convex_displacement, translated_gradient,
 };
-use crate::stencil::{ascend, curvature_along};
-
-use super::control::{Action, ArtControl, Controller, Report as ControlReport, Role, StencilView};
-
 /// Error text [`BandBuilder::build`] returns until `feat/band-methods-zoom` lands.
 pub const BAND_PRESET_SEAM: &str = "band presets stay on feat/band-methods-zoom";
 
@@ -191,7 +187,6 @@ pub struct StencilReport {
 
 enum Engine {
     Mode(Box<MinModeSession>),
-    Art(Box<ArtEngine>),
     Eigen(Box<EigenEngine>),
     Min(Box<MinEngine>),
 }
@@ -216,23 +211,6 @@ struct EigenEngine {
     max_force: f64,
 }
 
-struct ArtEngine {
-    x: Array1<f64>,
-    mode: Array1<f64>,
-    curvature: f64,
-    dr: f64,
-    force_tol: f64,
-    max_move: f64,
-    max_rotations: usize,
-    rotation_tol: f64,
-    rotation_angle_tol: f64,
-    krylov_dim: usize,
-    control: ArtControl,
-    session: Option<MinModeSession>,
-    iteration: usize,
-    max_force: f64,
-}
-
 /// Point search. [`Stencil::point`] fills the defaults.
 pub struct PointBuilder {
     x: Array1<f64>,
@@ -248,6 +226,7 @@ pub struct PointBuilder {
     threads: usize,
     art_threshold: f64,
     art_push_steps: usize,
+    artn: Option<ArtNConfig>,
     climb: Option<Climb>,
     window: bool,
     mode_solver: bool,
@@ -317,8 +296,9 @@ impl Stencil {
             force_tol: 1e-3,
             max_move: 0.2,
             threads: 1,
-            art_threshold: 0.0,
-            art_push_steps: 20,
+            art_threshold: ArtNConfig::default().eigenvalue_threshold,
+            art_push_steps: ArtNConfig::default().lanczos_start,
+            artn: None,
             climb: None,
             window: false,
             mode_solver: true,
@@ -345,7 +325,6 @@ impl Stencil {
     pub fn position(&self) -> ArrayView1<'_, f64> {
         match &self.engine {
             Engine::Mode(session) => session.position(),
-            Engine::Art(engine) => engine.x.view(),
             Engine::Eigen(engine) => engine.x.view(),
             Engine::Min(engine) => engine.x.view(),
         }
@@ -355,7 +334,6 @@ impl Stencil {
     pub fn mode(&self) -> Option<ArrayView1<'_, f64>> {
         match &self.engine {
             Engine::Mode(session) => Some(session.mode()),
-            Engine::Art(engine) => Some(engine.mode.view()),
             Engine::Eigen(engine) => Some(engine.mode.view()),
             Engine::Min(_) => None,
         }
@@ -365,7 +343,6 @@ impl Stencil {
     pub fn curvature(&self) -> f64 {
         match &self.engine {
             Engine::Mode(session) => session.curvature(),
-            Engine::Art(engine) => engine.curvature,
             Engine::Eigen(engine) => engine.curvature,
             Engine::Min(_) => f64::NAN,
         }
@@ -378,7 +355,6 @@ impl Stencil {
     ) -> Result<StencilReport, SaddleError> {
         match &mut self.engine {
             Engine::Mode(session) => Ok(from_min(session.step(surface)?)),
-            Engine::Art(engine) => art_step(engine, surface),
             Engine::Eigen(engine) => eigen_step(engine, surface),
             Engine::Min(engine) => min_step(engine, surface),
         }
@@ -475,6 +451,15 @@ impl PointBuilder {
         self
     }
 
+    /// Enable the ART nouveau protocol with these controls.
+    ///
+    /// ART nouveau uses the Lanczos minimum-mode estimator, regardless
+    /// of the otherwise selected point preset.
+    pub fn artn(mut self, artn: ArtNConfig) -> Self {
+        self.artn = Some(artn);
+        self
+    }
+
     /// Climb.
     pub fn climb(mut self, climb: Climb) -> Self {
         self.climb = Some(climb);
@@ -530,23 +515,9 @@ impl PointBuilder {
         let threads = self.threads;
         let dof = self.x.len();
         let engine = match self.preset {
-            Preset::Dimer | Preset::Lanczos => Engine::Mode(Box::new(mode_session(&self, mode)?)),
-            Preset::Art => Engine::Art(Box::new(ArtEngine {
-                x: self.x,
-                mode,
-                curvature: f64::NAN,
-                dr: self.dr,
-                force_tol: self.force_tol,
-                max_move: self.max_move,
-                max_rotations: self.max_rotations,
-                rotation_tol: self.rotation_tol,
-                rotation_angle_tol: self.rotation_angle_tol,
-                krylov_dim: self.krylov_dim,
-                control: ArtControl::new(self.art_threshold, self.art_push_steps),
-                session: None,
-                iteration: 0,
-                max_force: f64::NAN,
-            })),
+            Preset::Dimer | Preset::Lanczos | Preset::Art => {
+                Engine::Mode(Box::new(mode_session(&self, mode)?))
+            }
             Preset::EigenFollow => Engine::Eigen(Box::new(EigenEngine {
                 x: self.x,
                 mode,
@@ -644,12 +615,13 @@ fn validate_point(
 }
 
 fn mode_session(builder: &PointBuilder, mode: Array1<f64>) -> Result<MinModeSession, SaddleError> {
-    let kind = if builder.preset == Preset::Lanczos {
+    let kind = if matches!(builder.preset, Preset::Lanczos | Preset::Art) || builder.artn.is_some()
+    {
         MinModeKind::Lanczos
     } else {
         MinModeKind::Dimer
     };
-    let config = MinModeConfig::default()
+    let mut config = MinModeConfig::default()
         .with_kind(kind)
         .with_dr(builder.dr)
         .with_difference(FiniteDifference::Forward)
@@ -662,23 +634,15 @@ fn mode_session(builder: &PointBuilder, mode: Array1<f64>) -> Result<MinModeSess
         .with_method(Method::fire(FireKind::V2))
         .with_seed_curvature(false)
         .with_saddle_check(None);
+    if builder.preset == Preset::Art || builder.artn.is_some() {
+        let artn = builder.artn.clone().unwrap_or_else(|| {
+            ArtNConfig::default()
+                .with_eigenvalue_threshold(builder.art_threshold)
+                .with_lanczos_start(builder.art_push_steps)
+        });
+        config = config.with_artn(artn);
+    }
     MinModeSession::new(config, builder.x.clone(), mode)
-}
-
-fn art_mode_config(engine: &ArtEngine) -> MinModeConfig {
-    MinModeConfig::default()
-        .with_kind(MinModeKind::Lanczos)
-        .with_dr(engine.dr)
-        .with_difference(FiniteDifference::Forward)
-        .with_rotation_tol(engine.rotation_tol)
-        .with_rotation_angle_tol(engine.rotation_angle_tol)
-        .with_max_rotations(engine.max_rotations)
-        .with_krylov_dim(engine.krylov_dim)
-        .with_force_tol(engine.force_tol)
-        .with_max_move(engine.max_move)
-        .with_method(Method::fire(FireKind::V2))
-        .with_seed_curvature(false)
-        .with_saddle_check(None)
 }
 
 fn force_solver(method: Method, n: usize, max_move: f64) -> Result<Solver, SaddleError> {
@@ -727,118 +691,6 @@ fn unit_direction(mode: Array1<f64>) -> Result<Array1<f64>, SaddleError> {
         return Err(SaddleError::Invalid("mode must be nonzero".into()));
     }
     Ok(mode.mapv(|v| v / scale))
-}
-
-fn capped_step(x: &Array1<f64>, g_eff: &Array1<f64>, max_move: f64) -> Array1<f64> {
-    let nrm = g_eff.dot(g_eff).sqrt();
-    if !(nrm.is_finite() && nrm > 1e-15) {
-        return x.clone();
-    }
-    let alpha = (max_move / nrm).min(1.0);
-    x - &(g_eff * alpha)
-}
-
-fn forward_curvature<S: crate::minmode::PointSurface>(
-    surface: &S,
-    x: &Array1<f64>,
-    gradient: &Array1<f64>,
-    mode: &Array1<f64>,
-    dr: f64,
-) -> Result<f64, SaddleError> {
-    let shifted = x + &(mode * dr);
-    let (_energy, g_plus) = surface.eval(shifted.view())?;
-    // Same order as the min-mode forward action: divide, then dot.
-    let action = (&g_plus - gradient) / dr;
-    Ok(curvature_along(action.view(), mode.view()))
-}
-
-fn art_step<S: crate::minmode::PointSurface>(
-    engine: &mut ArtEngine,
-    surface: &S,
-) -> Result<StencilReport, SaddleError> {
-    if engine.session.is_some() {
-        return art_session_step(engine, surface);
-    }
-    let (_energy, gradient) = surface.eval(engine.x.view())?;
-    let curvature = forward_curvature(surface, &engine.x, &gradient, &engine.mode, engine.dr)?;
-    engine.curvature = curvature;
-    let max_force = ForceGate::LinfNorm.value(gradient.view());
-    engine.max_force = max_force;
-    let converged = max_force <= engine.force_tol && curvature < 0.0;
-    let last = ControlReport {
-        status: if converged {
-            super::control::StencilStatus::Converged
-        } else {
-            super::control::StencilStatus::Running
-        },
-        max_force,
-        curvature,
-    };
-    let roles = [Role::Walker];
-    let view = StencilView {
-        roles: &roles,
-        curvature,
-        max_force,
-    };
-    match engine.control.decide(&view, &last) {
-        Action::Stop(_) => Ok(StencilReport {
-            status: StencilStatus::Converged,
-            max_force,
-            curvature,
-            iteration: engine.iteration,
-            evaluations: 2,
-        }),
-        Action::Push => {
-            let eff = ascend(gradient.view(), engine.mode.view());
-            engine.x = capped_step(&engine.x, &eff, engine.max_move);
-            engine.iteration += 1;
-            Ok(StencilReport {
-                status: StencilStatus::Running,
-                max_force,
-                curvature,
-                iteration: engine.iteration,
-                evaluations: 2,
-            })
-        }
-        Action::Climb | Action::Step => {
-            let config = art_mode_config(engine);
-            engine.session = Some(MinModeSession::new(
-                config,
-                engine.x.clone(),
-                engine.mode.clone(),
-            )?);
-            let mut out = art_session_step(engine, surface)?;
-            out.evaluations = out.evaluations.saturating_add(2);
-            Ok(out)
-        }
-    }
-}
-
-fn art_session_step<S: crate::minmode::PointSurface>(
-    engine: &mut ArtEngine,
-    surface: &S,
-) -> Result<StencilReport, SaddleError> {
-    let (raw, x, mode, curvature) = {
-        let session = engine
-            .session
-            .as_mut()
-            .ok_or_else(|| SaddleError::Invalid("ART climb has no mode solver".into()))?;
-        let raw = session.step(surface)?;
-        (
-            raw,
-            session.position().to_owned(),
-            session.mode().to_owned(),
-            session.curvature(),
-        )
-    };
-    engine.x = x;
-    engine.mode = mode;
-    engine.curvature = curvature;
-    engine.max_force = raw.max_force;
-    engine.iteration += 1;
-    let mut report = from_min(raw);
-    report.iteration = engine.iteration;
-    Ok(report)
 }
 
 fn eigen_step<S: crate::minmode::PointSurface>(
@@ -1109,7 +961,7 @@ mod tests {
     }
 
     #[test]
-    fn art_push_stays_on_the_seed_until_the_well_opens() {
+    fn art_push_relaxes_only_perpendicular_to_the_seed() {
         let mut search = Stencil::point(array_grad(0.4, 0.3))
             .preset(Preset::Art)
             .mode(array_grad(1.0, 0.0))
@@ -1118,19 +970,20 @@ mod tests {
             .build()
             .unwrap();
         search.step(&bowl()).unwrap();
-        assert_eq!(search.position()[1].to_le_bytes(), (0.3_f64).to_le_bytes());
-        assert!(search.curvature() > 0.0);
+        assert!(search.position()[0] > 0.4);
+        assert!(search.position()[1].abs() < 0.3);
+        assert!(search.curvature().is_nan());
 
         let mut opened = Stencil::point(array_grad(0.2, 0.3))
-            .preset(Preset::Art)
             .mode(array_grad(1.0, 0.0))
-            .art_threshold(0.0)
+            .artn(ArtNConfig::default().with_lanczos_start(0))
             .max_rotations(4)
             .krylov_dim(4)
             .build()
             .unwrap();
         opened.step(&saddle()).unwrap();
         assert_ne!(opened.position()[1].to_le_bytes(), (0.3_f64).to_le_bytes());
+        assert!(opened.curvature() < 0.0);
     }
 
     #[test]
