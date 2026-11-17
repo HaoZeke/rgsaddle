@@ -44,6 +44,11 @@ def last_error() -> str:
     Thread-local slot reserved for the C ABI last-error text. Returns an empty string unless an error text was set. raise_status reads it and then clears it.
     """
 
+def hyperplane_thermodynamic_integration(sampler: Callable[..., numpy.typing.NDArray[numpy.float64]], point: numpy.typing.NDArray[numpy.float64], normal: numpy.typing.NDArray[numpy.float64], thermal: float = 0.02585, nodes: int = 8, thermalize: int = 500, stride: int = 5, samples: int = 2000, blocks: int = 20, seed: int = 1) -> tuple[float, float, int]:
+    """
+    Fixed-plane lambda TI through a Python sampler. The callback receives point, normal, lambda, thermal, seed, thermalize, stride and samples, and returns float64 C-contiguous V_full - V_harmonic observations.
+    """
+
 class StencilReport:
     @property
     def status(self) -> int:
@@ -128,11 +133,6 @@ class ConnectReport:
 def connect(surface: Callable[..., tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]], left: numpy.typing.NDArray[numpy.float64], right: numpy.typing.NDArray[numpy.float64], force_tol: float = 0.001, max_calls: int = 250000, quench_nodes: bool = True) -> ConnectReport:
     """
     Double-ended connect. surface(x) returns (energy, gradient) for one image shaped (1, 3N).
-    """
-
-def hyperplane_thermodynamic_integration(sampler: Callable[..., NDArray[numpy.float64]], point: NDArray[numpy.float64], normal: NDArray[numpy.float64], thermal: float = 0.02585, nodes: int = 8, thermalize: int = 500, stride: int = 5, samples: int = 2000, blocks: int = 20, seed: int = 1) -> tuple[float, float, int]:
-    """
-    Fixed-plane lambda TI. sampler(point, normal, lambda, thermal, seed, thermalize, stride, samples) returns float64 C-contiguous V_full - V_harmonic observations.
     """
 
 class SessionReport:

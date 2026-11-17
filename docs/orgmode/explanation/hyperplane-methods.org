@@ -481,7 +481,11 @@ only during =emit=.  Construction, destruction, fixed-layout budget and
 observation structs, and fixed-plane TI are implemented at ABI minor 41.
 The Python binding presents the same operation as
 =hyperplane_thermodynamic_integration= and calls a Python-owned sampler at
-every Gauss-Legendre node.  Callback bindings for plane optimization,
+every Gauss-Legendre node.
+The callback receives the plane point and normal, the coupling lambda, the
+thermal energy, the seed, and the thermalize, stride, and sample counts, and
+returns float64 C-contiguous observations of =V_full - V_harmonic=.
+Callback bindings for plane optimization,
 reversible work, PAFI profiles, and unconstrained shooting remain designed
 but not implemented.
 

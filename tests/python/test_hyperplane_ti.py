@@ -1,8 +1,20 @@
 """Fixed-plane thermodynamic integration through the callback binding."""
 
+from pathlib import Path
+
 import numpy as np
 
 from rgsaddle import hyperplane_thermodynamic_integration
+from rgsaddle._core import hyperplane_thermodynamic_integration as core_ti
+
+ROOT = Path(__file__).resolve().parents[2]
+STUB = ROOT / "python" / "rgsaddle" / "_core.pyi"
+DOC = (
+    "Fixed-plane lambda TI through a Python sampler. "
+    "The callback receives point, normal, lambda, thermal, seed, thermalize, "
+    "stride and samples, and returns float64 C-contiguous "
+    "V_full - V_harmonic observations."
+)
 
 
 def test_constant_derivative_integrates_exactly() -> None:
@@ -35,3 +47,29 @@ def test_constant_derivative_integrates_exactly() -> None:
     assert abs(free_energy - value) < 2.0e-14
     assert error == 0.0
     assert evaluations == 400
+
+
+def _flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+def test_binding_docstring_names_the_sampler_contract() -> None:
+    for fn in (core_ti, hyperplane_thermodynamic_integration):
+        text = _flat(fn.__doc__ or "")
+        assert text.startswith("hyperplane_thermodynamic_integration(")
+        assert "Callable[..., numpy.typing.NDArray[numpy.float64]]" in text
+        assert "point: numpy.typing.NDArray[numpy.float64]" in text
+        assert "normal: numpy.typing.NDArray[numpy.float64]" in text
+        assert _flat(DOC) in text
+
+
+def test_checked_in_stub_matches_stubgen_contract() -> None:
+    text = STUB.read_text(encoding="utf-8")
+    start = text.index("def hyperplane_thermodynamic_integration")
+    assert start < text.index("class StencilReport")
+    window = text[start : text.index("\nclass ", start)]
+    assert "Callable[..., numpy.typing.NDArray[numpy.float64]]" in window
+    assert "point: numpy.typing.NDArray[numpy.float64]" in window
+    assert "normal: numpy.typing.NDArray[numpy.float64]" in window
+    assert _flat(DOC) in _flat(window)
+    assert "Fixed-plane lambda TI. sampler(" not in window
