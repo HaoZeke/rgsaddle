@@ -343,6 +343,9 @@ fn walk_to_energy<S: PointSurface>(
             "an endpoint is already at or below the next tunneling energy".into(),
         ));
     }
+    // A step of one chord can cross the floor of a valley; it is halved
+    // until the energy falls.
+    let mut step = spacing;
     loop {
         let x = masses.to_cartesian(point.view())?;
         let (_, gradient) = surface.eval(x.view())?;
@@ -353,20 +356,21 @@ fn walk_to_energy<S: PointSurface>(
                 "the downhill walk reached a vanishing force above the tunneling energy".into(),
             ));
         }
-        let mut next = point.clone();
-        next.scaled_add(spacing / norm, &force);
-        let next_energy = potential(surface, masses, next.view())?;
-        if next_energy >= energy || next_energy.is_nan() {
-            return Err(SaddleError::Invalid(
-                "walking along the force did not lower the energy".into(),
-            ));
-        }
-        let advance = l2((&next - &point).view());
-        if advance == 0.0 || advance.is_nan() {
-            return Err(SaddleError::Stalled(
-                "the downhill walk stopped above the tunneling energy".into(),
-            ));
-        }
+        let (next, next_energy) = loop {
+            let mut next = point.clone();
+            next.scaled_add(step / norm, &force);
+            let advance = l2((&next - &point).view());
+            if advance == 0.0 || advance.is_nan() {
+                return Err(SaddleError::Stalled(
+                    "the downhill walk stopped above the tunneling energy".into(),
+                ));
+            }
+            let next_energy = potential(surface, masses, next.view())?;
+            if next_energy < energy {
+                break (next, next_energy);
+            }
+            step *= 0.5;
+        };
         if next_energy <= target || next_energy.is_nan() {
             return onto_segment(
                 surface,
@@ -463,6 +467,28 @@ mod tests {
         fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
             Ok((x[0], array![1.0]))
         }
+    }
+
+    struct Well;
+
+    impl PointSurface for Well {
+        fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+            Ok((x[0] * x[0], array![2.0 * x[0]]))
+        }
+    }
+
+    /// From `x = 1` on `V = x²` with a chord of 3, one chord along the
+    /// force lands at `x = −2`, above the start. The halved step reaches
+    /// `V = 1/4` and the walk ends on `V = 1/2`.
+    #[test]
+    fn a_walk_that_crosses_the_floor_halves_its_step() {
+        let masses = Masses::coordinates(array![1.0].view()).unwrap();
+        let point = walk_to_energy(&Well, &masses, array![1.0], array![4.0], 0.5).unwrap();
+        let energy = point[0] * point[0];
+        assert!(
+            energy > 0.5 && energy - 0.5 <= 4.0 * f64::EPSILON,
+            "{energy}"
+        );
     }
 
     /// The first midpoint of `V = x` on `[-1, 1]` lands exactly on
