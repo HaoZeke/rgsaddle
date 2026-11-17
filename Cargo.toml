@@ -60,13 +60,13 @@ proptest = { version = "1.6", optional = true }
 rug = { version = "1.27", optional = true }
 capnp = { version = "0.20", optional = true }
 libloading = { version = "0.8.9", optional = true }
-rgpot-core = { git = "https://github.com/OmniPotentRPC/rgpot", rev = "97ebba0b", features = ["profile"], optional = true }
+rgpot-core = { version = "=3.7.0", git = "https://github.com/OmniPotentRPC/rgpot", rev = "97ebba0b062128b7dc4637501c4b70ed4944ae9d", features = ["profile"], optional = true }
 
 [package.metadata.rgsaddle-lammps]
 lammpc-git = "https://github.com/OmniPotentRPC/lammpc"
 lammpc-rev = "dc443997"
 rgpot-git = "https://github.com/OmniPotentRPC/rgpot"
-rgpot-rev = "97ebba0b"
+rgpot-rev = "97ebba0b062128b7dc4637501c4b70ed4944ae9d"
 
 [dev-dependencies]
 approx = "0.5"
