@@ -24,6 +24,7 @@ use crate::tangent::compute_tangent;
 
 mod climb;
 mod growing_string;
+mod dynamic;
 mod min_mode;
 mod pair_model;
 mod saddle_check;
@@ -32,6 +33,8 @@ mod zoom;
 pub use growing_string::{
     GrowingStringConfig, GrowingStringPhase, GrowingStringReport, GrowingStringSession,
 };
+pub use dynamic::DynamicNeb;
+pub(crate) use dynamic::dynamic_mask;
 pub use min_mode::MinModeRefine;
 pub(crate) use min_mode::RefinePhase;
 pub use string::{StringConfig, StringSession};
@@ -401,6 +404,12 @@ pub struct BandConfig {
     /// step, anchoring the climbing image when armed. `None`, the
     /// default, runs the nudged elastic band.
     pub string: Option<StringConfig>,
+    /// Dynamic NEB ([`DynamicNeb`]). `None`, the default, evaluates
+    /// every image on every step. Images under the threshold keep their
+    /// last energy and force, stay in the spring and the tangent, and
+    /// are evaluated again when a neighbour moves enough that the
+    /// projected force exceeds the threshold.
+    pub dynamic: Option<DynamicNeb>,
 }
 
 with_setters!(BandConfig {
@@ -424,6 +433,7 @@ with_setters!(BandConfig {
     with_fixed_atoms => fixed_atoms: val Vec<bool>,
     with_saddle_check => saddle_check: opt SaddleIndexCheck,
     with_string => string: opt StringConfig,
+    with_dynamic => dynamic: opt DynamicNeb,
 });
 
 impl BandConfig {
@@ -552,6 +562,7 @@ impl Default for BandConfig {
             fixed_atoms: Vec::new(),
             saddle_check: Some(SaddleIndexCheck::default()),
             string: None,
+            dynamic: None,
         }
     }
 }
@@ -748,6 +759,20 @@ pub trait BandSurface: Sync {
         let _ = image;
         min_mode::one_row(self, position)
     }
+
+    /// Energy and Cartesian gradient of band image `image` alone, for a
+    /// dynamic-NEB refresh of one interior image. The default is a
+    /// one-row [`BandSurface::eval`]. A host that keys per-image state
+    /// on the band index overrides it. This is not the climbing-image
+    /// request: [`BandSurface::eval_image`] stays that channel.
+    fn eval_indexed(
+        &self,
+        image: usize,
+        position: ArrayView1<f64>,
+    ) -> Result<(f64, Array1<f64>), SaddleError> {
+        let _ = image;
+        min_mode::one_row(self, position)
+    }
 }
 
 /// Oriented cells and the Jacobian fixed at session build.
@@ -825,6 +850,8 @@ struct BandState {
     fixed: Vec<bool>,
     /// Stable per-image identities when tracking across growth or remeshing.
     ids: Vec<crate::stencil::ImageId>,
+    /// Dynamic NEB cache and the images pinned for the step in progress.
+    dynamic: Mutex<dynamic::DynamicRun>,
 }
 
 impl BandState {
@@ -845,7 +872,24 @@ impl BandState {
             rows: AtomicUsize::new(0),
             work: Mutex::new(BandWork::default()),
             pool: None,
+            dynamic: Mutex::new(dynamic::DynamicRun::default()),
         }
+    }
+
+    fn dynamic_run(&self) -> std::sync::MutexGuard<'_, dynamic::DynamicRun> {
+        self.dynamic.lock().unwrap_or_else(|err| err.into_inner())
+    }
+
+    fn dynamic_enabled(&self) -> bool {
+        self.dynamic_run().spec.is_some()
+    }
+
+    fn dynamic_spec(&self) -> Option<DynamicNeb> {
+        self.dynamic_run().spec
+    }
+
+    fn install_dynamic(&self, spec: Option<DynamicNeb>) {
+        self.dynamic_run().install(spec);
     }
     /// One surface call, split into image blocks on the image threads.
     fn eval_rows(
@@ -1162,30 +1206,33 @@ fn fill_band(
     next.energies.fill(0.0);
     match state.endpoints() {
         Some([e_first, e_last]) => {
-            fit1(&mut work.interior_e, n_images - 2);
-            fit2(&mut work.interior_g, (n_images - 2, dof));
-            state.eval_rows(
-                surface,
-                1..last,
-                interior,
-                &mut work.interior_e,
-                &mut work.interior_g,
-            )?;
-            state.rows.fetch_add(n_images - 2, Ordering::Relaxed);
             next.energies[0] = e_first;
             next.energies[last] = e_last;
-            next.energies
-                .slice_mut(s![1..last])
-                .assign(&work.interior_e);
             for end in [0, last] {
                 match prev {
                     Some(prev) => next.gradients.row_mut(end).assign(&prev.gradients.row(end)),
                     None => next.gradients.row_mut(end).fill(0.0),
                 }
             }
-            next.gradients
-                .slice_mut(s![1..last, ..])
-                .assign(&work.interior_g);
+            if state.dynamic_enabled() {
+                fill_dynamic_interior(state, work, surface, next, interior)?;
+            } else {
+                fit1(&mut work.interior_e, n_images - 2);
+                fit2(&mut work.interior_g, (n_images - 2, dof));
+                state.eval_rows(
+                    surface,
+                    interior,
+                    &mut work.interior_e,
+                    &mut work.interior_g,
+                )?;
+                state.rows.fetch_add(n_images - 2, Ordering::Relaxed);
+                next.energies
+                    .slice_mut(s![1..last])
+                    .assign(&work.interior_e);
+                next.gradients
+                    .slice_mut(s![1..last, ..])
+                    .assign(&work.interior_g);
+            }
         }
         None => {
             fit2(&mut work.whole, (n_images, dof));
@@ -1222,7 +1269,91 @@ fn fill_band(
             zero_fixed(&state.fixed, &mut row);
         }
     }
+    if state.dynamic_enabled() {
+        remember_dynamic(state, interior, next);
+    }
     Ok(())
+}
+
+/// Interior rows for dynamic NEB. An image whose coordinates still
+/// equal its last answer reuses that energy and gradient. A full miss
+/// stays one batched call. A partial miss asks for those images alone
+/// through [`BandSurface::eval_indexed`].
+fn fill_dynamic_interior(
+    state: &BandState,
+    work: &mut BandWork,
+    surface: &dyn BandSurface,
+    next: &mut BandEval,
+    interior: ArrayView2<f64>,
+) -> Result<(), SaddleError> {
+    let n_interior = interior.nrows();
+    let dof = interior.ncols();
+    let mut reuse = Vec::with_capacity(n_interior);
+    {
+        let run = state.dynamic_run();
+        for i in 0..n_interior {
+            reuse.push(run.recall(i, interior.row(i)));
+        }
+    }
+    let fresh: Vec<usize> = reuse
+        .iter()
+        .enumerate()
+        .filter(|(_, hit)| hit.is_none())
+        .map(|(i, _)| i)
+        .collect();
+    if fresh.len() == n_interior {
+        fit1(&mut work.interior_e, n_interior);
+        fit2(&mut work.interior_g, (n_interior, dof));
+        state.eval_rows(
+            surface,
+            interior,
+            &mut work.interior_e,
+            &mut work.interior_g,
+        )?;
+        state.rows.fetch_add(n_interior, Ordering::Relaxed);
+        let last = n_interior + 1;
+        next.energies
+            .slice_mut(s![1..last])
+            .assign(&work.interior_e);
+        next.gradients
+            .slice_mut(s![1..last, ..])
+            .assign(&work.interior_g);
+        return Ok(());
+    }
+    for (i, hit) in reuse.iter().enumerate() {
+        if let Some((energy, gradient)) = hit {
+            next.energies[i + 1] = *energy;
+            next.gradients.row_mut(i + 1).assign(gradient);
+        }
+    }
+    for i in fresh {
+        let (energy, mut gradient) = surface.eval_indexed(i + 1, interior.row(i))?;
+        if !energy.is_finite() || !gradient.iter().all(|component| component.is_finite()) {
+            return Err(SaddleError::NonFinite("band gradients"));
+        }
+        zero_fixed(&state.fixed, &mut gradient);
+        next.energies[i + 1] = energy;
+        next.gradients.row_mut(i + 1).assign(&gradient);
+        state.rows.fetch_add(1, Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+/// Keep the surface answer of every interior image for the next dynamic step.
+fn remember_dynamic(state: &BandState, interior: ArrayView2<f64>, next: &BandEval) {
+    let mut run = state.dynamic_run();
+    let n_interior = interior.nrows();
+    if run.images.len() != n_interior {
+        run.images = (0..n_interior).map(|_| None).collect();
+    }
+    for i in 0..n_interior {
+        run.remember(
+            i,
+            interior.row(i),
+            next.energies[i + 1],
+            next.gradients.row(i + 1),
+        );
+    }
 }
 
 /// Remove the mean Cartesian force (eOn's `zeroTranslation`). An image
@@ -2291,10 +2422,69 @@ fn assemble_band_with(
     if !projected.dot(&projected).is_finite() {
         return Err(SaddleError::NonFinite("band force norm"));
     }
+    // The solver sees forces ASE would hand the optimizer. The stored
+    // evaluation keeps the projected force before that mask, which is
+    // what convergence and [`BandSession::evaluation`] report.
+    let stored = if let Some(spec) = state.dynamic_spec() {
+        let saved = projected.clone();
+        let saved_driving = driving.clone();
+        let n_interior = n_images - 2;
+        let mut rows = Array2::zeros((n_interior, dof));
+        for i in 0..n_interior {
+            rows.row_mut(i)
+                .assign(&saved.slice(s![i * dof..(i + 1) * dof]));
+        }
+        let interior_pos = match x.to_shape((n_interior, dof)) {
+            Ok(view) => view,
+            Err(err) => return Err(SaddleError::Shape(err.to_string())),
+        };
+        let mask = dynamic_mask(
+            interior_pos.view(),
+            energies.slice(s![1..n_images - 1]),
+            &mut rows,
+            spec,
+        )?;
+        let mut masked_flat = Array1::zeros(saved.len());
+        for i in 0..n_interior {
+            masked_flat
+                .slice_mut(s![i * dof..(i + 1) * dof])
+                .assign(&rows.row(i));
+        }
+        let visible = state.convergence_force(&masked_flat);
+        let zeroed = state.dynamic_run().decision(x, &mask, visible);
+        if zeroed.len() != n_interior {
+            return Err(SaddleError::Shape(
+                "dynamic NEB image count changed during the step".into(),
+            ));
+        }
+        for (i, &clear) in zeroed.iter().enumerate() {
+            let range = s![i * dof..(i + 1) * dof];
+            if clear {
+                projected.slice_mut(range).fill(0.0);
+                if let Some(drive) = driving.as_mut() {
+                    drive.slice_mut(range).fill(0.0);
+                }
+            } else {
+                projected.slice_mut(range).assign(&saved.slice(range));
+                if let Some(drive) = driving.as_mut()
+                    && let Some(saved_drive) = saved_driving.as_ref()
+                {
+                    drive.slice_mut(range).assign(&saved_drive.slice(range));
+                }
+            }
+        }
+        Some(saved)
+    } else {
+        None
+    };
     if let Some(last) = slot.as_mut()
         && last.x == x
     {
-        work.store_projected(last, &projected);
+        let force = match &stored {
+            Some(force) => force,
+            None => &projected,
+        };
+        work.store_projected(last, force);
     }
     *state
         .last_max_force
@@ -2542,6 +2732,14 @@ impl BandSession {
                 "band force tolerance must be finite and non-negative".into(),
             ));
         }
+        if let Some(spec) = config.dynamic {
+            spec.check()?;
+            if config.solid.is_some() {
+                return Err(SaddleError::Invalid(
+                    "dynamic NEB does not run on a solid-state band".into(),
+                ));
+            }
+        }
         if let SpringKind::Uniform { k } = config.spring
             && !k.is_finite()
         {
@@ -2607,6 +2805,7 @@ impl BandSession {
             session.state.fixed = session.config.fixed_atoms.clone();
             session.pin_fixed();
         }
+        session.state.install_dynamic(session.config.dynamic);
         if let Some(precon) = session.config.exp_precon {
             session.set_exp_precon(precon)?;
         }
@@ -2943,11 +3142,45 @@ impl BandSession {
                     .into(),
             ));
         }
+        if self.config.dynamic.is_some() && config.is_some() {
+            return Err(SaddleError::Invalid(
+                "dynamic NEB does not use the trust-region stepper".into(),
+            ));
+        }
         if let Some(config) = config {
             config.validate()?;
         }
         self.rtr = config.map(|config| crate::rtr::BandRtr::new(config, false));
         self.restart();
+        Ok(())
+    }
+
+    /// Turn dynamic NEB on or off between steps. `None` restores a
+    /// full evaluation of every image. The image cache is dropped, so
+    /// the next step evaluates the band again. A solid-state band and
+    /// the trust-region stepper are refused.
+    pub fn set_dynamic(&mut self, dynamic: Option<DynamicNeb>) -> Result<(), SaddleError> {
+        if let Some(spec) = dynamic {
+            spec.check()?;
+            if self.solid.is_some() {
+                return Err(SaddleError::Invalid(
+                    "dynamic NEB does not run on a solid-state band".into(),
+                ));
+            }
+            if self.rtr.is_some() {
+                return Err(SaddleError::Invalid(
+                    "dynamic NEB does not use the trust-region stepper".into(),
+                ));
+            }
+            if self.config.string.is_some() {
+                return Err(SaddleError::Invalid(
+                    "dynamic NEB is for the NEB; the simplified string method evaluates every image"
+                        .into(),
+                ));
+            }
+        }
+        self.config.dynamic = dynamic;
+        self.state.install_dynamic(dynamic);
         Ok(())
     }
 
@@ -3300,6 +3533,11 @@ impl BandSession {
             return self.step_string(surface, string_cfg);
         }
         if self.rtr.is_some() {
+            if self.config.dynamic.is_some() {
+                return Err(SaddleError::Invalid(
+                    "dynamic NEB does not use the trust-region stepper".into(),
+                ));
+            }
             return self.step_rtr(surface);
         }
         let n_images = self.positions.nrows();
@@ -3318,14 +3556,27 @@ impl BandSession {
             per_image: e.metrics.as_slice(),
             free: e.free.as_deref(),
         });
-        let oracle =
-            Oracle::unbounded(interior_dof, |x: ArrayView1<f64>| match assemble_band_with(
+        let mut x = self.interior_flat();
+        if config.dynamic.is_some() {
+            state.dynamic_run().begin_step(x.clone());
+        }
+        let oracle = Oracle::unbounded(interior_dof, |query: ArrayView1<f64>| {
+            let pinned = if config.dynamic.is_some() {
+                state.dynamic_run().pin(query)
+            } else {
+                None
+            };
+            let y = match &pinned {
+                Some(pinned) => pinned.view(),
+                None => query,
+            };
+            match assemble_band_with(
                 config,
                 state,
                 surface,
                 endpoint_first.view(),
                 endpoint_last.view(),
-                x,
+                y,
                 metrics,
             ) {
                 Ok((e, f, _, driving)) => (e, -driving.unwrap_or(f)),
@@ -3333,9 +3584,9 @@ impl BandSession {
                     state.record_error(err);
                     (f64::INFINITY, Array1::zeros(interior_dof))
                 }
-            });
+            }
+        });
 
-        let mut x = self.interior_flat();
         let before = x.clone();
         let stepped = self.solver.step(&oracle, &mut x);
         drop(oracle);
@@ -3350,11 +3601,26 @@ impl BandSession {
             return Err(err);
         }
         stepped.map_err(|e| SaddleError::Solver(e.to_string()))?;
+        if self.config.dynamic.is_some() {
+            self.state.dynamic_run().snap(&mut x);
+        }
+        // A dynamic step that no longer moves, with every force the
+        // optimizer still sees under force_tol, is ASE's stop: images
+        // under the scaled threshold do not count.
+        let dynamic_settled = self.config.dynamic.is_some()
+            && x == before
+            && self
+                .state
+                .dynamic_run()
+                .visible_max()
+                .is_some_and(|visible| visible <= self.config.force_tol);
         // ODE12r keeps the band where it was when it rejects a trial and
         // retries with a shorter step, so an unchanged band is a stall
         // only once the step has shrunk past any use (64 rejections at
         // a quarter each).
-        if x == before && matches!(self.config.method, Method::Ode12r) && self.unmoved < 64 {
+        if dynamic_settled {
+            self.unmoved = 0;
+        } else if x == before && matches!(self.config.method, Method::Ode12r) && self.unmoved < 64 {
             self.unmoved += 1;
         } else {
             self.unmoved = 0;
@@ -3387,7 +3653,7 @@ impl BandSession {
             )?;
         }
         let max_force = self.state.last_max_force();
-        let status = if max_force <= self.config.force_tol {
+        let status = if max_force <= self.config.force_tol || dynamic_settled {
             BandStatus::Converged
         } else {
             BandStatus::Running
