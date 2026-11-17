@@ -501,7 +501,7 @@ fn center_rows(pos: &mut Array2<f64>) {
 
 /// Sella `R = dx.T @ refpos`. The rightmost quaternion is the inverse
 /// Kabsch rotation: a +axis body rotation reads negative.
-fn kabsch_f(pos: &Array2<f64>, refpos: &Array2<f64>) -> [[f64; 4]; 4] {
+pub(crate) fn kabsch_f(pos: &Array2<f64>, refpos: &Array2<f64>) -> [[f64; 4]; 4] {
     let mut r = [[0.0; 3]; 3];
     for i in 0..pos.nrows() {
         for a in 0..3 {
@@ -625,7 +625,7 @@ fn solve4(mut a: [[f64; 4]; 4], mut b: [f64; 4]) -> [f64; 4] {
     x
 }
 
-fn jacobi4(mut a: [[f64; 4]; 4]) -> ([f64; 4], [[f64; 4]; 4]) {
+pub(crate) fn jacobi4(mut a: [[f64; 4]; 4]) -> ([f64; 4], [[f64; 4]; 4]) {
     let mut v = [[0.0; 4]; 4];
     for (i, row) in v.iter_mut().enumerate() {
         row[i] = 1.0;

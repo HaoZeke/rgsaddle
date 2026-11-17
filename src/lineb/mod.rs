@@ -100,9 +100,11 @@ use ndarray::{Array1, Array2, ArrayView1};
 use crate::error::SaddleError;
 use crate::minmode::PointSurface;
 
+/// The surface, counting its evaluations and the Hessian-vector
+/// products it computes itself in one tally.
 pub(crate) struct Counted<'a, S> {
-    surface: &'a S,
-    calls: &'a AtomicUsize,
+    pub(crate) surface: &'a S,
+    pub(crate) calls: &'a AtomicUsize,
 }
 
 impl<S: PointSurface> PointSurface for Counted<'_, S> {
@@ -116,7 +118,11 @@ impl<S: PointSurface> PointSurface for Counted<'_, S> {
         x: ArrayView1<f64>,
         v: ArrayView1<f64>,
     ) -> Result<Option<Array1<f64>>, SaddleError> {
-        self.surface.hessian_vector(x, v)
+        let product = self.surface.hessian_vector(x, v)?;
+        if product.is_some() {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(product)
     }
 
     fn excluded_modes(&self, x: ArrayView1<f64>) -> Result<Array2<f64>, SaddleError> {
