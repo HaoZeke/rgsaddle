@@ -233,6 +233,12 @@ memory. Both sessions refuse line-searched methods: the
 oracle value beside a projected or inverted force is not its
 potential.
 
+## Free-energy profile from NEB images
+
+`ArcPath::from_positions` takes the images of a converged band, and `pafi_profile` returns the free energy along that path at a temperature with the barrier and its standard error.
+The method is projected average force integration (PAFI) of [Swinburne and Marinica (2018)](https://doi.org/10.1103/PhysRevLett.120.135503), and the surface is any `PointSurface`.
+The [PAFI guide](https://omnipotentrpc.github.io/rgsaddle/howto/pafi.html) lists the input, every `PafiConfig` field, how to read the result, the zero-temperature check, and the comparison with the reference code.
+
 ## Validation
 
 `validation/` has the sympy and sollya
