@@ -5,6 +5,7 @@
 //! step, because the nudged force is not the gradient of the action),
 //! Barzilai–Borwein, quick-min and ODE12r are the force-driven methods.
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
@@ -173,8 +174,9 @@ pub struct LinebReport {
 pub struct LinebCalls {
     /// Inside [`LinebSession::step`], over the whole session.
     pub optimizer: usize,
-    /// In [`LinebSession::path`]: the final force assembly, the action
-    /// and period quadrature, and the imaginary-time table.
+    /// In [`LinebSession::path`]: the action and period quadrature, the
+    /// imaginary-time table, and the force assembly when no step has
+    /// left one at the current images.
     pub measure: usize,
     /// In [`LinebSession::path`]: the Runge–Kutta constrained dynamics.
     pub dynamics: usize,
@@ -234,6 +236,9 @@ pub struct LinebSession {
     /// A rejected trial tightened the step length. The next step
     /// releases that length.
     cap_held: bool,
+    /// Assembly at [`Self::weighted`], when the last step ended on a
+    /// point it had evaluated.
+    held: Option<action::Assembly>,
     evaluations: AtomicUsize,
     iteration: usize,
 }
@@ -292,6 +297,7 @@ impl LinebSession {
             solver,
             atom_cap,
             cap_held: false,
+            held: None,
             evaluations: AtomicUsize::new(0),
             iteration: 0,
         })
@@ -345,6 +351,10 @@ impl LinebSession {
         let length_bits = AtomicU64::new(0.0_f64.to_bits());
         let mut x = action::pack(self.weighted.view());
         let before = x.clone();
+        // The last two evaluated points and their assemblies. The solver
+        // accepts its last evaluation or, after a rejection, the one
+        // before it.
+        let evaluated: Mutex<Vec<(Array1<f64>, action::Assembly)>> = Mutex::new(Vec::new());
         // `f64::INFINITY` marks "the stepper's own length", not a bound.
         let mut cap = f64::INFINITY;
         let assembly = loop {
@@ -366,7 +376,13 @@ impl LinebSession {
                         phase.store(1, Ordering::Relaxed);
                         let mut force = action::pack(assembly.drive.view());
                         force *= -1.0;
-                        (assembly.action, force)
+                        let value = assembly.action;
+                        let mut slots = evaluated.lock().unwrap_or_else(|e| e.into_inner());
+                        if slots.len() == 2 {
+                            slots.remove(0);
+                        }
+                        slots.push((trial.to_owned(), assembly));
+                        (value, force)
                     }
                     Err(_) => {
                         phase.store(2, Ordering::Relaxed);
@@ -377,14 +393,24 @@ impl LinebSession {
             let stepped = self.solver.step(&oracle, &mut x);
             drop(oracle);
             if phase.load(Ordering::Relaxed) == 1 && stepped.is_ok() {
-                break action::assemble(
-                    &counted,
-                    &masses,
-                    action::unpack(x.view(), n, dof).view(),
-                    energy,
-                    config.spring,
-                    config.endpoint_scale,
-                )?;
+                let mut slots =
+                    std::mem::take(&mut *evaluated.lock().unwrap_or_else(|e| e.into_inner()));
+                let cached = match slots.iter().rposition(|(at, _)| *at == x) {
+                    Some(index) => Some(slots.swap_remove(index).1),
+                    None if x == before => self.held.take(),
+                    None => None,
+                };
+                break match cached {
+                    Some(assembly) => assembly,
+                    None => action::assemble(
+                        &counted,
+                        &masses,
+                        action::unpack(x.view(), n, dof).view(),
+                        energy,
+                        config.spring,
+                        config.endpoint_scale,
+                    )?,
+                };
             }
             self.solver.forget_evaluation();
             if phase.load(Ordering::Relaxed) != 2 {
@@ -442,6 +468,7 @@ impl LinebSession {
         let displacement = action::l2(delta.view());
         self.weighted = action::unpack(x.view(), n, dof);
         self.iteration += 1;
+        self.held = Some(assembly.clone());
         let converged = assembly.perp_max <= config.perp_tol && assembly.opt_max <= config.opt_tol;
         if (displacement <= 0.0 || displacement.is_nan()) && !converged {
             return Err(SaddleError::Stalled(format!(
@@ -490,14 +517,17 @@ impl LinebSession {
             surface,
             calls: &dynamics_calls,
         };
-        let assembly = action::assemble(
-            &measured,
-            &self.masses,
-            self.weighted.view(),
-            self.energy,
-            self.config.spring,
-            self.config.endpoint_scale,
-        )?;
+        let assembly = match &self.held {
+            Some(assembly) => assembly.clone(),
+            None => action::assemble(
+                &measured,
+                &self.masses,
+                self.weighted.view(),
+                self.energy,
+                self.config.spring,
+                self.config.endpoint_scale,
+            )?,
+        };
         let periods: Periods = path::measure(
             &measured,
             &dynamics,
