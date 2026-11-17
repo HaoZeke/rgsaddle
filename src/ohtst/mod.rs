@@ -105,6 +105,7 @@ mod rate;
 mod reactant;
 mod sample;
 mod spline;
+mod ti;
 mod transmission;
 mod transport;
 mod work;
@@ -121,6 +122,10 @@ pub use reactant::{ReactantDensity, reactant_density};
 pub use sample::{
     AnalyticSurfaceSampler, LangevinConfig, PlaneIntegrator, PlaneSample, Uncontrolled,
     sample_plane, sample_plane_with_sampler,
+};
+pub use ti::{
+    AnalyticThermodynamicSampler, THERMODYNAMIC_DERIVATIVE, ThermodynamicIntegrationConfig,
+    ThermodynamicIntegrationEstimate, ThermodynamicIntegrationNode, thermodynamic_integration,
 };
 pub use transmission::{
     Basins, Counting, EndState, Endpoint, PermutationDistance, QuenchConfig, StateDistance,

@@ -139,16 +139,18 @@ pub use ocineb::{
 };
 #[cfg(feature = "ohtst")]
 pub use ohtst::{
-    AnalyticSurfaceSampler, AnharmonicConfig, AnharmonicCorrection, BasinConfig, BasinDensity,
-    BasinEnd, Basins, Counting, EndState, Endpoint, ExactGaussianPlaneSampler, FixedCell,
-    GaussianTransport, HarmonicReference, HyperplaneObservable, LangevinConfig, MassWeighted,
-    OhTstRate, PermutationDistance, PlaneDensity, PlaneIntegrator, PlaneMetric, PlaneOptimizer,
-    PlaneOptimizerConfig, PlaneOptimum, PlanePath, PlaneSample, PlaneTrace, QuadraticModel,
-    QuenchConfig, ReactantDensity, ReversibleWork, ReversibleWorkConfig, StateDistance,
+    AnalyticSurfaceSampler, AnalyticThermodynamicSampler, AnharmonicConfig, AnharmonicCorrection,
+    BasinConfig, BasinDensity, BasinEnd, Basins, Counting, EndState, Endpoint,
+    ExactGaussianPlaneSampler, FixedCell, GaussianTransport, HarmonicReference,
+    HyperplaneObservable, LangevinConfig, MassWeighted, OhTstRate, PermutationDistance,
+    PlaneDensity, PlaneIntegrator, PlaneMetric, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum,
+    PlanePath, PlaneSample, PlaneTrace, QuadraticModel, QuenchConfig, ReactantDensity,
+    ReversibleWork, ReversibleWorkConfig, StateDistance, THERMODYNAMIC_DERIVATIVE,
+    ThermodynamicIntegrationConfig, ThermodynamicIntegrationEstimate, ThermodynamicIntegrationNode,
     TransmissionCoefficient, TransmissionConfig, TransmissionEstimate, Transport, Uncontrolled,
     WorkEstimate, WorkNode, anharmonic_correction, basin_density, flux_mass, ohtst_rate,
     plane_transmission, reactant_density, reversible_work, reversible_work_along, sample_plane,
-    sample_plane_with_sampler, transmission_coefficient,
+    sample_plane_with_sampler, thermodynamic_integration, transmission_coefficient,
 };
 pub use pafi::{
     ArcPath, FreeEnergyProfile, HyperplaneAverage, PafiConfig, PathFrame, PathGeometry,

@@ -56,6 +56,10 @@ pub struct HyperplaneSampleBudget {
     pub coordinates: HyperplaneCoordinates,
     /// Ask the engine to return positions at every record.
     pub positions: bool,
+    /// Coupling parameter for a thermodynamic-interpolation request.
+    pub lambda: Option<f64>,
+    /// Named scalar observables requested at every record.
+    pub observables: Vec<String>,
 }
 
 impl Default for HyperplaneSampleBudget {
@@ -68,6 +72,8 @@ impl Default for HyperplaneSampleBudget {
             samples: 2_000,
             coordinates: HyperplaneCoordinates::MassWeighted,
             positions: true,
+            lambda: None,
+            observables: Vec::new(),
         }
     }
 }
@@ -106,6 +112,16 @@ impl HyperplaneSampleBudget {
     /// Set [`Self::positions`].
     pub fn with_positions(mut self, positions: bool) -> Self {
         self.positions = positions;
+        self
+    }
+    /// Set the thermodynamic coupling parameter.
+    pub fn with_lambda(mut self, lambda: f64) -> Self {
+        self.lambda = Some(lambda);
+        self
+    }
+    /// Request one named scalar observable.
+    pub fn with_observable(mut self, observable: impl Into<String>) -> Self {
+        self.observables.push(observable.into());
         self
     }
 }
