@@ -1,3 +1,5 @@
+#![cfg(feature = "ohtst")]
+
 //! OH-TST on the LEPS plus harmonic oscillator surface of Jóhannesson and
 //! Jónsson, J. Chem. Phys. 115, 9644 (2001), Appendix B, at
 //! `kT = 0.1 E_A` as in their Sec. III B and at lower temperatures.

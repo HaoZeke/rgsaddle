@@ -4,6 +4,7 @@ use ndarray::{Array1, Array2, ArrayView1, ArrayView2, s};
 
 use crate::error::SaddleError;
 use crate::minmode::{MinModeSession, ModeEstimate, PointSurface};
+use crate::projector::{ProjectedConstraint, TangentProjector, UnitNormal};
 
 /// A hyperplane of mass-weighted configuration space.
 ///
@@ -160,6 +161,23 @@ impl Hyperplane {
         }
         let n = x.len() / 2;
         Self::new(x.slice(s![..n]).to_owned(), x.slice(s![n..]).to_owned())
+    }
+}
+
+impl TangentProjector for Hyperplane {
+    fn project(&self, vector: ArrayView1<'_, f64>) -> Array1<f64> {
+        UnitNormal::new(self.normal()).project(vector)
+    }
+
+    fn project_in_place(&self, vector: &mut Array1<f64>) {
+        UnitNormal::new(self.normal()).project_in_place(vector);
+    }
+}
+
+impl ProjectedConstraint for Hyperplane {
+    fn restore_in_place(&self, point: &mut Array1<f64>) {
+        let distance = self.distance(point.view());
+        *point -= &(&self.normal * distance);
     }
 }
 

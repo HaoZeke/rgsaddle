@@ -19,11 +19,12 @@
 //! the integrated autocorrelation time, so a correlated series is not
 //! treated as independent.
 
-use ndarray::{Array1, ArrayView1};
+use ndarray::Array1;
 use rayon::prelude::*;
 
 use crate::error::SaddleError;
 use crate::minmode::PointSurface;
+use crate::projector::{AffineHyperplane, ProjectedConstraint, TangentProjector};
 use crate::stats::{Rng, block_mean};
 
 /// Overdamped hyperplane sampling.
@@ -360,6 +361,7 @@ pub fn average_hyperplane<S: PointSurface>(
     if !(tangent_norm.is_finite() && tangent_norm > 0.0) {
         return Err(SaddleError::Invalid("PAFI tangent vanishes".into()));
     }
+    let plane = AffineHyperplane::new(geometry.positions.view(), geometry.tangent.view())?;
     let mut x = geometry.positions.clone();
     let mut rng = Rng::new(config.seed);
     let sigma = (2.0 * config.mobility * config.thermal * config.time_step).sqrt();
@@ -392,22 +394,20 @@ pub fn average_hyperplane<S: PointSurface>(
             }
         }
         let mut drift = gradient;
-        project_out(&mut drift, geometry.tangent.view());
+        plane.project_in_place(&mut drift);
         let mut noise = Array1::zeros(n);
         for value in noise.iter_mut() {
             *value = rng.normal();
         }
-        project_out(&mut noise, geometry.tangent.view());
+        plane.project_in_place(&mut noise);
         if config.fix_com && n >= 6 && n.is_multiple_of(3) {
             remove_com(&mut drift);
             remove_com(&mut noise);
-            project_out(&mut drift, geometry.tangent.view());
-            project_out(&mut noise, geometry.tangent.view());
+            plane.project_in_place(&mut drift);
+            plane.project_in_place(&mut noise);
         }
         x = &x - &(&drift * drift_scale) + &(&noise * sigma);
-        let nn = geometry.tangent.dot(&geometry.tangent);
-        let slip = (&x - &geometry.positions).dot(&geometry.tangent) / nn;
-        x = &x - &(&geometry.tangent * slip);
+        plane.restore_in_place(&mut x);
     }
     if observations.len() != config.samples {
         return Err(SaddleError::Invalid(
@@ -668,15 +668,6 @@ fn projected_gradient(
 
 fn difference(end: &Array1<f64>, start: &Array1<f64>, ds: f64) -> Array1<f64> {
     (end - start) / ds
-}
-
-fn project_out(vector: &mut Array1<f64>, tangent: ArrayView1<f64>) {
-    let nn = tangent.dot(&tangent);
-    if nn == 0.0 {
-        return;
-    }
-    let coef = vector.dot(&tangent) / nn;
-    *vector -= &(tangent.to_owned() * coef);
 }
 
 pub(crate) fn remove_com(vector: &mut Array1<f64>) {

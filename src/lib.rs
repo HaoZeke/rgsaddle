@@ -64,11 +64,13 @@ pub mod minmode;
 pub mod nichols;
 pub mod occupancy;
 pub mod ocineb;
+#[cfg(feature = "ohtst")]
 pub mod ohtst;
 pub mod pafi;
 pub mod pair_network;
 pub mod prfo;
 pub mod projection;
+pub mod projector;
 pub mod relax;
 pub mod saddle_index;
 pub mod solid_dimer;
@@ -135,6 +137,7 @@ pub use ocineb::{
     backoff_threshold, initial_threshold, mode_alignment, should_trigger, success_threshold,
     walk_helped,
 };
+#[cfg(feature = "ohtst")]
 pub use ohtst::{
     AnharmonicConfig, AnharmonicCorrection, BasinConfig, BasinDensity, BasinEnd, Basins, Counting,
     EndState, Endpoint, FixedCell, GaussianTransport, HarmonicReference, Hyperplane,
@@ -156,6 +159,9 @@ pub use pair_network::{
 };
 pub use prfo::{PrfoKind, partitioned_rfo_eigen, restricted_prfo_displacement};
 pub use projection::ProjectionKind;
+pub use projector::{
+    AffineHyperplane, ManifoldTangent, ProjectedConstraint, TangentProjector, UnitNormal,
+};
 pub use relax::{
     DEFAULT_FORCE_TOL, DEFAULT_MAX_STEPS, RelaxConfig, Relaxation, max_atom_force,
     relax_to_tolerance,

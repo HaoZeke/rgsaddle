@@ -1,3 +1,5 @@
+#![cfg(feature = "ohtst")]
+
 //! OH-TST in 48 dimensions: a double well along one mode coupled to 47
 //! anharmonic modes, in a rotated frame,
 //!

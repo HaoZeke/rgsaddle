@@ -1,0 +1,261 @@
+#+title: Hyperplane methods on one geometric footing
+#+options: toc:2 num:t
+
+* Scope and provenance
+
+The implementation starts from the operator construction used by Goswami,
+Gunde, and Jónsson, /Enhanced climbing image nudged elastic band method with
+Hessian eigenmode alignment/, /Frontiers in Chemistry/ 14 (2026),
+doi:10.3389/fchem.2026.1807063: dimer translation and climbing-image
+translation are reflections made from the same rank-one projector.  Goswami,
+/A Tutorial Review of Bayesian Optimization with Gaussian Processes to
+Accelerate Stationary Point Searches/ (2026), arXiv:2603.10992, writes the
+dimer construction in the same form.  The cost accounting used when these
+operators are compared follows Goswami, /Bayesian hierarchical models for
+quantitative estimates for performance metrics applied to saddle search
+algorithms/, /AIP Advances/ 15 (2025), doi:10.1063/5.0283639.  These papers
+are cited first because they are the direct provenance of the implementation
+and its comparisons; they did not introduce PAFI or OH-TST.
+
+The method sources are:
+
+- Swinburne and Marinica, /Unsupervised Calculation of Free Energy Barriers
+  in Large Crystalline Systems/, /Physical Review Letters/ 120, 135503
+  (2018), doi:10.1103/PhysRevLett.120.135503 (PAFI).
+- Jóhannesson and Jónsson, /Optimization of hyperplanar transition states/,
+  /The Journal of Chemical Physics/ 115, 9644--9656 (2001),
+  doi:10.1063/1.1415499 (OH-TST).  Bligaard and Jónsson, /Computer Physics
+  Communications/ 169, 284 (2005), doi:10.1016/j.cpc.2005.03.064, gives
+  two-dimensional examples.
+- Hermes, Sargsyan, Najm, and Zádor, /Sella, an Open-Source
+  Automation-Friendly Molecular Saddle Point Optimizer/, /Journal of Chemical
+  Theory and Computation/ 18, 6974--6988 (2022),
+  doi:10.1021/acs.jctc.2c00395.
+- Absil, Mahony, and Sepulchre, /Optimization Algorithms on Matrix
+  Manifolds/, Princeton University Press (2008),
+  doi:10.1515/9781400830244.
+
+* One constraint and its metric
+
+Let Cartesian coordinates be \(x\), let \(M\) be a positive diagonal mass
+matrix, and put
+
+\[
+q=M^{1/2}x .
+\]
+
+A Cartesian plane with covector \(a\) through \(x_0\) is
+\(a^{T}(x-x_0)=0\).  In mass-weighted coordinates it has unit normal
+
+\[
+\nu={M^{-1/2}a\over\sqrt{a^{T}M^{-1}a}},\qquad q_0=M^{1/2}x_0 .
+\]
+
+Its tangent space and Euclidean projector in \(q\) are
+
+\[
+T_q{\cal H}=\{v:\nu^Tv=0\},\qquad
+P_q=I-\nu\nu^T .
+\]
+
+Mapping a tangent displacement back to Cartesian coordinates gives
+
+\[
+P_x=M^{-1/2}P_qM^{1/2}
+   =I-{M^{-1}aa^T\over a^TM^{-1}a}.
+\]
+
+Forces are covectors, so their Cartesian map is \(P_x^T\), not \(P_x\).
+The code therefore performs all OH-TST geometry in \(q\).  PAFI without
+explicit masses is the unit-mass case.  =MassWeighted= and
+=Hyperplane::from_cartesian= perform the two coordinate maps rather than
+hiding a metric in a dot product.
+
+The affine level set is a flat embedded manifold.  Its retraction is exact:
+
+\[
+R_q(v)=q+P_qv,\qquad
+\Pi_{\cal H}(y)=y-\nu\nu^T(y-q_0).
+\]
+
+For a non-unit normal \(n\), both occurrences of \(\nu\nu^T\) become
+\(nn^T/(n^Tn)\).  This is the arithmetic retained by PAFI.
+
+* PAFI: a fixed family of planes
+
+Let \(X(s)\) be a path parameterised by arc length, \(n(s)=X'(s)\), and
+\(n'(s)=X''(s)\).  PAFI samples the canonical distribution restricted to
+
+\[
+{\cal H}_s=\{q:(q-X(s))^Tn(s)=0\}.
+\]
+
+Projected Brownian dynamics removes the normal part of drift and noise with
+\(P_s=I-nn^T\), then applies the exact affine restoration.  With
+
+\[
+\psi(q,s)=(q-X(s))^Tn'(s),
+\]
+
+the mean-force estimator used in =pafi.rs= is
+
+\[
+{dF\over ds}
+ =\left\langle
+   \bigl(\nabla V(q)^Tn(s)\bigr)\bigl(1-\psi(q,s)\bigr)
+  \right\rangle_{{\cal H}_s}.
+\]
+
+=average_hyperplane= estimates this expression and its block error.
+=pafi_profile= evaluates independent fixed planes along the path.
+=integrate_profile= applies the trapezoid rule and propagates the plane
+errors.  PAFI optimises neither \(X\) nor a plane normal; path quality and
+sampling error are separate inputs to the result.
+
+* OH-TST: optimise the dividing plane
+
+Write a plane using a pivot \(c\), unit normal \(\nu\), and offset \(d\):
+
+\[
+{\cal H}(\nu,d;c)=\{q:\nu^T(q-c)=d\}.
+\]
+
+Its configurational free energy, up to the common normalisation, is
+
+\[
+A(\nu,d)
+=-k_BT\log\int
+ \delta\!\left(\nu^T(q-c)-d\right)
+ e^{-V(q)/(k_BT)}\,dq .
+\]
+
+Transition-state theory is variational: maximizing \(A\) minimizes the rate
+within this family of hyperplanar dividing surfaces.  An unoriented plane
+normal is a point of \(\mathrm{Gr}(D,1)\).  When the reactant-to-product sign
+is retained it is represented on \(S^{D-1}\); antipodal normals describe the
+same geometric plane with opposite side labels.  Thus the outer problem is
+
+\[
+\max_{([\nu],d)\in\mathrm{Gr}(D,1)\times\mathbb R} A(\nu,d),
+\]
+
+or the oriented sphere equivalent.  At \(\nu\), a normal update \(w\) is
+projected by \(P_\nu=I-\nu\nu^T\), and the retraction is
+\((\nu+w)/\|\nu+w\|\).  Held translations, rotations, or user directions
+replace the sphere by rgmin's =SubspaceSphere=.  The offset is a Euclidean
+factor.  =PlaneOptimizer= assembles those factors as an rgmin
+=ProductManifold= and minimizes \(-A\) with its Riemannian trust region.
+
+Sampling gives the ambient derivatives
+
+\[
+{\partial A\over\partial p}
+ =\langle\nu^T\nabla V\rangle\nu,\qquad
+{\partial A\over\partial\nu}
+ =-\left\langle(\nu^T\nabla V)(q-p)\right\rangle ,
+\]
+
+followed by tangent projection.  Moving the pivot inside the plane is a
+gauge.  Recentering it at the sample centroid leaves the plane unchanged
+and expresses the rotational derivative as the corresponding covariance.
+
+The =ohtst= Cargo feature is opt-in.  =Hyperplane= implements the same
+=TangentProjector= and =ProjectedConstraint= interfaces as PAFI's affine
+plane.  The analytic two-dimensional unit test uses
+\(V(x,y)=-x^2/2+y^2\), whose constrained Gaussian has its closed-form
+optimal plane at \(x=0\), normal to the unstable mode.
+
+* Dimer, Lanczos, bands, and Sella are one operator family
+
+For a unit direction \(u\), define
+
+\[
+P_u=I-uu^T,\qquad H_u=I-2uu^T=2P_u-I .
+\]
+
+=P_u= keeps the perpendicular component and =H_u= reflects the parallel
+component.  NEB uses \(P_tF\) for the true force and the complementary
+rank-one part for its spring force.  A climbing image uses \(H_tF\).
+Dimer translation and Lanczos min-mode following use \(H_uF\) after their
+different procedures have supplied \(u\).  The projection is identical;
+only the source and update of the direction differ.
+
+Sella equalities \(c(x)=0\) have Jacobian \(J\).  Their tangent projector is
+
+\[
+P_J=I-J^T(JJ^T)^+J .
+\]
+
+For one normalized row \(J=\nu^T\), \(P_J=P_\nu\).  Sella's
+internal-coordinate constraints, a PAFI plane, an OH-TST plane, NEB
+nudging, and min-mode force splitting are therefore rank-\(k\) members of
+the same projector family.  Nonlinear Sella constraints differ only because
+\(J(x)\) and the restoration retraction must be recomputed at each point.
+
+The first shared code piece is deliberately small:
+
+- =TangentProjector= owns force/vector projection.
+- =ProjectedConstraint= adds level-set restoration.
+- =AffineHyperplane= retains PAFI's non-unit-normal arithmetic.
+- =UnitNormal= retains the historical band/dimer/Lanczos arithmetic.
+- =ManifoldTangent= binds any rgmin =Manifold=, including Sella's
+  =Constraints=, at a point.
+- PAFI and =stencil::perp= use these implementations; OH-TST's
+  =Hyperplane= implements both traits.
+
+The checked-in before/after bit dump covers a seeded PAFI sample and the
+unit-normal projector.  It is in addition to the existing PAFI, band,
+min-mode, Sella, and rgmin manifold tests.
+
+* Reproducing the OH-TST paper is a separate validation piece
+
+The present change is a smoke validation, not a claim to reproduce published
+numbers.  A reproduction of Jóhannesson and Jónsson requires all of the
+following to be pinned in a separate validation directory:
+
+1. the paper's Appendix-B potential and derivatives, parameters, reduced
+   units, masses, and every reported temperature;
+2. the initial saddle plane and the allowed position/orientation degrees of
+   freedom for each model;
+3. a converged line integral or constrained-sampling protocol for every
+   trial plane, including domain truncation, quadrature tolerance or
+   thermostat, friction, time step, equilibration, stride, and sample count;
+4. the outer-plane stopping rule and the handling of the \(\nu\sim-\nu\)
+   gauge;
+5. reactant partition-function boundaries and the flux prefactor used to
+   convert the optimized plane free energy to the OH-TST rate;
+6. the dynamical transmission-coefficient definition, launch distribution,
+   basin commitment rule, trajectory length, and recrossing convention when
+   comparing corrected rates;
+7. deterministic seeds plus raw per-plane force, torque, uncertainty, free
+   energy, and rate outputs;
+8. digitized paper tables/figures with provenance, units, and an explicit
+   numerical acceptance tolerance chosen before the comparison.
+
+Without those inputs, agreement with a plotted or rounded paper value is not
+a reproducible test.
+
+* Ranked remaining unification pieces
+
+1. *Rank-\(k\) metric projector.* Move Sella's row-space orthogonalisation,
+   held-mode projection, and OH-TST subspace projection behind one
+   rank-revealing \(J\)-projector with Euclidean and diagonal-mass metrics.
+   This removes the largest remaining duplication and must preserve the
+   present rank threshold and operation order.
+2. *Point-dependent constraint adapter.* Add a fallible constraint API that
+   returns \(J(x)\), projects tangents, and restores a trial point.  Migrate
+   Sella =Constraints= and then expose it as an rgmin manifold without
+   swallowing shape or restoration errors.
+3. *Shared Householder functions.* Express climbing image, dimer translation,
+   Lanczos translation, and band perpendicular splitting through paired
+   =project=/=reflect= functions while retaining each call site's current
+   arithmetic and golden hashes.
+4. *Mass metric as an explicit type.* Replace repeated square-root mass
+   vectors in PAFI/OH-TST/IRC with a checked metric object that maps points,
+   tangent vectors, and covectors distinctly.
+5. *Sampler kernel reuse.* Share constrained drift/noise projection,
+   restoration, held modes, block statistics, and retained-frame handling
+   between PAFI and OH-TST without merging their different estimators.
+6. *Paper reproduction suite.* Implement the eight pinned inputs above and
+   compare paper observables only after independent quadrature references
+   pass.

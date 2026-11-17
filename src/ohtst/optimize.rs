@@ -1307,6 +1307,18 @@ mod tests {
         }
     }
 
+    /// `V = -x²/2 + y²`. For a unit normal `ν` and signed offset `d`,
+    /// the constrained Gaussian has
+    /// `A = d²/(2 νᵀH⁻¹ν) + (kT/2) ln(-νᵀH⁻¹ν) + constant`.
+    /// Its unique unoriented optimum is `d = 0`, `[ν] = [e_x]`.
+    struct HarmonicSaddle2d;
+
+    impl PointSurface for HarmonicSaddle2d {
+        fn eval(&self, q: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+            Ok((-0.5 * q[0] * q[0] + q[1] * q[1], array![-q[0], 2.0 * q[1]]))
+        }
+    }
+
     fn config() -> PlaneOptimizerConfig {
         PlaneOptimizerConfig::default()
             .with_sampler(
@@ -1342,6 +1354,22 @@ mod tests {
         assert_at_the_saddle_plane(&optimum);
         let first = optimum.trace[0].plane.normal();
         assert!((first.dot(&start.normal()) - 1.0).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn analytic_two_dimensional_plane_is_found() {
+        let start = Hyperplane::new(array![0.2, -0.1], array![1.0, 0.15]).unwrap();
+        let optimum = PlaneOptimizer::new(&start, config())
+            .unwrap()
+            .run(&HarmonicSaddle2d)
+            .unwrap();
+        let normal = optimum.plane.normal();
+        assert!(normal[1].abs() < 1.0e-4, "normal = {normal:?}");
+        assert!(
+            optimum.plane.distance(array![0.0, 0.0].view()).abs() < 1.0e-4,
+            "point = {:?}",
+            optimum.plane.point()
+        );
     }
 
     #[test]

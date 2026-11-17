@@ -1,3 +1,5 @@
+#![cfg(feature = "ohtst")]
+
 //! OH-TST on a skewed double well whose optimal plane shifts and turns
 //! with temperature: `(x² - 1)² + ½ k₀ (1 + α tanh 2x) (y - x)²` with
 //! `k₀ = 4`, `α = 0.8`, unit masses. The reactant minimum is `(-1, -1)`,
