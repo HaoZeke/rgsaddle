@@ -53,7 +53,8 @@ use crate::ohtst::anharmonic::hessian_action;
 use crate::ohtst::control::HarmonicReference;
 use crate::ohtst::plane::{Hyperplane, orthonormal_rows};
 use crate::ohtst::sample::{
-    LangevinConfig, PlaneSample, held_directions, mean_and_error, sample_plane,
+    AnalyticSurfaceSampler, LangevinConfig, PlaneSample, held_directions, mean_and_error,
+    sample_plane_with_sampler,
 };
 
 /// Geometry of the normal in [`PlaneOptimizer`]. The offset along the
@@ -769,7 +770,9 @@ impl<S: PointSurface> Climb<'_, S> {
     fn sample(&mut self, x: &Array1<f64>) -> Result<Iterate, SaddleError> {
         let plane = self.layout.plane(&self.pivot, x)?;
         let sampler = self.config.sampler.clone().with_records(self.records);
-        let sample = sample_plane(self.surface, &plane, Some(self.start.view()), &sampler)?;
+        let mut backend = AnalyticSurfaceSampler::new(self.surface, sampler.clone())
+            .with_start(self.start.clone());
+        let sample = sample_plane_with_sampler(&mut backend, &plane, &sampler)?;
         self.samples += 1;
         self.evaluations += sample.evaluations;
         let gradient = self.layout.gradient(

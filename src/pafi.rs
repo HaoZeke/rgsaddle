@@ -9,23 +9,25 @@
 //!
 //! `dF/ds = ⟨ (∇E · n) (1 - ψ) ⟩`.
 //!
-//! The average is over the hyperplane `(x - X) · n = 0`. Sampling here is
-//! overdamped Langevin (Brownian) dynamics in that plane. The parallel
-//! piece of the drift and of the noise is removed, and the plane is
-//! restored after every step. A center-of-mass projection is optional and
-//! is the `com yes` choice of that fix. The integral of `dF/ds` from the
-//! reactant is the potential of mean force. Block averages of the recorded
-//! samples supply the standard error. The block length is at least twice
-//! the integrated autocorrelation time, so a correlated series is not
-//! treated as independent.
+//! The average is over the hyperplane `(x - X) · n = 0`. Production samples
+//! arrive through [`HyperplaneSampler`]. The built-in overdamped Langevin
+//! implementation is retained only as the deterministic analytic-surface
+//! reference: it projects drift and noise, then restores the plane after
+//! every step. A center-of-mass projection is optional and is the `com yes`
+//! choice of `fix pafi`. The integral of `dF/ds` from the reactant is the
+//! potential of mean force. Block averages of the equilibrated records
+//! supply the standard error.
 
 use ndarray::Array1;
 use rayon::prelude::*;
 
 use crate::error::SaddleError;
 use crate::minmode::PointSurface;
-use crate::projector::{AffineHyperplane, ProjectedConstraint, TangentProjector};
-use crate::stats::{Rng, block_mean};
+use crate::projector::{
+    Hyperplane, HyperplaneEnsemble, HyperplaneObservation, HyperplaneSampleBudget,
+    HyperplaneSampler, ProjectedConstraint, TangentProjector,
+};
+use crate::stats::{EquilibrationReport, Rng, block_mean, equilibrate};
 
 /// Overdamped hyperplane sampling.
 ///
@@ -40,7 +42,7 @@ pub struct PafiConfig {
     pub mobility: f64,
     /// Overdamped time step.
     pub time_step: f64,
-    /// Steps discarded before the first recorded sample.
+    /// Minimum engine warm-up floor before automated equilibration detection.
     pub thermalize: usize,
     /// Steps between recorded samples.
     pub stride: usize,
@@ -311,6 +313,8 @@ pub struct HyperplaneAverage {
     pub evaluations: usize,
     /// Configurations kept from the production run, on the plane.
     pub retained: Vec<Array1<f64>>,
+    /// Automated equilibration, correlation and split-half drift report.
+    pub equilibration: EquilibrationReport,
 }
 
 /// Potential of mean force from the first plane.
@@ -342,6 +346,20 @@ pub fn average_hyperplane<S: PointSurface>(
     geometry: &PathGeometry,
     config: &PafiConfig,
 ) -> Result<HyperplaneAverage, SaddleError> {
+    let mut sampler = PafiAnalyticSampler {
+        surface,
+        geometry,
+        config,
+    };
+    average_hyperplane_with_sampler(&mut sampler, geometry, config)
+}
+
+/// Estimate the PAFI mean force from any constrained-ensemble engine.
+pub fn average_hyperplane_with_sampler<E: HyperplaneSampler>(
+    sampler: &mut E,
+    geometry: &PathGeometry,
+    config: &PafiConfig,
+) -> Result<HyperplaneAverage, SaddleError> {
     config.check()?;
     let n = geometry.positions.len();
     if geometry.tangent.len() != n || geometry.curvature.len() != n {
@@ -361,70 +379,158 @@ pub fn average_hyperplane<S: PointSurface>(
     if !(tangent_norm.is_finite() && tangent_norm > 0.0) {
         return Err(SaddleError::Invalid("PAFI tangent vanishes".into()));
     }
-    let plane = AffineHyperplane::new(geometry.positions.view(), geometry.tangent.view())?;
-    let mut x = geometry.positions.clone();
-    let mut rng = Rng::new(config.seed);
-    let sigma = (2.0 * config.mobility * config.thermal * config.time_step).sqrt();
-    let drift_scale = config.mobility * config.time_step;
-    let total = config.thermalize + config.stride * config.samples;
-    let mut observations = Vec::with_capacity(config.samples);
-    let mut psi_sum = 0.0;
-    let mut retained = Vec::new();
-    let retain_gap = config.samples.div_ceil(config.retain.max(1)).max(1);
-    for step in 0..total {
-        let (_energy, gradient) = surface.eval(x.view())?;
-        if gradient.len() != n || !gradient.iter().all(|v| v.is_finite()) {
-            return Err(SaddleError::Shape(
-                "PAFI gradient must match the path".into(),
-            ));
-        }
-        if step >= config.thermalize && (step - config.thermalize).is_multiple_of(config.stride) {
-            let (value, psi) = projected_gradient(&gradient, &x, geometry);
-            if !value.is_finite() || !psi.is_finite() {
-                return Err(SaddleError::NonFinite("PAFI projected gradient"));
-            }
-            let recorded = observations.len();
-            observations.push(value);
-            psi_sum += psi;
-            if config.retain > 0
-                && recorded.is_multiple_of(retain_gap)
-                && retained.len() < config.retain
-            {
-                retained.push(x.clone());
-            }
-        }
-        let mut drift = gradient;
-        plane.project_in_place(&mut drift);
-        let mut noise = Array1::zeros(n);
-        for value in noise.iter_mut() {
-            *value = rng.normal();
-        }
-        plane.project_in_place(&mut noise);
-        if config.fix_com && n >= 6 && n.is_multiple_of(3) {
-            remove_com(&mut drift);
-            remove_com(&mut noise);
-            plane.project_in_place(&mut drift);
-            plane.project_in_place(&mut noise);
-        }
-        x = &x - &(&drift * drift_scale) + &(&noise * sigma);
-        plane.restore_in_place(&mut x);
-    }
-    if observations.len() != config.samples {
+    let plane = Hyperplane::from_path(geometry.positions.view(), geometry.tangent.view())?;
+    let budget = HyperplaneSampleBudget::default()
+        .with_thermal(config.thermal)
+        .with_seed(config.seed)
+        .with_thermalize(config.thermalize)
+        .with_stride(config.stride)
+        .with_samples(config.samples)
+        .with_positions(true);
+    let ensemble = sampler.sample_hyperplane(&plane, &budget)?;
+    estimate_pafi(ensemble, geometry, config)
+}
+
+fn estimate_pafi(
+    ensemble: HyperplaneEnsemble,
+    geometry: &PathGeometry,
+    config: &PafiConfig,
+) -> Result<HyperplaneAverage, SaddleError> {
+    if ensemble.observations.len() != config.samples {
         return Err(SaddleError::Invalid(
-            "PAFI did not record the requested samples".into(),
+            "PAFI engine did not return the requested samples".into(),
         ));
     }
-    let (gradient, error, tau, n_eff) = block_mean(&observations, config.blocks);
+    let observations: Vec<f64> = ensemble
+        .observations
+        .iter()
+        .map(|sample| {
+            sample.pafi_gradient.unwrap_or_else(|| {
+                let psi = sample
+                    .position
+                    .as_ref()
+                    .map_or(sample.jacobian, |position| {
+                        (position - &geometry.positions).dot(&geometry.curvature)
+                    });
+                -sample.constraint_force * norm(&geometry.tangent) * (1.0 - psi)
+            })
+        })
+        .collect();
+    if observations.iter().any(|value| !value.is_finite()) {
+        return Err(SaddleError::NonFinite("PAFI projected gradient"));
+    }
+    let equilibration = equilibrate(
+        &observations,
+        config.thermalize,
+        config.stride,
+        config.blocks,
+    )?;
+    let kept_observations = &ensemble.observations[equilibration.discard..];
+    let kept_values = &observations[equilibration.discard..];
+    let psi = kept_observations
+        .iter()
+        .map(|sample| {
+            sample
+                .position
+                .as_ref()
+                .map_or(sample.jacobian, |position| {
+                    (position - &geometry.positions).dot(&geometry.curvature)
+                })
+        })
+        .sum::<f64>()
+        / kept_observations.len() as f64;
+    let retain_gap = kept_observations
+        .len()
+        .div_ceil(config.retain.max(1))
+        .max(1);
+    let retained = if config.retain == 0 {
+        Vec::new()
+    } else {
+        kept_observations
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| index.is_multiple_of(retain_gap))
+            .filter_map(|(_, sample)| sample.position.clone())
+            .take(config.retain)
+            .collect()
+    };
+    let (gradient, error, _, _) = block_mean(kept_values, config.blocks);
     Ok(HyperplaneAverage {
         gradient,
         error,
-        psi: psi_sum / config.samples as f64,
+        psi,
         samples: config.samples,
-        tau,
-        n_eff,
-        evaluations: total,
+        tau: equilibration.tau,
+        n_eff: equilibration.n_eff,
+        evaluations: ensemble.evaluations,
         retained,
+        equilibration,
     })
+}
+
+struct PafiAnalyticSampler<'a, S> {
+    surface: &'a S,
+    geometry: &'a PathGeometry,
+    config: &'a PafiConfig,
+}
+
+impl<S: PointSurface> HyperplaneSampler for PafiAnalyticSampler<'_, S> {
+    fn sample_hyperplane(
+        &mut self,
+        plane: &Hyperplane,
+        budget: &HyperplaneSampleBudget,
+    ) -> Result<HyperplaneEnsemble, SaddleError> {
+        let geometry = self.geometry;
+        let config = self.config;
+        let n = geometry.positions.len();
+        let mut x = geometry.positions.clone();
+        let mut rng = Rng::new(budget.seed);
+        let sigma = (2.0 * config.mobility * budget.thermal * config.time_step).sqrt();
+        let drift_scale = config.mobility * config.time_step;
+        let total = budget.thermalize + budget.stride * budget.samples;
+        let mut observations = Vec::with_capacity(budget.samples);
+        for step in 0..total {
+            let (_energy, gradient) = self.surface.eval(x.view())?;
+            if gradient.len() != n || !gradient.iter().all(|value| value.is_finite()) {
+                return Err(SaddleError::Shape(
+                    "PAFI gradient must match the path".into(),
+                ));
+            }
+            if step >= budget.thermalize && (step - budget.thermalize).is_multiple_of(budget.stride)
+            {
+                let (pafi_gradient, jacobian) = projected_gradient(&gradient, &x, geometry);
+                observations.push(HyperplaneObservation {
+                    constraint_force: -gradient.dot(&plane.normal()),
+                    pafi_gradient: Some(pafi_gradient),
+                    jacobian,
+                    position: budget.positions.then(|| x.clone()),
+                    projected_force: None,
+                    projected_velocity: None,
+                    observables: Default::default(),
+                });
+            }
+            let mut drift = gradient;
+            plane.project_in_place(&mut drift);
+            let mut noise = Array1::zeros(n);
+            for value in noise.iter_mut() {
+                *value = rng.normal();
+            }
+            plane.project_in_place(&mut noise);
+            if config.fix_com && n >= 6 && n.is_multiple_of(3) {
+                remove_com(&mut drift);
+                remove_com(&mut noise);
+                plane.project_in_place(&mut drift);
+                plane.project_in_place(&mut noise);
+            }
+            x = &x - &(&drift * drift_scale) + &(&noise * sigma);
+            plane.restore_in_place(&mut x);
+        }
+        Ok(HyperplaneEnsemble {
+            observations,
+            evaluations: total,
+            acceptance: 1.0,
+        })
+    }
 }
 
 /// Integrate plane gradients with the trapezoid rule.

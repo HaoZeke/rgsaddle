@@ -116,7 +116,10 @@ pub use path::PlanePath;
 pub use plane::{FixedCell, Hyperplane, MassWeighted};
 pub use rate::{OhTstRate, PlaneDensity, flux_mass, ohtst_rate, plane_transmission};
 pub use reactant::{ReactantDensity, reactant_density};
-pub use sample::{LangevinConfig, PlaneIntegrator, PlaneSample, Uncontrolled, sample_plane};
+pub use sample::{
+    AnalyticSurfaceSampler, LangevinConfig, PlaneIntegrator, PlaneSample, Uncontrolled,
+    sample_plane, sample_plane_with_sampler,
+};
 pub use transmission::{
     Basins, Counting, EndState, Endpoint, PermutationDistance, QuenchConfig, StateDistance,
     TransmissionCoefficient, TransmissionConfig, TransmissionEstimate, transmission_coefficient,

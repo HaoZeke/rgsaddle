@@ -5,10 +5,13 @@
 //! are kept separate because band and minimum-mode methods only transform
 //! forces, while PAFI also restores each sampled configuration.
 
-use ndarray::{Array1, ArrayView1, Zip};
+use std::collections::BTreeMap;
+
+use ndarray::{Array1, ArrayView1, ArrayView2, Zip, s};
 use rgmin::Manifold;
 
 use crate::SaddleError;
+use crate::minmode::{MinModeSession, ModeEstimate};
 
 /// Projection of an ambient vector onto an allowed tangent space.
 pub trait TangentProjector {
@@ -23,6 +26,185 @@ pub trait TangentProjector {
 pub trait ProjectedConstraint: TangentProjector {
     /// Restore `point` to the constraint level set.
     fn restore_in_place(&self, point: &mut Array1<f64>);
+}
+
+/// Coordinates in which a backend receives a hyperplane.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HyperplaneCoordinates {
+    /// `q = M^(1/2) x`; the normal and velocities use the Euclidean metric.
+    #[default]
+    MassWeighted,
+    /// Cartesian coordinates. The backend must apply its configured masses.
+    Cartesian,
+}
+
+/// Backend-independent constrained-ensemble request.
+#[non_exhaustive]
+#[derive(Clone, Debug)]
+pub struct HyperplaneSampleBudget {
+    /// `kT` in the engine's energy units.
+    pub thermal: f64,
+    /// Seed of all stochastic engine operations.
+    pub seed: u64,
+    /// Optional minimum warm-up floor before estimator-side equilibration.
+    pub thermalize: usize,
+    /// Engine steps between records.
+    pub stride: usize,
+    /// Number of records.
+    pub samples: usize,
+    /// Coordinate convention of the plane and returned vectors.
+    pub coordinates: HyperplaneCoordinates,
+    /// Ask the engine to return positions at every record.
+    pub positions: bool,
+}
+
+impl Default for HyperplaneSampleBudget {
+    fn default() -> Self {
+        Self {
+            thermal: 0.02585,
+            seed: 1,
+            thermalize: 500,
+            stride: 5,
+            samples: 2_000,
+            coordinates: HyperplaneCoordinates::MassWeighted,
+            positions: true,
+        }
+    }
+}
+
+impl HyperplaneSampleBudget {
+    /// Set [`Self::thermal`].
+    pub fn with_thermal(mut self, thermal: f64) -> Self {
+        self.thermal = thermal;
+        self
+    }
+    /// Set [`Self::seed`].
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = seed;
+        self
+    }
+    /// Set [`Self::thermalize`].
+    pub fn with_thermalize(mut self, thermalize: usize) -> Self {
+        self.thermalize = thermalize;
+        self
+    }
+    /// Set [`Self::stride`].
+    pub fn with_stride(mut self, stride: usize) -> Self {
+        self.stride = stride;
+        self
+    }
+    /// Set [`Self::samples`].
+    pub fn with_samples(mut self, samples: usize) -> Self {
+        self.samples = samples;
+        self
+    }
+    /// Set [`Self::coordinates`].
+    pub fn with_coordinates(mut self, coordinates: HyperplaneCoordinates) -> Self {
+        self.coordinates = coordinates;
+        self
+    }
+    /// Set [`Self::positions`].
+    pub fn with_positions(mut self, positions: bool) -> Self {
+        self.positions = positions;
+        self
+    }
+}
+
+/// One engine record on a constrained hyperplane.
+#[non_exhaustive]
+#[derive(Clone, Debug, Default)]
+pub struct HyperplaneObservation {
+    /// Mechanical constraint force along the plane's positive unit normal,
+    /// `-normal · gradient`.
+    pub constraint_force: f64,
+    /// Complete PAFI plane-gradient record, when the backend computes it.
+    ///
+    /// If absent, the PAFI estimator derives it from `constraint_force` and
+    /// `position`; analytic reference samplers set it to preserve their
+    /// historical floating-point operation order.
+    pub pafi_gradient: Option<f64>,
+    /// PAFI metric/Jacobian correction `psi`; zero for a fixed flat plane.
+    pub jacobian: f64,
+    /// Position when requested.
+    pub position: Option<Array1<f64>>,
+    /// Force after removing constrained directions, when exposed by the engine.
+    pub projected_force: Option<Array1<f64>>,
+    /// Velocity component removed by the constraint integrator, when exposed.
+    pub projected_velocity: Option<Array1<f64>>,
+    /// Estimator-selected scalar observables, keyed by a stable public name.
+    ///
+    /// Thermodynamic integration uses this for quantities such as
+    /// `potential.full_minus_harmonic` without exposing an engine type.
+    pub observables: BTreeMap<String, f64>,
+}
+
+impl HyperplaneObservation {
+    /// Set [`Self::constraint_force`].
+    pub fn with_constraint_force(mut self, constraint_force: f64) -> Self {
+        self.constraint_force = constraint_force;
+        self
+    }
+
+    /// Set [`Self::pafi_gradient`].
+    pub fn with_pafi_gradient(mut self, pafi_gradient: f64) -> Self {
+        self.pafi_gradient = Some(pafi_gradient);
+        self
+    }
+
+    /// Set [`Self::jacobian`].
+    pub fn with_jacobian(mut self, jacobian: f64) -> Self {
+        self.jacobian = jacobian;
+        self
+    }
+
+    /// Set [`Self::position`].
+    pub fn with_position(mut self, position: Array1<f64>) -> Self {
+        self.position = Some(position);
+        self
+    }
+
+    /// Set [`Self::projected_force`].
+    pub fn with_projected_force(mut self, projected_force: Array1<f64>) -> Self {
+        self.projected_force = Some(projected_force);
+        self
+    }
+
+    /// Set [`Self::projected_velocity`].
+    pub fn with_projected_velocity(mut self, projected_velocity: Array1<f64>) -> Self {
+        self.projected_velocity = Some(projected_velocity);
+        self
+    }
+
+    /// Insert a named scalar observable.
+    pub fn with_observable(mut self, name: impl Into<String>, value: f64) -> Self {
+        self.observables.insert(name.into(), value);
+        self
+    }
+}
+
+/// Records and engine accounting returned by [`HyperplaneSampler`].
+#[non_exhaustive]
+#[derive(Clone, Debug, Default)]
+pub struct HyperplaneEnsemble {
+    /// Records in engine order.
+    pub observations: Vec<HyperplaneObservation>,
+    /// Force/energy evaluations reported by the engine.
+    pub evaluations: usize,
+    /// Accepted fraction for a Metropolized engine, otherwise one.
+    pub acceptance: f64,
+}
+
+/// External or analytic engine that samples a constrained ensemble.
+///
+/// Implementations own integration, thermostats, masses, units and engine
+/// handles. No engine-specific type crosses this interface.
+pub trait HyperplaneSampler {
+    /// Generate records on `plane`.
+    fn sample_hyperplane(
+        &mut self,
+        plane: &Hyperplane,
+        budget: &HyperplaneSampleBudget,
+    ) -> Result<HyperplaneEnsemble, SaddleError>;
 }
 
 /// A point-dependent [`rgmin::Manifold`] projector bound at one point.
@@ -53,55 +235,174 @@ impl<M: Manifold + ?Sized> TangentProjector for ManifoldTangent<'_, M> {
     }
 }
 
-/// The affine plane `{x : normal · (x - point) = 0}`.
+/// The plane `{q : normal · (q - point) = 0}` in mass-weighted coordinates.
 ///
-/// `normal` need not be normalized. Keeping its norm explicit preserves
-/// PAFI's path-derivative arithmetic.
-#[derive(Clone, Copy, Debug)]
-pub struct AffineHyperplane<'a> {
-    point: ArrayView1<'a, f64>,
-    normal: ArrayView1<'a, f64>,
-    normal_squared: f64,
+/// [`Hyperplane::new`] stores a unit normal for OH-TST. [`Hyperplane::from_path`]
+/// additionally retains the path derivative used to apply the algebraically
+/// equivalent `nnᵀ/(nᵀn)` projector in PAFI's historical operation order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Hyperplane {
+    point: Array1<f64>,
+    normal: Array1<f64>,
+    projection_normal: Option<Array1<f64>>,
 }
 
-impl<'a> AffineHyperplane<'a> {
-    /// Bind a point and a nonzero normal of equal length.
-    pub fn new(
-        point: ArrayView1<'a, f64>,
-        normal: ArrayView1<'a, f64>,
-    ) -> Result<Self, SaddleError> {
-        if point.is_empty() || point.len() != normal.len() {
-            return Err(SaddleError::Shape(
-                "an affine hyperplane needs a point and normal of one nonzero length".into(),
-            ));
-        }
-        if !point
-            .iter()
-            .chain(normal.iter())
-            .all(|value| value.is_finite())
-        {
-            return Err(SaddleError::NonFinite("affine hyperplane"));
-        }
-        let normal_squared = normal.dot(&normal);
-        if normal_squared == 0.0 {
-            return Err(SaddleError::Invalid(
-                "an affine hyperplane normal vanishes".into(),
-            ));
-        }
+impl Hyperplane {
+    /// The plane through `point` normal to `normal`; the stored normal is
+    /// normalized.
+    pub fn new(point: Array1<f64>, normal: Array1<f64>) -> Result<Self, SaddleError> {
+        check_plane(&point, &normal)?;
+        let norm = normal.dot(&normal).sqrt();
         Ok(Self {
             point,
-            normal,
-            normal_squared,
+            normal: normal / norm,
+            projection_normal: None,
         })
     }
 
-    /// Signed constraint residual divided by `normal · normal`.
-    pub fn correction(&self, point: ArrayView1<'_, f64>) -> f64 {
-        (&point - &self.point).dot(&self.normal) / self.normal_squared
+    /// A path plane retaining the unnormalized derivative for bitwise-stable
+    /// projection and restoration.
+    pub fn from_path(
+        point: ArrayView1<'_, f64>,
+        derivative: ArrayView1<'_, f64>,
+    ) -> Result<Self, SaddleError> {
+        let raw = derivative.to_owned();
+        let mut plane = Self::new(point.to_owned(), raw.clone())?;
+        plane.projection_normal = Some(raw);
+        Ok(plane)
+    }
+
+    /// The plane through a minimum-mode session's position and mode.
+    pub fn from_min_mode(session: &MinModeSession) -> Result<Self, SaddleError> {
+        Self::new(session.position().to_owned(), session.mode().to_owned())
+    }
+
+    /// The plane through `position` normal to an estimated lowest mode.
+    pub fn from_mode(position: ArrayView1<f64>, mode: &ModeEstimate) -> Result<Self, SaddleError> {
+        Self::new(position.to_owned(), mode.mode.clone())
+    }
+
+    /// Map a Cartesian plane to mass-weighted coordinates.
+    pub fn from_cartesian(
+        position: ArrayView1<f64>,
+        normal: ArrayView1<f64>,
+        masses: &[f64],
+    ) -> Result<Self, SaddleError> {
+        let sqrt_mass = sqrt_masses(masses, position.len())?;
+        if normal.len() != position.len() {
+            return Err(SaddleError::Shape(
+                "Cartesian plane point and normal need one length".into(),
+            ));
+        }
+        Self::new(&position * &sqrt_mass, &normal / &sqrt_mass)
+    }
+
+    /// Map this mass-weighted plane back to Cartesian coordinates.
+    pub fn to_cartesian(&self, masses: &[f64]) -> Result<(Array1<f64>, Array1<f64>), SaddleError> {
+        let sqrt_mass = sqrt_masses(masses, self.dim())?;
+        let normal = &self.normal * &sqrt_mass;
+        let norm = normal.dot(&normal).sqrt();
+        Ok((&self.point / &sqrt_mass, normal / norm))
+    }
+
+    /// A point on the plane.
+    pub fn point(&self) -> ArrayView1<'_, f64> {
+        self.point.view()
+    }
+
+    /// Unit normal pointing from the reactant side to the product side.
+    pub fn normal(&self) -> ArrayView1<'_, f64> {
+        self.normal.view()
+    }
+
+    /// Configuration-space dimension.
+    pub fn dim(&self) -> usize {
+        self.point.len()
+    }
+
+    /// Signed mass-weighted distance from `q` to the plane.
+    pub fn distance(&self, q: ArrayView1<f64>) -> f64 {
+        let mut distance = 0.0;
+        for i in 0..self.dim() {
+            distance += self.normal[i] * (q[i] - self.point[i]);
+        }
+        distance
+    }
+
+    /// Orthogonally restore `q` to the plane.
+    pub fn project(&self, q: ArrayView1<f64>) -> Array1<f64> {
+        let mut out = q.to_owned();
+        self.restore_in_place(&mut out);
+        out
+    }
+
+    /// The same plane represented by the projection of `center`.
+    pub fn recentered(&self, center: ArrayView1<f64>) -> Self {
+        Self {
+            point: self.project(center),
+            normal: self.normal.clone(),
+            projection_normal: self.projection_normal.clone(),
+        }
+    }
+
+    /// Reverse the normal when `toward` is on the negative side.
+    pub fn oriented_toward(mut self, toward: ArrayView1<f64>) -> Self {
+        if self.distance(toward) < 0.0 {
+            self.normal.mapv_inplace(|value| -value);
+            if let Some(raw) = &mut self.projection_normal {
+                raw.mapv_inplace(|value| -value);
+            }
+        }
+        self
+    }
+
+    /// Make the normal orthogonal to the rows of `modes`.
+    pub fn orthogonal_to(&self, modes: ArrayView2<f64>) -> Result<Self, SaddleError> {
+        if modes.nrows() > 0 && modes.ncols() != self.dim() {
+            return Err(SaddleError::Shape(
+                "modes differ in length from the plane".into(),
+            ));
+        }
+        let mut normal = self.normal.clone();
+        for direction in orthonormal_rows(modes, self.dim()) {
+            let coefficient = direction.dot(&normal);
+            normal.scaled_add(-coefficient, &direction);
+        }
+        Self::new(self.point.clone(), normal)
+    }
+
+    /// Pack `[point; normal]`.
+    pub fn packed(&self) -> Array1<f64> {
+        let n = self.dim();
+        let mut packed = Array1::zeros(2 * n);
+        packed.slice_mut(s![..n]).assign(&self.point);
+        packed.slice_mut(s![n..]).assign(&self.normal);
+        packed
+    }
+
+    /// Unpack `[point; normal]`, normalizing the normal block.
+    pub fn from_packed(packed: ArrayView1<f64>) -> Result<Self, SaddleError> {
+        if packed.is_empty() || !packed.len().is_multiple_of(2) {
+            return Err(SaddleError::Shape(
+                "a packed hyperplane has an even nonzero length".into(),
+            ));
+        }
+        let n = packed.len() / 2;
+        Self::new(
+            packed.slice(s![..n]).to_owned(),
+            packed.slice(s![n..]).to_owned(),
+        )
+    }
+
+    fn projection(&self) -> (ArrayView1<'_, f64>, f64) {
+        match &self.projection_normal {
+            Some(raw) => (raw.view(), raw.dot(raw)),
+            None => (self.normal.view(), 1.0),
+        }
     }
 }
 
-impl TangentProjector for AffineHyperplane<'_> {
+impl TangentProjector for Hyperplane {
     fn project(&self, vector: ArrayView1<'_, f64>) -> Array1<f64> {
         let mut out = vector.to_owned();
         self.project_in_place(&mut out);
@@ -109,16 +410,68 @@ impl TangentProjector for AffineHyperplane<'_> {
     }
 
     fn project_in_place(&self, vector: &mut Array1<f64>) {
-        let coefficient = vector.dot(&self.normal) / self.normal_squared;
-        *vector -= &(self.normal.to_owned() * coefficient);
+        let (normal, denominator) = self.projection();
+        let coefficient = vector.dot(&normal) / denominator;
+        *vector -= &(normal.to_owned() * coefficient);
     }
 }
 
-impl ProjectedConstraint for AffineHyperplane<'_> {
+impl ProjectedConstraint for Hyperplane {
     fn restore_in_place(&self, point: &mut Array1<f64>) {
-        let correction = self.correction(point.view());
-        *point -= &(self.normal.to_owned() * correction);
+        let (normal, denominator) = self.projection();
+        let correction = (&*point - &self.point).dot(&normal) / denominator;
+        *point -= &(normal.to_owned() * correction);
     }
+}
+
+fn check_plane(point: &Array1<f64>, normal: &Array1<f64>) -> Result<(), SaddleError> {
+    if point.is_empty() || point.len() != normal.len() {
+        return Err(SaddleError::Shape(
+            "hyperplane point and normal need one nonzero length".into(),
+        ));
+    }
+    if !point.iter().chain(normal).all(|value| value.is_finite()) {
+        return Err(SaddleError::NonFinite("hyperplane"));
+    }
+    let norm = normal.dot(normal).sqrt();
+    if norm <= 0.0 {
+        return Err(SaddleError::Invalid("hyperplane normal vanishes".into()));
+    }
+    Ok(())
+}
+
+pub(crate) fn orthonormal_rows(rows: ArrayView2<f64>, n: usize) -> Vec<Array1<f64>> {
+    let mut basis: Vec<Array1<f64>> = Vec::with_capacity(rows.nrows());
+    for row in rows.rows() {
+        if row.len() != n {
+            continue;
+        }
+        let scale = row.dot(&row).sqrt();
+        let mut vector = row.to_owned();
+        for _ in 0..2 {
+            for direction in &basis {
+                let coefficient = direction.dot(&vector);
+                vector.scaled_add(-coefficient, direction);
+            }
+        }
+        let norm = vector.dot(&vector).sqrt();
+        if scale > 0.0 && norm > 1.0e-10 * scale {
+            basis.push(vector / norm);
+        }
+    }
+    basis
+}
+
+pub(crate) fn sqrt_masses(masses: &[f64], n: usize) -> Result<Array1<f64>, SaddleError> {
+    if masses.len() != n {
+        return Err(SaddleError::Shape("one mass per coordinate".into()));
+    }
+    if !masses.iter().all(|mass| mass.is_finite() && *mass > 0.0) {
+        return Err(SaddleError::Invalid(
+            "masses must be finite and positive".into(),
+        ));
+    }
+    Ok(masses.iter().map(|mass| mass.sqrt()).collect())
 }
 
 /// Orthogonal complement of an axis known by its caller to have unit norm.
@@ -163,11 +516,11 @@ mod tests {
     use ndarray::array;
 
     #[test]
-    fn affine_projection_and_restore_satisfy_the_plane() {
+    fn projection_and_restore_satisfy_the_plane() {
         let point = array![0.4, -0.2, 0.7];
         let normal = array![2.0, -1.0, 0.5];
-        let plane = AffineHyperplane::new(point.view(), normal.view()).unwrap();
-        let projected = plane.project(array![1.0, 3.0, -2.0].view());
+        let plane = Hyperplane::from_path(point.view(), normal.view()).unwrap();
+        let projected = TangentProjector::project(&plane, array![1.0, 3.0, -2.0].view());
         assert!(projected.dot(&normal).abs() < 1e-14);
         let mut position = array![-0.3, 1.2, 0.1];
         plane.restore_in_place(&mut position);

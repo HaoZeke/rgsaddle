@@ -59,16 +59,37 @@ fn degrees_of(plane: &Hyperplane) -> f64 {
 }
 
 /// Quadrature free energy of [`eckart_line`], in units of `kT`.
-fn eckart_free_energy(degrees: f64, kt: f64) -> f64 {
+fn eckart_absolute_free_energy(degrees: f64, kt: f64) -> f64 {
     let theta = degrees.to_radians();
+    let direction = [-theta.sin(), theta.cos()];
+    let cutoff = ECKART_V0 + 22.0 * kt;
+    let mut lo = 0.0;
+    let mut hi = 1.0;
+    while EckartHo::energy(hi * direction[0], hi * direction[1]).0 < cutoff {
+        hi *= 2.0;
+    }
+    for _ in 0..80 {
+        let middle = 0.5 * (lo + hi);
+        if EckartHo::energy(middle * direction[0], middle * direction[1]).0 < cutoff {
+            lo = middle;
+        } else {
+            hi = middle;
+        }
+    }
     line_free_energy(
         EckartHo::energy,
         [0.0, 0.0],
         [theta.cos(), theta.sin()],
         kt,
         ECKART_V0,
-        60.0,
+        0.5 * (lo + hi),
     ) / kt
+}
+
+/// Angular free energy relative to the paper's reference line.
+fn eckart_free_energy(degrees: f64, kt: f64) -> f64 {
+    let reference = (-0.5 * 0.1_f64.atan()).to_degrees();
+    eckart_absolute_free_energy(degrees, kt) - eckart_absolute_free_energy(reference, kt)
 }
 
 /// Maximum of the Eckart line free energy in a bracket of angles, with the
@@ -87,9 +108,9 @@ fn eckart_sampler(kt: f64, time_step: f64) -> LangevinConfig {
         .with_thermal(kt)
         .with_time_step(time_step)
         .with_friction(0.03)
-        .with_burn_in(400)
+        .with_burn_in(1_000)
         .with_stride(4)
-        .with_records(2000)
+        .with_records(4_000)
         .with_seed(7)
 }
 
@@ -152,11 +173,13 @@ fn assert_near_maximum(paper: f64, quadrature: f64, kt: f64) {
 /// are equally high at 0.2266 (quadrature: 0.22676). At 0.3 they are at
 /// 1.43° and 75.6°, and the line across the valley walls,
 /// `π/2 - arctan(1/10)`, is the limit at extreme temperature. The paper's
-/// peak at 1.24° for `T = 0.01` is not reproduced: quadrature puts it at
-/// 1.170°, within 0.006° of the saddle line, which is its low-temperature
-/// limit.
+/// peak at 1.24° for `T = 0.01` is not reproduced by the stated
+/// `V0 + 22 kT` cutoff: quadrature puts it at 1.170°, within 0.006° of the
+/// saddle line, which is its low-temperature limit.
 #[test]
 fn eckart_angles_of_the_paper() {
+    let reference = (-0.5 * 0.1_f64.atan()).to_degrees();
+    assert_eq!(eckart_free_energy(reference, 0.3 * ECKART_V0), 0.0);
     let (_, _, mode) = eigen2(hessian(EckartHo::energy, [0.0, 0.0]));
     let saddle = (mode[1] / mode[0]).atan().to_degrees();
     assert!((saddle - 1.16).abs() < 0.005, "saddle line at {saddle}°");
@@ -217,12 +240,20 @@ fn eckart_angles_of_the_paper() {
     assert!((walls - 84.29).abs() < 0.005 && (hot - walls).abs() < 0.005);
 }
 
-/// At `T = 0.3 E_a/k_B` the optimizer, turning the line about the saddle,
-/// reaches the maximum on its side: from 60° the broad one at 75.6° and
-/// from 4° the sharp one at 1.40°. Each lands within four of its errors,
-/// the last torque error over the quadrature curvature.
+/// Through the engine-neutral sampler trait, the rotation-only optimizer
+/// reaches the cold low-angle maximum and, above the branch crossing, the
+/// maximum in either basin. Each lands within four of its errors, the last
+/// torque error over the quadrature curvature.
 #[test]
 fn eckart_optimizer_finds_both_maxima() {
+    let cold_kt = 0.01 * ECKART_V0;
+    let (cold, cold_curvature) = eckart_maximum(cold_kt, 0.5, 3.0);
+    let (turned, error) = eckart_turn(cold_kt, 4.0, 8.0, cold_curvature);
+    assert!(
+        (turned - cold).abs() < 4.0 * error,
+        "{turned}° ± {error}° against {cold}°"
+    );
+
     let kt = 0.3 * ECKART_V0;
     let (low, low_curvature) = eckart_maximum(kt, 0.5, 3.0);
     let (high, high_curvature) = eckart_maximum(kt, 60.0, 88.0);

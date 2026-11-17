@@ -139,19 +139,20 @@ pub use ocineb::{
 };
 #[cfg(feature = "ohtst")]
 pub use ohtst::{
-    AnharmonicConfig, AnharmonicCorrection, BasinConfig, BasinDensity, BasinEnd, Basins, Counting,
-    EndState, Endpoint, FixedCell, GaussianTransport, HarmonicReference, Hyperplane,
-    LangevinConfig, MassWeighted, OhTstRate, PermutationDistance, PlaneDensity, PlaneIntegrator,
-    PlaneMetric, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum, PlanePath, PlaneSample,
-    PlaneTrace, QuenchConfig, ReactantDensity, ReversibleWork, ReversibleWorkConfig, StateDistance,
-    TransmissionCoefficient, TransmissionConfig, TransmissionEstimate, Transport, Uncontrolled,
-    WorkEstimate, WorkNode, anharmonic_correction, basin_density, flux_mass, ohtst_rate,
-    plane_transmission, reactant_density, reversible_work, reversible_work_along, sample_plane,
-    transmission_coefficient,
+    AnalyticSurfaceSampler, AnharmonicConfig, AnharmonicCorrection, BasinConfig, BasinDensity,
+    BasinEnd, Basins, Counting, EndState, Endpoint, FixedCell, GaussianTransport,
+    HarmonicReference, LangevinConfig, MassWeighted, OhTstRate, PermutationDistance, PlaneDensity,
+    PlaneIntegrator, PlaneMetric, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum, PlanePath,
+    PlaneSample, PlaneTrace, QuenchConfig, ReactantDensity, ReversibleWork, ReversibleWorkConfig,
+    StateDistance, TransmissionCoefficient, TransmissionConfig, TransmissionEstimate, Transport,
+    Uncontrolled, WorkEstimate, WorkNode, anharmonic_correction, basin_density, flux_mass,
+    ohtst_rate, plane_transmission, reactant_density, reversible_work, reversible_work_along,
+    sample_plane, sample_plane_with_sampler, transmission_coefficient,
 };
 pub use pafi::{
     ArcPath, FreeEnergyProfile, HyperplaneAverage, PafiConfig, PathFrame, PathGeometry,
-    average_hyperplane, integrate_profile, pafi_profile, zero_temperature_barrier,
+    average_hyperplane, average_hyperplane_with_sampler, integrate_profile, pafi_profile,
+    zero_temperature_barrier,
 };
 pub use pair_network::{
     Mat3i, PairConfig, PairEdge, PairExit, PairHop, PairMove, PairNetwork, PairStateClass,
@@ -160,7 +161,9 @@ pub use pair_network::{
 pub use prfo::{PrfoKind, partitioned_rfo_eigen, restricted_prfo_displacement};
 pub use projection::ProjectionKind;
 pub use projector::{
-    AffineHyperplane, ManifoldTangent, ProjectedConstraint, TangentProjector, UnitNormal,
+    Hyperplane, HyperplaneCoordinates, HyperplaneEnsemble, HyperplaneObservation,
+    HyperplaneSampleBudget, HyperplaneSampler, ManifoldTangent, ProjectedConstraint,
+    TangentProjector, UnitNormal,
 };
 pub use relax::{
     DEFAULT_FORCE_TOL, DEFAULT_MAX_STEPS, RelaxConfig, Relaxation, max_atom_force,
@@ -174,6 +177,7 @@ pub use solid_dimer::{
 };
 pub use spring::SpringKind;
 pub use ssneb::{SolidImage, SolidNeb, joint_coordinate};
+pub use stats::EquilibrationReport;
 pub use stencil::{
     BAND_PRESET_SEAM, BandBuilder, Chain, Climb, EvalPool, Mesh, MeshEvent, PointBuilder, Preset,
     Role, Stencil, StencilReport, StencilStatus,
