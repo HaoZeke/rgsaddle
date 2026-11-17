@@ -119,7 +119,7 @@ pub use optimize::{
     PlaneTrace, optimize_plane,
 };
 pub use path::PlanePath;
-pub use plane::{FixedCell, Hyperplane, MassWeighted};
+pub use plane::{FixedCell, Hyperplane, MassWeighted, mass_weighted_rigid_translations};
 pub use rate::{OhTstRate, PlaneDensity, flux_mass, ohtst_rate, plane_transmission};
 pub use reactant::{ReactantDensity, reactant_density};
 pub use sample::{
