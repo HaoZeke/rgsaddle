@@ -146,6 +146,9 @@ pub struct ThermodynamicIntegrationNode {
     pub evaluations: usize,
     /// Automated equilibration and drift report.
     pub equilibration: EquilibrationReport,
+    /// Hard-boundary reflections in the region's planar-face order for
+    /// this lambda window.
+    pub hard_reflections: Vec<usize>,
 }
 
 /// `F_full - F_harmonic` on one fixed hyperplane.
@@ -224,6 +227,7 @@ pub fn thermodynamic_integration<E: HyperplaneSampler>(
             effective_samples,
             evaluations: ensemble.evaluations,
             equilibration,
+            hard_reflections: ensemble.hard_reflections,
         });
     }
     Ok(ThermodynamicIntegrationEstimate {

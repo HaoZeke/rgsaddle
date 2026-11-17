@@ -506,6 +506,14 @@ impl<S: PointSurface> HyperplaneSampler for PafiAnalyticSampler<'_, S> {
         let drift_scale = config.mobility * config.time_step;
         let total = budget.thermalize + budget.stride * budget.samples;
         let mut observations = Vec::with_capacity(budget.samples);
+        let planar_boundaries = budget
+            .region
+            .as_ref()
+            .and_then(|region| region.planar_boundaries());
+        let wall_count = planar_boundaries
+            .as_ref()
+            .map_or_else(|| usize::from(budget.region.is_some()), Vec::len);
+        let mut hard_reflections = vec![0; wall_count];
         for step in 0..total {
             let (_energy, gradient) = self.surface.eval(x.view())?;
             if gradient.len() != n || !gradient.iter().all(|value| value.is_finite()) {
@@ -541,25 +549,54 @@ impl<S: PointSurface> HyperplaneSampler for PafiAnalyticSampler<'_, S> {
             }
             let mut proposal = &x - &(&drift * drift_scale) + &(&noise * sigma);
             plane.restore_in_place(&mut proposal);
-            if let Some(region) = &budget.region
-                && let Some(violation) = region.violation(proposal.view())?
-            {
-                if let Some(penetration) = violation.penetration {
-                    let mut normal = TangentProjector::project(plane, violation.normal.view());
-                    let scale = normal.dot(&normal).sqrt();
-                    if !(scale.is_finite() && scale > 0.0) {
-                        return Err(SaddleError::Invalid(
-                            "region boundary has no PAFI in-plane normal".into(),
-                        ));
+            if let Some(region) = &budget.region {
+                if let Some(boundaries) = &planar_boundaries {
+                    for _ in 0..8 {
+                        let mut reflected = false;
+                        for (index, boundary) in boundaries.iter().enumerate() {
+                            let penetration = boundary.signed_distance(proposal.view())?;
+                            if penetration <= 0.0 {
+                                continue;
+                            }
+                            let mut normal = TangentProjector::project(plane, boundary.normal());
+                            let scale = normal.dot(&normal).sqrt();
+                            if !(scale.is_finite() && scale > 0.0) {
+                                return Err(SaddleError::Invalid(
+                                    "region boundary has no PAFI in-plane normal".into(),
+                                ));
+                            }
+                            normal /= scale;
+                            proposal.scaled_add(-2.0 * penetration / scale, &normal);
+                            plane.restore_in_place(&mut proposal);
+                            hard_reflections[index] += 1;
+                            reflected = true;
+                        }
+                        if !reflected {
+                            break;
+                        }
                     }
-                    normal /= scale;
-                    proposal.scaled_add(-2.0 * penetration / scale, &normal);
-                    plane.restore_in_place(&mut proposal);
                     if !region.contains(proposal.view())? {
                         proposal = x.clone();
                     }
-                } else {
-                    proposal = x.clone();
+                } else if let Some(violation) = region.violation(proposal.view())? {
+                    hard_reflections[0] += 1;
+                    if let Some(penetration) = violation.penetration {
+                        let mut normal = TangentProjector::project(plane, violation.normal.view());
+                        let scale = normal.dot(&normal).sqrt();
+                        if !(scale.is_finite() && scale > 0.0) {
+                            return Err(SaddleError::Invalid(
+                                "region boundary has no PAFI in-plane normal".into(),
+                            ));
+                        }
+                        normal /= scale;
+                        proposal.scaled_add(-2.0 * penetration / scale, &normal);
+                        plane.restore_in_place(&mut proposal);
+                        if !region.contains(proposal.view())? {
+                            proposal = x.clone();
+                        }
+                    } else {
+                        proposal = x.clone();
+                    }
                 }
             }
             x = proposal;
@@ -568,6 +605,7 @@ impl<S: PointSurface> HyperplaneSampler for PafiAnalyticSampler<'_, S> {
             observations,
             evaluations: total,
             acceptance: 1.0,
+            hard_reflections,
         })
     }
 }
@@ -872,6 +910,7 @@ mod tests {
                 observations,
                 evaluations: budget.samples,
                 acceptance: 1.0,
+                hard_reflections: Vec::new(),
             })
         }
     }

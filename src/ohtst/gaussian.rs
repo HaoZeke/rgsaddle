@@ -262,6 +262,7 @@ impl HyperplaneSampler for ExactGaussianPlaneSampler<'_> {
             observations,
             evaluations: budget.samples + actions,
             acceptance: 1.0,
+            hard_reflections: Vec::new(),
         })
     }
 

@@ -1268,6 +1268,8 @@ PySella make_sella(Vector x, Vector masses, std::int64_t order, double delta, do
 struct HyperplaneTiContext {
   nb::callable sampler;
   std::string error;
+  std::vector<std::uint64_t> hard_reflections;
+  std::vector<std::vector<std::uint64_t>> reflection_windows;
 };
 
 std::vector<double> copy_pointer(const double *values, std::size_t count) {
@@ -1276,13 +1278,24 @@ std::vector<double> copy_pointer(const double *values, std::size_t count) {
 
 extern "C" std::int32_t hyperplane_sample_python(
     void *raw, const double *point, const double *normal, std::size_t dimension,
-    const rgsaddle_hyperplane_budget_t *budget, rgsaddle_hyperplane_emit_fn emit, void *emit_context) {
+    const rgsaddle_hyperplane_budget_t *budget, rgsaddle_hyperplane_emit_fn emit, void *emit_context,
+    rgsaddle_hard_reflection_report_t *report) {
   auto *context = static_cast<HyperplaneTiContext *>(raw);
   try {
     nb::object output =
         context->sampler(copy_vector(copy_pointer(point, dimension)), copy_vector(copy_pointer(normal, dimension)),
                          budget->lambda, budget->thermal, budget->seed, budget->thermalize, budget->stride,
                          budget->samples);
+    context->hard_reflections.clear();
+    if (nb::isinstance<nb::tuple>(output)) {
+      const auto pair = nb::cast<nb::tuple>(output);
+      if (pair.size() != 2) {
+        throw nb::value_error("hyperplane sampler tuple needs observations and hard-reflection counts");
+      }
+      output = nb::borrow<nb::object>(pair[0]);
+      const auto counts = nb::cast<OwnerArray>(pair[1]);
+      context->hard_reflections.assign(counts.data(), counts.data() + counts.shape(0));
+    }
     const auto values =
         take_f64_1d(output, "hyperplane sampler result", static_cast<std::size_t>(budget->samples));
     for (std::int64_t index = 0; index < budget->samples; ++index) {
@@ -1294,6 +1307,8 @@ extern "C" std::int32_t hyperplane_sample_python(
         return status;
       }
     }
+    report->counts = context->hard_reflections.data();
+    report->wall_count = context->hard_reflections.size();
     return RGSADDLE_OK;
   } catch (const std::exception &error) {
     context->error = error.what();
@@ -1301,14 +1316,30 @@ extern "C" std::int32_t hyperplane_sample_python(
   }
 }
 
-nb::tuple hyperplane_ti_python(nb::callable sampler, Vector point, Vector normal, double thermal,
-                               std::int64_t nodes, std::int64_t thermalize, std::int64_t stride,
-                               std::int64_t samples, std::int64_t blocks, std::uint64_t seed) {
+extern "C" std::int32_t collect_hard_reflections(void *raw, std::size_t window,
+                                                  const std::uint64_t *counts,
+                                                  std::size_t wall_count) {
+  auto *context = static_cast<HyperplaneTiContext *>(raw);
+  if (window != context->reflection_windows.size() || (wall_count > 0 && counts == nullptr)) {
+    return RGSADDLE_INVALID_PARAMETER;
+  }
+  if (wall_count == 0) {
+    context->reflection_windows.emplace_back();
+  } else {
+    context->reflection_windows.emplace_back(counts, counts + wall_count);
+  }
+  return RGSADDLE_OK;
+}
+
+nb::tuple hyperplane_ti_python_impl(nb::callable sampler, Vector point, Vector normal, double thermal,
+                                    std::int64_t nodes, std::int64_t thermalize, std::int64_t stride,
+                                    std::int64_t samples, std::int64_t blocks, std::uint64_t seed,
+                                    bool report_reflections) {
   if (point.shape(0) <= 0 || normal.shape(0) != point.shape(0)) {
     throw nb::value_error("point and normal need one nonzero length");
   }
-  HyperplaneTiContext context{std::move(sampler), ""};
-  auto *handle = rgsaddle_hyperplane_sampler_create(&context, hyperplane_sample_python);
+  HyperplaneTiContext context{std::move(sampler), "", {}, {}};
+  auto *handle = rgsaddle_hyperplane_sampler_create_report(&context, hyperplane_sample_python);
   if (handle == nullptr) {
     throw std::runtime_error("could not create the hyperplane sampler");
   }
@@ -1322,8 +1353,9 @@ nb::tuple hyperplane_ti_python(nb::callable sampler, Vector point, Vector normal
   config.blocks = blocks;
   config.seed = seed;
   rgsaddle_hyperplane_ti_result_t result{};
-  const auto status = rgsaddle_hyperplane_thermodynamic_integration(
-      handle, point.data(), normal.data(), static_cast<std::size_t>(point.shape(0)), &config, &result);
+  const auto status = rgsaddle_hyperplane_thermodynamic_integration_report(
+      handle, point.data(), normal.data(), static_cast<std::size_t>(point.shape(0)), &config, &result,
+      report_reflections ? collect_hard_reflections : nullptr, &context);
   rgsaddle_hyperplane_sampler_free(handle);
   if (status != RGSADDLE_OK) {
     if (!context.error.empty()) {
@@ -1331,7 +1363,32 @@ nb::tuple hyperplane_ti_python(nb::callable sampler, Vector point, Vector normal
     }
     status_error(static_cast<rgsaddle_status_t>(status));
   }
-  return nb::make_tuple(result.free_energy, result.error, result.evaluations);
+  if (!report_reflections) {
+    return nb::make_tuple(result.free_energy, result.error, result.evaluations);
+  }
+  nb::list windows;
+  for (const auto &counts : context.reflection_windows) {
+    nb::list wall_counts;
+    for (const auto count : counts) {
+      wall_counts.append(nb::int_(count));
+    }
+    windows.append(std::move(wall_counts));
+  }
+  return nb::make_tuple(result.free_energy, result.error, result.evaluations, std::move(windows));
+}
+
+nb::tuple hyperplane_ti_python(nb::callable sampler, Vector point, Vector normal, double thermal,
+                               std::int64_t nodes, std::int64_t thermalize, std::int64_t stride,
+                               std::int64_t samples, std::int64_t blocks, std::uint64_t seed) {
+  return hyperplane_ti_python_impl(std::move(sampler), point, normal, thermal, nodes, thermalize,
+                                   stride, samples, blocks, seed, false);
+}
+
+nb::tuple hyperplane_ti_report_python(nb::callable sampler, Vector point, Vector normal, double thermal,
+                                      std::int64_t nodes, std::int64_t thermalize, std::int64_t stride,
+                                      std::int64_t samples, std::int64_t blocks, std::uint64_t seed) {
+  return hyperplane_ti_python_impl(std::move(sampler), point, normal, thermal, nodes, thermalize,
+                                   stride, samples, blocks, seed, true);
 }
 
 } // namespace
@@ -1384,6 +1441,19 @@ NB_MODULE(_core, m) {
       "Fixed-plane lambda TI through a Python sampler. The callback receives point, normal, lambda, "
       "thermal, seed, thermalize, stride and samples, and returns float64 C-contiguous "
       "V_full - V_harmonic observations.");
+  m.def(
+      "hyperplane_thermodynamic_integration_report", &hyperplane_ti_report_python, nb::arg("sampler"),
+      nb::arg("point").noconvert(), nb::arg("normal").noconvert(), nb::arg("thermal") = 0.02585,
+      nb::arg("nodes") = 8, nb::arg("thermalize") = 500, nb::arg("stride") = 5,
+      nb::arg("samples") = 2000, nb::arg("blocks") = 20, nb::arg("seed") = 1,
+      nb::sig("def hyperplane_thermodynamic_integration_report(sampler: collections.abc.Callable[..., "
+              "numpy.typing.NDArray[numpy.float64] | tuple[numpy.typing.NDArray[numpy.float64], "
+              "numpy.typing.NDArray[numpy.uint64]]], point: numpy.typing.NDArray[numpy.float64], "
+              "normal: numpy.typing.NDArray[numpy.float64], thermal: float = 0.02585, nodes: int = 8, "
+              "thermalize: int = 500, stride: int = 5, samples: int = 2000, blocks: int = 20, "
+              "seed: int = 1) -> tuple[float, float, int, list[list[int]]]"),
+      "Fixed-plane lambda TI with per-window, per-wall hard-reflection counts. The sampler may "
+      "return observations alone or (observations, uint64 wall counts).");
   nb::class_<rgsaddle::StencilReport>(m, "StencilReport")
       .def_prop_ro("status", [](const rgsaddle::StencilReport &report) { return report.status; },
                    "0 while running, 1 when converged.")

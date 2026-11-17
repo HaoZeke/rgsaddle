@@ -28,7 +28,7 @@ extern "C" {
 #endif
 
 #define RGSADDLE_ABI_MAJOR 1u
-#define RGSADDLE_ABI_MINOR 41u
+#define RGSADDLE_ABI_MINOR 42u
 
 /**
  * Band config flags bit 0. When set, each evaluation calls the surface
@@ -241,6 +241,20 @@ typedef int32_t (*rgsaddle_sample_hyperplane_fn)(
     void *, const double *, const double *, size_t,
     const rgsaddle_hyperplane_budget_t *, rgsaddle_hyperplane_emit_fn, void *);
 
+/** Per-wall hard reflections for one sampling window (ABI minor 42). */
+typedef struct {
+  const uint64_t *counts;
+  size_t wall_count;
+} rgsaddle_hard_reflection_report_t;
+
+typedef int32_t (*rgsaddle_sample_hyperplane_report_fn)(
+    void *, const double *, const double *, size_t,
+    const rgsaddle_hyperplane_budget_t *, rgsaddle_hyperplane_emit_fn, void *,
+    rgsaddle_hard_reflection_report_t *);
+
+typedef int32_t (*rgsaddle_hard_reflection_emit_fn)(
+    void *, size_t, const uint64_t *, size_t);
+
 typedef struct {
   rgsaddle_version_t version;
   uint64_t flags;
@@ -261,11 +275,18 @@ typedef struct {
 
 RgsaddleHyperplaneSampler *rgsaddle_hyperplane_sampler_create(
     void *, rgsaddle_sample_hyperplane_fn);
+RgsaddleHyperplaneSampler *rgsaddle_hyperplane_sampler_create_report(
+    void *, rgsaddle_sample_hyperplane_report_fn);
 void rgsaddle_hyperplane_sampler_free(RgsaddleHyperplaneSampler *);
 int32_t rgsaddle_hyperplane_thermodynamic_integration(
     RgsaddleHyperplaneSampler *, const double *, const double *, size_t,
     const rgsaddle_hyperplane_ti_config_t *,
     rgsaddle_hyperplane_ti_result_t *);
+int32_t rgsaddle_hyperplane_thermodynamic_integration_report(
+    RgsaddleHyperplaneSampler *, const double *, const double *, size_t,
+    const rgsaddle_hyperplane_ti_config_t *,
+    rgsaddle_hyperplane_ti_result_t *, rgsaddle_hard_reflection_emit_fn,
+    void *);
 
 /**
  * Host-surface request. The session stamps version and flags.

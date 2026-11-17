@@ -231,6 +231,9 @@ pub struct WorkNode {
     pub transport_weight: Option<f64>,
     /// Work from the first plane to this node by MBAR.
     pub mbar_work: Option<f64>,
+    /// Hard-boundary reflections in the region's planar-face order for
+    /// this node's sampling window.
+    pub hard_reflections: Vec<usize>,
 }
 
 /// `A(last plane) - A(first plane)`.
@@ -474,6 +477,7 @@ pub fn reversible_work_along<E: HyperplaneSampler>(
                     overlap,
                     transport_weight,
                     mbar_work: None,
+                    hard_reflections: sample.hard_reflections.clone(),
                 });
             }
         }

@@ -398,7 +398,12 @@ impl HyperplaneSampler for LammpsHyperplaneSampler {
                     "LAMMPS requires a region with engine-portable planar boundaries".into(),
                 )
             })?;
-            engine.set_boundaries(&boundaries, plane.dim())?;
+            engine.set_hard_boundary(
+                boundaries,
+                plane.clone(),
+                self.system.coordinate_masses().collect(),
+                budget.coordinates,
+            )?;
         }
         engine.step(budget.thermalize)?;
 
@@ -410,6 +415,13 @@ impl HyperplaneSampler for LammpsHyperplaneSampler {
             accounting = state.accounting;
             let (position, projected_force, projected_velocity) =
                 convert_state(&self.system, budget.coordinates, state);
+            if let Some(region) = &budget.region
+                && !region.contains(position.view())?
+            {
+                return Err(SaddleError::Surface(
+                    "lammpc returned a configuration outside the armed hard region".into(),
+                ));
+            }
             let observables = thermostat.observables().into_iter().collect();
             observations.push(HyperplaneObservation {
                 constraint_force: accounting.constraint_force,
@@ -425,6 +437,7 @@ impl HyperplaneSampler for LammpsHyperplaneSampler {
             observations,
             evaluations: accounting.force_evaluations,
             acceptance: 1.0,
+            hard_reflections: engine.hard_reflections(),
         })
     }
 }
@@ -499,8 +512,11 @@ type MdInitializeFn = unsafe extern "C" fn(
     *const MdConfig,
 ) -> c_int;
 type MdStepFn = unsafe extern "C" fn(*mut c_void, usize) -> c_int;
-type MdSetBoundariesFn =
-    unsafe extern "C" fn(*mut c_void, *const f64, *const f64, usize, usize) -> c_int;
+type FeatureFindFn = unsafe extern "C" fn(*const c_char) -> *const LammpcFeatureEntry;
+type HardBoundaryFn =
+    unsafe extern "C" fn(*mut c_void, c_int, *mut f64, *mut f64, *const LammpcBoundaryBox) -> c_int;
+type SetHardBoundaryFn =
+    unsafe extern "C" fn(*mut c_void, Option<HardBoundaryFn>, *mut c_void) -> c_int;
 type MdStateFn = unsafe extern "C" fn(
     *mut c_void,
     *mut f64,
@@ -518,6 +534,149 @@ struct MdState {
     accounting: MdObservation,
 }
 
+#[repr(C)]
+struct LammpcFeatureEntry {
+    feature_id: *const c_char,
+    kind: c_int,
+    stub_applicable: c_int,
+    embed_applicable: c_int,
+}
+
+#[repr(C)]
+struct LammpcBoundaryBox {
+    lo: [f64; 3],
+    hi: [f64; 3],
+    xy: f64,
+    xz: f64,
+    yz: f64,
+    periodic: [c_int; 3],
+    triclinic: c_int,
+}
+
+struct HardBoundaryContext {
+    boundaries: Vec<crate::PlanarBoundary>,
+    plane: Hyperplane,
+    masses: Vec<f64>,
+    coordinates: HyperplaneCoordinates,
+    reflections: Vec<usize>,
+    error: Option<String>,
+}
+
+extern "C" fn hard_boundary_callback(
+    user: *mut c_void,
+    n_atoms: c_int,
+    positions: *mut f64,
+    velocities: *mut f64,
+    _box: *const LammpcBoundaryBox,
+) -> c_int {
+    const REJECT: c_int = 1;
+    const REFLECT: c_int = 2;
+    if user.is_null() || positions.is_null() || velocities.is_null() || n_atoms < 0 {
+        return REJECT;
+    }
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let context = unsafe { &mut *user.cast::<HardBoundaryContext>() };
+        let dimension = usize::try_from(n_atoms)
+            .ok()
+            .and_then(|atoms| atoms.checked_mul(3))
+            .ok_or_else(|| "lammpc hard-boundary atom count overflow".to_string())?;
+        if dimension != context.plane.dim() || dimension != context.masses.len() {
+            return Err("lammpc hard-boundary geometry differs from the region".to_string());
+        }
+        let positions = unsafe { std::slice::from_raw_parts_mut(positions, dimension) };
+        let velocities = unsafe { std::slice::from_raw_parts_mut(velocities, dimension) };
+        let mut q = Array1::from_vec(positions.to_vec());
+        let mut velocity = Array1::from_vec(velocities.to_vec());
+        if context.coordinates == HyperplaneCoordinates::MassWeighted {
+            for ((coordinate, speed), mass) in
+                q.iter_mut().zip(velocity.iter_mut()).zip(&context.masses)
+            {
+                let root = mass.sqrt();
+                *coordinate *= root;
+                *speed *= root;
+            }
+        }
+        let mut reflected = false;
+        for _ in 0..8 {
+            let mut pass_reflected = false;
+            for (index, boundary) in context.boundaries.iter().enumerate() {
+                let penetration = boundary
+                    .signed_distance(q.view())
+                    .map_err(|error| error.to_string())?;
+                if penetration <= 0.0 {
+                    continue;
+                }
+                let mut tangent = boundary.normal().to_owned();
+                let normal_component = tangent.dot(&context.plane.normal());
+                tangent.scaled_add(-normal_component, &context.plane.normal());
+                let scale = tangent.dot(&tangent).sqrt();
+                if !(scale.is_finite() && scale > 0.0) {
+                    return Err(
+                        "hard-region boundary has no component in the hyperplane".to_string()
+                    );
+                }
+                tangent /= scale;
+                q.scaled_add(-2.0 * penetration / scale, &tangent);
+                let component = velocity.dot(&tangent);
+                velocity.scaled_add(-2.0 * component, &tangent);
+                let plane_component = velocity.dot(&context.plane.normal());
+                velocity.scaled_add(-plane_component, &context.plane.normal());
+                q = context.plane.project(q.view());
+                context.reflections[index] += 1;
+                reflected = true;
+                pass_reflected = true;
+            }
+            if !pass_reflected {
+                break;
+            }
+        }
+        if context
+            .boundaries
+            .iter()
+            .map(|boundary| boundary.signed_distance(q.view()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .any(|distance| distance > 0.0)
+        {
+            return Err("hard-region reflection did not return inside the region".to_string());
+        }
+        if !reflected {
+            return Ok(false);
+        }
+        if context.coordinates == HyperplaneCoordinates::MassWeighted {
+            for ((coordinate, speed), mass) in
+                q.iter_mut().zip(velocity.iter_mut()).zip(&context.masses)
+            {
+                let root = mass.sqrt();
+                *coordinate /= root;
+                *speed /= root;
+            }
+        }
+        positions.copy_from_slice(q.as_slice().expect("boundary position is contiguous"));
+        velocities.copy_from_slice(
+            velocity
+                .as_slice()
+                .expect("boundary velocity is contiguous"),
+        );
+        Ok(true)
+    }));
+    match outcome {
+        Ok(Ok(false)) => 0,
+        Ok(Ok(true)) => REFLECT,
+        Ok(Err(message)) => {
+            let context = unsafe { &mut *user.cast::<HardBoundaryContext>() };
+            context.error = Some(message);
+            REJECT
+        }
+        Err(_) => {
+            let context = unsafe { &mut *user.cast::<HardBoundaryContext>() };
+            context.error = Some("panic in lammpc hard-boundary callback".into());
+            REJECT
+        }
+    }
+}
+
 struct Engine {
     session: *mut c_void,
     destroy: SessionDestroyFn,
@@ -525,7 +684,9 @@ struct Engine {
     last_error: LastErrorFn,
     md_initialize: MdInitializeFn,
     md_step: MdStepFn,
-    md_set_boundaries: Option<MdSetBoundariesFn>,
+    feature_find: Option<FeatureFindFn>,
+    set_hard_boundary: Option<SetHardBoundaryFn>,
+    hard_boundary: Option<Box<HardBoundaryContext>>,
     md_state: MdStateFn,
     _library: Library,
 }
@@ -572,8 +733,12 @@ impl Engine {
             let md_step = *library
                 .get::<MdStepFn>(b"lammpc_session_md_step\0")
                 .map_err(load_error)?;
-            let md_set_boundaries = library
-                .get::<MdSetBoundariesFn>(b"lammpc_session_md_set_boundaries\0")
+            let feature_find = library
+                .get::<FeatureFindFn>(b"lammpc_feature_find\0")
+                .ok()
+                .map(|symbol| *symbol);
+            let set_hard_boundary = library
+                .get::<SetHardBoundaryFn>(b"lammpc_session_set_hard_boundary\0")
                 .ok()
                 .map(|symbol| *symbol);
             let md_state = *library
@@ -602,7 +767,9 @@ impl Engine {
                 last_error,
                 md_initialize,
                 md_step,
-                md_set_boundaries,
+                feature_find,
+                set_hard_boundary,
+                hard_boundary: None,
                 md_state,
                 _library: library,
             })
@@ -632,41 +799,74 @@ impl Engine {
 
     fn step(&mut self, steps: usize) -> Result<(), SaddleError> {
         let status = unsafe { (self.md_step)(self.session, steps) };
-        self.check(status)
+        self.check(status)?;
+        if let Some(message) = self
+            .hard_boundary
+            .as_mut()
+            .and_then(|context| context.error.take())
+        {
+            return Err(SaddleError::Surface(message));
+        }
+        Ok(())
     }
 
-    fn set_boundaries(
+    fn set_hard_boundary(
         &mut self,
-        boundaries: &[crate::PlanarBoundary],
-        dimension: usize,
+        boundaries: Vec<crate::PlanarBoundary>,
+        plane: Hyperplane,
+        masses: Vec<f64>,
+        coordinates: HyperplaneCoordinates,
     ) -> Result<(), SaddleError> {
-        let set = self.md_set_boundaries.ok_or_else(|| {
+        let find = self.feature_find.ok_or_else(|| {
             SaddleError::Surface(
-                "liblammpc lacks hard-region support; update lammpc with the generic boundary ABI"
-                    .into(),
+                "liblammpc lacks the feature table needed to negotiate hard boundaries".into(),
             )
         })?;
-        let mut points = Vec::with_capacity(boundaries.len() * dimension);
-        let mut normals = Vec::with_capacity(boundaries.len() * dimension);
-        for boundary in boundaries {
-            if boundary.point().len() != dimension {
+        let feature = unsafe { find(c"abi.lammpc_session_set_hard_boundary".as_ptr()).as_ref() }
+            .filter(|entry| entry.kind == 2 && entry.embed_applicable != 0)
+            .ok_or_else(|| {
+                SaddleError::Surface(
+                    "liblammpc does not advertise abi.lammpc_session_set_hard_boundary".into(),
+                )
+            })?;
+        let advertised = unsafe { CStr::from_ptr(feature.feature_id) };
+        if advertised.to_bytes() != b"abi.lammpc_session_set_hard_boundary" {
+            return Err(SaddleError::Surface(
+                "liblammpc returned the wrong hard-boundary feature".into(),
+            ));
+        }
+        let set = self.set_hard_boundary.ok_or_else(|| {
+            SaddleError::Surface(
+                "liblammpc advertises but does not export lammpc_session_set_hard_boundary".into(),
+            )
+        })?;
+        for boundary in &boundaries {
+            if boundary.point().len() != plane.dim() {
                 return Err(SaddleError::Shape(
                     "LAMMPS boundary and plane dimensions differ".into(),
                 ));
             }
-            points.extend(boundary.point());
-            normals.extend(boundary.normal());
         }
-        let status = unsafe {
-            set(
-                self.session,
-                points.as_ptr(),
-                normals.as_ptr(),
-                boundaries.len(),
-                dimension,
-            )
-        };
-        self.check(status)
+        let reflections = vec![0; boundaries.len()];
+        let mut context = Box::new(HardBoundaryContext {
+            boundaries,
+            plane,
+            masses,
+            coordinates,
+            reflections,
+            error: None,
+        });
+        let user = (&mut *context as *mut HardBoundaryContext).cast();
+        let status = unsafe { set(self.session, Some(hard_boundary_callback), user) };
+        self.check(status)?;
+        self.hard_boundary = Some(context);
+        Ok(())
+    }
+
+    fn hard_reflections(&self) -> Vec<usize> {
+        self.hard_boundary
+            .as_ref()
+            .map_or_else(Vec::new, |context| context.reflections.clone())
     }
 
     fn state(&mut self, dimension: usize) -> Result<MdState, SaddleError> {
@@ -765,5 +965,41 @@ mod tests {
             observables.get(LAMMPS_OBSERVABLE_EFFECTIVE_DOF),
             Some(&14.0)
         );
+    }
+
+    #[test]
+    fn hard_boundary_callback_reflects_and_counts_each_face() {
+        let boundary = crate::PlanarBoundary::new(
+            ndarray::array![0.0, 0.0, 0.0],
+            ndarray::array![1.0, 0.0, 0.0],
+        )
+        .unwrap();
+        let plane = Hyperplane::new(
+            ndarray::array![0.0, 0.0, 0.0],
+            ndarray::array![0.0, 0.0, 1.0],
+        )
+        .unwrap();
+        let mut context = HardBoundaryContext {
+            boundaries: vec![boundary],
+            plane,
+            masses: vec![1.0; 3],
+            coordinates: HyperplaneCoordinates::Cartesian,
+            reflections: vec![0],
+            error: None,
+        };
+        let mut position = [0.25, 0.0, 0.0];
+        let mut velocity = [0.5, 0.0, 0.0];
+        let status = hard_boundary_callback(
+            (&mut context as *mut HardBoundaryContext).cast(),
+            1,
+            position.as_mut_ptr(),
+            velocity.as_mut_ptr(),
+            std::ptr::null(),
+        );
+        assert_eq!(status, 2);
+        assert_eq!(position, [-0.25, 0.0, 0.0]);
+        assert_eq!(velocity, [-0.5, 0.0, 0.0]);
+        assert_eq!(context.reflections, vec![1]);
+        assert!(context.error.is_none());
     }
 }

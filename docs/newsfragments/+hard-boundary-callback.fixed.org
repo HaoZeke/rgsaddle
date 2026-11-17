@@ -1,0 +1,3 @@
+The LAMMPS hyperplane sampler now negotiates and binds lammpc's
+=lammpc_session_set_hard_boundary= callback ABI.  OH-TST sampling reports
+per-window, per-wall reflection counts in Rust, C, and Python.

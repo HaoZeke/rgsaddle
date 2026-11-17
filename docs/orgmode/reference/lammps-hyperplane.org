@@ -75,6 +75,39 @@ step count.
 The extension is generic. It does not contain an OH-TST, PAFI, pair-style,
 or material type. rgsaddle maps those arrays into =HyperplaneObservation=.
 
+* Hard-boundary callback
+
+Hard regions use lammpc's advertised callback ABI:
+
+#+begin_src c
+int lammpc_session_set_hard_boundary(
+    LammpcSession *, LammpcHardBoundaryFn, void *);
+#+end_src
+
+The loader requires the feature-table entry
+=abi.lammpc_session_set_hard_boundary= and then resolves the symbol.  The
+callback receives atom-tag-ordered Cartesian positions in angstrom and
+velocities in angstrom per picosecond.  rgsaddle maps them to the requested
+coordinate convention, projects each face normal into the sampled
+hyperplane, reflects position and velocity, and returns
+=LAMMPC_BOUNDARY_REFLECT=.  The face order is the order returned by
+=Region::planar_boundaries=.
+
+The callback contract in lammpc revision =9ece83c8= is attached by
+=lammpc_session_integrate=; its projected =lammpc_session_md_step= loop does
+not call it.  rgsaddle nevertheless arms only the advertised ABI and verifies
+every returned record against the region, so that revision fails closed if a
+projected-MD step crosses a wall.  A lammpc build must route the armed callback
+through its constrained-MD drift before it can produce reflected hard-region
+samples; no unpublished boundary symbol is used.
+
+The resulting =HyperplaneEnsemble= and =PlaneSample= carry one
+=hard_reflections= count per face for the complete sampling window,
+including warm-up.  =WorkNode= and =ThermodynamicIntegrationNode= preserve
+the corresponding window report.  =OhTstRate= carries the reactant window
+and every reversible-work window separately, so a rate table can cite the
+wall diagnostics beside the estimate.
+
 * Errors
 
 Library lookup follows rgpot's =lammpc= profile candidates. An explicit path

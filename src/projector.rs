@@ -219,6 +219,11 @@ pub struct HyperplaneEnsemble {
     pub evaluations: usize,
     /// Accepted fraction for a Metropolized engine, otherwise one.
     pub acceptance: f64,
+    /// Hard-boundary reflections in the region's planar-face order.
+    ///
+    /// This is one count per wall over the complete sampler window,
+    /// including warm-up. An empty vector means that no hard wall was armed.
+    pub hard_reflections: Vec<usize>,
 }
 
 /// External or analytic engine that samples a constrained ensemble.

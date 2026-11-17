@@ -5,7 +5,23 @@
 #include <stddef.h>
 
 _Static_assert(RGSADDLE_ABI_MAJOR == 1u, "main ABI major");
-_Static_assert(RGSADDLE_ABI_MINOR == 41u, "ABI minor");
+_Static_assert(RGSADDLE_ABI_MINOR == 42u, "ABI minor");
+
+typedef RgsaddleHyperplaneSampler *(*abi42_signature_rgsaddle_hyperplane_sampler_create_report)(
+    void *, rgsaddle_sample_hyperplane_report_fn);
+_Static_assert(_Generic(&rgsaddle_hyperplane_sampler_create_report,
+                        abi42_signature_rgsaddle_hyperplane_sampler_create_report: 1,
+                        default: 0),
+               "rgsaddle_hyperplane_sampler_create_report signature");
+
+typedef int32_t (*abi42_signature_rgsaddle_hyperplane_thermodynamic_integration_report)(
+    RgsaddleHyperplaneSampler *, const double *, const double *, size_t,
+    const rgsaddle_hyperplane_ti_config_t *, rgsaddle_hyperplane_ti_result_t *,
+    rgsaddle_hard_reflection_emit_fn, void *);
+_Static_assert(_Generic(&rgsaddle_hyperplane_thermodynamic_integration_report,
+                        abi42_signature_rgsaddle_hyperplane_thermodynamic_integration_report: 1,
+                        default: 0),
+               "rgsaddle_hyperplane_thermodynamic_integration_report signature");
 _Static_assert(RGSADDLE_BAND_NO_MIN_MODE == (1ull << 3), "band flag bit 3");
 _Static_assert(RGSADDLE_BAND_SPLINE_REPARAM == (1ull << 4), "band flag bit 4");
 _Static_assert(RGSADDLE_REPARAM_LINEAR == 0, "rgsaddle_reparametrization_t LINEAR");

@@ -292,7 +292,7 @@ pub(crate) struct Dynamics<'a, S> {
     pub(crate) evaluations: usize,
     pub(crate) proposed: usize,
     pub(crate) accepted: usize,
-    pub(crate) wall_hits: usize,
+    pub(crate) hard_reflections: Vec<usize>,
 }
 
 impl<'a, S: PointSurface> Dynamics<'a, S> {
@@ -345,7 +345,7 @@ impl<'a, S: PointSurface> Dynamics<'a, S> {
             evaluations: 0,
             proposed: 0,
             accepted: 0,
-            wall_hits: 0,
+            hard_reflections: vec![0; walls.len() + usize::from(region.is_some())],
         };
         dynamics.walls = walls
             .iter()
@@ -435,10 +435,14 @@ impl<'a, S: PointSurface> Dynamics<'a, S> {
         let previous = q.to_vec();
         axpy(q, a, v);
         self.constrain(q);
-        let mut hits = 0;
         for _ in 0..REFLECTIONS {
             let mut reflected = false;
-            for wall in self.walls.iter().filter(|wall| wall.scale > 0.0) {
+            for (index, wall) in self
+                .walls
+                .iter()
+                .enumerate()
+                .filter(|(_, wall)| wall.scale > 0.0)
+            {
                 let excess = (dot(slice(&wall.normal), q) - wall.offset) / wall.scale;
                 if excess > 0.0 {
                     let u = slice(&wall.tangent);
@@ -446,14 +450,13 @@ impl<'a, S: PointSurface> Dynamics<'a, S> {
                     let c = dot(u, v);
                     axpy(v, -2.0 * c, u);
                     reflected = true;
-                    hits += 1;
+                    self.hard_reflections[index] += 1;
                 }
             }
             if !reflected {
                 break;
             }
         }
-        self.wall_hits += hits;
         if let Some(region) = self.region {
             for _ in 0..REFLECTIONS {
                 let Some(violation) = region.violation(ArrayView1::from(&*q))? else {
@@ -476,7 +479,8 @@ impl<'a, S: PointSurface> Dynamics<'a, S> {
                 let component = dot(normal, v);
                 axpy(v, -2.0 * component, normal);
                 self.constrain(q);
-                self.wall_hits += 1;
+                let index = self.walls.len();
+                self.hard_reflections[index] += 1;
             }
             if !region.contains(ArrayView1::from(&*q))? {
                 return Err(SaddleError::Solver(
@@ -537,15 +541,20 @@ impl<'a, S: PointSurface> Dynamics<'a, S> {
             axpy(tq, h, slice(&trial_v));
             self.constrain(tq);
         }
-        let mut blocked = self
-            .walls
-            .iter()
-            .any(|wall| dot(slice(&wall.normal), slice(&trial)) > wall.offset);
+        let mut blocked = false;
+        for (index, wall) in self.walls.iter().enumerate() {
+            if dot(slice(&wall.normal), slice(&trial)) > wall.offset {
+                self.hard_reflections[index] += 1;
+                blocked = true;
+            }
+        }
         if let Some(region) = self.region {
-            blocked |= !region.contains(trial.view())?;
+            if !region.contains(trial.view())? {
+                self.hard_reflections[self.walls.len()] += 1;
+                blocked = true;
+            }
         }
         if blocked {
-            self.wall_hits += 1;
             v.mapv_inplace(|x| -x);
             self.v = v;
             self.trial = trial;
@@ -650,7 +659,24 @@ impl<S: PointSurface> HyperplaneSampler for AnalyticSurfaceSampler<'_, S> {
             )?,
         };
         let rng = self.rng.take().unwrap_or_else(|| Rng::new(budget.seed));
-        let walls: [Hyperplane; 0] = [];
+        let planar_walls = budget
+            .region
+            .as_ref()
+            .and_then(|region| region.planar_boundaries())
+            .map(|boundaries| {
+                boundaries
+                    .into_iter()
+                    .map(|boundary| {
+                        Hyperplane::new(boundary.point().to_owned(), boundary.normal().to_owned())
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()?;
+        let walls = planar_walls.as_deref().map_or(&[][..], |walls| walls);
+        let fallback_region = planar_walls
+            .is_none()
+            .then_some(budget.region.as_deref())
+            .flatten();
         let mut config = self.config.clone();
         config.thermal = budget.thermal;
         config.seed = budget.seed;
@@ -661,8 +687,8 @@ impl<S: PointSurface> HyperplaneSampler for AnalyticSurfaceSampler<'_, S> {
             self.surface,
             start,
             held,
-            &walls,
-            budget.region.as_deref(),
+            walls,
+            fallback_region,
             &config,
             rng,
         )?;
@@ -691,6 +717,7 @@ impl<S: PointSurface> HyperplaneSampler for AnalyticSurfaceSampler<'_, S> {
             observations,
             evaluations,
             acceptance,
+            hard_reflections: dynamics.hard_reflections.clone(),
         })
     }
 
@@ -767,6 +794,10 @@ pub struct PlaneSample {
     /// Accepted fraction of the proposals. One without the Metropolis test
     /// unless a wall rejected a step.
     pub acceptance: f64,
+    /// Hard-boundary reflections in the region's planar-face order.
+    ///
+    /// Counts cover this complete sampling window, including warm-up.
+    pub hard_reflections: Vec<usize>,
     /// Configuration after the last step.
     pub last: Array1<f64>,
     /// Configurations kept from the records, evenly spaced.
@@ -1081,6 +1112,7 @@ fn estimate_engine_plane(
         records,
         evaluations: ensemble.evaluations,
         acceptance: ensemble.acceptance,
+        hard_reflections: ensemble.hard_reflections,
         last,
         retained,
         uncontrolled: None,
@@ -1373,6 +1405,7 @@ pub(crate) fn sample_plane_controlled<S: PointSurface>(
         records,
         evaluations: ensemble.evaluations + control_evaluations,
         acceptance: ensemble.acceptance,
+        hard_reflections: ensemble.hard_reflections,
         last,
         retained,
         uncontrolled,
@@ -1484,6 +1517,7 @@ mod tests {
                 observations,
                 evaluations: budget.samples,
                 acceptance: 1.0,
+                hard_reflections: Vec::new(),
             })
         }
     }
@@ -1618,6 +1652,8 @@ mod tests {
                 .with_integrator(integrator)
                 .with_region(region.clone());
             let sample = sample_plane(&surface, &plane, None, &config).unwrap();
+            assert_eq!(sample.hard_reflections.len(), 1);
+            assert!(sample.hard_reflections[0] > 0);
             let exact_mean = (2.0 * kt / std::f64::consts::PI).sqrt();
             assert!((sample.centroid[1] - exact_mean).abs() < 0.04);
             assert!(
@@ -1648,6 +1684,8 @@ mod tests {
             .with_retain(500)
             .with_region(wall);
         let sample = sample_plane(&surface, &plane, None, &config).unwrap();
+        assert_eq!(sample.hard_reflections.len(), 1);
+        assert!(sample.hard_reflections[0] > 0);
         assert!(
             sample
                 .retained

@@ -70,6 +70,10 @@ pub struct OhTstRate {
     pub free_energy: f64,
     /// Its standard error.
     pub free_energy_error: f64,
+    /// Per-wall reflections in the reactant-density sampling window.
+    pub reactant_hard_reflections: Vec<usize>,
+    /// Per-wall reflections for every reversible-work node, in path order.
+    pub work_hard_reflections: Vec<Vec<usize>>,
 }
 
 impl OhTstRate {
@@ -204,6 +208,10 @@ pub trait PlaneDensity {
     fn thermal(&self) -> f64;
     /// The density and its standard error.
     fn density(&self) -> (f64, f64);
+    /// Hard-boundary reflections in the density sampling window.
+    fn hard_reflections(&self) -> &[usize] {
+        &[]
+    }
 }
 
 impl PlaneDensity for ReactantDensity {
@@ -217,6 +225,10 @@ impl PlaneDensity for ReactantDensity {
 
     fn density(&self) -> (f64, f64) {
         (self.density, self.density_error)
+    }
+
+    fn hard_reflections(&self) -> &[usize] {
+        &self.hard_reflections
     }
 }
 
@@ -264,6 +276,12 @@ pub fn ohtst_rate<D: PlaneDensity + ?Sized>(
         density_error: value_error,
         free_energy: work.work,
         free_energy_error: work.error,
+        reactant_hard_reflections: density.hard_reflections().to_vec(),
+        work_hard_reflections: work
+            .nodes
+            .iter()
+            .map(|node| node.hard_reflections.clone())
+            .collect(),
     })
 }
 
@@ -439,6 +457,7 @@ mod tests {
             overlap: None,
             transport_weight: None,
             mbar_work: None,
+            hard_reflections: vec![3, 5],
         };
         let kt = 0.5;
         let work = ReversibleWork {
@@ -470,10 +489,13 @@ mod tests {
             records: 1,
             evaluations: 0,
             acceptance: 1.0,
-            wall_hits: 0,
+            wall_hits: 18,
+            hard_reflections: vec![7, 11],
             last: array![0.0, 0.0],
         };
         let rate = ohtst_rate(&density, &work).unwrap();
+        assert_eq!(rate.reactant_hard_reflections, vec![7, 11]);
+        assert_eq!(rate.work_hard_reflections, vec![vec![3, 5]]);
         let expected = (kt / TAU).sqrt() * 0.4 * (-3.0f64 / kt).exp();
         let half = Transmission {
             time: vec![1.0],
@@ -514,6 +536,8 @@ mod tests {
             density_error: 0.0,
             free_energy: 0.0,
             free_energy_error: 0.0,
+            reactant_hard_reflections: Vec::new(),
+            work_hard_reflections: Vec::new(),
         };
         let twelve_paths = base
             .multiplied(&RateMultiplicity::default().with_paths(12))

@@ -69,10 +69,36 @@ pub type RgsaddleSampleHyperplaneFn = extern "C" fn(
     *mut c_void,
 ) -> i32;
 
+/// Borrowed per-wall hard-reflection counts for one sampling window.
+#[repr(C)]
+#[derive(Default)]
+pub struct RgsaddleHardReflectionReport {
+    /// Counts in the region's planar-face order.
+    pub counts: *const u64,
+    /// Number of entries addressed by [`Self::counts`].
+    pub wall_count: usize,
+}
+
+/// Engine callback with a per-window hard-reflection report (ABI minor 42).
+pub type RgsaddleSampleHyperplaneReportFn = extern "C" fn(
+    *mut c_void,
+    *const f64,
+    *const f64,
+    usize,
+    *const RgsaddleHyperplaneBudget,
+    RgsaddleHyperplaneEmitFn,
+    *mut c_void,
+    *mut RgsaddleHardReflectionReport,
+) -> i32;
+
+/// Emit the reflection report for one estimator window.
+pub type RgsaddleHardReflectionEmitFn = extern "C" fn(*mut c_void, usize, *const u64, usize) -> i32;
+
 /// Opaque callback sampler.
 pub struct RgsaddleHyperplaneSampler {
     context: *mut c_void,
-    sample: RgsaddleSampleHyperplaneFn,
+    sample: Option<RgsaddleSampleHyperplaneFn>,
+    sample_report: Option<RgsaddleSampleHyperplaneReportFn>,
 }
 
 /// Fixed-plane TI settings.
@@ -171,15 +197,29 @@ impl HyperplaneSampler for RgsaddleHyperplaneSampler {
             observations: Vec::with_capacity(budget.samples),
             error: None,
         };
-        let status = (self.sample)(
-            self.context,
-            plane.point().as_ptr(),
-            plane.normal().as_ptr(),
-            plane.dim(),
-            &request,
-            emit_observation,
-            (&mut emitted as *mut Emitted).cast(),
-        );
+        let mut reflection_report = RgsaddleHardReflectionReport::default();
+        let status = match (self.sample, self.sample_report) {
+            (Some(sample), None) => sample(
+                self.context,
+                plane.point().as_ptr(),
+                plane.normal().as_ptr(),
+                plane.dim(),
+                &request,
+                emit_observation,
+                (&mut emitted as *mut Emitted).cast(),
+            ),
+            (None, Some(sample)) => sample(
+                self.context,
+                plane.point().as_ptr(),
+                plane.normal().as_ptr(),
+                plane.dim(),
+                &request,
+                emit_observation,
+                (&mut emitted as *mut Emitted).cast(),
+                &mut reflection_report,
+            ),
+            _ => RGSADDLE_INVALID_PARAMETER,
+        };
         if status != RGSADDLE_OK {
             return Err(SaddleError::Surface(format!(
                 "hyperplane sampler callback status {status}"
@@ -188,10 +228,24 @@ impl HyperplaneSampler for RgsaddleHyperplaneSampler {
         if let Some(error) = emitted.error {
             return Err(error);
         }
+        let hard_reflections = if reflection_report.wall_count == 0 {
+            Vec::new()
+        } else if reflection_report.counts.is_null() {
+            return Err(SaddleError::Surface(
+                "hyperplane sampler returned null hard-reflection counts".into(),
+            ));
+        } else {
+            unsafe { slice::from_raw_parts(reflection_report.counts, reflection_report.wall_count) }
+                .iter()
+                .map(|&count| usize::try_from(count))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| SaddleError::Invalid("hard-reflection count exceeds usize".into()))?
+        };
         Ok(HyperplaneEnsemble {
             evaluations: emitted.observations.len(),
             observations: emitted.observations,
             acceptance: 1.0,
+            hard_reflections,
         })
     }
 }
@@ -203,7 +257,26 @@ pub extern "C" fn rgsaddle_hyperplane_sampler_create(
     sample: Option<RgsaddleSampleHyperplaneFn>,
 ) -> *mut RgsaddleHyperplaneSampler {
     sample.map_or(std::ptr::null_mut(), |sample| {
-        Box::into_raw(Box::new(RgsaddleHyperplaneSampler { context, sample }))
+        Box::into_raw(Box::new(RgsaddleHyperplaneSampler {
+            context,
+            sample: Some(sample),
+            sample_report: None,
+        }))
+    })
+}
+
+/// Create an engine-owned callback sampler that reports wall counts.
+#[unsafe(no_mangle)]
+pub extern "C" fn rgsaddle_hyperplane_sampler_create_report(
+    context: *mut c_void,
+    sample: Option<RgsaddleSampleHyperplaneReportFn>,
+) -> *mut RgsaddleHyperplaneSampler {
+    sample.map_or(std::ptr::null_mut(), |sample_report| {
+        Box::into_raw(Box::new(RgsaddleHyperplaneSampler {
+            context,
+            sample: None,
+            sample_report: Some(sample_report),
+        }))
     })
 }
 
@@ -237,6 +310,38 @@ pub unsafe extern "C" fn rgsaddle_hyperplane_thermodynamic_integration(
     dimension: usize,
     config: *const RgsaddleHyperplaneTiConfig,
     result: *mut RgsaddleHyperplaneTiResult,
+) -> i32 {
+    unsafe {
+        rgsaddle_hyperplane_thermodynamic_integration_report(
+            sampler,
+            point,
+            normal,
+            dimension,
+            config,
+            result,
+            None,
+            std::ptr::null_mut(),
+        )
+    }
+}
+
+/// Run fixed-plane lambda TI and emit one per-wall report per lambda window.
+///
+/// # Safety
+///
+/// Pointer requirements are the same as
+/// [`rgsaddle_hyperplane_thermodynamic_integration`]. `reflection_context`
+/// must remain valid for every invocation of `reflection_emit`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_hyperplane_thermodynamic_integration_report(
+    sampler: *mut RgsaddleHyperplaneSampler,
+    point: *const f64,
+    normal: *const f64,
+    dimension: usize,
+    config: *const RgsaddleHyperplaneTiConfig,
+    result: *mut RgsaddleHyperplaneTiResult,
+    reflection_emit: Option<RgsaddleHardReflectionEmitFn>,
+    reflection_context: *mut c_void,
 ) -> i32 {
     if sampler.is_null() {
         return RGSADDLE_NULL_SESSION;
@@ -280,6 +385,24 @@ pub unsafe extern "C" fn rgsaddle_hyperplane_thermodynamic_integration(
     // SAFETY: checked non-null and borrowed for this call.
     match thermodynamic_integration(unsafe { &mut *sampler }, &plane, &settings) {
         Ok(estimate) => {
+            if let Some(emit) = reflection_emit {
+                for (window, node) in estimate.nodes.iter().enumerate() {
+                    let counts: Vec<u64> = match node
+                        .hard_reflections
+                        .iter()
+                        .copied()
+                        .map(u64::try_from)
+                        .collect()
+                    {
+                        Ok(counts) => counts,
+                        Err(_) => return RGSADDLE_INVALID_PARAMETER,
+                    };
+                    let status = emit(reflection_context, window, counts.as_ptr(), counts.len());
+                    if status != RGSADDLE_OK {
+                        return status;
+                    }
+                }
+            }
             // SAFETY: checked non-null above.
             unsafe {
                 *result = RgsaddleHyperplaneTiResult {
@@ -324,6 +447,37 @@ mod tests {
         RGSADDLE_OK
     }
 
+    extern "C" fn sample_report(
+        context: *mut c_void,
+        point: *const f64,
+        normal: *const f64,
+        dimension: usize,
+        budget: *const RgsaddleHyperplaneBudget,
+        emit: RgsaddleHyperplaneEmitFn,
+        emit_context: *mut c_void,
+        report: *mut RgsaddleHardReflectionReport,
+    ) -> i32 {
+        let status = sample(
+            context,
+            point,
+            normal,
+            dimension,
+            budget,
+            emit,
+            emit_context,
+        );
+        if status == RGSADDLE_OK {
+            static COUNTS: [u64; 2] = [3, 5];
+            unsafe {
+                *report = RgsaddleHardReflectionReport {
+                    counts: COUNTS.as_ptr(),
+                    wall_count: COUNTS.len(),
+                };
+            }
+        }
+        status
+    }
+
     #[test]
     fn callback_ti_returns_the_emitted_constant() {
         let sampler = rgsaddle_hyperplane_sampler_create(std::ptr::null_mut(), Some(sample));
@@ -364,6 +518,22 @@ mod tests {
         assert_eq!(result.error, 0.0);
         assert_eq!(result.evaluations, 400);
         // SAFETY: sampler came from the matching constructor.
+        unsafe { rgsaddle_hyperplane_sampler_free(sampler) };
+    }
+
+    #[test]
+    fn report_callback_copies_per_wall_counts() {
+        let sampler =
+            rgsaddle_hyperplane_sampler_create_report(std::ptr::null_mut(), Some(sample_report));
+        let plane = Hyperplane::new(Array1::zeros(2), ndarray::array![1.0, 0.0]).unwrap();
+        let budget = HyperplaneSampleBudget::default()
+            .with_samples(4)
+            .with_thermalize(0)
+            .with_stride(1);
+        let ensemble = unsafe { &mut *sampler }
+            .sample_hyperplane(&plane, &budget)
+            .unwrap();
+        assert_eq!(ensemble.hard_reflections, vec![3, 5]);
         unsafe { rgsaddle_hyperplane_sampler_free(sampler) };
     }
 }

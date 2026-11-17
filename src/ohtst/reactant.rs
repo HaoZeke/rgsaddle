@@ -69,8 +69,12 @@ pub struct ReactantDensity {
     pub evaluations: usize,
     /// Accepted fraction of the proposals.
     pub acceptance: f64,
-    /// Proposals rejected at a wall.
+    /// Total proposals rejected or reflected at a wall.
     pub wall_hits: usize,
+    /// Hard-boundary reflections in the order of the `walls` argument.
+    ///
+    /// Counts cover this complete sampling window, including warm-up.
+    pub hard_reflections: Vec<usize>,
     /// Configuration after the last step.
     pub last: Array1<f64>,
 }
@@ -147,7 +151,8 @@ pub fn reactant_density<S: PointSurface>(
         records: config.records,
         evaluations: dynamics.evaluations,
         acceptance: dynamics.acceptance(),
-        wall_hits: dynamics.wall_hits,
+        wall_hits: dynamics.hard_reflections.iter().sum(),
+        hard_reflections: dynamics.hard_reflections.clone(),
         last: dynamics.q.clone(),
     })
 }
@@ -218,7 +223,10 @@ mod tests {
             assert!((result.crossing_density - exact).abs() < 4.0 * result.crossing_error);
         }
         assert_eq!(free.wall_hits, 0);
+        assert!(free.hard_reflections.is_empty());
         assert!(walled.wall_hits > 0);
+        assert_eq!(walled.hard_reflections.len(), 1);
+        assert_eq!(walled.wall_hits, walled.hard_reflections[0]);
         assert!(
             reactant_density(&Well, &plane, array![0.7, 0.0].view(), &[wall], &config).is_err()
         );

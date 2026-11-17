@@ -84,11 +84,17 @@ contained point before velocity reflection.
 
 The engine-neutral sampling budget carries the same region.  The analytic
 BAOAB/GHMC implementation consumes it through its existing drift or proposal
-step.  The LAMMPS adapter forwards planar faces through
-=lammpc_session_md_set_boundaries=.  The pinned lammpc ABI predates that
-entry point, so production use requires the corresponding generic-boundary
-patch in lammpc; rgsaddle reports that missing capability instead of adding a
-second local integrator.
+step.  The LAMMPS adapter arms the host callback exported as
+=lammpc_session_set_hard_boundary=.  It first requires the feature-table row
+=abi.lammpc_session_set_hard_boundary=, then reflects the position and the
+in-plane velocity in the callback.  The callback owns no material model:
+lammpc supplies atom-tag-ordered Cartesian positions and velocities, and
+rgsaddle applies the same planar-region geometry as the analytic sampler.
+Each sampling window reports one reflection count per planar face.
+lammpc revision =9ece83c8= invokes that callback from its LAMMPS
+=integrate= entry point but not yet from projected =md_step=; rgsaddle checks
+every returned projected-MD record and fails closed on an outside point until
+lammpc routes the armed callback through that drift.
 
 * One constraint and its metric
 
@@ -477,7 +483,8 @@ int32_t rgsaddle_hyperplane_thermodynamic_integration(
 The opaque sampler stores the callback, engine context, coordinate
 convention, units, and masses.  The observation uses borrowed arrays valid
 only during =emit=.  Construction, destruction, fixed-layout budget and
-observation structs, and fixed-plane TI are implemented at ABI minor 41.
+observation structs and fixed-plane TI are implemented at ABI minor 41.
+Per-window, per-wall hard-reflection reports are additive at ABI minor 42.
 The Python binding presents the same operation as
 =hyperplane_thermodynamic_integration= and calls a Python-owned sampler at
 every Gauss-Legendre node.  Callback bindings for plane optimization,
