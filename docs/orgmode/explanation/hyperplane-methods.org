@@ -23,15 +23,15 @@ The method sources are:
   in Large Crystalline Systems/, /Physical Review Letters/ 120, 135503
   (2018), doi:10.1103/PhysRevLett.120.135503 (PAFI).
 - Jóhannesson and Jónsson, /Optimization of hyperplanar transition states/,
-  /The Journal of Chemical Physics/ 115, 9644--9656 (2001),
+  /The Journal of Chemical Physics/ 115, 9644-9656 (2001),
   doi:10.1063/1.1415499 (OH-TST).
 - Bligaard and Jónsson, /Optimization of hyperplanar transition states:
   Application to 2D test problems/, /Computer Physics Communications/ 169,
-  284--288 (2005), doi:10.1016/j.cpc.2005.03.064 (the twisted-path
+  284-288 (2005), doi:10.1016/j.cpc.2005.03.064 (the twisted-path
   validation).
 - Hermes, Sargsyan, Najm, and Zádor, /Sella, an Open-Source
   Automation-Friendly Molecular Saddle Point Optimizer/, /Journal of Chemical
-  Theory and Computation/ 18, 6974--6988 (2022),
+  Theory and Computation/ 18, 6974-6988 (2022),
   doi:10.1021/acs.jctc.2c00395.
 - Absil, Mahony, and Sepulchre, /Optimization Algorithms on Matrix
   Manifolds/, Princeton University Press (2008),
@@ -148,6 +148,16 @@ replace the sphere by rgmin's =SubspaceSphere=.  The offset is a Euclidean
 factor.  =PlaneOptimizer= assembles those factors as an rgmin
 =ProductManifold= and minimizes \(-A\) with its Riemannian trust region.
 
+Sample sizing and convergence are separate.  The gradient norm test may grow
+the constrained ensemble up to =max_records=.  It does not decide
+convergence: the accepted translation and orientation steps must instead be
+smaller than =confidence= times their gradient errors propagated through the
+current model curvature, or smaller than =tolerance=, for =patience=
+consecutive accepted steps.  =max_iterations= and =max_evaluations= return a
+finite last estimate with =PlaneOptimizerStatus::MaxIterations= or
+=PlaneOptimizerStatus::MaxEvaluations=; sampling noise cannot make the run
+unbounded.
+
 Sampling gives the ambient derivatives
 
 \[
@@ -181,10 +191,9 @@ and compares free energies relative to the paper's reference orientation.
 The same test then exercises the rotation-only =PlaneOptimizer= through
 =AnalyticSurfaceSampler= and =HyperplaneSampler=.
 
-The cutoff quadrature does not reproduce every rounded angle in the paper:
-at \(T=0.01E_a/k_B\) its low-angle maximum is \(1.16954^\circ\), rather than
-the quoted \(1.24^\circ\).  This discrepancy is retained as an explicit
-validation result; the test does not weaken quadrature or manufacture the
+At \(T=0.01E_a/k_B\), the cutoff quadrature gives a low-angle maximum of
+\(1.16954^\circ\); the paper quotes \(1.24^\circ\).  The test records that
+measured discrepancy and does not weaken quadrature or manufacture the
 published number.
 
 PAFI and OH-TST answer different questions on this surface.  PAFI fixes a
@@ -227,15 +236,15 @@ production path.
 
 ** Restricted MD, curvature, and thermodynamic integration
 
-The next consumer is restricted molecular dynamics and proton-transfer
-thermodynamic integration.  It must use the same boundary rather than grow a
-second constrained eigensolver or Gaussian sampler.
+Restricted molecular dynamics and proton-transfer thermodynamic integration
+use the same boundary rather than a second constrained eigensolver or Gaussian
+sampler.
 
 For a plane with additional orthonormal constrained rows \(U\), define
 \[
 Q=I-\nu\nu^T-U^TU,\qquad H_{\cal H}v=QH(Qv).
 \]
-The intended API is
+The implemented API is
 
 #+begin_src rust
 Hyperplane::hessian_vector(
@@ -250,26 +259,23 @@ Hyperplane::lowest_modes(
     constrained_rows: ArrayView2<f64>,
     count: usize,
     config: &MinModeConfig,
-) -> Result<ModeEstimateBlock, SaddleError>;
+    ) -> Result<HyperplaneModes, SaddleError>;
 #+end_src
 
-Both calls must be thin public entries to rgsaddle's existing
+Both calls are thin public entries to rgsaddle's existing
 =PointSurface::hessian_vector= / finite-difference action and block-Lanczos
 implementation.  They must project the trial vector before the action and
-the result afterwards.  Reimplementing Lanczos in the TI consumer is
-forbidden.  This extraction is not included in the first code piece because
-the current block-Lanczos workspace and its action counter are private to
-=IndexKSession=; copying that code onto =Hyperplane= would create exactly the
-duplication this design is meant to remove.
+the result afterwards.  =HyperplaneModes= reports the shared workspace's
+Hessian-action and finite-difference evaluation counts.  The analytic test
+checks the restricted Ritz values and vectors against the exact projected
+Hessian.
 
-An =ExactGaussianPlaneSampler= should implement =HyperplaneSampler= for a
+An =ExactGaussianPlaneSampler= implements =HyperplaneSampler= for a
 quadratic model \(V(q)=V_c+g^T(q-c)+\tfrac12(q-c)^TH(q-c)\).  It obtains the
 positive in-plane spectrum from =Hyperplane::lowest_modes=, draws independent
 normal coordinates with variance \(k_BT/\lambda_i\), and reports the same
 positions, normal constraint forces, projected forces, and Jacobian fields
 as an MD engine.  Zero or negative free curvatures are typed model errors.
-Harmonic controls in OH-TST and the spectral-instanton prototype should use
-this sampler rather than estimator-local Gaussian code.
 
 Thermodynamic integration uses
 \[
@@ -277,9 +283,8 @@ V_\lambda=(1-\lambda)V_{\rm harmonic}+\lambda V_{\rm full},\qquad
 {dF\over d\lambda}
 =\left\langle V_{\rm full}-V_{\rm harmonic}\right\rangle_{\lambda,{\cal H}} .
 \]
-The sampler request therefore needs an extensible observable selector and
-each returned record needs named scalar observables.  The concrete follow-up
-API is:
+The sampler request has an extensible observable selector and each returned
+record has named scalar observables.  The implemented estimator API is:
 
 #+begin_src rust
 trait HyperplaneSampler {
@@ -293,16 +298,17 @@ trait HyperplaneSampler {
 fn thermodynamic_integration<E: HyperplaneSampler>(
     sampler: &mut E,
     plane: &Hyperplane,
-    lambda: &[f64],
     config: &ThermodynamicIntegrationConfig,
 ) -> Result<ThermodynamicIntegrationEstimate, SaddleError>;
 #+end_src
 
-The TI estimator consumes the named
+The TI estimator selects Gauss-Legendre nodes, consumes the named
 \(V_{\rm full}-V_{\rm harmonic}\) series, applies the same automated
 equilibration and =block_mean= implementation as PAFI and OH-TST, and uses
-the shared checked quadrature used for path integration.  Backend-specific
-Hamiltonian interpolation remains behind the sampler.
+independent per-node block errors.  Backend-specific Hamiltonian
+interpolation remains behind the sampler.  The
+=restricted_thermodynamic_integration= spelling documents the Amsel-style
+fixed-plane MD/TI use: it does not optimize or move the chosen plane.
 
 ** Complete OH-TST workflow on engine traits
 
@@ -318,16 +324,16 @@ transmission_coefficient(&mut impl HyperplaneDynamics, plane, config)
     -> Result<TransmissionCoefficient, SaddleError>;
 #+end_src
 
-=PlaneOptimizer= and reversible work use repeated constrained ensembles and
-therefore depend only on =HyperplaneSampler=.  The transmission coefficient
+=optimize_plane= and =reversible_work= use repeated constrained ensembles and
+depend only on =HyperplaneSampler=.  BAR and MBAR request optional arbitrary
+configuration energies through the same engine trait.  The transmission coefficient
 \(\kappa\) does not: it launches flux-weighted configurations from the plane
 and propagates unconstrained trajectories to basin commitment.  A separate
-=HyperplaneDynamics= engine trait must expose velocity drawing, launch,
-unconstrained propagation, basin classification, and deterministic seed
-mapping.  Pretending that =sample_hyperplane= can provide those operations
-would hide the missing recrossing correction.  =ohtst_rate= may combine the
-optimized free-energy factor and \(\kappa\) only when both typed results are
-present.
+=HyperplaneDynamics= engine trait exposes that shooting operation.
+=AnalyticSurfaceDynamics= is the BAOAB/Newtonian analytic reference.
+Pretending that =sample_hyperplane= can provide those operations would hide
+the recrossing correction.  =ohtst_rate= combines the free-energy factor and
+\(\kappa\) only when both typed results are present.
 
 ** Derived equilibration and drift rejection
 
@@ -335,7 +341,7 @@ present.
 not declarations that equilibrium has been reached.  After that floor the
 estimator applies John D. Chodera, /A Simple Method for Automated
 Equilibration Detection in Molecular Simulations/, /Journal of Chemical
-Theory and Computation/ 12, 1799--1805 (2016),
+Theory and Computation/ 12, 1799-1805 (2016),
 doi:10.1021/acs.jctc.5b00784.  For every candidate discard \(t_0\), it
 estimates the statistical inefficiency
 
@@ -391,7 +397,7 @@ estimate is silently emitted.
   masses, step/evaluation accounting, and seed mapping.  Text-log scraping
   is not an API.
 
-The future C ABI should be callback based so the engine retains ownership:
+The C ABI is callback based so the engine retains ownership:
 
 #+begin_src c
 typedef struct rgsaddle_hyperplane_sampler rgsaddle_hyperplane_sampler;
@@ -407,17 +413,19 @@ typedef int32_t (*rgsaddle_sample_hyperplane_fn)(
     int32_t (*emit)(void *, const rgsaddle_hyperplane_observation *),
     void *emit_context);
 
-int32_t rgsaddle_pafi_estimate_from_sampler(
-    rgsaddle_hyperplane_sampler *, /* path geometry and output */);
-int32_t rgsaddle_ohtst_estimate_from_sampler(
-    rgsaddle_hyperplane_sampler *, /* plane and output */);
+int32_t rgsaddle_hyperplane_thermodynamic_integration(
+    rgsaddle_hyperplane_sampler *, /* plane, config, output */);
 #+end_src
 
 The opaque sampler stores the callback, engine context, coordinate
 convention, units, and masses.  The observation uses borrowed arrays valid
-only during =emit=.  Construction, destruction, error retrieval, and the
-complete fixed-layout request/result structs belong in the backend piece;
-none of these calls is implemented in this change.
+only during =emit=.  Construction, destruction, fixed-layout budget and
+observation structs, and fixed-plane TI are implemented at ABI minor 41.
+The Python binding presents the same operation as
+=hyperplane_thermodynamic_integration= and calls a Python-owned sampler at
+every Gauss-Legendre node.  Callback bindings for plane optimization,
+reversible work, PAFI profiles, and unconstrained shooting remain designed
+but not implemented.
 
 * Dimer, Lanczos, bands, and Sella are one operator family
 
@@ -464,8 +472,8 @@ min-mode, Sella, and rgmin manifold tests.
 
 * Reproducing the OH-TST paper is a separate validation piece
 
-The present change is a smoke validation, not a claim to reproduce published
-numbers.  A reproduction of Jóhannesson and Jónsson requires all of the
+The present change validates the implementation; it does not claim to
+reproduce published numbers.  A reproduction of Jóhannesson and Jónsson requires all of the
 following to be pinned in a separate validation directory:
 
 1. the paper's Appendix-B potential and derivatives, parameters, reduced
@@ -510,17 +518,9 @@ a reproducible test.
    tangent vectors, and covectors distinctly.
 5. *Production engine adapters.* Implement lammpc/LAMMPS first, then OpenMM
    and GROMACS, against =HyperplaneSampler= and the C ABI contract above.
-6. *Constrained curvature extraction.* Expose the existing min-mode
-   Hessian-action and block-Lanczos workspace through =Hyperplane= with
-   additional constrained rows; then migrate harmonic controls and the
-   spectral-instanton prototype.
-7. *Exact Gaussian backend and TI.* Implement
-   =ExactGaussianPlaneSampler=, named scalar observables, shared
-   \(\lambda\)-quadrature, and the proton-transfer TI estimator.
-8. *Engine-complete OH-TST workflow.* Generalize plane optimization and
-   reversible work over =HyperplaneSampler=, add =HyperplaneDynamics= for
-   flux launches and commitment, and require \(\kappa\) in the assembled
-   rate.
-9. *Paper reproduction suite.* Implement the eight pinned inputs above and
+6. *Production callback bindings.* Complete callback-owned C and Python
+   engine adapters for optimization, work, TI, and shooting without exposing
+   an engine pointer to Rust.
+7. *Paper reproduction suite.* Implement the eight pinned inputs above and
    compare paper observables only after independent quadrature references
    pass.
