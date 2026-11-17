@@ -123,7 +123,7 @@ pub use art::{
 pub use autoneb::{AutoNeb, AutoNebInterpolant, AutoNebReport, AutoNebTuning};
 pub use band::{
     BandConfig, BandEvaluation, BandReport, BandSession, BandStatus, BandSurface, Cell, CiConfig,
-    ExpBandPrecon, GrowingStringConfig, GrowingStringPhase, GrowingStringReport,
+    DynamicNeb, ExpBandPrecon, GrowingStringConfig, GrowingStringPhase, GrowingStringReport,
     GrowingStringSession, MinModeRefine, SolidState, StringConfig, StringSession, ZoomConfig,
     climbing_image,
 };
