@@ -57,6 +57,8 @@
 #[macro_use]
 mod config;
 
+mod vec3;
+
 pub mod art;
 pub mod autoneb;
 pub mod band;
