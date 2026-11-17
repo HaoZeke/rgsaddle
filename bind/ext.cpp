@@ -1372,6 +1372,9 @@ NB_MODULE(_core, m) {
         "string unless an error text was set. raise_status reads it and then clears it.");
 
   m.def(
+  m.attr("THERMODYNAMIC_DERIVATIVE") =
+      std::string(rgsaddle_thermodynamic_derivative_observable());
+  m.def(
       "hyperplane_thermodynamic_integration", &hyperplane_ti_python, nb::arg("sampler"),
       nb::arg("point").noconvert(), nb::arg("normal").noconvert(), nb::arg("thermal") = 0.02585,
       nb::arg("nodes") = 8, nb::arg("thermalize") = 500, nb::arg("stride") = 5,

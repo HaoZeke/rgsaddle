@@ -138,7 +138,7 @@ pub use indexk::{
 #[cfg(feature = "lammps")]
 pub use lammps::{
     LammpsHyperplaneSampler, LammpsSamplerConfig, LammpsSystem, LammpsThermostatKind,
-    LammpsThermostatRecord,
+    LammpsThermodynamicReference, LammpsThermostatRecord,
 };
 pub use minmode::{
     FiniteDifference, MinModeConfig, MinModeKind, MinModeReport, MinModeSession, MinModeStatus,
@@ -165,7 +165,9 @@ pub use ohtst::{
     PlaneOptimizerConfig, PlaneOptimizerStatus, PlaneOptimum, PlanePath, PlaneSample, PlaneTrace,
     QuadraticModel, QuenchConfig, QuenchedTransitionRegion, RateMultiplicity, ReactantDensity,
     ReversibleWork, ReversibleWorkConfig, StateDistance, THERMODYNAMIC_DERIVATIVE,
-    ThermodynamicIntegrationConfig, ThermodynamicIntegrationEstimate, ThermodynamicIntegrationNode,
+    ThermodynamicDerivative, ThermodynamicIntegrationConfig, ThermodynamicIntegrationEstimate,
+    ThermodynamicIntegrationNode, ThermodynamicSampler, ThermodynamicSurfaceSampler,
+    HarmonicExpansion, harmonic_energy_at,
     TransmissionCoefficient, TransmissionConfig, TransmissionEstimate, Transport, Uncontrolled,
     WorkEstimate, WorkNode, anharmonic_correction, basin_density, flux_mass,
     mass_weighted_rigid_translations, ohtst_rate, optimize_plane, plane_transmission,

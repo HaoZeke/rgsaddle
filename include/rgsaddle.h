@@ -266,6 +266,8 @@ int32_t rgsaddle_hyperplane_thermodynamic_integration(
     RgsaddleHyperplaneSampler *, const double *, const double *, size_t,
     const rgsaddle_hyperplane_ti_config_t *,
     rgsaddle_hyperplane_ti_result_t *);
+/** Stable observable name `potential.full_minus_harmonic` for TI records. */
+const char *rgsaddle_thermodynamic_derivative_observable(void);
 
 /**
  * Host-surface request. The session stamps version and flags.

@@ -129,9 +129,10 @@ pub use sample::{
     sample_plane, sample_plane_with_sampler,
 };
 pub use ti::{
-    AnalyticThermodynamicSampler, THERMODYNAMIC_DERIVATIVE, ThermodynamicIntegrationConfig,
-    ThermodynamicIntegrationEstimate, ThermodynamicIntegrationNode,
-    restricted_thermodynamic_integration, thermodynamic_integration,
+    AnalyticThermodynamicSampler, HarmonicExpansion, THERMODYNAMIC_DERIVATIVE,
+    ThermodynamicDerivative, ThermodynamicIntegrationConfig, ThermodynamicIntegrationEstimate,
+    ThermodynamicIntegrationNode, ThermodynamicSampler, ThermodynamicSurfaceSampler,
+    harmonic_energy_at, restricted_thermodynamic_integration, thermodynamic_integration,
 };
 #[allow(deprecated)]
 pub use transmission::{

@@ -82,6 +82,45 @@ sampling budget with a region.
 The extension is generic. It does not contain an OH-TST, PAFI, pair-style,
 or material type. rgsaddle maps those arrays into =HyperplaneObservation=.
 
+* Thermodynamic integration coupling
+
+When =HyperplaneSampleBudget::lambda= is set, =LammpsHyperplaneSampler=
+requires =LammpsSamplerConfig::thermodynamic_reference=: a Taylor harmonic
+model stored as reference energy, gradient, and dense Hessian in the
+sampler coordinates.
+
+Until lammpc exposes a mixing hook, lambda sampling fails with a surface
+error. The intended additive ABI is:
+
+#+begin_src c
+typedef struct {
+  double lambda;
+  double reference_energy;
+} lammpc_md_thermodynamic_coupling_t;
+
+int lammpc_session_md_set_thermodynamic_coupling(
+    LammpcSession *session,
+    const lammpc_md_thermodynamic_coupling_t *coupling,
+    const double *reference_gradient,
+    const double *reference_hessian,
+    size_t dimension);
+#+end_src
+
+Each MD step should add =(1-lambda) F_harmonic= to the LAMMPS force, with
+=F_harmonic = -(g_0 + H (x-x_0))= from the stored reference.
+
+To emit =potential.full_minus_harmonic= on each record, lammpc also needs
+
+#+begin_src c
+int lammpc_session_md_potential_energy(
+    LammpcSession *session,
+    const double *position,
+    size_t dimension,
+    double *energy);
+#+end_src
+
+returning the unmixed full potential at the current geometry.
+
 * Errors
 
 Library lookup follows rgpot's =lammpc= profile candidates. An explicit path

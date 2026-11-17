@@ -7,10 +7,343 @@ use crate::minmode::PointSurface;
 use crate::projector::{Hyperplane, HyperplaneEnsemble, HyperplaneSampleBudget, HyperplaneSampler};
 use crate::stats::{EquilibrationReport, block_mean, equilibrate};
 
+use super::anharmonic::hessian_action;
+use super::control::HarmonicReference;
+use super::gaussian::HyperplaneObservable;
 use super::{AnalyticSurfaceSampler, LangevinConfig};
 
 /// Stable observable name for `V_full - V_harmonic`.
 pub const THERMODYNAMIC_DERIVATIVE: &str = "potential.full_minus_harmonic";
+
+/// Second-order Taylor expansion of a [`PointSurface`] about a
+/// [`HarmonicReference`] point.
+#[non_exhaustive]
+#[derive(Clone, Debug)]
+pub struct HarmonicExpansion<'a, S> {
+    /// Full potential whose Hessian defines the reference.
+    pub surface: &'a S,
+    /// Expansion point and Hessian-action step.
+    pub reference: HarmonicReference,
+}
+
+impl<'a, S> HarmonicExpansion<'a, S> {
+    /// Build the expansion at `reference.point`.
+    #[must_use]
+    pub fn new(surface: &'a S, reference: HarmonicReference) -> Self {
+        Self { surface, reference }
+    }
+
+    /// Set [`Self::reference`].
+    #[must_use]
+    pub fn with_reference(mut self, reference: HarmonicReference) -> Self {
+        self.reference = reference;
+        self
+    }
+}
+
+/// Energy of the Taylor harmonic model at `position`.
+pub fn harmonic_energy_at<S: PointSurface>(
+    surface: &S,
+    reference: &HarmonicReference,
+    position: ArrayView1<f64>,
+    evaluations: &mut usize,
+) -> Result<f64, SaddleError> {
+    reference.check()?;
+    if position.len() != reference.point.len() {
+        return Err(SaddleError::Shape(
+            "the harmonic reference differs in length from the position".into(),
+        ));
+    }
+    let displacement = position.to_owned() - &reference.point;
+    let (energy, gradient) = surface.eval(reference.point.view())?;
+    let image = hessian_action(
+        surface,
+        reference.point.view(),
+        &displacement,
+        reference.hvp_step,
+        evaluations,
+    )?;
+  Ok(energy + gradient.dot(&displacement) + 0.5 * displacement.dot(&image))
+}
+
+impl<S: PointSurface> PointSurface for HarmonicExpansion<'_, S> {
+    fn eval(&self, q: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+        self.reference.check()?;
+        if q.len() != self.reference.point.len() {
+            return Err(SaddleError::Shape(
+                "the harmonic expansion differs in length from the position".into(),
+            ));
+        }
+        let displacement = q.to_owned() - &self.reference.point;
+        let (energy, gradient) = self.surface.eval(self.reference.point.view())?;
+        let mut evaluations = 0;
+        let image = hessian_action(
+            self.surface,
+            self.reference.point.view(),
+            &displacement,
+            self.reference.hvp_step,
+            &mut evaluations,
+        )?;
+        let expanded = energy + gradient.dot(&displacement) + 0.5 * displacement.dot(&image);
+        let expanded_gradient = &gradient + &image;
+        Ok((expanded, expanded_gradient))
+    }
+
+    fn hessian_vector(
+        &self,
+        _q: ArrayView1<f64>,
+        vector: ArrayView1<f64>,
+    ) -> Result<Option<Array1<f64>>, SaddleError> {
+        let mut evaluations = 0;
+        hessian_action(
+            self.surface,
+            self.reference.point.view(),
+            &vector.to_owned(),
+            self.reference.hvp_step,
+            &mut evaluations,
+        )
+        .map(Some)
+    }
+
+    fn excluded_modes(&self, q: ArrayView1<f64>) -> Result<Array2<f64>, SaddleError> {
+        self.surface.excluded_modes(q)
+    }
+}
+
+/// Mixed potential `V_lambda = (1-lambda) V_harmonic + lambda V_full`.
+pub(crate) struct LambdaSurface<'a, S> {
+    full: &'a S,
+    harmonic: HarmonicExpansion<'a, S>,
+    lambda: f64,
+}
+
+impl<'a, S: PointSurface> LambdaSurface<'a, S> {
+    pub(crate) fn new(
+        full: &'a S,
+        reference: HarmonicReference,
+        lambda: f64,
+    ) -> Result<Self, SaddleError> {
+        reference.check()?;
+        if !(0.0..=1.0).contains(&lambda) {
+            return Err(SaddleError::Invalid(
+                "thermodynamic lambda must lie in [0, 1]".into(),
+            ));
+        }
+        Ok(Self {
+            full,
+            harmonic: HarmonicExpansion::new(full, reference),
+            lambda,
+        })
+    }
+}
+
+impl<S: PointSurface> PointSurface for LambdaSurface<'_, S> {
+    fn eval(&self, q: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+        let (harmonic_energy, harmonic_gradient) = self.harmonic.eval(q)?;
+        let (full_energy, full_gradient) = self.full.eval(q)?;
+        let lambda = self.lambda;
+        Ok((
+            harmonic_energy.mul_add(1.0 - lambda, lambda * full_energy),
+            &harmonic_gradient * (1.0 - lambda) + &full_gradient * lambda,
+        ))
+    }
+
+    fn excluded_modes(&self, q: ArrayView1<f64>) -> Result<Array2<f64>, SaddleError> {
+        self.full.excluded_modes(q)
+    }
+}
+
+/// Observable `V_full - V_harmonic` at a sampled configuration.
+#[non_exhaustive]
+#[derive(Clone, Debug)]
+pub struct ThermodynamicDerivative<'a, S> {
+    /// Full potential in the sampling coordinates.
+    pub full: &'a S,
+    /// Expansion point for the harmonic reference.
+    pub reference: HarmonicReference,
+}
+
+impl<'a, S> ThermodynamicDerivative<'a, S> {
+    /// Name the observable [`THERMODYNAMIC_DERIVATIVE`].
+    #[must_use]
+    pub fn new(full: &'a S, reference: HarmonicReference) -> Self {
+        Self { full, reference }
+    }
+
+    /// Set [`Self::reference`].
+    #[must_use]
+    pub fn with_reference(mut self, reference: HarmonicReference) -> Self {
+        self.reference = reference;
+        self
+    }
+}
+
+impl<S: PointSurface> HyperplaneObservable for ThermodynamicDerivative<'_, S> {
+    fn observe(&self, position: ArrayView1<f64>) -> Result<f64, SaddleError> {
+        let mut evaluations = 0;
+        let harmonic = harmonic_energy_at(
+            self.full,
+            &self.reference,
+            position,
+            &mut evaluations,
+        )?;
+        let (full, _) = self.full.eval(position)?;
+        Ok(full - harmonic)
+    }
+}
+
+/// Records `V_full - V_harmonic` from positions and attaches the observable.
+pub struct ThermodynamicSampler<'a, E, S> {
+    inner: E,
+    derivative: ThermodynamicDerivative<'a, S>,
+}
+
+impl<'a, E, S> ThermodynamicSampler<'a, E, S> {
+    /// Wrap `inner` with `derivative`.
+    pub fn new(inner: E, derivative: ThermodynamicDerivative<'a, S>) -> Self {
+        Self { inner, derivative }
+    }
+
+    /// Borrow the wrapped sampler.
+    pub fn inner(&self) -> &E {
+        &self.inner
+    }
+
+    /// Borrow the wrapped sampler mutably.
+    pub fn inner_mut(&mut self) -> &mut E {
+        &mut self.inner
+    }
+}
+
+impl<'a, E: HyperplaneSampler, S: PointSurface> HyperplaneSampler for ThermodynamicSampler<'a, E, S> {
+    fn sample_hyperplane(
+        &mut self,
+        plane: &Hyperplane,
+        budget: &HyperplaneSampleBudget,
+    ) -> Result<HyperplaneEnsemble, SaddleError> {
+        let want_derivative = budget
+            .observables
+            .iter()
+            .any(|name| name == THERMODYNAMIC_DERIVATIVE);
+        let mut inner_budget = budget.clone();
+        if budget.lambda.is_some() && !want_derivative {
+            inner_budget
+                .observables
+                .push(THERMODYNAMIC_DERIVATIVE.to_string());
+        }
+        let need_positions = want_derivative
+            || inner_budget
+                .observables
+                .iter()
+                .any(|name| name == THERMODYNAMIC_DERIVATIVE);
+        if need_positions {
+            inner_budget.positions = true;
+        }
+        let mut ensemble = self.inner.sample_hyperplane(plane, &inner_budget)?;
+        for observation in &mut ensemble.observations {
+            if observation
+                .observables
+                .contains_key(THERMODYNAMIC_DERIVATIVE)
+            {
+                continue;
+            }
+            let position = observation.position.as_ref().ok_or_else(|| {
+                SaddleError::Invalid(
+                    "thermodynamic derivative needs positions in sampling records".into(),
+                )
+            })?;
+            let value = self.derivative.observe(position.view())?;
+            if !value.is_finite() {
+                return Err(SaddleError::NonFinite("thermodynamic derivative"));
+            }
+            observation
+                .observables
+                .insert(THERMODYNAMIC_DERIVATIVE.into(), value);
+            if !budget.positions {
+                observation.position = None;
+            }
+        }
+        Ok(ensemble)
+    }
+
+    fn energy(&mut self, position: ArrayView1<f64>) -> Result<Option<f64>, SaddleError> {
+        self.inner.energy(position)
+    }
+
+    fn constrained_directions(
+        &mut self,
+        plane: &Hyperplane,
+    ) -> Result<Vec<Array1<f64>>, SaddleError> {
+        self.inner.constrained_directions(plane)
+    }
+}
+
+/// Projected BAOAB/GHMC sampler on `V_lambda` built from a harmonic Taylor
+/// expansion of `full`.
+pub struct ThermodynamicSurfaceSampler<'a, S> {
+    full: &'a S,
+    reference: HarmonicReference,
+    dynamics: LangevinConfig,
+}
+
+impl<'a, S: PointSurface> ThermodynamicSurfaceSampler<'a, S> {
+    /// Configure Langevin dynamics with a harmonic reference at the basin
+    /// minimum or saddle plane.
+    pub fn new(
+        full: &'a S,
+        reference: HarmonicReference,
+        dynamics: LangevinConfig,
+    ) -> Result<Self, SaddleError> {
+        reference.check()?;
+        Ok(Self {
+            full,
+            reference,
+            dynamics,
+        })
+    }
+}
+
+impl<S: PointSurface> HyperplaneSampler for ThermodynamicSurfaceSampler<'_, S> {
+    fn sample_hyperplane(
+        &mut self,
+        plane: &Hyperplane,
+        budget: &HyperplaneSampleBudget,
+    ) -> Result<HyperplaneEnsemble, SaddleError> {
+        let lambda = budget.lambda.ok_or_else(|| {
+            SaddleError::Invalid("thermodynamic surface sampling needs a lambda request".into())
+        })?;
+        let surface = LambdaSurface::new(self.full, self.reference.clone(), lambda)?;
+        let mut inner_budget = budget.clone();
+        inner_budget.positions = true;
+        let mut sampler = AnalyticSurfaceSampler::new(&surface, self.dynamics.clone());
+        let mut ensemble = sampler.sample_hyperplane(plane, &inner_budget)?;
+        let derivative = ThermodynamicDerivative::new(self.full, self.reference.clone());
+        for observation in &mut ensemble.observations {
+            let position = observation.position.as_ref().ok_or_else(|| {
+                SaddleError::Invalid("thermodynamic surface sampler omitted a position".into())
+            })?;
+            let value = derivative.observe(position.view())?;
+            observation
+                .observables
+                .insert(THERMODYNAMIC_DERIVATIVE.into(), value);
+            if !budget.positions {
+                observation.position = None;
+            }
+        }
+        Ok(ensemble)
+    }
+
+    fn energy(&mut self, position: ArrayView1<f64>) -> Result<Option<f64>, SaddleError> {
+        Ok(Some(self.full.eval(position)?.0))
+    }
+
+    fn constrained_directions(
+        &mut self,
+        plane: &Hyperplane,
+    ) -> Result<Vec<Array1<f64>>, SaddleError> {
+        AnalyticSurfaceSampler::new(self.full, self.dynamics.clone()).constrained_directions(plane)
+    }
+}
 
 /// Settings for fixed-plane lambda thermodynamic integration.
 #[non_exhaustive]
@@ -401,6 +734,19 @@ mod tests {
         fn eval(&self, q: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
             Ok((0.25 * q[1].powi(4), array![0.0, q[1].powi(3)]))
         }
+    }
+
+    #[test]
+    fn thermodynamic_derivative_matches_full_minus_harmonic_energy() {
+        let reference = HarmonicReference::new(array![0.0, 0.0]);
+        let position = array![0.2, 0.4];
+        let observable = ThermodynamicDerivative::new(&Quartic, reference.clone());
+        let observed = observable.observe(position.view()).unwrap();
+        let (full, _) = Quartic.eval(position.view()).unwrap();
+        let mut evaluations = 0;
+        let harmonic =
+            harmonic_energy_at(&Quartic, &reference, position.view(), &mut evaluations).unwrap();
+        assert_eq!(observed, full - harmonic);
     }
 
     #[test]

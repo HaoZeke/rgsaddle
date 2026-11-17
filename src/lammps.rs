@@ -5,14 +5,16 @@
 //! supplies the forces. lammpc applies the plane to position, velocity, and
 //! force on every step.
 
+use std::collections::BTreeMap;
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::path::{Path, PathBuf};
 
 use libloading::Library;
-use ndarray::Array1;
+use ndarray::{Array1, Array2, ArrayView1};
 use rgpot_core::profile::{ProfileRequest, encode_force_input, library_candidates};
 
 use crate::strain_rate::{parse_json, required_f64, required_str};
+use crate::ohtst::THERMODYNAMIC_DERIVATIVE;
 use crate::{
     Hyperplane, HyperplaneCoordinates, HyperplaneEnsemble, HyperplaneObservation,
     HyperplaneSampleBudget, HyperplaneSampler, SaddleError,
@@ -210,6 +212,62 @@ impl LammpsSystem {
     }
 }
 
+/// Dense Taylor harmonic reference for lambda thermodynamic integration.
+///
+/// The reference supplies `V_harm(x) = E_0 + g_0·(x-x_0) + ½ (x-x_0)ᵀ H (x-x_0)`
+/// in the sampler's mass-weighted or Cartesian coordinates. `hessian` is
+/// row-major and matches `point.len()`.
+#[non_exhaustive]
+#[derive(Clone, Debug)]
+pub struct LammpsThermodynamicReference {
+    /// Reference geometry in sampler coordinates.
+    pub point: Array1<f64>,
+    /// Potential at [`Self::point`].
+    pub energy: f64,
+    /// Gradient at [`Self::point`].
+    pub gradient: Array1<f64>,
+    /// Symmetric Hessian at [`Self::point`].
+    pub hessian: Array2<f64>,
+}
+
+impl LammpsThermodynamicReference {
+    /// Evaluate the Taylor harmonic energy at `position`.
+    pub fn energy_at(&self, position: ArrayView1<f64>) -> Result<f64, SaddleError> {
+        if position.len() != self.point.len() {
+            return Err(SaddleError::Shape(
+                "LAMMPS thermodynamic reference differs in length from the position".into(),
+            ));
+        }
+        if self.gradient.len() != self.point.len() || self.hessian.dim() != (position.len(), position.len()) {
+            return Err(SaddleError::Shape(
+                "LAMMPS thermodynamic reference has inconsistent gradient or Hessian".into(),
+            ));
+        }
+        if !self.energy.is_finite()
+            || !self.point.iter().all(|value| value.is_finite())
+            || !self.gradient.iter().all(|value| value.is_finite())
+            || !self.hessian.iter().all(|value| value.is_finite())
+        {
+            return Err(SaddleError::NonFinite("LAMMPS thermodynamic reference"));
+        }
+        let displacement = position.to_owned() - &self.point;
+        let image = self.hessian.dot(&displacement);
+        Ok(self.energy + self.gradient.dot(&displacement) + 0.5 * displacement.dot(&image))
+    }
+
+    /// Harmonic force `-∇V_harm` at `position`.
+    pub fn force_at(&self, position: ArrayView1<f64>) -> Result<Array1<f64>, SaddleError> {
+        if position.len() != self.point.len() {
+            return Err(SaddleError::Shape(
+                "LAMMPS thermodynamic reference differs in length from the position".into(),
+            ));
+        }
+        let displacement = position.to_owned() - &self.point;
+        let image = self.hessian.dot(&displacement);
+        Ok(-(&self.gradient + &image))
+    }
+}
+
 /// Runtime controls for lammpc constrained dynamics.
 #[non_exhaustive]
 #[derive(Clone, Debug)]
@@ -224,6 +282,8 @@ pub struct LammpsSamplerConfig {
     pub thermostat: LammpsThermostatKind,
     /// Modes held by the plane construction in addition to the plane normal.
     pub excluded_modes: usize,
+    /// Harmonic reference for lambda thermodynamic mixing, when requested.
+    pub thermodynamic_reference: Option<LammpsThermodynamicReference>,
 }
 
 impl Default for LammpsSamplerConfig {
@@ -234,6 +294,7 @@ impl Default for LammpsSamplerConfig {
             friction_per_ps: 1.0,
             thermostat: LammpsThermostatKind::BaoabLangevin,
             excluded_modes: 0,
+            thermodynamic_reference: None,
         }
     }
 }
@@ -271,6 +332,16 @@ impl LammpsSamplerConfig {
     #[must_use]
     pub fn with_excluded_modes(mut self, excluded_modes: usize) -> Self {
         self.excluded_modes = excluded_modes;
+        self
+    }
+
+    /// Set [`Self::thermodynamic_reference`].
+    #[must_use]
+    pub fn with_thermodynamic_reference(
+        mut self,
+        thermodynamic_reference: LammpsThermodynamicReference,
+    ) -> Self {
+        self.thermodynamic_reference = Some(thermodynamic_reference);
         self
     }
 
@@ -400,6 +471,19 @@ impl HyperplaneSampler for LammpsHyperplaneSampler {
             })?;
             engine.set_boundaries(&boundaries, plane.dim())?;
         }
+        if let Some(lambda) = budget.lambda {
+            let reference = self
+                .config
+                .thermodynamic_reference
+                .as_ref()
+                .ok_or_else(|| {
+                    SaddleError::Invalid(
+                        "LAMMPS lambda sampling needs LammpsSamplerConfig::thermodynamic_reference"
+                            .into(),
+                    )
+                })?;
+            engine.set_thermodynamic_coupling(lambda, reference, plane.dim())?;
+        }
         engine.step(budget.thermalize)?;
 
         let mut observations = Vec::with_capacity(budget.samples);
@@ -408,9 +492,28 @@ impl HyperplaneSampler for LammpsHyperplaneSampler {
             engine.step(budget.stride)?;
             let state = engine.state(plane.dim())?;
             accounting = state.accounting;
+            let thermodynamic_derivative = if let (Some(lambda), Some(reference)) = (
+                budget.lambda,
+                self.config.thermodynamic_reference.as_ref(),
+            ) {
+                if lambda.is_finite() && (0.0..=1.0).contains(&lambda) {
+                    let position = Array1::from_vec(state.positions.clone());
+                    let harmonic = reference.energy_at(position.view())?;
+                    engine
+                        .full_potential_energy(position.view())?
+                        .map(|full| full - harmonic)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             let (position, projected_force, projected_velocity) =
                 convert_state(&self.system, budget.coordinates, state);
-            let observables = thermostat.observables().into_iter().collect();
+            let mut observables = thermostat.observables().into_iter().collect::<BTreeMap<_, _>>();
+            if let Some(value) = thermodynamic_derivative {
+                observables.insert(THERMODYNAMIC_DERIVATIVE.into(), value);
+            }
             observations.push(HyperplaneObservation {
                 constraint_force: accounting.constraint_force,
                 pafi_gradient: None,
@@ -510,6 +613,22 @@ type MdStateFn = unsafe extern "C" fn(
     usize,
     *mut MdObservation,
 ) -> c_int;
+type MdSetThermodynamicCouplingFn = unsafe extern "C" fn(
+    *mut c_void,
+    *const MdThermodynamicCoupling,
+    *const f64,
+    *const f64,
+    usize,
+) -> c_int;
+type MdPotentialEnergyFn =
+    unsafe extern "C" fn(*mut c_void, *const f64, usize, *mut f64) -> c_int;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct MdThermodynamicCoupling {
+    lambda: f64,
+    reference_energy: f64,
+}
 
 struct MdState {
     positions: Vec<f64>,
@@ -527,6 +646,8 @@ struct Engine {
     md_step: MdStepFn,
     md_set_boundaries: Option<MdSetBoundariesFn>,
     md_state: MdStateFn,
+    md_set_thermodynamic_coupling: Option<MdSetThermodynamicCouplingFn>,
+    md_potential_energy: Option<MdPotentialEnergyFn>,
     _library: Library,
 }
 
@@ -579,6 +700,16 @@ impl Engine {
             let md_state = *library
                 .get::<MdStateFn>(b"lammpc_session_md_state\0")
                 .map_err(load_error)?;
+            let md_set_thermodynamic_coupling = library
+                .get::<MdSetThermodynamicCouplingFn>(
+                    b"lammpc_session_md_set_thermodynamic_coupling\0",
+                )
+                .ok()
+                .map(|symbol| *symbol);
+            let md_potential_energy = library
+                .get::<MdPotentialEnergyFn>(b"lammpc_session_md_potential_energy\0")
+                .ok()
+                .map(|symbol| *symbol);
             if available() == 0 {
                 return Err(SaddleError::Surface(
                     "lammpc was built without LAMMPS".into(),
@@ -604,9 +735,83 @@ impl Engine {
                 md_step,
                 md_set_boundaries,
                 md_state,
+                md_set_thermodynamic_coupling,
+                md_potential_energy,
                 _library: library,
             })
         }
+    }
+
+    fn set_thermodynamic_coupling(
+        &mut self,
+        lambda: f64,
+        reference: &LammpsThermodynamicReference,
+        dimension: usize,
+    ) -> Result<(), SaddleError> {
+        let set = self.md_set_thermodynamic_coupling.ok_or_else(|| {
+            SaddleError::Surface(
+                "liblammpc lacks lammpc_session_md_set_thermodynamic_coupling; \
+                 thermodynamic integration needs a mixing hook that adds \
+                 (1-lambda) F_harmonic to the LAMMPS force each step, with a \
+                 dense reference gradient and Hessian passed at coupling time"
+                    .into(),
+            )
+        })?;
+        if reference.point.len() != dimension
+            || reference.gradient.len() != dimension
+            || reference.hessian.dim() != (dimension, dimension)
+        {
+            return Err(SaddleError::Shape(
+                "LAMMPS thermodynamic reference does not match the plane dimension".into(),
+            ));
+        }
+        if !(lambda.is_finite() && (0.0..=1.0).contains(&lambda)) {
+            return Err(SaddleError::Invalid(
+                "thermodynamic lambda must lie in [0, 1]".into(),
+            ));
+        }
+        let coupling = MdThermodynamicCoupling {
+            lambda,
+            reference_energy: reference.energy,
+        };
+        let gradient = reference
+            .gradient
+            .as_slice()
+            .ok_or_else(|| SaddleError::Shape("LAMMPS reference gradient must be contiguous".into()))?;
+        let hessian = reference
+            .hessian
+            .as_slice()
+            .ok_or_else(|| SaddleError::Shape("LAMMPS reference Hessian must be contiguous".into()))?;
+        let status = unsafe {
+            set(
+                self.session,
+                &coupling,
+                gradient.as_ptr(),
+                hessian.as_ptr(),
+                dimension,
+            )
+        };
+        self.check(status)
+    }
+
+    fn full_potential_energy(
+        &mut self,
+        position: ArrayView1<f64>,
+    ) -> Result<Option<f64>, SaddleError> {
+        let Some(evaluate) = self.md_potential_energy else {
+            return Ok(None);
+        };
+        let mut energy = 0.0;
+        let position = position
+            .as_slice()
+            .ok_or_else(|| SaddleError::Shape("LAMMPS positions must be contiguous".into()))?;
+        let status =
+            unsafe { evaluate(self.session, position.as_ptr(), position.len(), &mut energy) };
+        self.check(status)?;
+        if !energy.is_finite() {
+            return Err(SaddleError::NonFinite("LAMMPS potential energy"));
+        }
+        Ok(Some(energy))
     }
 
     fn initialize(
