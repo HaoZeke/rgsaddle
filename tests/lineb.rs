@@ -250,6 +250,43 @@ fn turning_knots_at_both_ends_give_the_harmonic_half_period() {
     );
 }
 
+/// The inverted parabola lowered by `SHIFT`, a total energy far below
+/// zero.
+struct LoweredParabola;
+
+const SHIFT: f64 = -2000.0;
+
+impl PointSurface for LoweredParabola {
+    fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+        let (energy, gradient) = Parabola.eval(x)?;
+        Ok((energy + SHIFT, gradient))
+    }
+}
+
+/// Knots `GAP` above the turning points of the lowered parabola, where
+/// `V − E` rounds at `ε |SHIFT|`, the size of `GAP`. The half period is
+/// still `π`, and the clock costs no more than at the parabola's own
+/// energy zero.
+#[test]
+fn turning_knots_on_a_lowered_surface_keep_the_clock_cheap() {
+    const GAP: f64 = 1e-12;
+    let raised = straight_path(&Parabola, 1.0, 0.5 - GAP);
+    let lowered = straight_path(&LoweredParabola, 1.0, 0.5 + SHIFT - GAP);
+    let panels = (2 * path_pairs()) as f64;
+    let slack = (2.0 / 8.0 / panels.powi(4)).sqrt();
+    assert!(
+        (lowered.half_period - std::f64::consts::PI).abs() <= slack,
+        "{}",
+        lowered.half_period
+    );
+    assert!(
+        lowered.calls.measure <= raised.calls.measure,
+        "lowered {} vs raised {}",
+        lowered.calls.measure,
+        raised.calls.measure
+    );
+}
+
 fn unstable_mode(saddle: [f64; 2]) -> (Array1<f64>, f64) {
     let scale = saddle[0].abs().max(saddle[1].abs());
     let step = scale * f64::EPSILON.sqrt();

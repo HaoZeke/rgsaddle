@@ -371,7 +371,14 @@ fn end_action<S: PointSurface>(
 /// Period samples along an end chord, in path order. `s` runs from the
 /// interior of the chord toward the turning knot on the right end, and
 /// from the turning knot inward on the left. A piece no wider than the
-/// caller's panel is halved until Simpson and its two halves agree.
+/// caller's panel is halved until Simpson and its two halves agree to
+/// within the allowance plus the rounding of the integrand.
+///
+/// Next to the turning knot `V − E` is a difference of two nearly equal
+/// energies. An error `δV` in `V` moves the integrand `1/σ` by
+/// `δV/σ²` of itself, and once that exceeds the allowance, halving
+/// cannot make the two estimates agree. `δV` is taken as
+/// `ENERGY_ULPS · ε · |E|`.
 fn end_clock<S: PointSurface>(
     level: &Level<'_, S>,
     chord: EndChord,
@@ -392,10 +399,12 @@ fn end_clock<S: PointSurface>(
                     "the end-chord period step underflowed".into(),
                 ));
             }
-            let coarse = simpson_s(level, chord, s, s + du)?;
+            let (coarse, coarse_rounding) = simpson_s(level, chord, s, s + du)?;
             let mid = s + 0.5 * du;
-            let fine = simpson_s(level, chord, s, mid)? + simpson_s(level, chord, mid, s + du)?;
-            let allowance = tol * du / u_max;
+            let (left, left_rounding) = simpson_s(level, chord, s, mid)?;
+            let (right, right_rounding) = simpson_s(level, chord, mid, s + du)?;
+            let fine = left + right;
+            let allowance = tol * du / u_max + coarse_rounding + left_rounding + right_rounding;
             if (fine - coarse).abs() <= allowance {
                 let next = s + du;
                 if next <= s || next.is_nan() {
@@ -414,19 +423,31 @@ fn end_clock<S: PointSurface>(
     Ok(out)
 }
 
+/// Rounding of the energy, in units of `ε |E|`, that the end-chord
+/// clock allows for.
+const ENERGY_ULPS: f64 = 64.0;
+
+/// Simpson on `[s0, s1]`, and the bound on its change from an error of
+/// `ENERGY_ULPS · ε · |E|` in every sampled `V`.
 fn simpson_s<S: PointSurface>(
     level: &Level<'_, S>,
     chord: EndChord,
     s0: f64,
     s1: f64,
-) -> Result<f64, SaddleError> {
+) -> Result<(f64, f64), SaddleError> {
+    let delta_v = ENERGY_ULPS * f64::EPSILON * level.energy.abs();
     let mid = 0.5 * (s0 + s1);
     let mut acc = 0.0;
+    let mut rounding = 0.0;
     for (s, weight) in [(s0, 1.0), (mid, 4.0), (s1, 1.0)] {
         let taken = level.sample(chord.lambda(s))?;
-        acc += weight * end_rate(&taken, chord.u(s), chord.from_start)?;
+        let rate = end_rate(&taken, chord.u(s), chord.from_start)?;
+        acc += weight * rate;
+        if taken.sigma > 0.0 {
+            rounding += weight * rate * delta_v / (taken.sigma * taken.sigma);
+        }
     }
-    Ok(acc * (s1 - s0) / 6.0)
+    Ok((acc * (s1 - s0) / 6.0, rounding * (s1 - s0) / 6.0))
 }
 
 /// Fourth-order Runge–Kutta with step doubling. A step is accepted when
