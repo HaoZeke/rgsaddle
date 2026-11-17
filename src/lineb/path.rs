@@ -87,6 +87,9 @@ impl Curve {
     }
 }
 
+/// `(λ, t)` samples of the imaginary time along a spline, in path order.
+pub(crate) type TimeTable = Vec<(f64, f64)>;
+
 #[derive(Clone, Debug)]
 pub(crate) struct Periods {
     /// `∫ √(2(V−E)) ds` along the spline, one way.
@@ -95,6 +98,8 @@ pub(crate) struct Periods {
     pub half_period: f64,
     /// Travel time of the constrained dynamics from one end to the other.
     pub half_period_dynamics: f64,
+    /// `(λ, t)` samples of the imaginary time along the spline.
+    pub time_table: TimeTable,
 }
 
 struct Sample {
@@ -170,10 +175,13 @@ fn simpson_weight(i: usize, intervals: usize) -> f64 {
     }
 }
 
-/// Action and both half periods. `pairs` is the number of Simpson pairs
-/// on each chord.
-pub(crate) fn measure<S: PointSurface>(
-    surface: &S,
+/// Action, both half periods and the imaginary-time table. `pairs` is
+/// the number of Simpson pairs on each chord. The quadrature and the
+/// time table call `quadrature`; the constrained dynamics calls
+/// `dynamics`, so the two costs can be counted apart.
+pub(crate) fn measure<Q: PointSurface, D: PointSurface>(
+    quadrature: &Q,
+    dynamics_surface: &D,
     masses: &Masses,
     weighted: ArrayView2<f64>,
     energy: f64,
@@ -185,70 +193,92 @@ pub(crate) fn measure<S: PointSurface>(
         ));
     }
     let curve = Curve::new(weighted)?;
-    let (action, half_period) = integrate(surface, masses, &curve, energy, pairs)?;
-    let half_period_dynamics = dynamics(surface, masses, &curve, energy, pairs)?;
+    let level = Level {
+        surface: quadrature,
+        masses,
+        curve: &curve,
+        energy,
+    };
+    let (action, half_period, time_table) = integrate(&level, pairs)?;
+    let half_period_dynamics = dynamics(dynamics_surface, masses, &curve, energy, pairs)?;
     Ok(Periods {
         action,
         half_period,
         half_period_dynamics,
+        time_table,
     })
 }
 
+/// Action, half period and the `(λ, t)` time table from one pass of
+/// samples. Interior chords add to the table by the trapezoid rule on
+/// the Simpson samples; end chords add their adaptive clock.
 fn integrate<S: PointSurface>(
-    surface: &S,
-    masses: &Masses,
-    curve: &Curve,
-    energy: f64,
+    level: &Level<'_, S>,
     pairs: usize,
-) -> Result<(f64, f64), SaddleError> {
+) -> Result<(f64, f64, TimeTable), SaddleError> {
     let mut action = 0.0;
     let mut half = 0.0;
-    let last = curve.knots.len() - 1;
+    let mut table = vec![(0.0, 0.0)];
+    let mut clock = 0.0;
+    let knots = &level.curve.knots;
+    let last = knots.len() - 1;
     for j in 0..last {
-        let (left, right) = (curve.knots[j], curve.knots[j + 1]);
-        let (segment_action, segment_half) = if j == 0 || j + 1 == last {
-            let level = Level {
-                surface,
-                masses,
-                curve,
-                energy,
-            };
-            end_integral(&level, EndChord::new(left, right, j == 0)?, pairs)?
+        let (left, right) = (knots[j], knots[j + 1]);
+        if j == 0 || j + 1 == last {
+            let chord = EndChord::new(left, right, j == 0)?;
+            action += end_action(level, chord, pairs)?;
+            let samples = end_clock(level, chord, pairs)?;
+            let gained = samples.last().map(|(_, period)| *period).ok_or_else(|| {
+                SaddleError::Invalid("the end chord produced no period samples".into())
+            })?;
+            for (lambda, period) in samples.into_iter().skip(1) {
+                table.push((lambda, clock + period));
+            }
+            clock += gained;
+            half += gained;
         } else {
-            open_integral(surface, masses, curve, energy, left, right, pairs)?
-        };
-        action += segment_action;
-        half += segment_half;
+            let (segment_action, segment_half) =
+                open_integral(level, left, right, pairs, &mut table, &mut clock)?;
+            action += segment_action;
+            half += segment_half;
+        }
     }
     if !(action.is_finite() && half.is_finite() && half > 0.0) {
         return Err(SaddleError::NonFinite("tunneling period"));
     }
-    Ok((action, half))
+    Ok((action, half, table))
 }
 
 fn open_integral<S: PointSurface>(
-    surface: &S,
-    masses: &Masses,
-    curve: &Curve,
-    energy: f64,
+    level: &Level<'_, S>,
     left: f64,
     right: f64,
     pairs: usize,
+    table: &mut Vec<(f64, f64)>,
+    clock: &mut f64,
 ) -> Result<(f64, f64), SaddleError> {
     let intervals = 2 * pairs;
     let h = (right - left) / intervals as f64;
     let mut action = 0.0;
     let mut half = 0.0;
+    let mut previous_rate = 0.0;
     for i in 0..=intervals {
         let weight = simpson_weight(i, intervals);
-        let sample = sample(surface, masses, curve, energy, left + h * i as f64)?;
+        let lambda = left + h * i as f64;
+        let sample = level.sample(lambda)?;
         if sample.sigma <= 0.0 || sample.sigma.is_nan() {
             return Err(SaddleError::Invalid(
                 "the tunneling momentum vanishes in the interior of the path".into(),
             ));
         }
+        let rate = sample.speed / sample.sigma;
         action += weight * sample.sigma * sample.speed;
-        half += weight * sample.speed / sample.sigma;
+        half += weight * rate;
+        if i > 0 {
+            *clock += 0.5 * (previous_rate + rate) * h;
+            table.push((lambda, *clock));
+        }
+        previous_rate = rate;
     }
     Ok((action * h / 3.0, half * h / 3.0))
 }
@@ -309,11 +339,12 @@ impl EndChord {
     }
 }
 
-fn end_integral<S: PointSurface>(
+/// `∫ σ ds` on an end chord, Simpson in `u`.
+fn end_action<S: PointSurface>(
     level: &Level<'_, S>,
     chord: EndChord,
     pairs: usize,
-) -> Result<(f64, f64), SaddleError> {
+) -> Result<f64, SaddleError> {
     let intervals = 2 * pairs;
     let h = chord.u_max / intervals as f64;
     let mut action = 0.0;
@@ -328,12 +359,7 @@ fn end_integral<S: PointSurface>(
         let sample = level.sample(lambda)?;
         action += weight * sample.sigma * sample.speed * 2.0 * u;
     }
-    let clock = end_clock(level, chord, pairs)?;
-    let half = clock
-        .last()
-        .map(|(_, period)| *period)
-        .ok_or_else(|| SaddleError::Invalid("the end chord produced no period samples".into()))?;
-    Ok((action * h / 3.0, half))
+    Ok(action * h / 3.0)
 }
 
 /// Period samples along an end chord, in path order. `s` runs from the
@@ -544,13 +570,11 @@ pub(crate) struct Replicas {
 }
 
 /// Replicas at `t_j = j τ / P`. The return half retraces the spline.
-/// The period is twice the quadrature half period.
-pub(crate) fn replicas<S: PointSurface>(
-    surface: &S,
-    masses: &Masses,
+/// The period is twice the last time in `table`, the time table that
+/// [`measure`] built on the same images.
+pub(crate) fn replicas(
     weighted: ArrayView2<f64>,
-    energy: f64,
-    pairs: usize,
+    table: &[(f64, f64)],
     beads: usize,
 ) -> Result<Replicas, SaddleError> {
     if beads < 2 {
@@ -558,14 +582,8 @@ pub(crate) fn replicas<S: PointSurface>(
             "a ring polymer needs at least two replicas".into(),
         ));
     }
-    if pairs < 1 {
-        return Err(SaddleError::Invalid(
-            "the period quadrature needs at least one Simpson pair per chord".into(),
-        ));
-    }
     let curve = Curve::new(weighted)?;
-    let table = time_table(surface, masses, &curve, energy, pairs)?;
-    let half = table[table.len() - 1].1;
+    let half = table.last().map_or(0.0, |(_, time)| *time);
     if half <= 0.0 || half.is_nan() {
         return Err(SaddleError::Invalid(
             "the path has no imaginary-time duration".into(),
@@ -578,7 +596,7 @@ pub(crate) fn replicas<S: PointSurface>(
     for bead in 0..beads {
         let time = period * bead as f64 / beads as f64;
         let forward = if time <= half { time } else { period - time };
-        let lambda = invert_time(&table, forward)?;
+        let lambda = invert_time(table, forward)?;
         out.row_mut(bead).assign(&curve.at(lambda));
         #[cfg(any(test, feature = "lineb-oracle"))]
         parameter.push(lambda);
@@ -589,57 +607,6 @@ pub(crate) fn replicas<S: PointSurface>(
         parameter,
         period,
     })
-}
-
-fn time_table<S: PointSurface>(
-    surface: &S,
-    masses: &Masses,
-    curve: &Curve,
-    energy: f64,
-    pairs: usize,
-) -> Result<Vec<(f64, f64)>, SaddleError> {
-    let mut table = vec![(0.0, 0.0)];
-    let mut clock = 0.0;
-    let last = curve.knots.len() - 1;
-    for j in 0..last {
-        let (left, right) = (curve.knots[j], curve.knots[j + 1]);
-        if j == 0 || j + 1 == last {
-            let level = Level {
-                surface,
-                masses,
-                curve,
-                energy,
-            };
-            let samples = end_clock(&level, EndChord::new(left, right, j == 0)?, pairs)?;
-            let gained = samples.last().map(|(_, period)| *period).ok_or_else(|| {
-                SaddleError::Invalid("the end chord produced no period samples".into())
-            })?;
-            for (lambda, period) in samples.into_iter().skip(1) {
-                table.push((lambda, clock + period));
-            }
-            clock += gained;
-        } else {
-            let intervals = 2 * pairs;
-            let h = (right - left) / intervals as f64;
-            for i in 1..=intervals {
-                let lambda_left = left + h * (i - 1) as f64;
-                let lambda_right = left + h * i as f64;
-                let left_sample = sample(surface, masses, curve, energy, lambda_left)?;
-                let right_sample = sample(surface, masses, curve, energy, lambda_right)?;
-                if !(left_sample.sigma > 0.0 && right_sample.sigma > 0.0) {
-                    return Err(SaddleError::Invalid(
-                        "the tunneling momentum vanishes in the interior of the path".into(),
-                    ));
-                }
-                clock += 0.5
-                    * (left_sample.speed / left_sample.sigma
-                        + right_sample.speed / right_sample.sigma)
-                    * h;
-                table.push((lambda_right, clock));
-            }
-        }
-    }
-    Ok(table)
 }
 
 fn invert_time(table: &[(f64, f64)], time: f64) -> Result<f64, SaddleError> {

@@ -68,14 +68,7 @@ pub fn hqtst_rate<S: PointSurface>(
         surface,
         calls: &calls,
     };
-    let replicas = path::replicas(
-        &counted,
-        &path.masses,
-        path.weighted.view(),
-        path.energy,
-        path.quadrature_pairs,
-        beads,
-    )?;
+    let replicas = path::replicas(path.weighted.view(), &path.time_table, beads)?;
     let kappa = spring_constant(replicas.period, path.hbar, beads)?;
     let gauges = gauge_modes(&replicas.weighted, &path.masses)?;
     let log_abs_det = projected_log_abs_det(replicas.weighted.len(), &gauges, |vector| {
@@ -112,14 +105,7 @@ pub fn hqtst_rate_interpolated_hessian<S: PointSurface>(
         surface,
         calls: &calls,
     };
-    let replicas = path::replicas(
-        &counted,
-        &path.masses,
-        path.weighted.view(),
-        path.energy,
-        path.quadrature_pairs,
-        beads,
-    )?;
+    let replicas = path::replicas(path.weighted.view(), &path.time_table, beads)?;
     let kappa = spring_constant(replicas.period, path.hbar, beads)?;
     let step = coordinate_scale(path.weighted.iter().copied())?;
     let hessians = image_hessians(&counted, &path.masses, path.weighted.view(), step)?;
