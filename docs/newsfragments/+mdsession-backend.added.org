@@ -1,0 +1,4 @@
+An opt-in =mdsession= feature adds =MdSessionBackend=, one =HyperplaneSampler=
+and =HyperplaneDynamics= over the engine-generic rgpot MD session ABI. The
+engine is a symbol prefix and a library path, so GROMACS nblib and any engine
+that exports the same =<prefix>_md_*= calls use the same code.

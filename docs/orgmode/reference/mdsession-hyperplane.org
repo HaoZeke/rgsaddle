@@ -1,0 +1,47 @@
+#+title: MD session hyperplane API
+#+options: toc:2 num:nil
+
+* Cargo feature
+
+=mdsession= is opt-in and enables =ohtst=. It adds the pinned =rgpot-core=
+dependency, used to name the library candidates, and =libloading=. The engine
+library is a runtime shared library and is not needed by default builds.
+
+* Public types
+
+| Type | Contract |
+|------+----------|
+| =MdSessionSystem= | Engine creation text, Cartesian positions in angstrom, and an optional cell |
+| =MdSessionConfig= | Symbol prefix, optional library path, session time step in ps, and Langevin friction in inverse ps |
+| =MdSessionBackend= | Implements =HyperplaneSampler= and =HyperplaneDynamics= over one session per call |
+
+Both configuration structs are =#[non_exhaustive]=, implement =Default=, and
+provide =with_*= builders. A default system and a default config are
+incomplete; validation returns =SaddleError::Invalid= or =SaddleError::Shape=
+before the engine is loaded.
+
+* Units and coordinates
+
+| Quantity | Unit |
+|----------+------|
+| position | angstrom |
+| time step, time | ps |
+| friction | ps^-1 |
+| thermal energy | eV |
+| mass | amu |
+
+=HyperplaneCoordinates::MassWeighted= passes the plane in \(q=M^{1/2}x\).
+Returned positions are \(q\), forces are \(F_q=M^{-1/2}F_x\), and
+velocities are \(\dot q=M^{1/2}\dot x\). The session takes the plane as a
+gradient of the Cartesian positions, \(M^{1/2}n_q\). In shooting, a
+=TransmissionConfig= with =masses= set is Cartesian and must state the
+session's masses; without them the frame is mass-weighted.
+
+* Session calls
+
+The backend resolves =<prefix>_md_abi_version=, =available=, =features=,
+=engine=, =last_error=, =create=, =atom_count=, =destroy=, =masses=,
+=set_positions=, =set_velocities=, =state= and =step_projected=. It uses
+=set_box=, =set_seed= and =initialize= when the engine has them, and fails
+with the missing name when it needs one that is absent. The engine must
+report the =projected= feature.

@@ -1,0 +1,59 @@
+#+title: Sample and shoot a hyperplane through an rgpot MD session
+#+options: toc:2 num:nil
+
+* Build the optional stack
+
+Enable the =mdsession= feature. It also enables =ohtst=. Default builds do not
+compile rgpot or load an engine.
+
+One backend, =MdSessionBackend=, serves every engine that exports the
+engine-generic MD session of rgpot
+(=CppCore/rgpot/MDSession/md_session_c_abi.h=). The engine is data: a symbol
+prefix, so that the calls are =<prefix>_md_<call>=, and a library path. GROMACS
+nblib is =rgpot_nblib= (=librgpot_nblib=, built with rgpot's =-Dwith_nblib=true=);
+an engine that exports the same calls under another prefix needs no new code.
+
+#+begin_src console
+$ RGPOT_NBLIB_ENGINE=/path/to/librgpot_nblib.so \
+    cargo test --features mdsession --test mdsession_nblib
+#+end_src
+
+Without =RGPOT_NBLIB_ENGINE= the integration tests return at once.
+
+* Describe the system
+
+=MdSessionSystem= takes the engine's creation text (a topology for nblib),
+Cartesian positions in angstrom, and an optional row-major cell. The masses
+come from the session.
+
+#+begin_src rust
+let system = MdSessionSystem::default()
+    .with_spec(topology_text)
+    .with_positions(positions)
+    .with_box_matrix(cell);
+
+let mut backend = MdSessionBackend::new(
+    system,
+    MdSessionConfig::default()
+        .with_prefix("rgpot_nblib")
+        .with_library_path("librgpot_nblib.so")
+        .with_time_step_ps(0.004)
+        .with_friction_per_ps(5.0),
+);
+#+end_src
+
+* Sample, then shoot
+
+=sample_hyperplane= runs thermostatted steps restricted to the plane. A budget
+region with planar boundaries becomes planar hard walls of the session, and a
+step that ends outside a wall is undone with the velocity reflected.
+Records hold the constraint force along the plane normal, the position, the
+force projected onto the plane, the velocity, and the observables
+=mdsession.potential_ev= and =mdsession.kinetic_ev=.
+
+=shoot_hyperplane= draws a flux-weighted velocity at each start, runs the
+forward and the backward half with the session's unconstrained dynamics, and
+assigns each checkpoint by the side of the plane. The session's Langevin step
+replaces BAOAB. =EndState::Quench= is refused because the session has no
+surface to quench on, and with friction above zero =hold_excluded= must be
+false, because the session thermostat acts on every coordinate.
