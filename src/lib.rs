@@ -138,20 +138,23 @@ pub use ocineb::{
     walk_helped,
 };
 #[cfg(feature = "ohtst")]
+#[allow(deprecated)]
 pub use ohtst::{
-    AnalyticSurfaceSampler, AnalyticThermodynamicSampler, AnharmonicConfig, AnharmonicCorrection,
-    BasinConfig, BasinDensity, BasinEnd, Basins, Counting, EndState, Endpoint,
-    ExactGaussianPlaneSampler, FixedCell, GaussianTransport, HarmonicReference,
-    HyperplaneObservable, LangevinConfig, MassWeighted, OhTstRate, PermutationDistance,
-    PlaneDensity, PlaneIntegrator, PlaneMetric, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum,
-    PlanePath, PlaneSample, PlaneTrace, QuadraticModel, QuenchConfig, ReactantDensity,
-    ReversibleWork, ReversibleWorkConfig, StateDistance, THERMODYNAMIC_DERIVATIVE,
-    ThermodynamicIntegrationConfig, ThermodynamicIntegrationEstimate, ThermodynamicIntegrationNode,
-    TransmissionCoefficient, TransmissionConfig, TransmissionEstimate, Transport, Uncontrolled,
-    WorkEstimate, WorkNode, anharmonic_correction, basin_density, flux_mass, ohtst_rate,
-    plane_transmission, reactant_density, restricted_thermodynamic_integration, reversible_work,
-    reversible_work_along, sample_plane, sample_plane_with_sampler, thermodynamic_integration,
-    transmission_coefficient,
+    AnalyticSurfaceDynamics, AnalyticSurfaceSampler, AnalyticThermodynamicSampler,
+    AnharmonicConfig, AnharmonicCorrection, BasinConfig, BasinDensity, BasinEnd, Basins, Counting,
+    EndState, Endpoint, ExactGaussianPlaneSampler, FixedCell, GaussianTransport, HarmonicReference,
+    HyperplaneDynamics, HyperplaneObservable, LangevinConfig, MassWeighted, OhTstRate,
+    PermutationDistance, PlaneDensity, PlaneIntegrator, PlaneMetric, PlaneOptimizer,
+    PlaneOptimizerConfig, PlaneOptimum, PlanePath, PlaneSample, PlaneTrace, QuadraticModel,
+    QuenchConfig, ReactantDensity, ReversibleWork, ReversibleWorkConfig, StateDistance,
+    THERMODYNAMIC_DERIVATIVE, ThermodynamicIntegrationConfig, ThermodynamicIntegrationEstimate,
+    ThermodynamicIntegrationNode, TransmissionCoefficient, TransmissionConfig,
+    TransmissionEstimate, Transport, Uncontrolled, WorkEstimate, WorkNode, anharmonic_correction,
+    basin_density, flux_mass, ohtst_rate, optimize_plane, plane_transmission, reactant_density,
+    restricted_thermodynamic_integration, reversible_work, reversible_work_along,
+    reversible_work_along_on_surface, reversible_work_on_surface, sample_plane,
+    sample_plane_with_sampler, thermodynamic_integration, transmission_coefficient,
+    transmission_coefficient_on_surface,
 };
 pub use pafi::{
     ArcPath, FreeEnergyProfile, HyperplaneAverage, PafiConfig, PathFrame, PathGeometry,

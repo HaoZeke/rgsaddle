@@ -114,7 +114,9 @@ pub use anharmonic::{AnharmonicConfig, AnharmonicCorrection, anharmonic_correcti
 pub use basin::{BasinConfig, BasinDensity, BasinEnd, basin_density};
 pub use control::HarmonicReference;
 pub use gaussian::{ExactGaussianPlaneSampler, HyperplaneObservable, QuadraticModel};
-pub use optimize::{PlaneMetric, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum, PlaneTrace};
+pub use optimize::{
+    PlaneMetric, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum, PlaneTrace, optimize_plane,
+};
 pub use path::PlanePath;
 pub use plane::{FixedCell, Hyperplane, MassWeighted};
 pub use rate::{OhTstRate, PlaneDensity, flux_mass, ohtst_rate, plane_transmission};
@@ -128,12 +130,15 @@ pub use ti::{
     ThermodynamicIntegrationEstimate, ThermodynamicIntegrationNode,
     restricted_thermodynamic_integration, thermodynamic_integration,
 };
+#[allow(deprecated)]
 pub use transmission::{
-    Basins, Counting, EndState, Endpoint, PermutationDistance, QuenchConfig, StateDistance,
-    TransmissionCoefficient, TransmissionConfig, TransmissionEstimate, transmission_coefficient,
+    AnalyticSurfaceDynamics, Basins, Counting, EndState, Endpoint, HyperplaneDynamics,
+    PermutationDistance, QuenchConfig, StateDistance, TransmissionCoefficient, TransmissionConfig,
+    TransmissionEstimate, transmission_coefficient, transmission_coefficient_on_surface,
 };
 pub use transport::{GaussianTransport, Transport};
+#[allow(deprecated)]
 pub use work::{
     ReversibleWork, ReversibleWorkConfig, WorkEstimate, WorkNode, reversible_work,
-    reversible_work_along,
+    reversible_work_along, reversible_work_along_on_surface, reversible_work_on_surface,
 };

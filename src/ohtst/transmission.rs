@@ -789,10 +789,75 @@ impl TransmissionEstimate for TransmissionCoefficient {
     }
 }
 
+/// Engine boundary for unconstrained shooting from hyperplane samples.
+///
+/// Implementations own velocity generation, unconstrained propagation,
+/// deterministic seed mapping and basin classification. The operation is
+/// separate from [`crate::HyperplaneSampler`] because constrained sampling
+/// cannot supply a recrossing correction.
+pub trait HyperplaneDynamics {
+    /// Shoot trajectories from `starts` and estimate the transmission
+    /// coefficient of `plane`.
+    fn shoot_hyperplane(
+        &mut self,
+        plane: &Hyperplane,
+        starts: &[Array1<f64>],
+        config: &TransmissionConfig,
+    ) -> Result<TransmissionCoefficient, SaddleError>;
+}
+
+/// Analytic [`PointSurface`] reference implementation of
+/// [`HyperplaneDynamics`].
+pub struct AnalyticSurfaceDynamics<'a, S> {
+    surface: &'a S,
+}
+
+impl<'a, S: PointSurface> AnalyticSurfaceDynamics<'a, S> {
+    /// Bind unconstrained shooting to `surface`.
+    pub fn new(surface: &'a S) -> Self {
+        Self { surface }
+    }
+}
+
+impl<S: PointSurface> HyperplaneDynamics for AnalyticSurfaceDynamics<'_, S> {
+    fn shoot_hyperplane(
+        &mut self,
+        plane: &Hyperplane,
+        starts: &[Array1<f64>],
+        config: &TransmissionConfig,
+    ) -> Result<TransmissionCoefficient, SaddleError> {
+        analytic_transmission_coefficient(self.surface, plane, starts, config)
+    }
+}
+
 /// Shoot from `starts`, configurations of `plane`'s ensemble, and return
 /// the transmission coefficient of the plane. The starts are projected
 /// onto the plane; its normal points to the product.
-pub fn transmission_coefficient<S: PointSurface>(
+pub fn transmission_coefficient<D: HyperplaneDynamics>(
+    dynamics: &mut D,
+    plane: &Hyperplane,
+    starts: &[Array1<f64>],
+    config: &TransmissionConfig,
+) -> Result<TransmissionCoefficient, SaddleError> {
+    dynamics.shoot_hyperplane(plane, starts, config)
+}
+
+/// Analytic-surface compatibility wrapper for [`transmission_coefficient`].
+#[deprecated(
+    since = "0.5.0",
+    note = "construct AnalyticSurfaceDynamics and call transmission_coefficient"
+)]
+pub fn transmission_coefficient_on_surface<S: PointSurface>(
+    surface: &S,
+    plane: &Hyperplane,
+    starts: &[Array1<f64>],
+    config: &TransmissionConfig,
+) -> Result<TransmissionCoefficient, SaddleError> {
+    let mut dynamics = AnalyticSurfaceDynamics::new(surface);
+    transmission_coefficient(&mut dynamics, plane, starts, config)
+}
+
+fn analytic_transmission_coefficient<S: PointSurface>(
     surface: &S,
     plane: &Hyperplane,
     starts: &[Array1<f64>],

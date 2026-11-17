@@ -18,11 +18,11 @@
 
 use ndarray::{Array1, ArrayView1};
 use rgsaddle::{
-    AnharmonicConfig, BasinConfig, GaussianTransport, HarmonicReference, Hyperplane,
-    LangevinConfig, PlaneMetric, PlaneOptimizer, PlaneOptimizerConfig, PlanePath, PointSurface,
-    ReversibleWorkConfig, SaddleError, TransmissionConfig, Transport, WorkEstimate,
-    anharmonic_correction, basin_density, reversible_work_along, sample_plane,
-    transmission_coefficient,
+    AnalyticSurfaceDynamics, AnalyticSurfaceSampler, AnharmonicConfig, BasinConfig,
+    GaussianTransport, HarmonicReference, Hyperplane, LangevinConfig, PlaneMetric, PlaneOptimizer,
+    PlaneOptimizerConfig, PlanePath, PointSurface, ReversibleWorkConfig, SaddleError,
+    TransmissionConfig, Transport, WorkEstimate, anharmonic_correction, basin_density,
+    reversible_work_along, sample_plane, transmission_coefficient,
 };
 
 include!(concat!(
@@ -574,7 +574,13 @@ fn coupled_modes_transmission_balances_the_plane_partition_function() {
             .with_check_every(20)
             .with_shots(shots)
             .with_blocks(32);
-        let result = transmission_coefficient(&model, &plane, &starts, &config).unwrap();
+        let result = transmission_coefficient(
+            &mut AnalyticSurfaceDynamics::new(&model),
+            &plane,
+            &starts,
+            &config,
+        )
+        .unwrap();
         assert_eq!(result.unassigned, 0);
         balance.push((
             result.kappa.ln() + model.log_plane(s, kt),
@@ -624,13 +630,9 @@ fn coupled_modes_work_to_the_saddle_plane() {
         .with_mbar(true)
         .with_estimate(WorkEstimate::Mbar);
     for transport in [Transport::Rigid, GaussianTransport::default().into()] {
-        let work = reversible_work_along(
-            &model,
-            &path,
-            None,
-            &config.clone().with_transport(transport.clone()),
-        )
-        .unwrap();
+        let run_config = config.clone().with_transport(transport.clone());
+        let mut engine = AnalyticSurfaceSampler::new(&model, run_config.sampler.clone());
+        let work = reversible_work_along(&mut engine, &path, &run_config).unwrap();
         let estimates = [
             ("integration", work.integrated_work, work.integrated_error),
             ("BAR", work.bar_work.unwrap(), work.bar_error.unwrap()),

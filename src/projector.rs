@@ -221,6 +221,20 @@ pub trait HyperplaneSampler {
         plane: &Hyperplane,
         budget: &HyperplaneSampleBudget,
     ) -> Result<HyperplaneEnsemble, SaddleError>;
+
+    /// Potential energy at an arbitrary configuration, when the backend
+    /// supports mapped-configuration BAR or MBAR.
+    fn energy(&mut self, _position: ArrayView1<f64>) -> Result<Option<f64>, SaddleError> {
+        Ok(None)
+    }
+
+    /// Orthonormal directions held fixed in addition to the plane normal.
+    fn constrained_directions(
+        &mut self,
+        _plane: &Hyperplane,
+    ) -> Result<Vec<Array1<f64>>, SaddleError> {
+        Ok(Vec::new())
+    }
 }
 
 /// A point-dependent [`rgmin::Manifold`] projector bound at one point.

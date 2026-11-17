@@ -264,6 +264,10 @@ impl HyperplaneSampler for ExactGaussianPlaneSampler<'_> {
             acceptance: 1.0,
         })
     }
+
+    fn energy(&mut self, position: ArrayView1<f64>) -> Result<Option<f64>, SaddleError> {
+        Ok(Some(self.model.eval(position)?.0))
+    }
 }
 
 #[cfg(test)]
