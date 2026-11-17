@@ -115,7 +115,8 @@ pub use basin::{BasinConfig, BasinDensity, BasinEnd, basin_density};
 pub use control::HarmonicReference;
 pub use gaussian::{ExactGaussianPlaneSampler, HyperplaneObservable, QuadraticModel};
 pub use optimize::{
-    PlaneMetric, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum, PlaneTrace, optimize_plane,
+    PlaneMetric, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimizerStatus, PlaneOptimum,
+    PlaneTrace, optimize_plane,
 };
 pub use path::PlanePath;
 pub use plane::{FixedCell, Hyperplane, MassWeighted};
