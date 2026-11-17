@@ -355,83 +355,44 @@ impl Displacement {
     }
 }
 
-impl Manifold for Translation {
-    fn required_dim(&self, n: usize) -> Result<(), usize> {
-        let need = packed_need(&self.indices);
-        if n >= need && n.is_multiple_of(3) {
-            Ok(())
-        } else {
-            Err(need)
+macro_rules! level_set_manifold {
+    ($ty:ty) => {
+        impl Manifold for $ty {
+            fn required_dim(&self, n: usize) -> Result<(), usize> {
+                let need = packed_need(&self.indices);
+                if n >= need && n.is_multiple_of(3) {
+                    Ok(())
+                } else {
+                    Err(need)
+                }
+            }
+
+            fn project(&self, x: &Array1<f64>, v: &Array1<f64>) -> Array1<f64> {
+                match self.gradient(x.view()) {
+                    Ok(g) => project_ker(&g, v),
+                    Err(_) => v.clone(),
+                }
+            }
+
+            fn retract(&self, x: &Array1<f64>, v: &Array1<f64>) -> Array1<f64> {
+                restore_level(x, v, |z| self.value(z), |z| self.gradient(z))
+            }
+
+            fn transport(
+                &self,
+                _x_from: &Array1<f64>,
+                x_to: &Array1<f64>,
+                v: &Array1<f64>,
+            ) -> Array1<f64> {
+                self.project(x_to, v)
+            }
         }
-    }
-
-    fn project(&self, x: &Array1<f64>, v: &Array1<f64>) -> Array1<f64> {
-        match self.gradient(x.view()) {
-            Ok(g) => project_ker(&g, v),
-            Err(_) => v.clone(),
-        }
-    }
-
-    fn retract(&self, x: &Array1<f64>, v: &Array1<f64>) -> Array1<f64> {
-        restore_level(x, v, |z| self.value(z), |z| self.gradient(z))
-    }
-
-    fn transport(&self, _x_from: &Array1<f64>, x_to: &Array1<f64>, v: &Array1<f64>) -> Array1<f64> {
-        self.project(x_to, v)
-    }
+    };
 }
 
-impl Manifold for Rotation {
-    fn required_dim(&self, n: usize) -> Result<(), usize> {
-        let need = packed_need(&self.indices);
-        if n >= need && n.is_multiple_of(3) {
-            Ok(())
-        } else {
-            Err(need)
-        }
-    }
-
-    fn project(&self, x: &Array1<f64>, v: &Array1<f64>) -> Array1<f64> {
-        match self.gradient(x.view()) {
-            Ok(g) => project_ker(&g, v),
-            Err(_) => v.clone(),
-        }
-    }
-
-    fn retract(&self, x: &Array1<f64>, v: &Array1<f64>) -> Array1<f64> {
-        restore_level(x, v, |z| self.value(z), |z| self.gradient(z))
-    }
-
-    fn transport(&self, _x_from: &Array1<f64>, x_to: &Array1<f64>, v: &Array1<f64>) -> Array1<f64> {
-        self.project(x_to, v)
-    }
-}
-
-impl Manifold for Displacement {
-    fn required_dim(&self, n: usize) -> Result<(), usize> {
-        let need = packed_need(&self.indices);
-        if n >= need && n.is_multiple_of(3) {
-            Ok(())
-        } else {
-            Err(need)
-        }
-    }
-
-    fn project(&self, x: &Array1<f64>, v: &Array1<f64>) -> Array1<f64> {
-        match self.gradient(x.view()) {
-            Ok(g) => project_ker(&g, v),
-            Err(_) => v.clone(),
-        }
-    }
-
-    fn retract(&self, x: &Array1<f64>, v: &Array1<f64>) -> Array1<f64> {
-        restore_level(x, v, |z| self.value(z), |z| self.gradient(z))
-    }
-
-    fn transport(&self, _x_from: &Array1<f64>, x_to: &Array1<f64>, v: &Array1<f64>) -> Array1<f64> {
-        self.project(x_to, v)
-    }
-}
+level_set_manifold!(Translation);
+level_set_manifold!(Rotation);
+level_set_manifold!(Displacement);
 
 /// Which Sella internal a host packed into an internals chart.
 ///
