@@ -3333,6 +3333,7 @@ fn read_tracer_rows(csv: &std::path::Path) -> Vec<TracerRow> {
 /// L/2 of L. The Ref. [12] values fit 2 D t to the per-axis sum from the
 /// first snapshot over every lag and average the three axes.
 struct TracerSeed {
+    seed: u64,
     lattice: f64,
     tau: f64,
     lags: usize,
@@ -3342,7 +3343,6 @@ struct TracerSeed {
     atom: f64,
     jump: f64,
     ws_slope: f64,
-    ws_reference: f64,
     site: f64,
     site_slope: f64,
     tracer_slope: f64,
@@ -3357,7 +3357,7 @@ fn tracer_seeds(rows: &[TracerRow], temperature: f64) -> Vec<TracerSeed> {
         by_seed.entry(row.seed).or_default().push(row);
     }
     let mut seeds = Vec::new();
-    for group in by_seed.values_mut() {
+    for (seed, group) in &mut by_seed {
         group.sort_by_key(|row| row.lag);
         let lags = group.len();
         let Some(one) = group.iter().find(|row| row.lag == 1) else {
@@ -3387,6 +3387,7 @@ fn tracer_seeds(rows: &[TracerRow], temperature: f64) -> Vec<TracerSeed> {
         let axes = [0, 1, 2].map(|axis| first(&|sums: &TracerSums| sums.tracer[axis]) / 2.0);
         let block = 6.0 * tau;
         seeds.push(TracerSeed {
+            seed: *seed,
             lattice: one.lattice,
             tau,
             lags,
@@ -3396,7 +3397,6 @@ fn tracer_seeds(rows: &[TracerRow], temperature: f64) -> Vec<TracerSeed> {
             atom: one.mean.atom / block,
             jump: one.mean.jump / block,
             ws_slope: slope(&|sums: &TracerSums| sums.ws, &window) / 6.0,
-            ws_reference: first(&|sums: &TracerSums| sums.ws) / 6.0,
             site: one.mean.site / block,
             site_slope: slope(&|sums: &TracerSums| sums.site, &window) / 6.0,
             tracer_slope: slope(&|sums: &TracerSums| sums.tracer_total(), &window) / 6.0,
@@ -3411,6 +3411,17 @@ fn tracer_seeds(rows: &[TracerRow], temperature: f64) -> Vec<TracerSeed> {
 /// Mean and standard error across trajectories of a [`TracerSeed`] value.
 fn across_seeds(seeds: &[TracerSeed], value: impl Fn(&TracerSeed) -> f64) -> (f64, f64) {
     mean_and_error(&seeds.iter().map(value).collect::<Vec<_>>())
+}
+
+/// Tracer correlation factor: the mean `tracer` N D* over the mean
+/// Wigner-Seitz block D, with both standard errors in quadrature. A ratio
+/// per trajectory would put one trajectory's noisy slope in the denominator.
+fn correlation_factor(seeds: &[TracerSeed], tracer: impl Fn(&TracerSeed) -> f64) -> (f64, f64) {
+    let (ratio, error, _) = ratio_with_error(
+        across_seeds(seeds, tracer),
+        across_seeds(seeds, |seed| seed.ws),
+    );
+    (ratio, error)
 }
 
 fn sia_tracer_note(csv: &std::path::Path) -> String {
@@ -3432,7 +3443,7 @@ fn sia_tracer_note(csv: &std::path::Path) -> String {
     text.push_str("# Free dumbbell tracer diffusivity, Mishin Cu\n\n");
     text.push_str(&format!("One <100> dumbbell in the perfect 13×13×13 cell (8789 atoms) on the Mishin EAM1 of `tests/mishin_cu.rs`, with the seeds, sampling, and blocks of the free-dumbbell D campaigns: Maxwellian start, {dynamics}, timestep {} fs. Every 0.1 ps the centre-of-mass drift is removed and every atom is assigned its nearest ideal-lattice site. The defect is located three ways: the one doubly occupied Wigner-Seitz cell (as in `direct_md_sia_d_*.md`), the midpoint of the two atoms in it, and the one of those two farther from the site. Each atom's site is unwrapped from sample to sample, and every atom's position less the drift is stored at the start of production and at the end of each block of τ.\n\n", head.dt_fs));
     text.push_str("Two diffusivities are measured from the same trajectories. The defect diffusivity is the mean-square displacement of the defect over 6t. The tracer quantity is Σ_i |Δr_i|² over 6t, summed over every atom i; this is N D*, with D* the per-atom self-diffusivity that Eq. (5) of Ref. [12] (B. Zhang et al., Phys. Rev. Materials 6, 053605 (2022)) computes, G_MSD = (1/N) Σ_i Δx_i Δx_j with 2Dt = G_MSD at long times. Its erratum (Phys. Rev. Materials 9, 069901(E) (2025)) multiplies that D* by N = 4951 to report an SIA diffusivity, and Table 1 of Mwungeli, Liu, and Demkowicz lists those values. N D* is measured from atom sites (one atom changes site by λ = a/√2 per dumbbell jump, so the vibrational term is absent) and from the drift-removed positions. Every displacement is in the frame of the centre of mass.\n\n");
-    text.push_str("Block values are the lag-τ mean over every block. Slope values fit the mean over all origins against lag, with an intercept, from lag L/8 to L/2 of the L blocks. The Ref. [12] column follows that paper: one origin, the start of production; each axis fitted as 2Dt with an intercept over every lag; the three axes averaged. f is the slope N D* from sites over the slope D of the Wigner-Seitz site, per trajectory; f (Ref. [12]) is the Ref. [12] value over the one-origin fit of the Wigner-Seitz site. The jump column sums |Δr|² of the Wigner-Seitz site from sample to sample over 6t: the jump rate times λ²/6 when every move is one nearest-neighbour jump. Every value is the mean over trajectories ± the standard error across them.\n\n");
+    text.push_str("Block values are the lag-τ mean over every block. Slope values fit the mean over all origins against lag, with an intercept, from lag L/8 to L/2 of the L blocks. The Ref. [12] column follows that paper: one origin, the start of production; each axis fitted as 2Dt with an intercept over every lag; the three axes averaged. f is N D* over the block D of the Wigner-Seitz site, each the mean over trajectories, with both standard errors in quadrature: f takes the sites slope and f (Ref. [12]) the Ref. [12] fit. The block D of the defect equals its slope when successive defect jumps are uncorrelated beyond τ, which the slope column tests; the block N D* lies above the slope because a block of n jumps has the lattice-walk f(n) of `direct_md_dynamics.md`, about 0.8/n above its limit. The jump column sums |Δr|² of the Wigner-Seitz site from sample to sample over 6t: the jump rate times λ²/6 when every move is one nearest-neighbour jump. Every value is the mean over trajectories ± the standard error across them.\n\n");
     let mut temperatures: Vec<f64> = rows.iter().map(|row| row.temperature).collect();
     temperatures.sort_by(f64::total_cmp);
     temperatures.dedup();
@@ -3478,8 +3489,8 @@ fn sia_tracer_note(csv: &std::path::Path) -> String {
             cell(across_seeds(&seeds, |seed| seed.site_slope)),
             cell(across_seeds(&seeds, |seed| seed.tracer_slope)),
             cell(reference),
-            cell(across_seeds(&seeds, |seed| seed.site_slope / seed.ws_slope)),
-            cell(across_seeds(&seeds, |seed| seed.reference / seed.ws_reference)),
+            cell(correlation_factor(&seeds, |seed| seed.site_slope)),
+            cell(correlation_factor(&seeds, |seed| seed.reference)),
             seeds.iter().map(|seed| seed.breaks).sum::<f64>(),
             seeds.iter().map(|seed| seed.unresolved).sum::<f64>(),
         ));
@@ -3786,7 +3797,7 @@ struct TracerEstimate {
     defect: (f64, f64),
     /// N D*, the Ref. [12] fit.
     tracer: (f64, f64),
-    /// N D* from sites over D of the Wigner-Seitz site, both slopes, per trajectory.
+    /// `tracer` over `defect`.
     correlation: (f64, f64),
 }
 
@@ -3799,7 +3810,7 @@ fn tracer_estimate(rows: &[TracerRow], temperature: f64) -> Option<TracerEstimat
         seeds: seeds.len(),
         defect: across_seeds(&seeds, |seed| seed.ws),
         tracer: across_seeds(&seeds, |seed| seed.reference),
-        correlation: across_seeds(&seeds, |seed| seed.site_slope / seed.ws_slope),
+        correlation: correlation_factor(&seeds, |seed| seed.reference),
     })
 }
 
@@ -3822,6 +3833,39 @@ fn measured_tracer(
                 && (kind == DynamicsKind::NphNve || (estimate.lattice - lattice).abs() < 1.0e-5);
             matches.then_some((estimate, campaign.file))
         })
+}
+
+/// Per-trajectory D differences below this, Å²/ps, are the rounding of the
+/// two CSVs: the tracer campaign reran the free-dumbbell trajectories.
+const SAME_TRAJECTORY_D: f64 = 1.0e-6;
+
+/// The free-dumbbell CSV that [`measured_diffusivity`] pairs with a tracer
+/// campaign at `temperature`, the largest per-trajectory difference between
+/// its D and the Wigner-Seitz block D of the tracer seeds, and the number of
+/// seeds compared.
+fn rerun_mismatch(campaign: &SiaCampaign, temperature: f64) -> Option<(&'static str, f64, usize)> {
+    let rows = read_tracer_rows(&validation_file(campaign.file));
+    let estimate = tracer_estimate(&rows, temperature)?;
+    let (_, _, file) =
+        measured_diffusivity(campaign.kind, campaign.gamma, temperature, estimate.lattice)?;
+    let mut free: BTreeMap<u64, (f64, usize, f64)> = BTreeMap::new();
+    for block in read_sia_blocks(&validation_file(file))
+        .iter()
+        .filter(|block| block.temperature == temperature)
+    {
+        let entry = free.entry(block.seed).or_insert((0.0, 0, block.tau));
+        entry.0 += block.r2;
+        entry.1 += 1;
+    }
+    let mut worst = 0.0_f64;
+    let mut compared = 0;
+    for seed in tracer_seeds(&rows, temperature) {
+        if let Some((sum, count, tau)) = free.get(&seed.seed) {
+            worst = worst.max((seed.ws - sum / *count as f64 / (6.0 * tau)).abs());
+            compared += 1;
+        }
+    }
+    (compared > 0).then_some((file, worst, compared))
 }
 
 fn defect_pair_diffusivity(temperature: f64) -> Option<(f64, f64)> {
@@ -3987,7 +4031,7 @@ fn table_d_section(temperatures: &[f64]) -> String {
     text.push_str("- Ref. [12], Eq. (5) (p. 4): the \"generalized mean square displacement (MSD) per atom matrix\" G_MSD = (1/N) Σ_i [Δx_i², Δx_iΔy_i, …], with \"displacements of individual atoms from their initial positions\", \"2Dt = G_MSD in the limit of a long time\", and \"linear least-squares-fits to the corresponding elements of G_MSD over time\" after the first 1 ps. The cell has 4951 atoms with the SIA (p. 3); the volume follows thermal expansion and the runs are 2 ns of NVE (p. 4).\n");
     text.push_str("- Erratum, Phys. Rev. Materials 9, 069901(E) (2025), doi:10.1103/8hb2-86lm, replaces the p. 4 sentence that this D \"is the SIA diffusivity\" with \"The diffusivity thereby obtained is the self-diffusivity of Cu, not the SIA diffusivity, because G_MSD is computed on a per-atom basis\", and states that the diffusivities of Figs. 4 and 5(b) \"may be converted to SIA diffusivities by multiplying them by the number of atoms in the model, i.e., 4951.\" Fig. 4 of Ref. [12] (p. 9) plots those diffusivities at 700 K in µm²/s; at zero strain the components read 1.84 µm²/s = 1.84×10⁻⁴ Å²/ps, and 4951 times that is 0.911 Å²/ps, the 700 K D_i of Table 1 (0.910 ± 0.012).\n");
     text.push_str("- Potential: section 3 (p. 6), \"All atomistic simulations are carried out using the embedded atom method (EAM) potential for Cu by Mishin et al. [32]\"; Ref. [12] (p. 3), \"an embedded atom method (EAM) [24] potential for Cu developed by Mishin et al. [25]\". Both references are Y. Mishin, M. J. Mehl, D. A. Papaconstantopoulos, A. F. Voter, and J. D. Kress, Phys. Rev. B 63, 224106 (2001), the EAM1 of `tests/mishin_cu.rs` that every campaign here uses.\n\n");
-    text.push_str("Table 1 D_i is therefore 4951 D*, with D* the per-atom diffusivity of Eq. (5): N D* = Σ_i ⟨Δx_i²⟩/2t, a sum of tracer displacements. One Johnson jump moves one atom by the defect's own jump vector, so N D* would equal the defect diffusivity only if successive jumps moved uncorrelated atoms. They do not: the atom that has just moved is one of the two atoms of the new dumbbell, so it moves again at the next jump with probability 1/2, and that move points back along its last one on average. N D* = f D_defect defines the tracer correlation factor f of the mechanism, while the ν of section 1 needs D_defect itself. Both are measured below on the same free-dumbbell trajectories, with the dynamics of the whole-cell k ensembles (`direct_md_sia_tracer_*.md`). N D* is the Ref. [12] fit of drift-removed positions; defect D is the Wigner-Seitz block value of `direct_md_sia_d_*.md`; f is the per-trajectory ratio of the two slopes from atom sites. Ratios carry both errors in quadrature, and z is the difference over the two errors in quadrature.\n\n");
+    text.push_str("Table 1 D_i is therefore 4951 D*, with D* the per-atom diffusivity of Eq. (5): N D* = Σ_i ⟨Δx_i²⟩/2t, a sum of tracer displacements. One Johnson jump moves one atom by the defect's own jump vector, so N D* would equal the defect diffusivity only if successive jumps moved uncorrelated atoms. They do not: the atom that has just moved is one of the two atoms of the new dumbbell, so it moves again at the next jump with probability 1/2, and that move points back along its last one on average. N D* = f D_defect defines the tracer correlation factor f of the mechanism, while the ν of section 1 needs D_defect itself. Both are measured below on the same free-dumbbell trajectories, with the dynamics of the whole-cell k ensembles (`direct_md_sia_tracer_*.md`). N D* is the Ref. [12] fit of drift-removed positions; defect D is the Wigner-Seitz block value of the same trajectories; f is N D* over defect D, the ratio of the two means. Ratios carry both errors in quadrature, and z is the difference over the two errors in quadrature.\n\n");
     text.push_str("| T (K) | dynamics | CSV | seeds | N D*, Ref. [12] fit (Å²/ps) | Table 1 D_i [12] | N D* / Table 1 | z | defect D (Å²/ps) | defect D / Table 1 | f |\n|---:|:---|:---|---:|---:|---:|---:|---:|---:|---:|---:|\n");
     let mut tracer_ratios = Vec::new();
     let mut defect_ratios = Vec::new();
@@ -4034,6 +4078,31 @@ fn table_d_section(temperatures: &[f64]) -> String {
             span(&defect_ratios),
             span(&factors)
         ));
+    }
+    for campaign in SIA_TRACER_CAMPAIGNS.iter().take(2) {
+        let checks: Vec<(&str, f64, usize)> = temperatures
+            .iter()
+            .filter_map(|temperature| rerun_mismatch(campaign, *temperature))
+            .collect();
+        let Some((file, _, _)) = checks.first() else {
+            continue;
+        };
+        let worst = checks
+            .iter()
+            .map(|(_, worst, _)| *worst)
+            .fold(0.0, f64::max);
+        let compared: usize = checks.iter().map(|(_, _, compared)| compared).sum();
+        text.push_str(&format!(
+            "\nPer trajectory, the Wigner-Seitz block D of `{}` and the D of `{file}` differ by at most {worst:.1e} Å²/ps over {compared} trajectories",
+            campaign.file
+        ));
+        text.push_str(&if worst < SAME_TRAJECTORY_D {
+            ": these are the same trajectories.\n".to_string()
+        } else if campaign.kind == DynamicsKind::NphNve {
+            format!(": these are other trajectories with the same seeds. The NPH stage of `{file}` started at the earlier lattice constants of the V_iv runs, and the tracer campaign starts it at the zero-total-pressure lattice of `direct_md_lattice.csv`.\n")
+        } else {
+            ": these are other trajectories with the same seeds.\n".to_string()
+        });
     }
     text.push_str("\nThe same correlation on an ideal lattice: a <100> dumbbell that moves only by Johnson jumps, the moving atom ending on the near side of the new dumbbell (`johnson_walk`). f(n) is Σ_i |Δs_i|² over n λ² after n jumps, mean ± standard error over the walks, seed 0x5EED. The lattice value is not an input to any number above.\n\n| jumps n | walks | f(n) |\n|---:|---:|---:|\n");
     for (jumps, walks) in JOHNSON_WALKS {
@@ -4309,23 +4378,45 @@ fn dynamics_note() -> String {
     }
     text.push_str("\n## V_iv by D_i convention\n\nV_iv/Ω = 4αk/(aD_i) with α = 2/3 and the k of the table above, for three D_i: the Table 1 value, which is 4951 D* from Ref. [12]; N D* measured on our trajectories with the dynamics of the ensemble; and the defect D of those dynamics, which is the D_i of ν = D_i/(αa²). σ adds the relative errors of k and D_i in quadrature. The previous column is the conversion this driver used before, k a²/(α D_i Ω), with the defect D: α was inverted, which multiplies V by 1/α² = 9/4. The last column is Table 1, k-method, 8788 atoms.\n\n| T (K) | dynamics | detector | Table 1 D_i | N D*, ours | defect D, ours | previous: k a²/(αD), defect D | Table 1 |\n|---:|:---|:---|---:|---:|---:|---:|---:|\n");
     text.push_str(&volumes);
-    let factors: Vec<f64> = temperatures
-        .iter()
-        .flat_map(|temperature| {
-            SIA_TRACER_CAMPAIGNS.iter().take(2).filter_map(|campaign| {
-                let rows = read_tracer_rows(&validation_file(campaign.file));
-                tracer_estimate(&rows, *temperature).map(|estimate| estimate.correlation.0)
-            })
-        })
-        .collect();
+    let mut factors = Vec::new();
+    let mut reruns = Vec::new();
+    let mut others = Vec::new();
+    for campaign in SIA_TRACER_CAMPAIGNS.iter().take(2) {
+        let name = format!("\"{}\"", campaign_label(campaign.kind, campaign.gamma));
+        let rows = read_tracer_rows(&validation_file(campaign.file));
+        for temperature in temperatures {
+            let Some((_, worst, _)) = rerun_mismatch(campaign, temperature) else {
+                continue;
+            };
+            let list = if worst < SAME_TRAJECTORY_D {
+                if let Some(estimate) = tracer_estimate(&rows, temperature) {
+                    factors.push(estimate.correlation.0);
+                }
+                &mut reruns
+            } else {
+                &mut others
+            };
+            if !list.contains(&name) {
+                list.push(name.clone());
+            }
+        }
+    }
     if !factors.is_empty() {
         let low = factors.iter().copied().fold(f64::INFINITY, f64::min);
         let high = factors.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         text.push_str(&format!(
-            "\nThe previous column over the N D* column is (9/4) f. With the measured f between {low:.3} and {high:.3}, that is {:.3} to {:.3}.\n",
+            "\nThe previous column over the N D* column is (9/4) N D*/D, with D the defect D of the row. On the {} rows with an N D*, the tracer campaign reran the trajectories of that D, so N D*/D is f, here {low:.3} to {high:.3}, and the ratio is {:.3} to {:.3}.",
+            reruns.join(" and "),
             2.25 * low,
             2.25 * high
         ));
+        if !others.is_empty() {
+            text.push_str(&format!(
+                " The {} rows take N D* and D from different trajectories with the same seeds (see the first section).",
+                others.join(" and ")
+            ));
+        }
+        text.push('\n');
     }
     let quoted: Vec<String> = temperatures
         .iter()
