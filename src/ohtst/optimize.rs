@@ -29,15 +29,19 @@
 //! Hessian is the harmonic one of [`PlaneMetric::Harmonic`], or one
 //! curvature per factor measured along every trial step.
 //!
-//! A plane counts as converged when the translational and the rotational
-//! blocks of its gradient are both within
-//! [`PlaneOptimizerConfig::confidence`] standard errors of zero;
-//! [`PlaneOptimizerConfig::patience`] accepted planes in a row end the
-//! run. The sample size follows the norm test of Byrd, Chin, Nocedal and
-//! Wu, Math. Program. 134, 127 (2012), doi:10.1007/s10107-012-0572-5:
+//! Sample sizing and convergence use separate tests. The sample size follows
+//! the norm test of Byrd, Chin, Nocedal and Wu, Math. Program. 134, 127
+//! (2012), doi:10.1007/s10107-012-0572-5:
 //! when the variance of the mean gradient at an accepted plane exceeds
 //! `θ² |g|²`, the sample grows by that ratio, up to
 //! [`PlaneOptimizerConfig::max_records`], and the plane is sampled again.
+//! Convergence instead compares each accepted translational and orientational
+//! step with its gradient error propagated through the current model
+//! curvature, or with an absolute step tolerance. The criterion must hold
+//! for [`PlaneOptimizerConfig::patience`] accepted steps. Iteration and
+//! evaluation caps return a finite [`PlaneOptimum`] with a typed
+//! [`PlaneOptimizerStatus`] rather than turning sampling noise into an
+//! unbounded run.
 
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -123,17 +127,19 @@ pub struct PlaneOptimizerConfig {
     /// [`Self::translate`] is set, because a plane that cannot move turns
     /// about its point.
     pub recenter: bool,
-    /// Standard errors within which a gradient block counts as zero.
+    /// `k` in the accepted-step convergence test: a translation or
+    /// orientation step is converged when it is below `k` propagated
+    /// standard errors.
     pub confidence: f64,
-    /// Length below which a gradient block counts as zero whatever its
-    /// error. A surface whose normal force has no variance on the optimal
-    /// plane, such as a separable quadratic, needs it.
+    /// Absolute accepted-step length below which a block is converged.
     pub tolerance: f64,
-    /// Converged accepted planes in a row that end [`PlaneOptimizer::run`].
+    /// Converged accepted steps in a row that end [`PlaneOptimizer::run`].
     pub patience: usize,
     /// Outer trust-region iterations of [`PlaneOptimizer::run`], one trial
     /// plane each.
     pub max_iterations: usize,
+    /// Hard cap on reported force/energy evaluations.
+    pub max_evaluations: usize,
 }
 
 impl Default for PlaneOptimizerConfig {
@@ -154,6 +160,7 @@ impl Default for PlaneOptimizerConfig {
             tolerance: 0.0,
             patience: 3,
             max_iterations: 100,
+            max_evaluations: 10_000_000,
         }
     }
 }
@@ -264,6 +271,13 @@ impl PlaneOptimizerConfig {
         self
     }
 
+    /// Set [`Self::max_evaluations`].
+    #[must_use]
+    pub fn with_max_evaluations(mut self, max_evaluations: usize) -> Self {
+        self.max_evaluations = max_evaluations;
+        self
+    }
+
     fn check(&self, dim: usize) -> Result<(), SaddleError> {
         self.sampler.check()?;
         let positive = |v: f64| v.is_finite() && v > 0.0;
@@ -289,9 +303,18 @@ impl PlaneOptimizerConfig {
                 "the plane optimizer has to translate, rotate, or both".into(),
             ));
         }
-        if self.patience == 0 || self.max_records < self.sampler.records {
+        let first_sample = self
+            .sampler
+            .burn_in
+            .saturating_add(self.sampler.stride.saturating_mul(self.sampler.records))
+            .saturating_add(1);
+        if self.patience == 0
+            || self.max_records < self.sampler.records
+            || self.max_iterations == 0
+            || self.max_evaluations < first_sample
+        {
             return Err(SaddleError::Invalid(
-                "patience must be positive and max_records at least the first sample".into(),
+                "optimizer caps must admit one iteration and the first sample".into(),
             ));
         }
         if let PlaneMetric::Harmonic(reference) = &self.metric {
@@ -339,8 +362,22 @@ pub struct PlaneTrace {
 
 /// The converged plane of [`PlaneOptimizer::run`].
 #[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlaneOptimizerStatus {
+    /// The accepted-step criterion passed for the configured patience.
+    Converged,
+    /// The outer iteration cap was reached with a finite last estimate.
+    MaxIterations,
+    /// Another sample would exceed the force/energy evaluation cap.
+    MaxEvaluations,
+}
+
+/// The last plane estimate returned by [`PlaneOptimizer::run`].
+#[non_exhaustive]
 #[derive(Clone, Debug)]
 pub struct PlaneOptimum {
+    /// Why the optimizer stopped.
+    pub status: PlaneOptimizerStatus,
     /// The last accepted plane.
     pub plane: Hyperplane,
     /// Its sample.
@@ -506,6 +543,8 @@ impl PlaneOptimizer {
             tested: false,
             streak: 0,
             converged: false,
+            status: None,
+            accepted_step: None,
             samples: 0,
             evaluations,
             trace: Vec::new(),
@@ -532,18 +571,13 @@ impl PlaneOptimizer {
         let Some(current) = climb.current else {
             return Err(SaddleError::Solver("no plane was sampled".into()));
         };
-        if !climb.converged {
-            let b = climb.blocks;
-            return Err(SaddleError::Solver(format!(
-                "the plane did not converge in {} iterations: translation {:.3e} ± {:.3e}, rotation {:.3e} ± {:.3e}",
-                config.max_iterations,
-                b.translation,
-                b.translation_error,
-                b.rotation,
-                b.rotation_error
-            )));
-        }
+        let status = climb.status.unwrap_or(if climb.converged {
+            PlaneOptimizerStatus::Converged
+        } else {
+            PlaneOptimizerStatus::MaxIterations
+        });
         Ok(PlaneOptimum {
+            status,
             plane: current.plane,
             sample: current.sample,
             iterations: result.iterations,
@@ -785,6 +819,13 @@ impl Model {
             }
         }
     }
+
+    fn curvatures(&self) -> (f64, f64) {
+        match self {
+            Self::Secant { rotation, offset } => (*rotation, *offset),
+            Self::Harmonic { curvature, .. } => (*curvature, *curvature),
+        }
+    }
 }
 
 /// One sampled plane.
@@ -808,6 +849,12 @@ struct Blocks {
     rotation_error: f64,
 }
 
+#[derive(Clone, Copy, Default)]
+struct AcceptedStep {
+    translation: f64,
+    rotation: f64,
+}
+
 /// The state the trust region's callbacks share.
 struct Climb<'a, E> {
     sampler: &'a mut E,
@@ -822,6 +869,8 @@ struct Climb<'a, E> {
     tested: bool,
     streak: usize,
     converged: bool,
+    status: Option<PlaneOptimizerStatus>,
+    accepted_step: Option<AcceptedStep>,
     samples: usize,
     evaluations: usize,
     trace: Vec<PlaneTrace>,
@@ -830,6 +879,24 @@ struct Climb<'a, E> {
 }
 
 impl<E: HyperplaneSampler> Climb<'_, E> {
+    fn sample_cost(&self, records: usize) -> usize {
+        self.config
+            .sampler
+            .burn_in
+            .saturating_add(self.config.sampler.stride.saturating_mul(records))
+            .saturating_add(1)
+    }
+
+    fn reserve_sample(&mut self, records: usize) -> bool {
+        if self.evaluations.saturating_add(self.sample_cost(records)) > self.config.max_evaluations
+        {
+            self.status = Some(PlaneOptimizerStatus::MaxEvaluations);
+            false
+        } else {
+            true
+        }
+    }
+
     fn sample(&mut self, x: &Array1<f64>) -> Result<Iterate, SaddleError> {
         let plane = self.layout.plane(&self.pivot, x)?;
         let sampler = self.config.sampler.clone().with_records(self.records);
@@ -893,6 +960,9 @@ impl<E: HyperplaneSampler> Climb<'_, E> {
             Some(current) if current.x == *x => return Ok(current.value),
             Some(_) => {}
         }
+        if !self.reserve_sample(self.records) {
+            return Ok(f64::INFINITY);
+        }
         let mut trial = self.sample(x)?;
         let current = self.current.as_ref().expect("a current plane");
         let step = x - &current.x;
@@ -923,6 +993,24 @@ impl<E: HyperplaneSampler> Climb<'_, E> {
                 ));
             }
         };
+        let current = self.current.as_ref().expect("an accepted plane");
+        let step = &trial.x - &current.x;
+        let rotation = if self.layout.rotate {
+            step.slice(s![..self.layout.dim])
+                .dot(&step.slice(s![..self.layout.dim]))
+                .sqrt()
+        } else {
+            0.0
+        };
+        let translation = if self.layout.translate {
+            step[step.len() - 1].abs()
+        } else {
+            0.0
+        };
+        self.accepted_step = Some(AcceptedStep {
+            translation,
+            rotation,
+        });
         if self.config.recenter && self.config.translate {
             self.recenter(&mut trial)?;
             x.assign(&trial.x);
@@ -948,6 +1036,9 @@ impl<E: HyperplaneSampler> Climb<'_, E> {
                 "the trust region asked for the gradient off the current plane".into(),
             ));
         }
+        if self.status == Some(PlaneOptimizerStatus::MaxEvaluations) {
+            return Ok(Array1::zeros(x.len()));
+        }
         if !self.tested {
             self.tested = true;
             self.test()?;
@@ -964,6 +1055,9 @@ impl<E: HyperplaneSampler> Climb<'_, E> {
     fn test(&mut self) -> Result<(), SaddleError> {
         let mut blocks = self.blocks();
         if let Some(records) = self.grown(&blocks) {
+            if !self.reserve_sample(records) {
+                return Ok(());
+            }
             self.records = records;
             let current = self.current.take().expect("an accepted plane");
             let mut again = self.sample(&current.x)?;
@@ -974,13 +1068,34 @@ impl<E: HyperplaneSampler> Climb<'_, E> {
             self.current = Some(again);
             blocks = self.blocks();
         }
-        let zero = |value: f64, error: f64| {
-            value <= self.config.confidence * error || value <= self.config.tolerance
+        let (rotation_curvature, translation_curvature) = self.model.curvatures();
+        let propagated = |error: f64, curvature: f64| {
+            if curvature.is_finite() && curvature > 0.0 {
+                error / curvature
+            } else {
+                0.0
+            }
         };
-        let within = (!self.layout.translate || zero(blocks.translation, blocks.translation_error))
-            && (!self.layout.rotate || zero(blocks.rotation, blocks.rotation_error));
+        let zero = |step: f64, error: f64| {
+            step <= self.config.confidence * error || step <= self.config.tolerance
+        };
+        let within = self.accepted_step.is_some_and(|step| {
+            (!self.layout.translate
+                || zero(
+                    step.translation,
+                    propagated(blocks.translation_error, translation_curvature),
+                ))
+                && (!self.layout.rotate
+                    || zero(
+                        step.rotation,
+                        propagated(blocks.rotation_error, rotation_curvature),
+                    ))
+        });
         self.streak = if within { self.streak + 1 } else { 0 };
         self.converged = self.streak >= self.config.patience;
+        if self.converged {
+            self.status = Some(PlaneOptimizerStatus::Converged);
+        }
         self.blocks = blocks;
         let current = self.current.as_ref().expect("an accepted plane");
         self.trace.push(PlaneTrace {
@@ -1384,6 +1499,20 @@ mod tests {
         }
     }
 
+    /// At `x = 0`, `kT = 0.2`, the constrained `y` variance is `0.1`.
+    /// The true normal mean is zero while finite samples remain noisy.
+    struct NoisyZeroMean;
+
+    impl PointSurface for NoisyZeroMean {
+        fn eval(&self, q: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+            let (x, y) = (q[0], q[1]);
+            Ok((
+                -0.5 * x * x + y * y + 0.2 * x * (y * y - 0.1),
+                array![-x + 0.2 * (y * y - 0.1), 2.0 * y + 0.4 * x * y],
+            ))
+        }
+    }
+
     fn config() -> PlaneOptimizerConfig {
         PlaneOptimizerConfig::default()
             .with_sampler(
@@ -1400,6 +1529,7 @@ mod tests {
     }
 
     fn assert_at_the_saddle_plane(optimum: &PlaneOptimum) {
+        assert_eq!(optimum.status, PlaneOptimizerStatus::Converged);
         let nu = optimum.plane.normal();
         let tilt = (nu[1] * nu[1] + nu[2] * nu[2]).sqrt();
         let offset = optimum.plane.distance(array![0.0, 0.0, 0.0].view());
@@ -1440,6 +1570,62 @@ mod tests {
             .with_tolerance(2.0e-6);
         let optimum = optimize_plane(&mut sampler, &start, &config).unwrap();
         assert_at_the_saddle_plane(&optimum);
+    }
+
+    #[test]
+    fn noisy_zero_mean_optimum_terminates_under_the_force_call_cap() {
+        let start = Hyperplane::new(array![0.02, 0.0], array![1.0, 0.03]).unwrap();
+        let sampling = LangevinConfig::default()
+            .with_thermal(0.2)
+            .with_time_step(0.1)
+            .with_burn_in(200)
+            .with_stride(4)
+            .with_records(600)
+            .with_blocks(12)
+            .with_seed(73);
+        let mut sampler = AnalyticSurfaceSampler::new(&NoisyZeroMean, sampling.clone());
+        let config = PlaneOptimizerConfig::default()
+            .with_sampler(sampling)
+            .with_max_records(2_400)
+            .with_max_iterations(120)
+            .with_max_evaluations(500_000)
+            .with_tolerance(2.0e-4);
+        let optimum = optimize_plane(&mut sampler, &start, &config).unwrap();
+        assert_eq!(optimum.status, PlaneOptimizerStatus::Converged);
+        assert!(optimum.evaluations <= config.max_evaluations);
+        assert!(optimum.plane.distance(array![0.0, 0.0].view()).abs() < 0.01);
+        assert!(optimum.plane.normal()[1].abs() < 0.01);
+    }
+
+    #[test]
+    fn iteration_cap_returns_the_last_finite_estimate() {
+        let start = Hyperplane::new(array![0.3, 0.1, -0.2], array![1.0, 0.3, -0.25]).unwrap();
+        let optimum = PlaneOptimizer::new(&start, config().with_max_iterations(1))
+            .unwrap()
+            .run(&HarmonicSaddle)
+            .unwrap();
+        assert_eq!(optimum.status, PlaneOptimizerStatus::MaxIterations);
+        assert!(optimum.sample.normal_force.is_finite());
+    }
+
+    #[test]
+    fn evaluation_cap_returns_the_last_finite_estimate() {
+        let start = Hyperplane::new(array![0.05, 0.0, 0.0], array![1.0, 0.04, -0.03]).unwrap();
+        let model = QuadraticModel::new(
+            array![0.0, 0.0, 0.0],
+            Array2::from_diag(&array![-1.0, 2.0, 3.0]),
+        );
+        let mut sampler = ExactGaussianPlaneSampler::new(model).unwrap();
+        let sampling = LangevinConfig::default().with_records(600).with_blocks(12);
+        let first_sample_cap = sampling.burn_in + sampling.stride * sampling.records + 1;
+        let config = PlaneOptimizerConfig::default()
+            .with_sampler(sampling)
+            .with_max_records(600)
+            .with_max_evaluations(first_sample_cap);
+        let optimum = optimize_plane(&mut sampler, &start, &config).unwrap();
+        assert_eq!(optimum.status, PlaneOptimizerStatus::MaxEvaluations);
+        assert!(optimum.evaluations <= config.max_evaluations);
+        assert!(optimum.sample.normal_force.is_finite());
     }
 
     #[test]
