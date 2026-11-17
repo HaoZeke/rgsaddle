@@ -128,7 +128,10 @@ pub use indexk::{
     indexk_step, reflect_force, translated_force,
 };
 #[cfg(feature = "lammps")]
-pub use lammps::{LammpsHyperplaneSampler, LammpsSamplerConfig, LammpsSystem};
+pub use lammps::{
+    LammpsHyperplaneSampler, LammpsSamplerConfig, LammpsSystem, LammpsThermostatKind,
+    LammpsThermostatRecord,
+};
 pub use minmode::{
     FiniteDifference, MinModeConfig, MinModeKind, MinModeReport, MinModeSession, MinModeStatus,
     ModeEstimate, PointSurface, RaisedStep, halve_raised_energy, rotation_force_error,

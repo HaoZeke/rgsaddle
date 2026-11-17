@@ -43,7 +43,9 @@ let mut sampler = LammpsHyperplaneSampler::new(
     LammpsSamplerConfig::default()
         .with_library_path("liblammpc.so")
         .with_time_step_ps(0.001)
-        .with_friction_per_ps(1.0),
+        .with_friction_per_ps(1.0)
+        .with_thermostat(LammpsThermostatKind::BaoabLangevin)
+        .with_excluded_modes(3),
 );
 #+end_src
 
@@ -81,3 +83,10 @@ Mass-weighted sampling returns \(q=M^{1/2}x\), its tangent force, and its
 removed velocity. Cartesian sampling leaves the vectors Cartesian and uses
 the mass metric for projection. PAFI and OH-TST statistics are computed by
 rgsaddle after lammpc returns the records.
+
+Each record exposes two thermostat metadata observables:
+=lammps.thermostat= and =lammps.effective_degrees_of_freedom=. The thermostat
+field is a stable enum code (currently BAOAB Langevin). The effective degrees
+of freedom are \(3N - 1 - n_{\mathrm{excluded}}\), with
+=n_{\mathrm{excluded}}= supplied through
+=LammpsSamplerConfig::with_excluded_modes=.
