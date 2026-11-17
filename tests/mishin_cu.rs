@@ -1325,6 +1325,7 @@ fn rotate_positions(positions: &Array1<f64>, rotation: [[f64; 3]; 3]) -> Array1<
     out
 }
 
+#[allow(clippy::needless_range_loop)]
 fn deform(
     positions: &Array1<f64>,
     cell: [[f64; 3]; 3],
@@ -1375,9 +1376,9 @@ fn eon_barrier(strain: f64, variable: bool) -> Option<f64> {
     let key = (strain * 1000.0).round() as i32;
     if variable {
         return match key {
-            0 => Some(0.34700693547728179),
+            0 => Some(0.347_006_935_477_281_8),
             20 => Some(0.16255571725275786),
-            30 => Some(0.088051942122888249),
+            30 => Some(0.088_051_942_122_888_25),
             40 => Some(0.027924583692424676),
             _ => None,
         };
@@ -1386,8 +1387,8 @@ fn eon_barrier(strain: f64, variable: bool) -> Option<f64> {
         0 => Some(0.4738130973207717),
         20 => Some(0.2435460895545134),
         30 => Some(0.14829201811522807),
-        40 => Some(0.067862165555311549),
-        50 => Some(0.0077937374149428251),
+        40 => Some(0.067_862_165_555_311_55),
+        50 => Some(0.007_793_737_414_942_825),
         _ => None,
     }
 }
@@ -1421,6 +1422,7 @@ struct ExplicitOut {
     sad_gradient: Array1<f64>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn explicit_barrier(
     copper: &Copper,
     cube: [[f64; 3]; 3],
@@ -1532,6 +1534,7 @@ struct Tally {
 
 #[test]
 #[ignore = "release copper dimer head-to-head; writes benchmarks/strain_response_head_to_head.csv"]
+#[allow(clippy::needless_range_loop)]
 fn strain_response_head_to_head() {
     let copper = Copper::new();
     let (perfect, cube) = fcc(3, 3.615);
@@ -2093,6 +2096,7 @@ struct Reference {
     multipole: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_sparse(
     file: &mut File,
     kind: &str,
@@ -2212,7 +2216,7 @@ fn write_point(
     };
     writeln!(
         file,
-        "{kind},{path},{strain},{},{variant},{events},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},\"{trust}\",{refine_calls},{},{},{},{},{},{},{:.3},\"{}\"",
+        "{kind},{path},{strain},{},{variant},{events},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},\"{trust}\",{refine_calls},{},{},{},{},{},{},{:.3},\"{} status={} curvature={} min_force={}\"",
         if variable { "variable" } else { "fixed" },
         calibration as u8,
         csv_num(found.barrier),
@@ -2240,13 +2244,10 @@ fn write_point(
         csv_opt(eon),
         csv_opt(versus_eon),
         wall_s,
-        format!(
-            "{} status={} curvature={} min_force={}",
-            note.replace('"', "'"),
-            found.status,
-            csv_num(found.curvature),
-            csv_num(found.min_force)
-        )
+        note.replace('"', "'"),
+        found.status,
+        csv_num(found.curvature),
+        csv_num(found.min_force)
     )
     .unwrap();
     tallies.push(Tally {
@@ -2787,6 +2788,7 @@ fn directed_gap(left: &Array1<f64>, right: &Array1<f64>, cell: [[f64; 3]; 3]) ->
     worst
 }
 
+#[allow(clippy::needless_range_loop)]
 fn axis_of(positions: &Array1<f64>, dumbbell: [usize; 2]) -> [f64; 3] {
     let mut vector = [0.0; 3];
     for c in 0..3 {
@@ -3151,6 +3153,7 @@ fn occupied(positions: &Array1<f64>, site: [f64; 3], cell: [[f64; 3]; 3]) -> boo
     (0..n).any(|atom| mic_distance(point_of(positions, atom), site, cell) < 0.8)
 }
 
+#[allow(clippy::type_complexity)]
 fn relax_pair(
     copper: &FastCopper,
     repeats: usize,
@@ -4063,6 +4066,7 @@ fn measured_lattice(temperature: f64) -> f64 {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn capture_mechanism(
     _copper: &FastCopper,
     reactant: &Array1<f64>,
@@ -4297,6 +4301,7 @@ impl Clone for LocalAtom {
 
 impl Copy for LocalAtom {}
 
+#[allow(clippy::needless_range_loop)]
 fn assign_mapped(
     reactant: &Array1<f64>,
     cell: [[f64; 3]; 3],
@@ -4695,6 +4700,7 @@ fn orientation_scan(copper: &FastCopper) -> Vec<String> {
     rows
 }
 
+#[allow(clippy::type_complexity)]
 fn relax_pair_axis(
     copper: &FastCopper,
     repeats: usize,
@@ -4769,7 +4775,7 @@ fn crystal_image(reactant: &Array1<f64>, repeats: usize, a: f64) -> Array1<f64> 
     let mut site_used = vec![false; sites.len()];
     let mut product = reactant.clone();
     let mut assigned = 0usize;
-    for (distance, atom, site) in pairs {
+    for (_distance, atom, site) in pairs {
         if atom_used[atom] || site_used[site] {
             continue;
         }
@@ -5277,9 +5283,6 @@ fn defect_pair_capture() {
                 } else {
                     None
                 };
-            let barrier = saved
-                .map(|row| row.d_e0)
-                .or(recomputed.as_ref().map(|row| row.d_e0));
             if saved
                 .or(recomputed.as_ref())
                 .is_some_and(|row| row.d_e0 >= BOLTZMANN_EV_PER_K * 500.0 && row.band_force <= 0.05)
@@ -5434,8 +5437,6 @@ struct NebCapture {
     d_e0: f64,
     zero_t: f64,
     band_force: f64,
-    drop: f64,
-    rise: f64,
     index1: bool,
     barrierless: bool,
     note: String,
@@ -5528,8 +5529,6 @@ fn neb_capture(
         d_e0,
         zero_t: zero.barrier,
         band_force,
-        drop,
-        rise,
         index1,
         barrierless: downhill,
         note,
@@ -5586,7 +5585,7 @@ fn run_dense_job(
 
 fn finish_line(kind: &str, entry: &rgsaddle::RateEntry) -> String {
     format!(
-        "{kind},{},{},{},{},{},{:.6},{},{},{},{},{},{},{:.5},{}",
+        "{kind},{},{},{},{},{},{:.6},{},{},{},{},{},{},{:.5},kappa {}",
         entry.shell,
         entry.orientation,
         entry.hop,
@@ -5600,7 +5599,7 @@ fn finish_line(kind: &str, entry: &rgsaddle::RateEntry) -> String {
         num_or(&entry.rate),
         entry.outcome.as_str(),
         entry.band_force,
-        format!("kappa {}", num_or(&entry.kappa))
+        num_or(&entry.kappa)
     )
 }
 
@@ -5774,7 +5773,7 @@ fn defect_pair_finish() {
                         .ok()
                         .is_some_and(|error| error <= 0.01)
             }) {
-                eprintln!("skip {}", marker);
+                eprintln!("skip {marker}");
                 continue;
             }
             let entries = run_dense_job(&copper, &scaled, temperature).unwrap_or_default();
@@ -5880,7 +5879,6 @@ fn local_seeds(
     }
     push_atoms(0.45, perp, &dumbbell);
     push_atoms(-0.45, perp, &dumbbell);
-    drop(push_atoms);
     for kick in rotations {
         seeds.push(rgsaddle::DimerSeed {
             positions: reactant + &kick,
@@ -5909,7 +5907,7 @@ fn offset_len(offset: &[f64; 3]) -> f64 {
 }
 
 fn reaches_recombination(
-    reactant: &Array1<f64>,
+    _reactant: &Array1<f64>,
     reactant_energy: f64,
     vacancy: [f64; 3],
     cell: [[f64; 3]; 3],
@@ -6694,14 +6692,6 @@ fn defect_pair_viv() {
     eprintln!("viv {:.1} min", started.elapsed().as_secs_f64() / 60.0);
 }
 
-fn shell_multiplicity(a: f64, repeats: usize, radius: f64) -> f64 {
-    shell_table(a, repeats)
-        .into_iter()
-        .find(|(value, _, _)| (*value - radius).abs() < 0.05)
-        .map(|(_, _, count)| count as f64)
-        .unwrap_or(0.0)
-}
-
 fn distinct_orientations(vector: [f64; 3]) -> Vec<&'static str> {
     let hat = unit3(vector);
     let mut seen = Vec::new();
@@ -7004,15 +6994,16 @@ fn capture_still_competes(
         {
             return true;
         }
-        if let Ok(value) = fields[6].parse::<f64>() {
-            if value.is_finite() {
-                barrier = barrier.min(value);
-            }
+        if let Ok(value) = fields[6].parse::<f64>()
+            && value.is_finite()
+        {
+            barrier = barrier.min(value);
         }
     }
     saw && barrier <= 0.15
 }
 
+#[allow(clippy::too_many_arguments)]
 fn survey_shell(
     copper: &FastCopper,
     checkpoint: &Mutex<File>,
@@ -7296,8 +7287,8 @@ fn write_viv_summary(copper: &FastCopper) {
     for temperature in [300.0_f64, 500.0, 700.0] {
         let a = measured_lattice(temperature);
         let omega = a * a * a / 4.0;
-        for threshold_meV in [0.5_f64, 1.0, 2.0] {
-            let threshold = threshold_meV * 1.0e-3;
+        for threshold_mev in [0.5_f64, 1.0, 2.0] {
+            let threshold = threshold_mev * 1.0e-3;
             let mut sites = Vec::new();
             let mut unresolved = Vec::new();
             for (radius, vector, count) in shell_table(a, repeats_of()) {
@@ -7363,14 +7354,14 @@ fn write_viv_summary(copper: &FastCopper) {
                     };
                     writeln!(
                         out,
-                        "{temperature},{threshold_meV},{:.6},{},{},{demkowicz},{pending}",
+                        "{temperature},{threshold_mev},{:.6},{},{},{demkowicz},{pending}",
                         value.volume / omega,
                         value.spontaneous_sites,
                         value.kinetic_sites
                     )
                     .unwrap();
                     eprintln!(
-                        "V/Omega {temperature} K threshold {threshold_meV} meV = {:.4} spontaneous {} kinetic {} unresolved {}",
+                        "V/Omega {temperature} K threshold {threshold_mev} meV = {:.4} spontaneous {} kinetic {} unresolved {}",
                         value.volume / omega,
                         value.spontaneous_sites,
                         value.kinetic_sites,
@@ -7378,7 +7369,7 @@ fn write_viv_summary(copper: &FastCopper) {
                     );
                 }
                 Err(error) => {
-                    writeln!(out, "{temperature},{threshold_meV},,,,{error}").unwrap();
+                    writeln!(out, "{temperature},{threshold_mev},,,,{error}").unwrap();
                 }
             }
         }
@@ -7395,16 +7386,6 @@ fn repeats_of() -> usize {
 #[ignore = "sum the recombination volume from the catalogues on disk"]
 fn defect_pair_volume_only() {
     write_viv_summary(&FastCopper::new());
-}
-
-fn distinct_orientations_at(a: f64, radius: f64) -> Vec<&'static str> {
-    let Some((_, vector, _)) = shell_table(a, 8)
-        .into_iter()
-        .find(|(value, _, _)| (*value - radius).abs() < 0.05)
-    else {
-        return Vec::new();
-    };
-    distinct_orientations(vector)
 }
 
 fn orientation_with_data(
@@ -7449,22 +7430,23 @@ fn orientation_with_data(
             if fields[0] == "ref" || fields[0] == "survey" {
                 has_ref = true;
             }
-            if fields[0] == "pafi" && fields.len() > 13 && fields[12] == "rated" {
-                if let Ok(value) = fields[13].parse::<f64>() {
-                    if value.is_finite() {
-                        force = Some(force.map_or(value, |prior: f64| prior.min(value)));
-                    }
-                }
+            if fields[0] == "pafi"
+                && fields.len() > 13
+                && fields[12] == "rated"
+                && let Ok(value) = fields[13].parse::<f64>()
+                && value.is_finite()
+            {
+                force = Some(force.map_or(value, |prior: f64| prior.min(value)));
             }
         }
         if has_ref {
             any = Some(label);
         }
-        if let Some(value) = force {
-            if value < best_force {
-                best_force = value;
-                best = Some(label);
-            }
+        if let Some(value) = force
+            && value < best_force
+        {
+            best_force = value;
+            best = Some(label);
         }
     }
     best.or(any)
@@ -7489,22 +7471,20 @@ fn lowest_barrier(text: &str, radius: f64, orientation: &str, temperature: f64) 
         if (temp - temperature).abs() > 1.0 {
             continue;
         }
-        if let Ok(value) = fields[6].parse::<f64>() {
-            if value.is_finite() {
-                best = Some(best.map_or(value, |prior: f64| prior.min(value)));
-            }
+        if let Ok(value) = fields[6].parse::<f64>()
+            && value.is_finite()
+        {
+            best = Some(best.map_or(value, |prior: f64| prior.min(value)));
         }
-        if let Some(pos) = line.find("lowest_relative ") {
-            if let Ok(value) = line[pos + "lowest_relative ".len()..]
+        if let Some(pos) = line.find("lowest_relative ")
+            && let Ok(value) = line[pos + "lowest_relative ".len()..]
                 .split_whitespace()
                 .next()
                 .unwrap_or("")
                 .parse::<f64>()
-            {
-                if value.is_finite() {
-                    best = Some(best.map_or(value, |prior: f64| prior.min(value)));
-                }
-            }
+            && value.is_finite()
+        {
+            best = Some(best.map_or(value, |prior: f64| prior.min(value)));
         }
     }
     best
@@ -7524,10 +7504,11 @@ fn isolated_translation_rate(temperature: f64) -> Option<f64> {
         if (temp - temperature).abs() > 1.0 {
             continue;
         }
-        if let Ok(rate) = fields[11].parse::<f64>() {
-            if rate.is_finite() && rate > 0.0 {
-                return Some(rate);
-            }
+        if let Ok(rate) = fields[11].parse::<f64>()
+            && rate.is_finite()
+            && rate > 0.0
+        {
+            return Some(rate);
         }
     }
     None
@@ -7557,17 +7538,15 @@ fn descended(text: &str, radius: f64, orientation: &str, temperature: f64) -> bo
             continue;
         }
         saw = true;
-        if let Some(pos) = line.find("downhill_rel ") {
-            if let Ok(value) = line[pos + "downhill_rel ".len()..]
+        if let Some(pos) = line.find("downhill_rel ")
+            && let Ok(value) = line[pos + "downhill_rel ".len()..]
                 .split(|c: char| c == ',' || c == ';' || c.is_whitespace())
                 .next()
                 .unwrap_or("")
                 .parse::<f64>()
-            {
-                if value < -0.02 {
-                    dropped = true;
-                }
-            }
+            && value < -0.02
+        {
+            dropped = true;
         }
     }
     !saw || dropped
@@ -7597,15 +7576,17 @@ fn pafi_rate(text: &str, radius: f64, orientation: &str, temperature: f64) -> Op
         if (temp - temperature).abs() > 1.0 || fields[12] == "below_resolution" {
             continue;
         }
-        if let (Ok(barrier), Ok(error)) = (fields[8].parse::<f64>(), fields[9].parse::<f64>()) {
-            if barrier.abs() < 1.0e-4 && error < 1.0e-4 {
-                continue;
-            }
+        if let (Ok(barrier), Ok(error)) = (fields[8].parse::<f64>(), fields[9].parse::<f64>())
+            && barrier.abs() < 1.0e-4
+            && error < 1.0e-4
+        {
+            continue;
         }
-        if let Ok(rate) = fields[11].parse::<f64>() {
-            if rate.is_finite() && rate > 0.0 {
-                return Some(rate);
-            }
+        if let Ok(rate) = fields[11].parse::<f64>()
+            && rate.is_finite()
+            && rate > 0.0
+        {
+            return Some(rate);
         }
     }
     None
@@ -7673,7 +7654,7 @@ fn saddle_assignment(
 fn write_tight(file: &Mutex<File>, line: &str) {
     eprintln!("{line}");
     let _ = std::io::stderr().flush();
-    append_checkpoint(file, &line);
+    append_checkpoint(file, line);
 }
 
 #[test]
@@ -7735,21 +7716,20 @@ fn defect_pair_tight() {
         if !checkpoint_has(
             &prior,
             &format!("rotation,isolated,100,rotate,{temperature},"),
-        ) {
-            if let Some(hit) = tight_dimer(&copper, job.cell, hint, mode) {
-                let barrier = hit.energy - reactant_energy;
-                let assignment =
-                    saddle_assignment(&reactant, &hit.positions, [job.mobile[0], job.mobile[1]]);
-                write_tight(
-                    &checkpoint,
-                    &format!(
-                        "rotation,isolated,100,rotate,{temperature},{barrier:.6},{:.6e},{TIGHT_FORCE_EV_PER_A:.6e},{},{assignment},own lattice a={a:.6}; dimer force tolerance",
-                        hit.force, hit.index1
-                    ),
-                );
-                if hit.index1 {
-                    isolated.push((temperature, barrier, f64::NAN));
-                }
+        ) && let Some(hit) = tight_dimer(&copper, job.cell, hint, mode)
+        {
+            let barrier = hit.energy - reactant_energy;
+            let assignment =
+                saddle_assignment(&reactant, &hit.positions, [job.mobile[0], job.mobile[1]]);
+            write_tight(
+                &checkpoint,
+                &format!(
+                    "rotation,isolated,100,rotate,{temperature},{barrier:.6},{:.6e},{TIGHT_FORCE_EV_PER_A:.6e},{},{assignment},own lattice a={a:.6}; dimer force tolerance",
+                    hit.force, hit.index1
+                ),
+            );
+            if hit.index1 {
+                isolated.push((temperature, barrier, f64::NAN));
             }
         }
         if !checkpoint_has(
@@ -8446,10 +8426,11 @@ fn migration_rate(text: &str, temperature: f64) -> Option<f64> {
         if (temp - temperature).abs() > 1.0 || fields[12] != "rated" {
             continue;
         }
-        if let Ok(rate) = fields[11].parse::<f64>() {
-            if rate.is_finite() && rate > 0.0 {
-                best = Some(rate);
-            }
+        if let Ok(rate) = fields[11].parse::<f64>()
+            && rate.is_finite()
+            && rate > 0.0
+        {
+            best = Some(rate);
         }
     }
     best
@@ -8534,31 +8515,29 @@ fn defect_pair_run11() {
             )
             .into_iter()
             .next()
+                && let (Some(hint), Some(mode)) = (hop.saddle, hop.mode)
+                && let Some(hit) = tight_dimer(&copper, job.cell, hint, mode)
             {
-                if let (Some(hint), Some(mode)) = (hop.saddle, hop.mode) {
-                    if let Some(hit) = tight_dimer(&copper, job.cell, hint, mode) {
-                        let mut product = hop.product;
-                        relax_fast(&copper, &mut product, job.cell, 2.0e-4, 80);
-                        record_pafi(
-                            &copper,
-                            &checkpoint,
-                            bulk,
-                            "isolated",
-                            "100",
-                            "translate",
-                            "toward",
-                            700.0,
-                            &reactant,
-                            reactant_energy,
-                            &hit.positions,
-                            &hit.mode,
-                            &product,
-                            job.cell,
-                            true,
-                        );
-                        let _ = length;
-                    }
-                }
+                let mut product = hop.product;
+                relax_fast(&copper, &mut product, job.cell, 2.0e-4, 80);
+                record_pafi(
+                    &copper,
+                    &checkpoint,
+                    bulk,
+                    "isolated",
+                    "100",
+                    "translate",
+                    "toward",
+                    700.0,
+                    &reactant,
+                    reactant_energy,
+                    &hit.positions,
+                    &hit.mode,
+                    &product,
+                    job.cell,
+                    true,
+                );
+                let _ = length;
             }
         }
     }
@@ -8742,6 +8721,7 @@ fn defect_pair_run11() {
     eprintln!("run11 {:.1} min", started.elapsed().as_secs_f64() / 60.0);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn record_pafi(
     copper: &FastCopper,
     checkpoint: &Mutex<File>,
@@ -8754,7 +8734,7 @@ fn record_pafi(
     reactant: &Array1<f64>,
     reactant_energy: f64,
     saddle: &Array1<f64>,
-    mode: &Array1<f64>,
+    _mode: &Array1<f64>,
     downhill: &Array1<f64>,
     cell: [[f64; 3]; 3],
     append_capture_catalogue: bool,
@@ -9048,6 +9028,7 @@ fn capture_rate_row(
     None
 }
 
+#[allow(clippy::needless_range_loop)]
 fn assemble_passage() {
     let text = catalogue_text();
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benchmarks");
@@ -9135,7 +9116,7 @@ fn assemble_passage() {
             let mut total = 0.0;
             let mut spontaneous_total = 0.0;
             let mut kinetic_total = 0.0;
-            let mut samples = vec![0.0; 16];
+            let mut samples = [0.0; 16];
             for orientation in ["100", "010", "001"] {
                 let mut sites = Vec::new();
                 let mut capture_index = Vec::new();
@@ -9724,7 +9705,6 @@ fn assemble_run12() {
             .filter(|(radius, _, _)| *radius <= 11.0)
             .map(|(radius, _, _)| *radius)
             .fold(0.0, f64::max);
-        let jump = a / 2.0_f64.sqrt();
         let return_sites = return_layer_count(a, &shells, max_r);
         let (
             total,
@@ -9748,8 +9728,6 @@ fn assemble_run12() {
             a,
             omega,
             max_r,
-            jump,
-            return_sites,
             11.0,
             false,
             &|_, _| 0.0,
@@ -10025,44 +10003,6 @@ fn strain_away_factor(text: &str, temperature: f64, radius_ours: f64, free: f64)
     (-(barrier - free) / thermal).exp()
 }
 
-fn attach_return(
-    mut sites: Vec<rgsaddle::VolumeSite>,
-    boundary: &str,
-    outward: f64,
-    probability: f64,
-    count: f64,
-    layer_id: &str,
-) -> Vec<rgsaddle::VolumeSite> {
-    let Some(index) = sites
-        .iter()
-        .position(|site| site.id == boundary && site.outcome == rgsaddle::SiteOutcome::Kinetic)
-    else {
-        return sites;
-    };
-    if !(outward.is_finite()
-        && outward > 0.0
-        && (0.0..1.0).contains(&probability)
-        && count.is_finite()
-        && count >= 0.0)
-    {
-        return sites;
-    }
-    sites[index]
-        .rates
-        .retain(|(destination, _)| destination != "escaped");
-    sites[index].rates.push((layer_id.to_string(), outward));
-    sites.push(rgsaddle::VolumeSite {
-        id: layer_id.to_string(),
-        count,
-        outcome: rgsaddle::SiteOutcome::Kinetic,
-        rates: vec![
-            (boundary.to_string(), outward * probability),
-            ("escaped".into(), outward * (1.0 - probability)),
-        ],
-    });
-    sites
-}
-
 fn isolated_attempt_frequency(text: &str, temperature: f64) -> Option<f64> {
     for line in text.lines() {
         let fields: Vec<&str> = line.split(',').collect();
@@ -10184,6 +10124,11 @@ fn strain_bias(
     }
 }
 
+#[allow(
+    clippy::needless_range_loop,
+    clippy::too_many_arguments,
+    clippy::type_complexity
+)]
 fn channel_volumes(
     shells: &[(f64, [f64; 3], usize)],
     spontaneous: &std::collections::HashSet<String>,
@@ -10193,8 +10138,6 @@ fn channel_volumes(
     a: f64,
     omega: f64,
     max_r: f64,
-    jump: f64,
-    return_sites: usize,
     cutoff: f64,
     size_barriers: bool,
     binding: &dyn Fn(f64, &str) -> f64,
@@ -10312,8 +10255,6 @@ fn channel_volumes(
         })
         .unwrap_or(0.0);
     let a_ours = measured_lattice(temperature);
-    let layer = return_sites as f64 / 3.0;
-    let probability = rgsaddle::spherical_return_probability(max_r, jump).unwrap_or(0.0);
     let solve = |glide: bool,
                  rotation: bool,
                  drift: bool|
@@ -10574,7 +10515,7 @@ fn channel_volumes(
     let (rotated, spont, kinetic, time, tau_capture, capture_index, embedded, r_eff) =
         solve(true, true, false);
     let (drifted, _, _, _, _, _, _, _) = solve(true, true, true);
-    let mut samples = vec![0.0; 16];
+    let mut samples = [0.0; 16];
     for sample in 0..samples.len() {
         let mut varied = embedded.clone();
         for (place, rate, relative) in &capture_index {
@@ -10817,10 +10758,10 @@ fn assemble_run13() {
     for temperature in [300.0_f64, 500.0, 700.0] {
         let a = demkowicz_lattice(temperature);
         let mut k_mig = migration_rate(&rates, temperature).unwrap_or(f64::NAN);
-        if pafi_kappa_unresolved(&rates, temperature) {
-            if let Some(measured) = md_channel_rate(temperature) {
-                k_mig = measured;
-            }
+        if pafi_kappa_unresolved(&rates, temperature)
+            && let Some(measured) = md_channel_rate(temperature)
+        {
+            k_mig = measured;
         }
         let omega = a * a * a / 4.0;
         let thermal = temperature * rgsaddle::BOLTZMANN_EV_PER_K;
@@ -10896,42 +10837,26 @@ fn assemble_run13() {
                 _ => "",
             };
             let max_r = shells.last().map(|(radius, _, _)| *radius).unwrap_or(0.0);
-            let jump = a / 2.0_f64.sqrt();
-            let return_sites = return_layer_count(a, &shells, max_r);
             let binding = |radius: f64, orientation: &str| {
                 field
                     .as_ref()
                     .map(|item| item.binding(radius, orientation))
                     .unwrap_or(0.0)
             };
-            let (
-                total,
-                sigma,
-                spont_sites,
-                kinetic_sites,
-                _,
-                _,
-                _,
-                _,
-                _,
-                _,
-                _tau_capture,
-                chain_radius,
-            ) = channel_volumes(
-                &shells,
-                &spontaneous,
-                &rates,
-                temperature,
-                k_mig,
-                a,
-                omega,
-                max_r,
-                jump,
-                return_sites,
-                cutoff + 0.05,
-                true,
-                &binding,
-            );
+            let (total, sigma, spont_sites, _, _, _, _, _, _, _, _tau_capture, chain_radius) =
+                channel_volumes(
+                    &shells,
+                    &spontaneous,
+                    &rates,
+                    temperature,
+                    k_mig,
+                    a,
+                    omega,
+                    max_r,
+                    cutoff + 0.05,
+                    true,
+                    &binding,
+                );
             let (k_rot, _) = rotation_channel(&rates, temperature);
             let d_graph = rgsaddle::dumbbell_diffusivity(a, k_mig, k_rot).unwrap_or(f64::NAN);
             let d_table = match temperature as i32 {
@@ -10989,6 +10914,7 @@ fn assemble_run13() {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn transplanted_rotation(
     copper: &FastCopper,
     checkpoint: &Mutex<File>,
@@ -11273,7 +11199,7 @@ fn defect_pair_diffusivity() {
     let mass = 63.546_f64;
     let scale = 0.009648533212_f64;
     let mut rng = 0x5deece66d_u64;
-    let mut normal = |rng: &mut u64| {
+    let normal = |rng: &mut u64| {
         let u1 = {
             *rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
             ((*rng >> 33) as f64 + 0.5) / 2147483648.0
@@ -11493,7 +11419,7 @@ fn eam_force(positions: &Array1<f64>, length: f64) -> Array1<f64> {
     }
     let cutoff2 = RC * RC;
     use rayon::prelude::*;
-    let (mut rho, pairs) = (0..n)
+    let (rho, pairs) = (0..n)
         .into_par_iter()
         .fold(
             || (vec![0.0; n], Vec::new()),

@@ -193,6 +193,7 @@ fn octupole_about(positions: &[[f64; 3]], forces: &[[f64; 3]]) -> Result<Octupol
     Ok(o)
 }
 
+#[allow(clippy::needless_range_loop)]
 fn rotate_quadrupole(q: Quadrupole, rotation: M3) -> Quadrupole {
     let mut out = [[[0.0; 3]; 3]; 3];
     for i in 0..3 {
@@ -213,6 +214,7 @@ fn rotate_quadrupole(q: Quadrupole, rotation: M3) -> Quadrupole {
     out
 }
 
+#[allow(clippy::needless_range_loop)]
 fn rotate_octupole(o: Octupole, rotation: M3) -> Octupole {
     let mut out = [[[[0.0; 3]; 3]; 3]; 3];
     for i in 0..3 {

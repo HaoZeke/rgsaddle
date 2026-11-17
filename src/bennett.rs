@@ -87,6 +87,7 @@ pub struct Transmission {
 /// `tangent` is the product direction. It is normalised. `reference` is the
 /// point on the dividing surface that defines `s = 0`; every start should
 /// already lie on that plane.
+#[allow(clippy::needless_range_loop)]
 pub fn bennett_chandler<S: PointSurface>(
     surface: &S,
     starts: &[Array1<f64>],

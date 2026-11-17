@@ -1597,7 +1597,7 @@ fn ssneb_validates_the_copper_dimer() {
             );
             let (e_csv, h_csv) = published
                 .iter()
-                .find(|row| row.0 == gamma && row.1 == !frozen)
+                .find(|row| row.0 == gamma && row.1 != frozen)
                 .map(|row| (row.2, row.3))
                 .expect("published row");
             let benchmark = !(gamma == 0.05 && !frozen && product_name == "aligned");

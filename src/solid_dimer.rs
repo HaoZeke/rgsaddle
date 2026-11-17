@@ -281,7 +281,7 @@ pub fn index_at<S: PointSurface>(
             "index check needs a positive difference step and at least one eigenvalue".into(),
         ));
     }
-    if !check.negative.is_finite() || !(check.escape.is_finite() && check.escape >= 0.0) {
+    if !(check.negative.is_finite() && check.escape.is_finite() && check.escape >= 0.0) {
         return Err(SaddleError::Invalid(
             "index check cutoff and escape step must be finite".into(),
         ));
@@ -478,6 +478,7 @@ impl JointChart {
     /// infinitesimal right strain at fixed fractional coordinates.
     /// At zero strain and zero external stress the cell block is
     /// `(V/J) σ`.
+    #[allow(clippy::needless_range_loop)]
     pub fn gradient(
         &self,
         q: ArrayView1<f64>,
@@ -654,7 +655,7 @@ impl SolidDimer {
                         .into(),
                 ));
             }
-            if !(index.escape.is_finite() && index.escape >= 0.0) || !index.negative.is_finite() {
+            if !(index.escape.is_finite() && index.escape >= 0.0 && index.negative.is_finite()) {
                 return Err(SaddleError::Invalid(
                     "index check cutoff and escape step must be finite".into(),
                 ));

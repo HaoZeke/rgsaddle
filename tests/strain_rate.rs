@@ -17,6 +17,7 @@ fn det(h: [[f64; 3]; 3]) -> f64 {
         + h[0][2] * (h[1][0] * h[2][1] - h[1][1] * h[2][0])
 }
 
+#[allow(clippy::needless_range_loop)]
 fn apply(
     positions: &Array1<f64>,
     cell: [[f64; 3]; 3],
@@ -471,6 +472,7 @@ fn refine_caches_an_index_one_saddle() {
 }
 
 #[test]
+#[allow(clippy::needless_range_loop)]
 fn activation_volume_is_the_stress_derivative() {
     let minimum = [[1.0, 0.2, 0.0], [0.2, -0.5, 0.1], [0.0, 0.1, 0.3]];
     let saddle = [[1.4, -0.1, 0.2], [-0.1, 0.2, 0.0], [0.2, 0.0, -0.4]];

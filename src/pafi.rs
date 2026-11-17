@@ -587,6 +587,7 @@ fn dense_arcs(arcs: &[f64], parts: usize) -> Vec<f64> {
     dense
 }
 
+#[allow(clippy::needless_range_loop)]
 fn prefix_errors(arcs: &[f64], errors: &[f64]) -> Result<Vec<f64>, SaddleError> {
     let mut out = vec![0.0; arcs.len()];
     for i in 1..arcs.len() {
@@ -644,6 +645,7 @@ fn project_out(vector: &mut Array1<f64>, tangent: ArrayView1<f64>) {
     *vector -= &(tangent.to_owned() * coef);
 }
 
+#[allow(clippy::needless_range_loop)]
 pub(crate) fn remove_com(vector: &mut Array1<f64>) {
     let n = vector.len() / 3;
     if n == 0 {

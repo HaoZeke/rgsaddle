@@ -61,6 +61,7 @@ impl Kelvin {
     }
 
     /// Symmetric strain at `r` due to a point force at the origin.
+    #[allow(clippy::needless_range_loop)]
     pub fn strain_from_force(&self, r: [f64; 3], force: [f64; 3]) -> Result<M3, SaddleError> {
         let distance = length(r);
         if distance < 1e-12 {
@@ -86,6 +87,7 @@ impl Kelvin {
     /// Symmetric strain at `r` due to a dipole at the origin.
     ///
     /// `u_i = -∂_k G_ij P_jk`.
+    #[allow(clippy::needless_range_loop)]
     pub fn strain_from_dipole(
         &self,
         r: [f64; 3],
@@ -130,6 +132,7 @@ impl Kelvin {
     }
 
     /// `∂_n ε_ij` at `r` due to a dipole at the origin.
+    #[allow(clippy::needless_range_loop)]
     pub fn strain_gradient_from_dipole(
         &self,
         r: [f64; 3],
@@ -369,6 +372,7 @@ fn build_node(
     index
 }
 
+#[allow(clippy::needless_range_loop)]
 fn accumulate(nodes: &mut [Node], index: usize, defects: &[DefectSource]) {
     let children = nodes[index].children.clone();
     if children.is_empty() {
@@ -464,6 +468,7 @@ fn separated(source: &Node, target: &Node, theta: f64) -> bool {
     distance > (source.half + target.half) / theta
 }
 
+#[allow(clippy::needless_range_loop)]
 fn m2l(
     solver: &FmmSolver,
     source: &Node,

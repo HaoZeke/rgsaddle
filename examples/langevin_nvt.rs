@@ -329,7 +329,7 @@ impl MdState {
                 } else {
                     self.verlet_step(dynamics, potential);
                 }
-                if self.step % self.rescale_steps == 0 {
+                if self.step.is_multiple_of(self.rescale_steps) {
                     let now = self.temperature(dynamics.mass);
                     if now > 0.0 && (now - dynamics.temperature).abs() > dynamics.rescale_window_k {
                         let factor = (dynamics.temperature / now).sqrt();
@@ -469,7 +469,7 @@ where
     }
     while state.step < total_steps || watch.pending() {
         state.advance(dynamics, potential);
-        if state.step % sample_steps != 0 {
+        if !state.step.is_multiple_of(sample_steps) {
             continue;
         }
         last = defects(&state.positions, state.cell);
@@ -479,7 +479,7 @@ where
             break;
         }
     }
-    if !captured && state.step % sample_steps != 0 {
+    if !captured && !state.step.is_multiple_of(sample_steps) {
         last = defects(&state.positions, state.cell);
     }
     TrajectoryOutcome {
@@ -2245,6 +2245,7 @@ fn rate_to_volume(rate: f64, lattice: f64, d_i: f64) -> f64 {
     rate * lattice * lattice / (DUMBBELL_ALPHA * d_i) / (lattice.powi(3) / 4.0)
 }
 
+#[cfg(test)]
 fn survival_volume(
     trials: &[(bool, f64)],
     t_max: f64,
@@ -2411,7 +2412,7 @@ fn summarize(csv: &std::path::Path) -> String {
         text.push_str("No trajectory rows were found.\n");
         return text;
     }
-    for (_, members) in &by_temp {
+    for members in by_temp.values() {
         let temperature = members[0].temperature;
         let window = members.iter().map(|group| group.window).fold(0.0, f64::max);
         text.push_str(&format!("## {temperature:.0} K, window {window:.2} ps\n\n"));
@@ -2440,7 +2441,7 @@ fn summarize(csv: &std::path::Path) -> String {
             ));
         }
         text.push('\n');
-        for (_shell, orient_groups) in &shells {
+        for orient_groups in shells.values() {
             let labels: BTreeMap<&str, &Group> = orient_groups
                 .iter()
                 .map(|group| (group.orientation.as_str(), *group))
@@ -2563,16 +2564,6 @@ fn defect_centroid(
         }
     }
     (best_gap < f64::MAX).then_some(pair)
-}
-
-fn centroid_of(positions: &[f64], atoms: [usize; 2]) -> [f64; 3] {
-    let mut center = [0.0; 3];
-    for atom in atoms {
-        for axis in 0..3 {
-            center[axis] += positions[3 * atom + axis];
-        }
-    }
-    [center[0] * 0.5, center[1] * 0.5, center[2] * 0.5]
 }
 
 fn isolated_dumbbell(repeats: usize, a: f64) -> (Vec<f64>, [[f64; 3]; 3]) {
@@ -2724,7 +2715,7 @@ fn sia_d_trajectory(
     while state.step < total_steps {
         state.advance(&dynamics, &mut potential);
         let step = state.step;
-        if step % sample_steps != 0 {
+        if !step.is_multiple_of(sample_steps) {
             continue;
         }
         let scale = state.dilation();
@@ -2753,7 +2744,7 @@ fn sia_d_trajectory(
             block_start = unwrapped;
             changes = 0;
             unresolved = 0;
-        } else if step > equil_steps && (step - equil_steps) % block_steps == 0 {
+        } else if step > equil_steps && (step - equil_steps).is_multiple_of(block_steps) {
             let block = (step - equil_steps) / block_steps - 1;
             let d =
                 [0, 1, 2].map(|axis| (unwrapped[axis] - block_start[axis]) as f64 * 0.5 * lattice);
@@ -2928,7 +2919,9 @@ fn sia_estimate(rows: &[SiaBlock], temperature: f64) -> Option<SiaEstimate> {
         let msd = group.iter().map(|row| row.r2).sum::<f64>() / group.len() as f64;
         per_seed.push(msd / (6.0 * tau));
         let pairs: Vec<f64> = group
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| {
                 let d = [0, 1, 2].map(|axis| pair[0].d[axis] + pair[1].d[axis]);
                 d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
@@ -3720,12 +3713,12 @@ fn main() {
                 let mut gradient = vec![0.0; positions.len()];
                 potential.energy_gradient(&positions, cell, &mut gradient);
                 let lengths = [cell[0][0], cell[1][1], cell[2][2]];
-                let mut origin = defect_centroid(&positions, lengths, None).unwrap_or([0.0; 3]);
+                let origin = defect_centroid(&positions, lengths, None).unwrap_or([0.0; 3]);
                 let mut cursor = origin;
                 let mut unwrapped = origin;
                 let window_ps = spec.window_ps.max(40.0);
                 let steps = ((window_ps / (spec.dt_fs * 1.0e-3)).round() as usize).max(1);
-                let equil_steps = ((2.0 / (spec.dt_fs * 1.0e-3)).round() as usize);
+                let equil_steps = (2.0 / (spec.dt_fs * 1.0e-3)).round() as usize;
                 let sample_steps = ((0.1 / (spec.dt_fs * 1.0e-3)).round() as usize).max(1);
                 let mut start = unwrapped;
                 let mut started = false;
@@ -3774,7 +3767,6 @@ fn main() {
                     cursor = here;
                     if step == equil_steps {
                         start = unwrapped;
-                        origin = unwrapped;
                         started = true;
                     }
                     if started {

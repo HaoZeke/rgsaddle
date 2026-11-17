@@ -64,9 +64,9 @@ fn orthorhombic_lengths(cell: [[f64; 3]; 3]) -> Option<[f64; 3]> {
 pub fn centroid(positions: &[f64]) -> [f64; 3] {
     let n = (positions.len() / 3).max(1) as f64;
     let mut sum = [0.0; 3];
-    for atom in positions.chunks_exact(3) {
-        for axis in 0..3 {
-            sum[axis] += atom[axis];
+    for atom in positions.as_chunks::<3>().0 {
+        for (total, value) in sum.iter_mut().zip(atom) {
+            *total += value;
         }
     }
     sum.map(|value| value / n)
@@ -84,7 +84,7 @@ impl SiteOccupancy {
     ) -> Result<Self, SaddleError> {
         let lengths = orthorhombic_lengths(cell)
             .ok_or_else(|| SaddleError::Invalid("cell is not orthorhombic".into()))?;
-        if sites.is_empty() || sites.len() % 3 != 0 {
+        if sites.is_empty() || !sites.len().is_multiple_of(3) {
             return Err(SaddleError::Shape(format!(
                 "{} site coordinates",
                 sites.len()
@@ -98,7 +98,9 @@ impl SiteOccupancy {
             return Err(SaddleError::NonFinite("site occupancy reference"));
         }
         let sites: Vec<[f64; 3]> = sites
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|site| [0, 1, 2].map(|axis| site[axis].rem_euclid(lengths[axis])))
             .collect();
         let volume = lengths[0] * lengths[1] * lengths[2];
@@ -219,7 +221,7 @@ impl SiteOccupancy {
     ) -> Result<Occupancy, SaddleError> {
         let lengths = orthorhombic_lengths(cell)
             .ok_or_else(|| SaddleError::Invalid("cell is not orthorhombic".into()))?;
-        if positions.len() % 3 != 0 {
+        if !positions.len().is_multiple_of(3) {
             return Err(SaddleError::Shape(format!(
                 "{} coordinates",
                 positions.len()
@@ -229,7 +231,7 @@ impl SiteOccupancy {
         let now = centroid(positions);
         let shift = [0, 1, 2].map(|axis| now[axis] - self.origin[axis] * scale[axis]);
         self.counts.iter_mut().for_each(|count| *count = 0);
-        for atom in positions.chunks_exact(3) {
+        for atom in positions.as_chunks::<3>().0 {
             let point = [0, 1, 2].map(|axis| {
                 ((atom[axis] - shift[axis]) / scale[axis]).rem_euclid(self.lengths[axis])
             });
@@ -319,7 +321,7 @@ mod tests {
         let drift = [0.7, -1.3, 13.1];
         let mut state = 7u64;
         let mut atoms = sites.clone();
-        for atom in atoms.chunks_exact_mut(3) {
+        for atom in atoms.as_chunks_mut::<3>().0 {
             for axis in 0..3 {
                 atom[axis] = atom[axis] * stretch[axis] + drift[axis] + 1.2 * jitter(&mut state);
             }

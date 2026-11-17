@@ -46,6 +46,7 @@ fn event() -> StrainResponse {
     .unwrap()
 }
 
+#[allow(clippy::needless_range_loop)]
 fn main() -> Result<(), SaddleError> {
     let temperature = 600.0;
     let surface = Well;

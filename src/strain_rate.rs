@@ -171,6 +171,7 @@ impl ElasticDipole {
     /// `P_ij = Σ_a (X_i^a F_j^a + X_j^a F_i^a) / 2`. The resultant and the
     /// torque must already vanish, as they do for Kanzaki forces of a
     /// relaxed defect. Positions and forces are Cartesian.
+    #[allow(clippy::needless_range_loop)]
     pub fn from_forces(positions: &[[f64; 3]], forces: &[[f64; 3]]) -> Result<Self, SaddleError> {
         if positions.len() != forces.len() {
             return Err(SaddleError::Shape(
@@ -961,6 +962,7 @@ pub fn rotation_x(quarter_turns: i32) -> M3 {
     }
 }
 
+#[allow(clippy::needless_range_loop)]
 fn rotate_moment(moment: Quadrupole, rotation: M3) -> Quadrupole {
     let mut out = [[[0.0; 3]; 3]; 3];
     for i in 0..3 {
@@ -986,8 +988,9 @@ fn identity() -> M3 {
     [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
 }
 
+#[allow(clippy::needless_range_loop)]
 fn deform_vectors(values: &Array1<f64>, eps: M3) -> Result<Array1<f64>, SaddleError> {
-    if values.len() % 3 != 0 {
+    if !values.len().is_multiple_of(3) {
         return Err(SaddleError::Shape(
             "a Cartesian vector has length divisible by 3".into(),
         ));
@@ -1007,6 +1010,7 @@ fn deform_vectors(values: &Array1<f64>, eps: M3) -> Result<Array1<f64>, SaddleEr
     Ok(out)
 }
 
+#[allow(clippy::needless_range_loop)]
 fn deform_cell(cell: M3, eps: M3) -> M3 {
     let mut deform = eps;
     for i in 0..3 {
@@ -1045,6 +1049,7 @@ pub fn double_dot(a: M3, b: M3) -> f64 {
 }
 
 /// `P' = R P R^T` for a rotation `R` that sends column vectors to `R v`.
+#[allow(clippy::needless_range_loop)]
 pub fn transform_tensor(tensor: M3, rotation: M3) -> M3 {
     let mut rotated = [[0.0; 3]; 3];
     for i in 0..3 {
@@ -1339,6 +1344,7 @@ fn det(m: M3) -> f64 {
         + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
 }
 
+#[allow(clippy::needless_range_loop)]
 fn invert6(matrix: &[[f64; 6]; 6]) -> Result<[[f64; 6]; 6], SaddleError> {
     let mut a = [[0.0; 12]; 6];
     for i in 0..6 {
@@ -1407,6 +1413,7 @@ fn push_string(out: &mut String, text: &str) {
     out.push('"');
 }
 
+#[allow(clippy::needless_range_loop)]
 fn push_optional_moment(out: &mut String, moment: Option<Quadrupole>) {
     match moment {
         None => out.push_str("null"),
@@ -1447,6 +1454,7 @@ fn optional_moment(obj: &[(String, Json)], key: &str) -> Result<Option<Quadrupol
     }
 }
 
+#[allow(clippy::needless_range_loop)]
 fn push_matrix(out: &mut String, m: M3) {
     out.push('[');
     for i in 0..3 {

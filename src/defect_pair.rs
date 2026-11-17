@@ -34,9 +34,9 @@
 //! minimum-image separation of the mobile-defect centroid from the fixed
 //! defect. The shell label is the caller's.
 //!
-//! [`RateCatalogue`] is the document `rgsaddle.defect_pair_rates`, version
-//! 1. An amsel absorbing-Markov step reads `rate_Hz` as the first-order
-//! exit rate of one channel. The channel key is
+//! [`RateCatalogue`] is the document `rgsaddle.defect_pair_rates`,
+//! version 1. An amsel absorbing-Markov step reads `rate_Hz` as the
+//! first-order exit rate of one channel. The channel key is
 //! `(shell, direction, hop, temperature, cell_repeats)`.
 
 use ndarray::{Array1, Array2, ArrayView1, s};
@@ -875,7 +875,6 @@ struct Searched {
     index1: bool,
     band_converged: bool,
     saddle: Array1<f64>,
-    saddle_cell: M3,
     saddle_energy: f64,
     d_e0: f64,
     stress: M3,
@@ -887,6 +886,7 @@ struct Searched {
     band_force: f64,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn search_hop<S: PointSurface>(
     surface: &S,
     setup: &PairSetup,
@@ -904,7 +904,6 @@ fn search_hop<S: PointSurface>(
             index1: false,
             band_converged: false,
             saddle: reactant.clone(),
-            saddle_cell: setup.cell,
             saddle_energy: reactant_energy,
             d_e0: 0.0,
             stress: [[0.0; 3]; 3],
@@ -1019,7 +1018,6 @@ fn search_hop<S: PointSurface>(
             index1: true,
             band_converged: false,
             saddle,
-            saddle_cell,
             saddle_energy,
             d_e0,
             stress,
@@ -1046,7 +1044,6 @@ fn search_hop<S: PointSurface>(
         index1: true,
         band_converged,
         saddle,
-        saddle_cell,
         saddle_energy,
         d_e0,
         stress,
@@ -2094,6 +2091,7 @@ fn solve_linear(mut matrix: Vec<Vec<f64>>, mut rhs: Vec<f64>) -> Result<Vec<f64>
 
 /// Climbing band from the reactant through `saddle` to a nearby downhill
 /// geometry. Springs are energy-weighted so images stay near the barrier.
+#[allow(clippy::too_many_arguments)]
 pub fn segment_band<S: PointSurface>(
     surface: &S,
     config: &DefectPairConfig,
@@ -2327,6 +2325,7 @@ fn cauchy<S: PointSurface>(
     finite_difference_cauchy_stress(surface, positions, cell, 1.0e-5)
 }
 
+#[allow(clippy::type_complexity)]
 fn hessian<S: PointSurface>(
     surface: &S,
     positions: ArrayView1<f64>,
@@ -2488,6 +2487,7 @@ fn plane_arcs(path: &ArcPath, planes: usize) -> Vec<f64> {
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn blank_entry(
     setup: &PairSetup,
     hop: &HopTemplate,
@@ -2693,6 +2693,7 @@ fn mobile_center(
     Ok([acc[0] / scale, acc[1] / scale, acc[2] / scale])
 }
 
+#[allow(clippy::needless_range_loop)]
 fn mic(delta: [f64; 3], cell: M3) -> Result<[f64; 3], SaddleError> {
     let inv = m3_inv(cell)?;
     let mut s = [0.0; 3];
