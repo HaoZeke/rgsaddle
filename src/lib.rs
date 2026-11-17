@@ -40,7 +40,7 @@
 //! Each entry point opens with a runnable example on a small analytic
 //! surface: [`BandSession`], [`AutoNeb`], [`OcinebSession`],
 //! [`MinModeSession`], [`Index1Session`], [`SolidDimer`], [`SolidNeb`],
-//! [`Stencil`], and the [`ohtst`] module. With the `capi` feature the C
+//! [`Stencil`], and the `ohtst` module. With the `capi` feature the C
 //! band, min-mode and stencil handles have the same examples in `capi`.
 //! The guides and tutorials are at
 //! <https://omnipotentrpc.github.io/rgsaddle/>.
@@ -184,9 +184,9 @@ pub use projector::{
     TangentProjector, UnitNormal,
 };
 pub use region::{
-    AffineSymmetry, BoundaryViolation, PathSlab, PeriodicSymmetryOperations, PlanarBoundary,
-    Region, RegionIntersection, SymmetryOperations, SymmetrySource, SymmetryUniqueRegion,
-    reflect_velocity,
+    AffineSymmetry, BoundaryViolation, CrystalSymmetryConfig, CrystalSymmetryOperation, PathSlab,
+    PeriodicSymmetryOperations, PlanarBoundary, Region, RegionIntersection, SymmetryOperations,
+    SymmetrySource, SymmetryUniqueRegion, reflect_velocity,
 };
 pub use relax::{
     DEFAULT_FORCE_TOL, DEFAULT_MAX_STEPS, RelaxConfig, Relaxation, max_atom_force,

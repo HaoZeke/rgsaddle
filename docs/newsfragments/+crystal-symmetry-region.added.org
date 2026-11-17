@@ -1,0 +1,5 @@
+=SymmetryUniqueRegion::from_crystal_operations= now lifts generic
+three-dimensional crystal operations, explicit or species-matched atom
+permutations, and reactant/saddle geometries into a hard unique region.  It
+uses =minimage= for periodic matching and reports the saddle orbit size
+under the reactant stabilizer.
