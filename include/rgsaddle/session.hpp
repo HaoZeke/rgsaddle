@@ -249,6 +249,11 @@ public:
         check(rgsaddle_band_set_saddle_check(handle_, config));
     }
 
+    // Simplified string method, ABI minor 45.
+    void set_string(bool enabled, std::int32_t scheme = RGSADDLE_REPARAM_NOT_A_KNOT) {
+        check(rgsaddle_band_set_string(handle_, enabled ? 1 : 0, scheme));
+    }
+
     [[nodiscard]] SaddleIndex saddle_index(std::size_t capacity = 8) const {
         rgsaddle_saddle_index_t out{};
         std::vector<double> curvatures(capacity);

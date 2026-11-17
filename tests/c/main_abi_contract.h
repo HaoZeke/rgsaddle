@@ -8,6 +8,7 @@ _Static_assert(RGSADDLE_ABI_MAJOR == 1u, "main ABI major");
 _Static_assert(RGSADDLE_ABI_MINOR == 45u, "ABI minor");
 _Static_assert(RGSADDLE_BAND_NO_MIN_MODE == (1ull << 3), "band flag bit 3");
 _Static_assert(RGSADDLE_BAND_SPLINE_REPARAM == (1ull << 4), "band flag bit 4");
+_Static_assert(RGSADDLE_BAND_STRING == (1ull << 5), "band flag bit 5");
 _Static_assert(RGSADDLE_REPARAM_LINEAR == 0, "rgsaddle_reparametrization_t LINEAR");
 _Static_assert(RGSADDLE_REPARAM_NOT_A_KNOT == 1, "rgsaddle_reparametrization_t NOT_A_KNOT");
 _Static_assert(RGSADDLE_REQ_ONE_IMAGE == (1ull << 0), "request flag bit 0");
@@ -639,5 +640,9 @@ _Static_assert(_Generic(&rgsaddle_ohtst_curve, abi44_signature_rgsaddle_ohtst_cu
 
 typedef void (*abi44_signature_rgsaddle_ohtst_free)(RgsaddleOhtst *session);
 _Static_assert(_Generic(&rgsaddle_ohtst_free, abi44_signature_rgsaddle_ohtst_free: 1, default: 0), "rgsaddle_ohtst_free signature");
+
+typedef rgsaddle_status_t (*abi45_signature_rgsaddle_band_set_string)(
+    RgsaddleBand *band, int32_t enabled, int32_t scheme);
+_Static_assert(_Generic(&rgsaddle_band_set_string, abi45_signature_rgsaddle_band_set_string: 1, default: 0), "rgsaddle_band_set_string signature");
 
 #endif
