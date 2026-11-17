@@ -21,7 +21,8 @@ use eindir_core::{Bounds, DifferentiableObjective, Gradient, Objective};
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
 use rgmin::{Control, Method, Solver};
 use rgsaddle::{
-    BandConfig, BandSession, BandStatus, BandSurface, Cell, ExpBandPrecon, SaddleError, SpringKind,
+    BandConfig, BandSession, BandStatus, BandSurface, Cell, CiConfig, DEFAULT_FORCE_TOL,
+    ExpBandPrecon, SaddleError, SpringKind, StringConfig,
 };
 
 const R0: f64 = 2.55;
@@ -359,4 +360,89 @@ fn ode12r_reproduces_the_cu_vacancy_counts_of_table_ii() {
         precon.1,
         plain.1
     );
+}
+
+#[test]
+fn simplified_string_matches_neb_cu_vacancy_barrier() {
+    let (reactant, product) = endpoints();
+    let reactant = relax(reactant);
+    let product = relax(product);
+    let e0 = morse(reactant.view()).0;
+    let band = initial_band(&reactant, &product, 5);
+    let l = box_length();
+    let cell = Cell([[l, 0.0, 0.0], [0.0, l, 0.0], [0.0, 0.0, l]]);
+    let interior = (band.nrows() - 2) as f64;
+
+    let neb_cfg = BandConfig::default()
+        .with_spring(SpringKind::Uniform { k: 1.0 })
+        .with_climbing(None)
+        .with_cell(cell)
+        .with_force_tol(DEFAULT_FORCE_TOL)
+        .with_max_move(0.0)
+        .with_remove_translation(false)
+        .with_method(Method::lbfgs_with_memory(20))
+        .with_min_mode(None)
+        .with_saddle_check(None);
+    let neb_surface = Surface {
+        rows: AtomicUsize::new(0),
+    };
+    let mut neb = BandSession::new(neb_cfg, band.clone()).expect("neb session");
+    let neb_rep = neb.run(&neb_surface, 500).expect("neb run");
+    assert_eq!(neb_rep.status, BandStatus::Converged);
+    let neb_eval = neb.evaluation().expect("neb evaluation");
+    let neb_barrier = neb_eval
+        .energies
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max)
+        - e0;
+    let neb_per_image = neb_surface.rows.load(Ordering::Relaxed) as f64 / interior;
+
+    for (label, string_cfg, climbing) in [
+        ("string-spline", StringConfig::spline(), None),
+        ("string-linear", StringConfig::linear(), None),
+        (
+            "ci-string-spline",
+            StringConfig::spline(),
+            Some(CiConfig::after(0.5)),
+        ),
+    ] {
+        let cfg = BandConfig::default()
+            .with_string(string_cfg)
+            .with_climbing(climbing)
+            .with_cell(cell)
+            .with_force_tol(DEFAULT_FORCE_TOL)
+            .with_max_move(0.2)
+            .with_remove_translation(false)
+            .with_method(Method::lbfgs_with_memory(20))
+            .with_min_mode(None)
+            .with_saddle_check(None);
+        let surface = Surface {
+            rows: AtomicUsize::new(0),
+        };
+        let mut session = BandSession::new(cfg, band.clone()).expect(label);
+        let rep = session.run(&surface, 800).expect(label);
+        assert_eq!(rep.status, BandStatus::Converged, "{label}");
+        let eval = session.evaluation().expect(label);
+        let barrier = eval
+            .energies
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max)
+            - e0;
+        let per_image = surface.rows.load(Ordering::Relaxed) as f64 / interior;
+        let mid_grad = morse(session.positions().row(2))
+            .1
+            .iter()
+            .fold(0.0_f64, |m, g| m.max(g.abs()));
+        eprintln!(
+            "Cu vacancy {label}: steps={}, evals/img={per_image:.2}, barrier={barrier:.8} eV \
+             (NEB {neb_barrier:.8} eV, steps={}, evals/img={neb_per_image:.2}), |g_mid|={mid_grad:.2e}",
+            rep.iteration, neb_rep.iteration
+        );
+        assert!(
+            (barrier - neb_barrier).abs() < 0.05 * DEFAULT_FORCE_TOL,
+            "{label}: barrier {barrier} vs NEB {neb_barrier}"
+        );
+    }
 }
