@@ -10,21 +10,46 @@
 //! `dF/ds = ⟨ (∇E · n) (1 - ψ) ⟩`.
 //!
 //! The average is over the hyperplane `(x - X) · n = 0`. Sampling here is
-//! overdamped Langevin (Brownian) dynamics in that plane. The parallel
+//! overdamped Langevin (Brownian) dynamics in that plane, by default with
+//! the step of Leimkuhler and Matthews ([`Integrator`]). The parallel
 //! piece of the drift and of the noise is removed, and the plane is
 //! restored after every step. A center-of-mass projection is optional and
 //! is the `com yes` choice of that fix. The integral of `dF/ds` from the
-//! reactant is the potential of mean force. Block averages of the recorded
-//! samples supply the standard error. The block length is at least twice
-//! the integrated autocorrelation time, so a correlated series is not
-//! treated as independent.
+//! reactant is the potential of mean force. The standard error is the
+//! larger of the block-mean error and the one from the integrated
+//! autocorrelation time, so a correlated series is not treated as
+//! independent. When a plane needs more samples, its chain goes on from
+//! where it stopped instead of starting cold.
+//!
+//! [`pafi_profile`] samples planes at given arc lengths of the polyline.
+//! [`pafi_frames`] puts one plane on every frame and takes each choice the
+//! barrier could otherwise depend on from the band itself, so that a band
+//! traversed the other way, or the same hop built in a symmetry-equivalent
+//! frame, gives the same barrier within its error.
 
-use ndarray::{Array1, ArrayView1};
+use ndarray::Array1;
 use rayon::prelude::*;
 
 use crate::error::SaddleError;
 use crate::minmode::PointSurface;
-use crate::stats::{Rng, block_mean};
+use crate::stats::{Rng, windowed_block_mean};
+
+/// Discretization of the overdamped dynamics, with `h = μ dt`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Integrator {
+    /// `x' = x - h ∇E + sqrt(2 h kT) ξ`. Averages carry an error of first
+    /// order in `h`: a harmonic well of stiffness `k` comes out wider by
+    /// `1 / (1 - h k / 2)`.
+    EulerMaruyama,
+    /// Leimkuhler and Matthews, Appl. Math. Res. Express 2013, 34 (2013),
+    /// doi:10.1093/amrx/abs010: `x' = x - h ∇E + sqrt(h kT / 2) (ξ + ξ')`,
+    /// with `ξ` the noise of the step before. It samples a harmonic well
+    /// exactly at any stable step, and averages carry an error of second
+    /// order in `h` otherwise.
+    #[default]
+    LeimkuhlerMatthews,
+}
 
 /// Overdamped hyperplane sampling.
 ///
@@ -39,11 +64,13 @@ pub struct PafiConfig {
     pub mobility: f64,
     /// Overdamped time step.
     pub time_step: f64,
+    /// Discretization of the dynamics.
+    pub integrator: Integrator,
     /// Steps discarded before the first recorded sample.
     pub thermalize: usize,
     /// Steps between recorded samples.
     pub stride: usize,
-    /// Recorded samples. At least twice [`Self::blocks`].
+    /// Recorded samples of the first pass. At least twice [`Self::blocks`].
     pub samples: usize,
     /// Contiguous blocks used for the standard error. At least 2.
     pub blocks: usize,
@@ -51,19 +78,46 @@ pub struct PafiConfig {
     pub seed: u64,
     /// Remove the mean Cartesian drift when the system has at least two atoms.
     pub fix_com: bool,
-    /// How many recorded configurations to keep, evenly spaced.
+    /// How many recorded configurations to keep, evenly spaced over the
+    /// first pass.
     pub retain: usize,
     /// Stop early when the integrated barrier error is at or below this.
     /// `None` runs one pass.
     pub target_error: Option<f64>,
-    /// Extra sampling passes used to reach [`Self::target_error`].
+    /// Sampling passes used to reach [`Self::target_error`], the first
+    /// included.
     pub max_rounds: usize,
+    /// Share of the summed squared steps of the path carried by the atoms
+    /// the planes of [`pafi_frames`] constrain, in `(0, 1]`; the other
+    /// atoms are free in every plane. A normal that reaches into an
+    /// elastic far field lets the defect slide back across the plane while
+    /// the far field makes up the projection. 1 constrains every atom.
+    pub active_share: f64,
+    /// Largest atom force left in the plane when [`pafi_frames`] relaxes a
+    /// frame in its plane before sampling.
+    pub relax_tol: f64,
+    /// The `MaxJumpThresh` test of Swinburne's PAFI: after every
+    /// [`Self::window`] recorded samples the configuration is relaxed in
+    /// its plane to [`Self::jump_tol`], and when an atom ends further than
+    /// this from the minimum of the plane, the chain has left the basin of
+    /// the path for a nearby one that the plane also cuts. Those samples
+    /// are dropped and the chain goes back to where the last kept window
+    /// ended. The planes then average over the basin of the path alone.
+    /// `None` keeps every sample.
+    pub max_jump: Option<f64>,
+    /// Largest atom force left by the relaxation of [`Self::max_jump`].
+    pub jump_tol: f64,
+    /// Recorded samples between two tests of [`Self::max_jump`]: shorter
+    /// than the time a chain takes to leave the basin of the path, or
+    /// every window is dropped. At least 1.
+    pub window: usize,
 }
 
 with_setters!(PafiConfig {
     with_thermal => thermal: val f64,
     with_mobility => mobility: val f64,
     with_time_step => time_step: val f64,
+    with_integrator => integrator: val Integrator,
     with_thermalize => thermalize: val usize,
     with_stride => stride: val usize,
     with_samples => samples: val usize,
@@ -73,6 +127,11 @@ with_setters!(PafiConfig {
     with_retain => retain: val usize,
     with_target_error => target_error: opt f64,
     with_max_rounds => max_rounds: val usize,
+    with_active_share => active_share: val f64,
+    with_relax_tol => relax_tol: val f64,
+    with_max_jump => max_jump: opt f64,
+    with_jump_tol => jump_tol: val f64,
+    with_window => window: val usize,
 });
 
 impl Default for PafiConfig {
@@ -81,6 +140,7 @@ impl Default for PafiConfig {
             thermal: 0.02585,
             mobility: 1.0,
             time_step: 1.0e-3,
+            integrator: Integrator::default(),
             thermalize: 200,
             stride: 5,
             samples: 200,
@@ -90,6 +150,11 @@ impl Default for PafiConfig {
             retain: 16,
             target_error: None,
             max_rounds: 4,
+            active_share: 1.0,
+            relax_tol: 1.0e-4,
+            max_jump: None,
+            jump_tol: 1.0e-2,
+            window: 200,
         }
     }
 }
@@ -115,6 +180,26 @@ impl PafiConfig {
             return Err(SaddleError::Invalid(
                 "PAFI needs a positive stride, at least two blocks, and two samples per block"
                     .into(),
+            ));
+        }
+        if !(self.active_share > 0.0 && self.active_share <= 1.0) {
+            return Err(SaddleError::Invalid(
+                "PAFI active share must lie in (0, 1]".into(),
+            ));
+        }
+        if !(self.relax_tol.is_finite() && self.relax_tol > 0.0) {
+            return Err(SaddleError::Invalid(
+                "PAFI relaxation tolerance must be finite and positive".into(),
+            ));
+        }
+        if self
+            .max_jump
+            .is_some_and(|jump| !(jump.is_finite() && jump > 0.0))
+            || !(self.jump_tol.is_finite() && self.jump_tol > 0.0)
+            || self.window == 0
+        {
+            return Err(SaddleError::Invalid(
+                "PAFI jump threshold and its tolerance must be finite and positive, and its window at least one sample".into(),
             ));
         }
         Ok(())
@@ -153,6 +238,22 @@ pub struct PathGeometry {
     pub curvature: Array1<f64>,
     /// `s`.
     pub arc: f64,
+}
+
+/// The planes [`pafi_frames`] samples, one through every frame.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct FramePlanes {
+    /// Unit normal at each frame, zero off [`Self::active`].
+    pub normals: Vec<Array1<f64>>,
+    /// `dn/ds` at each frame, zero off [`Self::active`].
+    pub curvatures: Vec<Array1<f64>>,
+    /// Arc length of each frame from the first along the coordinates of
+    /// [`Self::active`].
+    pub arcs: Vec<f64>,
+    /// Atoms the normals act on, ascending. An atom is a coordinate triple,
+    /// or one coordinate when the length is not a multiple of three.
+    pub active: Vec<usize>,
 }
 
 impl ArcPath {
@@ -254,6 +355,11 @@ impl ArcPath {
         self.frames.iter().map(|frame| frame.arc).collect()
     }
 
+    /// The stored frames, reactant first.
+    pub fn frames(&self) -> &[PathFrame] {
+        &self.frames
+    }
+
     /// Polyline geometry at `arc`. The tangent is the chord of the segment.
     pub fn geometry(&self, arc: f64) -> Result<PathGeometry, SaddleError> {
         if !arc.is_finite() {
@@ -289,27 +395,110 @@ impl ArcPath {
             arc,
         })
     }
+
+    /// The planes of [`pafi_frames`].
+    ///
+    /// The atoms kept are the fewest, largest first, whose summed squared
+    /// steps along the path reach `share` of the total; 1 keeps every atom.
+    /// On those atoms the normal is the unit tangent of the parabola
+    /// through the frame and its two neighbours, in the arc length of the
+    /// chords, and the curvature is the same derivative of the normals.
+    /// The end frames take the parabola through themselves and the next
+    /// two. Both are of second order in the spacing, where a chord tilts
+    /// the plane by half the angle the path turns over it, and a reversed
+    /// band gives the same planes.
+    pub fn frame_planes(&self, share: f64) -> Result<FramePlanes, SaddleError> {
+        let count = self.frames.len();
+        if !(share > 0.0 && share <= 1.0) {
+            return Err(SaddleError::Invalid(
+                "PAFI active share must lie in (0, 1]".into(),
+            ));
+        }
+        let n = self.frames[0].positions.len();
+        let width = atom_width(n);
+        let steps: Vec<Array1<f64>> = self
+            .frames
+            .windows(2)
+            .map(|pair| &pair[1].positions - &pair[0].positions)
+            .collect();
+        let active = active_atoms(&steps, width, share);
+        let mut mask = Array1::<f64>::zeros(n);
+        for atom in &active {
+            for c in 0..width {
+                mask[atom * width + c] = 1.0;
+            }
+        }
+        let local: Vec<Array1<f64>> = steps.iter().map(|step| step * &mask).collect();
+        let lengths: Vec<f64> = local.iter().map(norm).collect();
+        if !lengths
+            .iter()
+            .all(|length| length.is_finite() && *length > 0.0)
+        {
+            return Err(SaddleError::Invalid(
+                "a PAFI frame step moves none of the constrained atoms".into(),
+            ));
+        }
+        let mut arcs = Vec::with_capacity(count);
+        arcs.push(0.0);
+        for length in &lengths {
+            arcs.push(arcs[arcs.len() - 1] + length);
+        }
+        let normals = arc_derivative(&local, &lengths)
+            .into_iter()
+            .map(|tangent| {
+                let length = norm(&tangent);
+                if length.is_finite() && length > 0.0 {
+                    Ok(tangent / length)
+                } else {
+                    Err(SaddleError::Invalid(
+                        "the path turns back on itself at a PAFI frame".into(),
+                    ))
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let turns: Vec<Array1<f64>> = normals.windows(2).map(|pair| &pair[1] - &pair[0]).collect();
+        let curvatures = arc_derivative(&turns, &lengths);
+        Ok(FramePlanes {
+            normals,
+            curvatures,
+            arcs,
+            active,
+        })
+    }
 }
 
 /// Mean free-energy gradient on one hyperplane.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct HyperplaneAverage {
     /// `dF/ds` in energy per arc length.
     pub gradient: f64,
-    /// Standard error from the block means.
+    /// Standard error: the larger of the block-mean error and
+    /// `sqrt(2 τ var / samples)`.
     pub error: f64,
     /// Mean of `ψ = (x - X) · dn/ds`.
     pub psi: f64,
-    /// Recorded samples in the production run.
+    /// Recorded samples, summed over passes.
     pub samples: usize,
     /// Integrated autocorrelation time of the recorded series, in samples.
     pub tau: f64,
     /// `samples / (2 τ)`.
     pub n_eff: f64,
-    /// Force evaluations spent on this plane, summed over rounds.
+    /// Force evaluations spent on this plane, summed over passes.
     pub evaluations: usize,
-    /// Configurations kept from the production run, on the plane.
+    /// Configurations kept from the first pass, on the plane.
     pub retained: Vec<Array1<f64>>,
+    /// Energy at the origin of the plane, where its chain starts.
+    pub energy: f64,
+    /// `∇E · n` at the origin of the plane: the zero-temperature value of
+    /// [`Self::gradient`] when the origin is the minimum in the plane.
+    pub zero: f64,
+    /// Largest displacement of one atom from the origin of the plane over
+    /// the recorded samples. An atom is a coordinate triple, or one
+    /// coordinate when the length is not a multiple of three.
+    pub widest: f64,
+    /// Windows of samples dropped by [`PafiConfig::max_jump`].
+    pub jumps: usize,
 }
 
 /// Potential of mean force from the first plane.
@@ -488,89 +677,15 @@ pub fn average_hyperplane<S: PointSurface>(
     config: &PafiConfig,
 ) -> Result<HyperplaneAverage, SaddleError> {
     config.check()?;
-    let n = geometry.positions.len();
-    if geometry.tangent.len() != n || geometry.curvature.len() != n {
-        return Err(SaddleError::Shape(
-            "PAFI tangent and curvature must match the position".into(),
+    let plane = Plane::new(geometry, config.fix_com)?;
+    let mut chain = Chain::new(&plane, config.seed, config.integrator);
+    chain.run(surface, &plane, config, config.thermalize, config.samples)?;
+    if chain.values.is_empty() {
+        return Err(SaddleError::Stalled(
+            "PAFI plane left the basin of the path in every window".into(),
         ));
     }
-    if !geometry
-        .tangent
-        .iter()
-        .chain(geometry.curvature.iter())
-        .all(|v| v.is_finite())
-    {
-        return Err(SaddleError::NonFinite("PAFI path geometry"));
-    }
-    let tangent_norm = norm(&geometry.tangent);
-    if !(tangent_norm.is_finite() && tangent_norm > 0.0) {
-        return Err(SaddleError::Invalid("PAFI tangent vanishes".into()));
-    }
-    let mut x = geometry.positions.clone();
-    let mut rng = Rng::new(config.seed);
-    let sigma = (2.0 * config.mobility * config.thermal * config.time_step).sqrt();
-    let drift_scale = config.mobility * config.time_step;
-    let total = config.thermalize + config.stride * config.samples;
-    let mut observations = Vec::with_capacity(config.samples);
-    let mut psi_sum = 0.0;
-    let mut retained = Vec::new();
-    let retain_gap = config.samples.div_ceil(config.retain.max(1)).max(1);
-    for step in 0..total {
-        let (_energy, gradient) = surface.eval(x.view())?;
-        if gradient.len() != n || !gradient.iter().all(|v| v.is_finite()) {
-            return Err(SaddleError::Shape(
-                "PAFI gradient must match the path".into(),
-            ));
-        }
-        if step >= config.thermalize && (step - config.thermalize).is_multiple_of(config.stride) {
-            let (value, psi) = projected_gradient(&gradient, &x, geometry);
-            if !value.is_finite() || !psi.is_finite() {
-                return Err(SaddleError::NonFinite("PAFI projected gradient"));
-            }
-            let recorded = observations.len();
-            observations.push(value);
-            psi_sum += psi;
-            if config.retain > 0
-                && recorded.is_multiple_of(retain_gap)
-                && retained.len() < config.retain
-            {
-                retained.push(x.clone());
-            }
-        }
-        let mut drift = gradient;
-        project_out(&mut drift, geometry.tangent.view());
-        let mut noise = Array1::zeros(n);
-        for value in noise.iter_mut() {
-            *value = rng.normal();
-        }
-        project_out(&mut noise, geometry.tangent.view());
-        if config.fix_com && n >= 6 && n.is_multiple_of(3) {
-            remove_com(&mut drift);
-            remove_com(&mut noise);
-            project_out(&mut drift, geometry.tangent.view());
-            project_out(&mut noise, geometry.tangent.view());
-        }
-        x = &x - &(&drift * drift_scale) + &(&noise * sigma);
-        let nn = geometry.tangent.dot(&geometry.tangent);
-        let slip = (&x - &geometry.positions).dot(&geometry.tangent) / nn;
-        x = &x - &(&geometry.tangent * slip);
-    }
-    if observations.len() != config.samples {
-        return Err(SaddleError::Invalid(
-            "PAFI did not record the requested samples".into(),
-        ));
-    }
-    let (gradient, error, tau, n_eff) = block_mean(&observations, config.blocks);
-    Ok(HyperplaneAverage {
-        gradient,
-        error,
-        psi: psi_sum / config.samples as f64,
-        samples: config.samples,
-        tau,
-        n_eff,
-        evaluations: total,
-        retained,
-    })
+    Ok(chain.average(config))
 }
 
 /// Integrate plane gradients with the trapezoid rule.
@@ -616,9 +731,12 @@ pub fn integrate_profile(
 
 /// Sample every requested arc and integrate.
 ///
-/// When [`PafiConfig::target_error`] is set, planes are resampled until the
-/// barrier error is at or below that target or [`PafiConfig::max_rounds`]
-/// is spent. Later rounds are inverse-variance combined with the first.
+/// When [`PafiConfig::target_error`] is set, the chains of the planes up to
+/// the dividing surface, the ones the barrier error is made of, go on from
+/// where they stopped until that error is at or below the target or
+/// [`PafiConfig::max_rounds`] passes are spent. A pass adds the samples
+/// the error scaling as one over their root asks for, at least
+/// [`PafiConfig::samples`] and at most eight times that.
 pub fn pafi_profile<S: PointSurface + Sync>(
     surface: &S,
     path: &ArcPath,
@@ -630,66 +748,144 @@ pub fn pafi_profile<S: PointSurface + Sync>(
             "PAFI needs at least two hyperplanes".into(),
         ));
     }
-    let mut planes = sample_planes(surface, path, arcs, config, 0)?;
-    let mut profile = profile_of(arcs, &planes)?;
-    let rounds = config.max_rounds.max(1);
-    let mut round = 1usize;
-    while let Some(target) = config.target_error {
-        if profile.barrier_error <= target || round >= rounds {
-            break;
-        }
-        if profile.barrier_error <= 0.0 {
-            break;
-        }
-        let factor = (profile.barrier_error / target).powi(2).clamp(2.0, 8.0);
-        let samples = ((config.samples as f64) * factor).ceil() as usize;
-        let extra = config
-            .clone()
-            .with_samples(samples.max(config.blocks * 2))
-            .with_thermalize(config.thermalize / 2)
-            .with_target_error(None);
-        let more = sample_planes(surface, path, arcs, &extra, round as u64 * 10_000)?;
-        for (plane, added) in planes.iter_mut().zip(more) {
-            let (gradient, error) =
-                combine(plane.gradient, plane.error, added.gradient, added.error);
-            plane.gradient = gradient;
-            plane.error = error;
-            plane.samples += added.samples;
-            plane.evaluations += added.evaluations;
-            plane.tau = plane.tau.max(added.tau);
-            plane.n_eff += added.n_eff;
-            if plane.retained.len() < config.retain {
-                plane.retained.extend(added.retained);
-            }
-        }
-        profile = profile_of(arcs, &planes)?;
-        round += 1;
-    }
-    profile.samples = planes.iter().map(|plane| plane.samples).sum();
-    Ok((profile, planes))
+    config.check()?;
+    let geometries = arcs
+        .iter()
+        .map(|arc| path.geometry(*arc))
+        .collect::<Result<Vec<_>, _>>()?;
+    sample_rounds(surface, &geometries, config, |planes| {
+        profile_of(arcs, planes)
+    })
 }
 
-fn sample_planes<S: PointSurface + Sync>(
+/// One hyperplane on every frame of `path`, each sampled from its own
+/// minimum, integrated against the zero-temperature energy of those minima.
+///
+/// The planes are [`ArcPath::frame_planes`] at
+/// [`PafiConfig::active_share`]. Each frame is relaxed in its plane to
+/// [`PafiConfig::relax_tol`], giving `x*_k` and `E*_k`; its chain starts
+/// there and `ψ` is measured from there, the point of the minimum energy
+/// path on that plane. With `g = (∇E · n)(1 - ψ)`,
+///
+/// `F_k = E*_k - E*_0 + Σ trapezoid(⟨g⟩ - g(x*))`
+///
+/// over the arc length of the constrained atoms. At zero temperature the
+/// sum vanishes and the barrier is the energy of the in-plane minima
+/// whatever the spacing of the frames, so the trapezoid acts only on the
+/// thermal part. The dividing surface is the maximum of `F`, and passes
+/// go on as in [`pafi_profile`]. Each plane's
+/// [`HyperplaneAverage::evaluations`] includes its relaxation.
+pub fn pafi_frames<S: PointSurface + Sync>(
     surface: &S,
     path: &ArcPath,
-    arcs: &[f64],
     config: &PafiConfig,
-    salt: u64,
-) -> Result<Vec<HyperplaneAverage>, SaddleError> {
-    arcs.par_iter()
-        .enumerate()
-        .map(|(index, arc)| {
-            let geometry = path.geometry(*arc)?;
-            let local = config.clone().with_seed(
-                config
-                    .seed
-                    .wrapping_add(salt)
-                    .wrapping_add(index as u64)
-                    .wrapping_add(1),
-            );
-            average_hyperplane(surface, &geometry, &local)
+) -> Result<(FreeEnergyProfile, Vec<HyperplaneAverage>), SaddleError> {
+    config.check()?;
+    let planes = path.frame_planes(config.active_share)?;
+    let n = path.frames[0].positions.len();
+    let relaxed = path
+        .frames
+        .par_iter()
+        .zip(&planes.normals)
+        .map(|(frame, normal)| {
+            let geometry = PathGeometry {
+                positions: frame.positions.clone(),
+                tangent: normal.clone(),
+                curvature: Array1::zeros(n),
+                arc: 0.0,
+            };
+            let plane = Plane::new(&geometry, config.fix_com)?;
+            match relax_in_plane(surface, &plane, frame.positions.clone(), config.relax_tol)? {
+                (minimum, evaluations, true) => Ok((minimum, evaluations)),
+                _ => Err(SaddleError::Stalled(format!(
+                    "PAFI in-plane relaxation did not reach {:e} in {RELAX_STEPS} steps",
+                    config.relax_tol
+                ))),
+            }
         })
-        .collect()
+        .collect::<Result<Vec<_>, SaddleError>>()?;
+    let geometries: Vec<PathGeometry> = relaxed
+        .iter()
+        .zip(planes.normals.iter().zip(&planes.curvatures))
+        .zip(&planes.arcs)
+        .map(
+            |(((positions, _), (normal, curvature)), arc)| PathGeometry {
+                positions: positions.clone(),
+                tangent: normal.clone(),
+                curvature: curvature.clone(),
+                arc: *arc,
+            },
+        )
+        .collect();
+    let (profile, mut averages) = sample_rounds(surface, &geometries, config, |averages| {
+        control_variate(&planes.arcs, averages)
+    })?;
+    for (average, (_, steps)) in averages.iter_mut().zip(&relaxed) {
+        average.evaluations += steps;
+    }
+    Ok((profile, averages))
+}
+
+fn sample_rounds<S, F>(
+    surface: &S,
+    geometries: &[PathGeometry],
+    config: &PafiConfig,
+    integrate: F,
+) -> Result<(FreeEnergyProfile, Vec<HyperplaneAverage>), SaddleError>
+where
+    S: PointSurface + Sync,
+    F: Fn(&[HyperplaneAverage]) -> Result<FreeEnergyProfile, SaddleError>,
+{
+    let planes = geometries
+        .iter()
+        .map(|geometry| Plane::new(geometry, config.fix_com))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut chains: Vec<Chain> = planes
+        .iter()
+        .enumerate()
+        .map(|(index, plane)| {
+            let seed = config.seed.wrapping_add(index as u64).wrapping_add(1);
+            Chain::new(plane, seed, config.integrator)
+        })
+        .collect();
+    chains
+        .par_iter_mut()
+        .zip(&planes)
+        .try_for_each(|(chain, plane)| {
+            chain.run(surface, plane, config, config.thermalize, config.samples)
+        })?;
+    if let Some(index) = chains.iter().position(|chain| chain.values.is_empty()) {
+        return Err(SaddleError::Stalled(format!(
+            "PAFI plane {index} left the basin of the path in every window"
+        )));
+    }
+    let mut averages: Vec<HyperplaneAverage> =
+        chains.iter().map(|chain| chain.average(config)).collect();
+    let mut profile = integrate(&averages)?;
+    let mut round = 1usize;
+    while let Some(target) = config.target_error {
+        if profile.barrier_error <= target
+            || round >= config.max_rounds.max(1)
+            || profile.barrier_error <= 0.0
+        {
+            break;
+        }
+        let short = (profile.barrier_error / target).powi(2) - 1.0;
+        let prefix = profile.dividing + 1;
+        chains[..prefix]
+            .par_iter_mut()
+            .zip(&planes[..prefix])
+            .try_for_each(|(chain, plane)| {
+                let more = ((chain.values.len() as f64) * short).ceil() as usize;
+                let more = more.clamp(config.samples, 8 * config.samples);
+                chain.run(surface, plane, config, 0, more)
+            })?;
+        averages = chains.iter().map(|chain| chain.average(config)).collect();
+        profile = integrate(&averages)?;
+        round += 1;
+    }
+    profile.samples = averages.iter().map(|plane| plane.samples).sum();
+    Ok((profile, averages))
 }
 
 fn profile_of(
@@ -701,24 +897,347 @@ fn profile_of(
     integrate_profile(arcs, &gradients, &errors)
 }
 
-fn combine(mean_a: f64, error_a: f64, mean_b: f64, error_b: f64) -> (f64, f64) {
-    let va = error_a * error_a;
-    let vb = error_b * error_b;
-    if va == 0.0 && vb == 0.0 {
-        return (0.5 * (mean_a + mean_b), 0.0);
+fn control_variate(
+    arcs: &[f64],
+    planes: &[HyperplaneAverage],
+) -> Result<FreeEnergyProfile, SaddleError> {
+    let excess: Vec<f64> = planes
+        .iter()
+        .map(|plane| plane.gradient - plane.zero)
+        .collect();
+    let errors: Vec<f64> = planes.iter().map(|plane| plane.error).collect();
+    let mut profile = integrate_profile(arcs, &excess, &errors)?;
+    let base = planes[0].energy;
+    for (free, plane) in profile.free_energy.iter_mut().zip(planes) {
+        *free += plane.energy - base;
     }
-    if va == 0.0 {
-        return (mean_a, 0.0);
-    }
-    if vb == 0.0 {
-        return (mean_b, 0.0);
-    }
-    let weight_a = 1.0 / va;
-    let weight_b = 1.0 / vb;
-    let mean = (weight_a * mean_a + weight_b * mean_b) / (weight_a + weight_b);
-    let error = (1.0 / (weight_a + weight_b)).sqrt();
-    (mean, error)
+    profile.dividing = dividing_index(&profile.free_energy);
+    profile.barrier = profile.free_energy[profile.dividing];
+    profile.barrier_error = profile.free_energy_error[profile.dividing];
+    profile.gradient = planes.iter().map(|plane| plane.gradient).collect();
+    Ok(profile)
 }
+
+/// The plane `(x - X) · t = 0` of one geometry and the projection onto it.
+struct Plane<'a> {
+    geometry: &'a PathGeometry,
+    /// `t` with the mean Cartesian drift removed when that is held, at
+    /// unit length: the one direction the dynamics may not take.
+    unit: Array1<f64>,
+    com: bool,
+}
+
+impl<'a> Plane<'a> {
+    fn new(geometry: &'a PathGeometry, fix_com: bool) -> Result<Self, SaddleError> {
+        let n = geometry.positions.len();
+        if geometry.tangent.len() != n || geometry.curvature.len() != n {
+            return Err(SaddleError::Shape(
+                "PAFI tangent and curvature must match the position".into(),
+            ));
+        }
+        if !geometry
+            .positions
+            .iter()
+            .chain(geometry.tangent.iter())
+            .chain(geometry.curvature.iter())
+            .all(|v| v.is_finite())
+        {
+            return Err(SaddleError::NonFinite("PAFI path geometry"));
+        }
+        let com = fix_com && n >= 6 && n.is_multiple_of(3);
+        let mut unit = geometry.tangent.clone();
+        if com {
+            remove_com(&mut unit);
+        }
+        let length = norm(&unit);
+        if !(length.is_finite() && length > 0.0) {
+            return Err(SaddleError::Invalid("PAFI tangent vanishes".into()));
+        }
+        unit /= length;
+        Ok(Self {
+            geometry,
+            unit,
+            com,
+        })
+    }
+
+    fn project(&self, vector: &mut Array1<f64>) {
+        if self.com {
+            remove_com(vector);
+        }
+        let along = vector.dot(&self.unit);
+        vector.scaled_add(-along, &self.unit);
+    }
+
+    fn restore(&self, x: &mut Array1<f64>) {
+        let tangent = &self.geometry.tangent;
+        let slip = (&*x - &self.geometry.positions).dot(tangent) / self.unit.dot(tangent);
+        x.scaled_add(-slip, &self.unit);
+    }
+}
+
+/// Windows a pass may run for each one it asks for, the dropped included.
+const WINDOW_TRIES: usize = 4;
+
+/// One overdamped chain on one plane, kept between passes.
+struct Chain {
+    x: Array1<f64>,
+    previous: Option<Array1<f64>>,
+    rng: Rng,
+    values: Vec<f64>,
+    psi_sum: f64,
+    retained: Vec<Array1<f64>>,
+    evaluations: usize,
+    widest: f64,
+    origin: (f64, f64),
+    /// Minimum of the plane reached from its origin, for the jump test.
+    minimum: Option<Array1<f64>>,
+    /// Where the last window the jump test kept ended.
+    kept: Option<Array1<f64>>,
+    jumps: usize,
+}
+
+impl Chain {
+    fn new(plane: &Plane, seed: u64, integrator: Integrator) -> Self {
+        let mut rng = Rng::new(seed);
+        let previous =
+            (integrator == Integrator::LeimkuhlerMatthews).then(|| plane.noise(&mut rng));
+        Self {
+            x: plane.geometry.positions.clone(),
+            previous,
+            rng,
+            values: Vec::new(),
+            psi_sum: 0.0,
+            retained: Vec::new(),
+            evaluations: 0,
+            widest: 0.0,
+            origin: (f64::NAN, f64::NAN),
+            minimum: None,
+            kept: None,
+            jumps: 0,
+        }
+    }
+
+    /// `thermalize` steps, then `samples` more recorded `config.stride`
+    /// apart in windows of `config.window`, each put to
+    /// [`PafiConfig::max_jump`]. A dropped window is run again, from where
+    /// the last kept window ended with fresh noise, or from the origin,
+    /// thermalized again, when no window has been kept; the pass gives up
+    /// after [`WINDOW_TRIES`] times the windows it asked for.
+    fn run<S: PointSurface>(
+        &mut self,
+        surface: &S,
+        plane: &Plane,
+        config: &PafiConfig,
+        thermalize: usize,
+        samples: usize,
+    ) -> Result<(), SaddleError> {
+        let mut warm = thermalize;
+        let goal = self.values.len() + samples;
+        let mut tries = WINDOW_TRIES * samples.div_ceil(config.window);
+        while self.values.len() < goal && tries > 0 {
+            tries -= 1;
+            let take = (goal - self.values.len()).min(config.window);
+            let mark = (
+                self.values.len(),
+                self.retained.len(),
+                self.psi_sum,
+                self.widest,
+            );
+            self.advance(surface, plane, config, warm, take)?;
+            warm = 0;
+            let Some(limit) = config.max_jump else {
+                continue;
+            };
+            if !self.jumped(surface, plane, config, limit)? {
+                self.kept = Some(self.x.clone());
+                continue;
+            }
+            self.values.truncate(mark.0);
+            self.retained.truncate(mark.1);
+            self.psi_sum = mark.2;
+            self.widest = mark.3;
+            self.jumps += 1;
+            match &self.kept {
+                Some(kept) => self.x.assign(kept),
+                None => {
+                    self.x.assign(&plane.geometry.positions);
+                    warm = config.thermalize;
+                }
+            }
+            if let Some(previous) = self.previous.as_mut() {
+                *previous = plane.noise(&mut self.rng);
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the chain, relaxed in its plane, ends more than `limit` from
+    /// the minimum of the plane, or does not settle.
+    fn jumped<S: PointSurface>(
+        &mut self,
+        surface: &S,
+        plane: &Plane,
+        config: &PafiConfig,
+        limit: f64,
+    ) -> Result<bool, SaddleError> {
+        if self.minimum.is_none() {
+            let (minimum, evaluations, _) = relax_in_plane(
+                surface,
+                plane,
+                plane.geometry.positions.clone(),
+                config.jump_tol,
+            )?;
+            self.evaluations += evaluations;
+            self.minimum = Some(minimum);
+        }
+        let (quenched, evaluations, settled) =
+            relax_in_plane(surface, plane, self.x.clone(), config.jump_tol)?;
+        self.evaluations += evaluations;
+        let minimum = self.minimum.as_ref().expect("minimum");
+        Ok(!settled || largest_atom(&(&quenched - minimum)) > limit)
+    }
+
+    fn advance<S: PointSurface>(
+        &mut self,
+        surface: &S,
+        plane: &Plane,
+        config: &PafiConfig,
+        thermalize: usize,
+        samples: usize,
+    ) -> Result<(), SaddleError> {
+        let geometry = plane.geometry;
+        let n = self.x.len();
+        let h = config.mobility * config.time_step;
+        let retain_gap = config.samples.div_ceil(config.retain.max(1)).max(1);
+        for step in 0..thermalize + config.stride * samples {
+            let (energy, gradient) = surface.eval(self.x.view())?;
+            if gradient.len() != n || !gradient.iter().all(|v| v.is_finite()) {
+                return Err(SaddleError::Shape(
+                    "PAFI gradient must match the path".into(),
+                ));
+            }
+            if self.evaluations == 0 {
+                self.origin = (energy, gradient.dot(&geometry.tangent));
+            }
+            self.evaluations += 1;
+            if step >= thermalize && (step - thermalize).is_multiple_of(config.stride) {
+                let (value, psi) = projected_gradient(&gradient, &self.x, geometry);
+                if !value.is_finite() || !psi.is_finite() {
+                    return Err(SaddleError::NonFinite("PAFI projected gradient"));
+                }
+                let recorded = self.values.len();
+                self.values.push(value);
+                self.psi_sum += psi;
+                self.widest = self
+                    .widest
+                    .max(largest_atom(&(&self.x - &geometry.positions)));
+                if config.retain > 0
+                    && recorded.is_multiple_of(retain_gap)
+                    && self.retained.len() < config.retain
+                {
+                    self.retained.push(self.x.clone());
+                }
+            }
+            let mut drift = gradient;
+            plane.project(&mut drift);
+            let fresh = plane.noise(&mut self.rng);
+            self.x.scaled_add(-h, &drift);
+            match self.previous.as_mut() {
+                Some(previous) => {
+                    let scale = (0.5 * h * config.thermal).sqrt();
+                    self.x.scaled_add(scale, previous);
+                    self.x.scaled_add(scale, &fresh);
+                    *previous = fresh;
+                }
+                None => self.x.scaled_add((2.0 * h * config.thermal).sqrt(), &fresh),
+            }
+            plane.restore(&mut self.x);
+        }
+        Ok(())
+    }
+
+    fn average(&self, config: &PafiConfig) -> HyperplaneAverage {
+        let (gradient, error, tau, n_eff) = windowed_block_mean(&self.values, config.blocks);
+        HyperplaneAverage {
+            gradient,
+            error,
+            psi: self.psi_sum / self.values.len().max(1) as f64,
+            samples: self.values.len(),
+            tau,
+            n_eff,
+            evaluations: self.evaluations,
+            retained: self.retained.clone(),
+            energy: self.origin.0,
+            zero: self.origin.1,
+            widest: self.widest,
+            jumps: self.jumps,
+        }
+    }
+}
+
+impl Plane<'_> {
+    fn noise(&self, rng: &mut Rng) -> Array1<f64> {
+        let mut noise = Array1::from_shape_fn(self.unit.len(), |_| rng.normal());
+        self.project(&mut noise);
+        noise
+    }
+}
+
+/// FIRE of Bitzek et al., Phys. Rev. Lett. 97, 170201 (2006), on the force
+/// projected into `plane`, from `x` until no atom feels more than `tol`
+/// there. Returns where it stopped, the force evaluations spent, and
+/// whether it got there within [`RELAX_STEPS`].
+fn relax_in_plane<S: PointSurface>(
+    surface: &S,
+    plane: &Plane,
+    mut x: Array1<f64>,
+    tol: f64,
+) -> Result<(Array1<f64>, usize, bool), SaddleError> {
+    const MAX_MOVE: f64 = 0.1;
+    let mut velocity = Array1::<f64>::zeros(x.len());
+    let (mut dt, mut alpha, mut positive) = (0.05, 0.1, 0usize);
+    for step in 0..RELAX_STEPS {
+        let (_, gradient) = surface.eval(x.view())?;
+        if gradient.len() != x.len() || !gradient.iter().all(|v| v.is_finite()) {
+            return Err(SaddleError::Shape(
+                "PAFI gradient must match the path".into(),
+            ));
+        }
+        let mut force = -gradient;
+        plane.project(&mut force);
+        if largest_atom(&force) <= tol {
+            return Ok((x, step + 1, true));
+        }
+        if force.dot(&velocity) > 0.0 {
+            let mix = alpha * norm(&velocity) / norm(&force);
+            velocity *= 1.0 - alpha;
+            velocity.scaled_add(mix, &force);
+            if positive > 5 {
+                dt = (dt * 1.1_f64).min(0.5);
+                alpha *= 0.99;
+            }
+            positive += 1;
+        } else {
+            velocity.fill(0.0);
+            dt *= 0.5;
+            alpha = 0.1;
+            positive = 0;
+        }
+        velocity.scaled_add(dt, &force);
+        plane.project(&mut velocity);
+        let mut move_by = &velocity * dt;
+        let widest = largest_atom(&move_by);
+        if widest > MAX_MOVE {
+            move_by *= MAX_MOVE / widest;
+        }
+        x += &move_by;
+        plane.restore(&mut x);
+    }
+    Ok((x, RELAX_STEPS, false))
+}
+
+const RELAX_STEPS: usize = 10_000;
 
 /// Integral of `∇E · dX/ds` with the system held on the path.
 ///
@@ -816,13 +1335,48 @@ fn difference(end: &Array1<f64>, start: &Array1<f64>, ds: f64) -> Array1<f64> {
     (end - start) / ds
 }
 
-fn project_out(vector: &mut Array1<f64>, tangent: ArrayView1<f64>) {
-    let nn = tangent.dot(&tangent);
-    if nn == 0.0 {
-        return;
+fn atom_width(len: usize) -> usize {
+    if len.is_multiple_of(3) { 3 } else { 1 }
+}
+
+/// Atoms whose summed squared steps reach `share` of the total, the
+/// largest first, in ascending order.
+fn active_atoms(steps: &[Array1<f64>], width: usize, share: f64) -> Vec<usize> {
+    let atoms = steps.first().map_or(0, |step| step.len() / width);
+    if share >= 1.0 {
+        return (0..atoms).collect();
     }
-    let coef = vector.dot(&tangent) / nn;
-    *vector -= &(tangent.to_owned() * coef);
+    let mut weight = vec![0.0; atoms];
+    for step in steps {
+        for (atom, slot) in weight.iter_mut().enumerate() {
+            *slot += (0..width)
+                .map(|c| step[atom * width + c].powi(2))
+                .sum::<f64>();
+        }
+    }
+    let total: f64 = weight.iter().sum();
+    let mut order: Vec<usize> = (0..atoms).collect();
+    order.sort_by(|a, b| weight[*b].total_cmp(&weight[*a]));
+    let mut carried = 0.0;
+    let mut active = Vec::new();
+    for atom in order {
+        if carried >= share * total {
+            break;
+        }
+        carried += weight[atom];
+        active.push(atom);
+    }
+    active.sort_unstable();
+    active
+}
+
+fn largest_atom(vector: &Array1<f64>) -> f64 {
+    let width = atom_width(vector.len());
+    vector
+        .exact_chunks(width)
+        .into_iter()
+        .map(|atom| atom.dot(&atom).sqrt())
+        .fold(0.0, f64::max)
 }
 
 pub(crate) fn remove_com(vector: &mut Array1<f64>) {
@@ -848,4 +1402,34 @@ pub(crate) fn remove_com(vector: &mut Array1<f64>) {
 
 fn norm(vector: &Array1<f64>) -> f64 {
     vector.dot(vector).sqrt()
+}
+
+/// Derivative along the arc at every frame of a quantity with
+/// `differences[k]` between frames `k` and `k + 1` a distance `steps[k]`
+/// apart: that of the parabola through the frame and its neighbours, or
+/// through an end frame and the next two.
+fn arc_derivative(differences: &[Array1<f64>], steps: &[f64]) -> Vec<Array1<f64>> {
+    let last = differences.len();
+    if last == 1 {
+        return vec![&differences[0] / steps[0]; 2];
+    }
+    let end = |near: &Array1<f64>, far: &Array1<f64>, h1: f64, h2: f64| {
+        (near * (h2 * (2.0 * h1 + h2)) - far * (h1 * h1)) / (h1 * h2 * (h1 + h2))
+    };
+    let mut derivatives = Vec::with_capacity(last + 1);
+    derivatives.push(end(&differences[0], &differences[1], steps[0], steps[1]));
+    for k in 1..last {
+        let (before, after) = (steps[k - 1], steps[k]);
+        derivatives.push(
+            (&differences[k] * (before * before) + &differences[k - 1] * (after * after))
+                / (before * after * (before + after)),
+        );
+    }
+    derivatives.push(end(
+        &differences[last - 1],
+        &differences[last - 2],
+        steps[last - 1],
+        steps[last - 2],
+    ));
+    derivatives
 }

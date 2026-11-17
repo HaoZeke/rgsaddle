@@ -147,9 +147,9 @@ pub use ohtst::{
     transmission_coefficient,
 };
 pub use pafi::{
-    ArcPath, BalancedBarriers, FreeEnergyProfile, HyperplaneAverage, PafiConfig, PathFrame,
-    PathGeometry, anchored_barriers, average_hyperplane, balanced_barriers, integrate_profile,
-    pafi_profile, zero_temperature_barrier,
+    ArcPath, BalancedBarriers, FramePlanes, FreeEnergyProfile, HyperplaneAverage, Integrator,
+    PafiConfig, PathFrame, PathGeometry, anchored_barriers, average_hyperplane, balanced_barriers,
+    integrate_profile, pafi_frames, pafi_profile, zero_temperature_barrier,
 };
 pub use pair_network::{
     Mat3i, PairConfig, PairEdge, PairExit, PairHop, PairMove, PairNetwork, PairStateClass,
