@@ -89,6 +89,20 @@ extern "C" {
  */
 #define RGSADDLE_BAND_SPLINE_REPARAM (1ull << 4)
 
+/**
+ * Band config flags bit 5, ABI minor 42. Simplified string method of E,
+ * Ren and Vanden-Eijnden, J. Chem. Phys. 126, 164103 (2007): interior
+ * images evolve under the full potential force (no spring, no tangent
+ * projection) and are placed at equal arc length after each step; an
+ * armed climbing image reflects the potential force along the tangent
+ * and stays anchored during reparametrization. RGSADDLE_BAND_SPLINE_REPARAM
+ * places the images on the not-a-knot cubic spline and leaving it clear
+ * places them on the polyline. Read only from a config whose version
+ * minor is 42 or newer. Incompatible with RGSADDLE_METHOD_RTR and with
+ * rgsaddle_band_create_solid.
+ */
+#define RGSADDLE_BAND_STRING (1ull << 5)
+
 /** Request flags bit 0. positions and gradients are one image. */
 #define RGSADDLE_REQ_ONE_IMAGE (1ull << 0)
 
@@ -1424,6 +1438,22 @@ rgsaddle_status_t rgsaddle_band_set_zoom(RgsaddleBand *band, int32_t enabled,
                                          double alpha, int64_t offset,
                                          double after, int64_t stability,
                                          int32_t cubic);
+
+/**
+ * Simplified string method on the band, ABI minor 42 (E, Ren and
+ * Vanden-Eijnden, J. Chem. Phys. 126, 164103 (2007)). `enabled` 1
+ * evolves interior images under the full potential force (no spring, no
+ * tangent projection) and places them at equal arc length after each
+ * step according to `scheme` (`rgsaddle_reparametrization_t`:
+ * RGSADDLE_REPARAM_LINEAR or RGSADDLE_REPARAM_NOT_A_KNOT), anchoring an
+ * armed climbing image; `enabled` 0 returns the band to NEB and ignores
+ * `scheme`. Optimizer history and the climbing state restart; cached
+ * endpoint energies stay. Returns RGSADDLE_NULL_BAND for a null band and
+ * RGSADDLE_INVALID_PARAMETER for `enabled` other than 0 or 1, an unknown
+ * `scheme`, a solid-state band, or a trust-region band.
+ */
+rgsaddle_status_t rgsaddle_band_set_string(RgsaddleBand *band, int32_t enabled,
+                                           int32_t scheme);
 
 /**
  * Point stencil. Opaque config, typed keys, one callback.

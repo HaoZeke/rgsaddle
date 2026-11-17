@@ -151,6 +151,22 @@ int main() {
         }
     }
 
+    rgsaddle::Band str_band(cfg, n_images, n_atoms, pos.data());
+    str_band.set_string(true, RGSADDLE_REPARAM_NOT_A_KNOT);
+    rgsaddle::Report str_rep;
+    for (int i = 0; i < 500; ++i) {
+        str_rep = str_band.step(surface, nullptr);
+        if (str_rep.converged()) {
+            break;
+        }
+    }
+    auto str_pos = str_band.positions();
+    if (!str_rep.converged() || str_rep.ci_index < 1 ||
+        std::fabs(str_pos[static_cast<std::size_t>(str_rep.ci_index * 3)]) > 0.01) {
+        std::fprintf(stderr, "C++ string band did not converge to the saddle\n");
+        return 1;
+    }
+
     std::vector<double> pair(static_cast<std::size_t>(n_images * 6));
     for (std::size_t i = 0; i < static_cast<std::size_t>(n_images); ++i) {
         for (std::size_t c = 0; c < 3; ++c) {
