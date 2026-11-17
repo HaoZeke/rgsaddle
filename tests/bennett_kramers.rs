@@ -51,7 +51,11 @@ fn newtonian_crossing_does_not_recross_immediately() {
         transmission.kappa,
         transmission.time[2]
     );
-    assert!(transmission.forward > 20, "forward {}", transmission.forward);
+    assert!(
+        transmission.forward > 20,
+        "forward {}",
+        transmission.forward
+    );
 }
 
 #[test]

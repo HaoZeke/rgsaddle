@@ -43,14 +43,17 @@
 
 pub mod autoneb;
 pub mod band;
+pub mod bennett;
 #[cfg(feature = "capi")]
 pub mod capi;
 pub mod connect;
+pub mod defect_pair;
 pub mod error;
 pub mod idpp;
 pub mod minmode;
 pub mod nichols;
 pub mod ocineb;
+pub mod pafi;
 pub mod prfo;
 pub mod projection;
 pub mod site_occupancy;
@@ -59,9 +62,6 @@ pub mod solid_state;
 pub mod spring;
 pub mod ssneb;
 pub mod stencil;
-pub mod bennett;
-pub mod defect_pair;
-pub mod pafi;
 pub mod strain_rate;
 pub mod tangent;
 
@@ -81,7 +81,20 @@ pub use band::{
     BandConfig, BandEvaluation, BandReport, BandSession, BandStatus, BandSurface, Cell, CiConfig,
     ExpBandPrecon, MinModeRefine, SolidState, ZoomConfig,
 };
+pub use bennett::{ShootingConfig, Transmission, bennett_chandler};
 pub use connect::{ConnectConfig, ConnectProfile, ConnectReport, connect};
+pub use defect_pair::{
+    BasinSaddle, CellMode, DefectPairConfig, DimerSeed, DirectionClass, FREE_CRYSTAL,
+    FreeMigration, HopOutcome, HopTemplate, PairSetup, RateCatalogue, RateEntry,
+    RecombinationVolume, SPONTANEOUS_BARRIER_EV, SiteOutcome, SphereLanding, VolumePlacement,
+    VolumeSite, attempt_frequency, capture_is_spontaneous, capture_is_spontaneous_within,
+    classify_separation, debye_hit_probability, debye_matched_radius, debye_radius,
+    debye_resistance, defect_pair_rates, descend_limited, dumbbell_diffusivity,
+    dumbbell_translation_axis, effective_capture_radius, embed_free_migration, embed_sphere_return,
+    kinetic_recombination_volume, mean_absorption_time, pair_separation, product_tangent,
+    seeded_saddles, segment_band, shell_pair_factor, smoluchowski_rate, sphere_hit_probability,
+    spherical_return_probability, volume_from_frequency,
+};
 pub use elastic::{
     ElasticMultipole, LocalField, Octupole, Quadrupole, StrainGradient, quadrupole_energy,
 };
@@ -101,6 +114,10 @@ pub use ocineb::{
     backoff_threshold, initial_threshold, mode_alignment, should_trigger, success_threshold,
     walk_helped,
 };
+pub use pafi::{
+    ArcPath, FreeEnergyProfile, HyperplaneAverage, PafiConfig, PathFrame, PathGeometry,
+    average_hyperplane, integrate_profile, pafi_profile, zero_temperature_barrier,
+};
 pub use prfo::{PrfoKind, partitioned_rfo_eigen, restricted_prfo_displacement};
 pub use projection::ProjectionKind;
 pub use site_occupancy::{Occupancy, Persistence, SiteOccupancy, centroid};
@@ -113,25 +130,6 @@ pub use ssneb::{SolidImage, SolidNeb, joint_coordinate};
 pub use stencil::{
     BAND_PRESET_SEAM, BandBuilder, Chain, Climb, EvalPool, Mesh, MeshEvent, PointBuilder, Preset,
     Role, Stencil, StencilReport, StencilStatus,
-};
-pub use bennett::{ShootingConfig, Transmission, bennett_chandler};
-pub use defect_pair::{
-    BasinSaddle, CellMode, DefectPairConfig, DimerSeed, DirectionClass, HopOutcome, HopTemplate,
-    PairSetup, RateCatalogue, RateEntry, RecombinationVolume, SiteOutcome, SPONTANEOUS_BARRIER_EV,
-    VolumePlacement, VolumeSite, attempt_frequency, capture_is_spontaneous,
-    capture_is_spontaneous_within, classify_separation, defect_pair_rates, descend_limited,
-    debye_hit_probability, debye_matched_radius, debye_radius, debye_resistance,
-    dumbbell_diffusivity, dumbbell_translation_axis, effective_capture_radius,
-    embed_free_migration, embed_sphere_return, kinetic_recombination_volume,
-    mean_absorption_time, pair_separation, product_tangent, shell_pair_factor, smoluchowski_rate,
-    sphere_hit_probability, spherical_return_probability, volume_from_frequency, FreeMigration,
-    SphereLanding,
-    FREE_CRYSTAL,
-    seeded_saddles, segment_band,
-};
-pub use pafi::{
-    ArcPath, FreeEnergyProfile, HyperplaneAverage, PafiConfig, PathFrame, PathGeometry,
-    average_hyperplane, integrate_profile, pafi_profile, zero_temperature_barrier,
 };
 pub use strain_rate::{
     BOLTZMANN_EV_PER_K, CurvatureBound, ElasticDipole, Estimate, HopVariant, LINEAR_FOLD_EV,

@@ -178,4 +178,3 @@ impl PointSurface for Corner {
         Ok((energy, gradient))
     }
 }
-

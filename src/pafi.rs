@@ -220,10 +220,7 @@ impl ArcPath {
 
     /// Arc length of the reactant and of the product.
     pub fn bounds(&self) -> (f64, f64) {
-        (
-            self.frames[0].arc,
-            self.frames.last().expect("frames").arc,
-        )
+        (self.frames[0].arc, self.frames.last().expect("frames").arc)
     }
 
     /// Arc length of every stored frame.
@@ -338,10 +335,7 @@ pub fn average_hyperplane<S: PointSurface>(
     let mut observations = Vec::with_capacity(config.samples);
     let mut psi_sum = 0.0;
     let mut retained = Vec::new();
-    let retain_gap = config
-        .samples
-        .div_ceil(config.retain.max(1))
-        .max(1);
+    let retain_gap = config.samples.div_ceil(config.retain.max(1)).max(1);
     for step in 0..total {
         let (_energy, gradient) = surface.eval(x.view())?;
         if gradient.len() != n || !gradient.iter().all(|v| v.is_finite()) {
@@ -357,7 +351,9 @@ pub fn average_hyperplane<S: PointSurface>(
             let recorded = observations.len();
             observations.push(value);
             psi_sum += psi;
-            if config.retain > 0 && recorded.is_multiple_of(retain_gap) && retained.len() < config.retain
+            if config.retain > 0
+                && recorded.is_multiple_of(retain_gap)
+                && retained.len() < config.retain
             {
                 retained.push(x.clone());
             }
@@ -474,7 +470,8 @@ pub fn pafi_profile<S: PointSurface + Sync>(
         extra.target_error = None;
         let more = sample_planes(surface, path, arcs, &extra, round as u64 * 10_000)?;
         for (plane, added) in planes.iter_mut().zip(more) {
-            let (gradient, error) = combine(plane.gradient, plane.error, added.gradient, added.error);
+            let (gradient, error) =
+                combine(plane.gradient, plane.error, added.gradient, added.error);
             plane.gradient = gradient;
             plane.error = error;
             plane.samples += added.samples;
@@ -514,7 +511,10 @@ fn sample_planes<S: PointSurface + Sync>(
         .collect()
 }
 
-fn profile_of(arcs: &[f64], planes: &[HyperplaneAverage]) -> Result<FreeEnergyProfile, SaddleError> {
+fn profile_of(
+    arcs: &[f64],
+    planes: &[HyperplaneAverage],
+) -> Result<FreeEnergyProfile, SaddleError> {
     let gradients: Vec<f64> = planes.iter().map(|plane| plane.gradient).collect();
     let errors: Vec<f64> = planes.iter().map(|plane| plane.error).collect();
     integrate_profile(arcs, &gradients, &errors)
@@ -621,7 +621,11 @@ fn dividing_index(free: &[f64]) -> usize {
     best
 }
 
-fn projected_gradient(gradient: &Array1<f64>, x: &Array1<f64>, geometry: &PathGeometry) -> (f64, f64) {
+fn projected_gradient(
+    gradient: &Array1<f64>,
+    x: &Array1<f64>,
+    geometry: &PathGeometry,
+) -> (f64, f64) {
     let psi = (x - &geometry.positions).dot(&geometry.curvature);
     let parallel = gradient.dot(&geometry.tangent);
     (parallel * (1.0 - psi), psi)

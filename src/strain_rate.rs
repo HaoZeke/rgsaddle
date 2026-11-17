@@ -1612,7 +1612,10 @@ pub(crate) fn required_f64(obj: &[(String, Json)], key: &str) -> Result<f64, Sad
         .ok_or_else(|| SaddleError::Invalid(format!("json is missing the number {key}")))
 }
 
-pub(crate) fn required_str<'a>(obj: &'a [(String, Json)], key: &str) -> Result<&'a str, SaddleError> {
+pub(crate) fn required_str<'a>(
+    obj: &'a [(String, Json)],
+    key: &str,
+) -> Result<&'a str, SaddleError> {
     obj_get(obj, key)
         .and_then(Json::as_str)
         .ok_or_else(|| SaddleError::Invalid(format!("json is missing the string {key}")))

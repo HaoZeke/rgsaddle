@@ -55,8 +55,8 @@ use crate::solid_dimer::{
 };
 use crate::ssneb::SolidNeb;
 use crate::strain_rate::{
-    self, ElasticDipole, Json, double_dot, obj_get, parse_json, required_f64,
-    required_matrix, required_str, split_translational_modes,
+    self, ElasticDipole, Json, double_dot, obj_get, parse_json, required_f64, required_matrix,
+    required_str, split_translational_modes,
 };
 
 /// Which way the mobile defect moves relative to the fixed defect.
@@ -124,7 +124,10 @@ pub fn classify_separation(
 pub fn dumbbell_translation_axis(axis: [f64; 3], hop: [f64; 3]) -> Option<[f64; 3]> {
     let axis_norm2 = axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2];
     let hop_norm2 = hop[0] * hop[0] + hop[1] * hop[1] + hop[2] * hop[2];
-    if !(axis_norm2.is_finite() && hop_norm2.is_finite()) || axis_norm2 < 1.0e-18 || hop_norm2 < 1.0e-18 {
+    if !(axis_norm2.is_finite() && hop_norm2.is_finite())
+        || axis_norm2 < 1.0e-18
+        || hop_norm2 < 1.0e-18
+    {
         return None;
     }
     let dot = axis[0] * hop[0] + axis[1] * hop[1] + axis[2] * hop[2];
@@ -170,7 +173,10 @@ pub fn dumbbell_diffusivity(
             "the lattice parameter must be finite and positive".into(),
         ));
     }
-    if !(translation_rate.is_finite() && translation_rate >= 0.0 && rotation_rate.is_finite() && rotation_rate >= 0.0)
+    if !(translation_rate.is_finite()
+        && translation_rate >= 0.0
+        && rotation_rate.is_finite()
+        && rotation_rate >= 0.0)
     {
         return Err(SaddleError::Invalid(
             "translation and rotation rates must be finite and non-negative".into(),
@@ -619,33 +625,73 @@ impl RateCatalogue {
         out.push_str(
             "  \"dF\": \"PAFI potential of mean force from the reactant to the dividing surface\",\n",
         );
-        out.push_str(
-            "  \"kappa\": \"Bennett-Chandler positive-flux transmission coefficient\",\n",
-        );
-        out.push_str(
-            "  \"harmonic_rate\": \"Vineyard prefactor * exp(-dE0/kT)\",\n",
-        );
+        out.push_str("  \"kappa\": \"Bennett-Chandler positive-flux transmission coefficient\",\n");
+        out.push_str("  \"harmonic_rate\": \"Vineyard prefactor * exp(-dE0/kT)\",\n");
         out.push_str("  \"entries\": [\n");
         for (i, entry) in self.entries.iter().enumerate() {
             out.push_str("    {\n");
             push_kv(&mut out, "shell", &json_string(&entry.shell), true);
-            push_kv(&mut out, "direction", &json_string(entry.direction.as_str()), true);
+            push_kv(
+                &mut out,
+                "direction",
+                &json_string(entry.direction.as_str()),
+                true,
+            );
             push_kv(&mut out, "hop", &json_string(&entry.hop), true);
             push_kv(&mut out, "temperature", &num(entry.temperature), true);
-            push_kv(&mut out, "cell_repeats", &entry.cell_repeats.to_string(), true);
+            push_kv(
+                &mut out,
+                "cell_repeats",
+                &entry.cell_repeats.to_string(),
+                true,
+            );
             push_kv(&mut out, "n_atoms", &entry.n_atoms.to_string(), true);
-            push_kv(&mut out, "separation_before", &num(entry.separation_before), true);
-            push_kv(&mut out, "separation_after", &num(entry.separation_after), true);
-            push_kv(&mut out, "outcome", &json_string(entry.outcome.as_str()), true);
-            push_kv(&mut out, "connected", if entry.connected { "true" } else { "false" }, true);
-            push_kv(&mut out, "index1", if entry.index1 { "true" } else { "false" }, true);
+            push_kv(
+                &mut out,
+                "separation_before",
+                &num(entry.separation_before),
+                true,
+            );
+            push_kv(
+                &mut out,
+                "separation_after",
+                &num(entry.separation_after),
+                true,
+            );
+            push_kv(
+                &mut out,
+                "outcome",
+                &json_string(entry.outcome.as_str()),
+                true,
+            );
+            push_kv(
+                &mut out,
+                "connected",
+                if entry.connected { "true" } else { "false" },
+                true,
+            );
+            push_kv(
+                &mut out,
+                "index1",
+                if entry.index1 { "true" } else { "false" },
+                true,
+            );
             push_kv(
                 &mut out,
                 "band_converged",
-                if entry.band_converged { "true" } else { "false" },
+                if entry.band_converged {
+                    "true"
+                } else {
+                    "false"
+                },
                 true,
             );
-            push_kv(&mut out, "reactant_energy", &num(entry.reactant_energy), true);
+            push_kv(
+                &mut out,
+                "reactant_energy",
+                &num(entry.reactant_energy),
+                true,
+            );
             push_kv(&mut out, "product_energy", &num(entry.product_energy), true);
             push_kv(&mut out, "saddle_energy", &num(entry.saddle_energy), true);
             push_kv(&mut out, "dE0", &num(entry.d_e0), true);
@@ -656,27 +702,57 @@ impl RateCatalogue {
             push_kv(&mut out, "vineyard", &opt_num(entry.vineyard), true);
             push_kv(&mut out, "kappa", &opt_num(entry.kappa), true);
             push_kv(&mut out, "kappa_error", &opt_num(entry.kappa_error), true);
-            push_kv(&mut out, "harmonic_rate", &opt_num(entry.harmonic_rate), true);
+            push_kv(
+                &mut out,
+                "harmonic_rate",
+                &opt_num(entry.harmonic_rate),
+                true,
+            );
             push_kv(&mut out, "rate_Hz", &opt_num(entry.rate), true);
             push_kv(&mut out, "zero_T", &opt_num(entry.zero_t), true);
             push_kv(&mut out, "band_force", &num(entry.band_force), true);
-            push_kv(&mut out, "pafi_samples", &entry.pafi_samples.to_string(), true);
+            push_kv(
+                &mut out,
+                "pafi_samples",
+                &entry.pafi_samples.to_string(),
+                true,
+            );
             push_kv(
                 &mut out,
                 "pafi_evaluations",
                 &entry.pafi_evaluations.to_string(),
                 true,
             );
-            push_kv(&mut out, "saddle_stress", &matrix_json(entry.saddle_stress), true);
-            push_kv(&mut out, "saddle_dipole", &matrix_json(entry.saddle_dipole), true);
+            push_kv(
+                &mut out,
+                "saddle_stress",
+                &matrix_json(entry.saddle_stress),
+                true,
+            );
+            push_kv(
+                &mut out,
+                "saddle_dipole",
+                &matrix_json(entry.saddle_dipole),
+                true,
+            );
             push_kv(
                 &mut out,
                 "negative_eigenvalue",
                 &opt_num(entry.negative_eigenvalue),
                 true,
             );
-            push_kv(&mut out, "orientation", &json_string(&entry.orientation), true);
-            push_kv(&mut out, "final_state", &json_string(&entry.final_state), false);
+            push_kv(
+                &mut out,
+                "orientation",
+                &json_string(&entry.orientation),
+                true,
+            );
+            push_kv(
+                &mut out,
+                "final_state",
+                &json_string(&entry.final_state),
+                false,
+            );
             out.push_str("    }");
             if i + 1 != self.entries.len() {
                 out.push(',');
@@ -704,9 +780,9 @@ impl RateCatalogue {
             .ok_or_else(|| SaddleError::Invalid("catalogue is missing entries".into()))?;
         let mut entries = Vec::with_capacity(rows.len());
         for row in rows {
-            let item = row
-                .as_object()
-                .ok_or_else(|| SaddleError::Invalid("a catalogue entry must be an object".into()))?;
+            let item = row.as_object().ok_or_else(|| {
+                SaddleError::Invalid("a catalogue entry must be an object".into())
+            })?;
             entries.push(RateEntry {
                 shell: required_str(item, "shell")?.to_string(),
                 direction: DirectionClass::parse(required_str(item, "direction")?)?,
@@ -757,12 +833,7 @@ pub fn defect_pair_rates<S: PointSurface + Sync>(
     check_setup(setup)?;
     check_config(config)?;
     let n_atoms = setup.positions.len() / 3;
-    let (reactant, reactant_energy) = relax(
-        surface,
-        setup.positions.clone(),
-        setup.cell,
-        config,
-    )?;
+    let (reactant, reactant_energy) = relax(surface, setup.positions.clone(), setup.cell, config)?;
     let mut entries = Vec::new();
     for hop in &setup.hops {
         let (product, product_energy) = relax(surface, hop.product.clone(), setup.cell, config)?;
@@ -890,7 +961,14 @@ fn search_hop<S: PointSurface>(
         let push = cartesian_push(&dimer, config.push)?;
         let (plus, _) = relax(surface, &saddle + &push, saddle_cell, config)?;
         let (minus, _) = relax(surface, &saddle - &push, saddle_cell, config)?;
-        if links(&plus, &minus, reactant, product, setup.cell, config.connect_rmsd)? {
+        if links(
+            &plus,
+            &minus,
+            reactant,
+            product,
+            setup.cell,
+            config.connect_rmsd,
+        )? {
             found_saddle = Some((dimer, saddle, saddle_cell, report));
             break;
         }
@@ -911,10 +989,26 @@ fn search_hop<S: PointSurface>(
     let push = cartesian_push(&dimer, config.push)?;
     let (plus, _) = relax(surface, &saddle + &push, saddle_cell, config)?;
     let (minus, _) = relax(surface, &saddle - &push, saddle_cell, config)?;
-    let connected = links(&plus, &minus, reactant, product, setup.cell, config.connect_rmsd)?;
+    let connected = links(
+        &plus,
+        &minus,
+        reactant,
+        product,
+        setup.cell,
+        config.connect_rmsd,
+    )?;
     let (saddle_energy, _) = surface.eval_in_cell(saddle.view(), &m3_to_row9(saddle_cell))?;
-    let d_e0 = enthalpy(saddle_energy, saddle_cell, setup.cell, config.external_stress)?
-        - enthalpy(reactant_energy, setup.cell, setup.cell, config.external_stress)?;
+    let d_e0 = enthalpy(
+        saddle_energy,
+        saddle_cell,
+        setup.cell,
+        config.external_stress,
+    )? - enthalpy(
+        reactant_energy,
+        setup.cell,
+        setup.cell,
+        config.external_stress,
+    )?;
     let stress = cauchy(surface, saddle.view(), saddle_cell)?;
     let volume = m3_det(saddle_cell).abs();
     let dipole = ElasticDipole::from_stress(volume, stress, config.bulk_stress)?.tensor();
@@ -1066,16 +1160,17 @@ fn harmonic_rates<S: PointSurface>(
             split_translational_modes(&sad_vals, sad_vecs.view(), sad_translations.view())?;
         (min_split.positive, sad_split.positive)
     } else {
-        (
-            positives(&min_vals),
-            positives(&sad_vals),
-        )
+        (positives(&min_vals), positives(&sad_vals))
     };
     let geometry = path.geometry(path.bounds().0)?;
     let tangent = unit(&geometry.tangent)?;
     let lambda = curvature_along(&min_h, tangent.view(), atoms, reactant.len());
     let nu = if lambda > 0.0 {
-        Some(attempt_frequency(lambda, config.mass, config.angular_scale)?)
+        Some(attempt_frequency(
+            lambda,
+            config.mass,
+            config.angular_scale,
+        )?)
     } else {
         None
     };
@@ -1083,7 +1178,13 @@ fn harmonic_rates<S: PointSurface>(
         && !sad_positive.is_empty()
         && min_positive.len() > sad_positive.len()
     {
-        vineyard_frequency(&min_positive, &sad_positive, config.mass, config.angular_scale).ok()
+        vineyard_frequency(
+            &min_positive,
+            &sad_positive,
+            config.mass,
+            config.angular_scale,
+        )
+        .ok()
     } else {
         None
     };
@@ -1150,9 +1251,8 @@ fn climb_path<S: PointSurface>(
         max_move: 0.2,
         memory: 12,
     };
-    let wrapped = crate::mic::Cell::from_ase(cell).map_err(|error| {
-        SaddleError::Invalid(format!("IDPP cell: {error}"))
-    })?;
+    let wrapped = crate::mic::Cell::from_ase(cell)
+        .map_err(|error| SaddleError::Invalid(format!("IDPP cell: {error}")))?;
     let left = crate::idpp::idpp_path(
         reactant.view(),
         saddle.view(),
@@ -1201,15 +1301,8 @@ fn climb_path<S: PointSurface>(
         fire.climbing = None;
         fire.method = Method::Fire { kind: FireKind::V2 };
         fire.time_step = config.band.time_step.min(0.1);
-        let (pos, cells, force) = run_band(
-            surface,
-            config,
-            fire,
-            band,
-            cell,
-            Some(start_cells),
-            false,
-        )?;
+        let (pos, cells, force) =
+            run_band(surface, config, fire, band, cell, Some(start_cells), false)?;
         if force < relaxed_force {
             relaxed = pos;
             relaxed_cells = cells;
@@ -1316,13 +1409,19 @@ fn run_band<S: PointSurface>(
             best_force = report.max_force;
             best = neb.cartesian()?;
             best_cells = neb.cells()?.unwrap_or_default();
-        } else if abort_on_spike && best_force < tol.max(0.05) && report.max_force > best_force * 8.0
+        } else if abort_on_spike
+            && best_force < tol.max(0.05)
+            && report.max_force > best_force * 8.0
         {
             break;
         }
     }
     let (cartesian, found_cells, force) = if report.max_force <= best_force {
-        (neb.cartesian()?, neb.cells()?.unwrap_or_default(), report.max_force)
+        (
+            neb.cartesian()?,
+            neb.cells()?.unwrap_or_default(),
+            report.max_force,
+        )
     } else {
         (best, best_cells, best_force)
     };
@@ -1594,8 +1693,7 @@ pub fn kinetic_recombination_volume(
                 let probability = *rate / total;
                 // A spontaneous shell is already captured. Naming it is the
                 // same absorber as "recombined"; it is not an escape.
-                if destination == "recombined" || spontaneous_ids.contains(destination.as_str())
-                {
+                if destination == "recombined" || spontaneous_ids.contains(destination.as_str()) {
                     rhs[i] += probability;
                 } else if let Some(&j) = index.get(destination.as_str()) {
                     matrix[i][j] -= probability;
@@ -1606,8 +1704,7 @@ pub fn kinetic_recombination_volume(
     }
     let mut kinetic = 0.0;
     for (site, probability) in transient.iter().zip(&absorption) {
-        if !(probability.is_finite() && *probability >= -1.0e-8 && *probability <= 1.0 + 1.0e-8)
-        {
+        if !(probability.is_finite() && *probability >= -1.0e-8 && *probability <= 1.0 + 1.0e-8) {
             return Err(SaddleError::Invalid(format!(
                 "capture probability for {} is not in [0, 1]",
                 site.id
@@ -1721,7 +1818,8 @@ pub fn embed_sphere_return(
         .iter()
         .map(|site| {
             let mut site = site.clone();
-            site.rates.retain(|(destination, _)| destination != "escaped");
+            site.rates
+                .retain(|(destination, _)| destination != "escaped");
             site
         })
         .collect();
@@ -1836,9 +1934,7 @@ pub fn mean_absorption_time(sites: &[VolumeSite]) -> Result<f64, SaddleError> {
         }
     }
     if weight <= 0.0 {
-        return Err(SaddleError::Invalid(
-            "the cell has no sites".into(),
-        ));
+        return Err(SaddleError::Invalid("the cell has no sites".into()));
     }
     let n = transient.len();
     let mut times = vec![0.0; sites.len()];
@@ -1934,7 +2030,8 @@ pub fn embed_free_migration(
                 )));
             }
             found = true;
-            site.rates.retain(|(destination, _)| destination != "escaped");
+            site.rates
+                .retain(|(destination, _)| destination != "escaped");
             site.rates
                 .push((FREE_CRYSTAL.to_string(), migration.outward_rate));
         }
@@ -2029,7 +2126,8 @@ fn cartesian_push(dimer: &SolidDimer, push: f64) -> Result<Array1<f64>, SaddleEr
         }
     } else {
         let length = mode.len().min(n);
-        step.slice_mut(s![..length]).assign(&mode.slice(s![..length]));
+        step.slice_mut(s![..length])
+            .assign(&mode.slice(s![..length]));
     }
     let scale = max_atomic(&step);
     if scale == 0.0 {
@@ -2168,13 +2266,7 @@ fn relax_joint<S: PointSurface>(
     config: &DefectPairConfig,
 ) -> Result<(Array1<f64>, f64), SaddleError> {
     let n_atoms = positions.len() / 3;
-    let chart = JointChart::new(
-        cell,
-        n_atoms,
-        CellMask::all(),
-        config.external_stress,
-        1.0,
-    )?;
+    let chart = JointChart::new(cell, n_atoms, CellMask::all(), config.external_stress, 1.0)?;
     let mut q = Array1::zeros(chart.dimension());
     q.slice_mut(s![..positions.len()]).assign(&positions);
     let mut solver = rgmin::Solver::new(
@@ -2262,9 +2354,7 @@ fn hessian<S: PointSurface>(
         }
     };
     if coords.is_empty() {
-        return Err(SaddleError::Invalid(
-            "the harmonic region is empty".into(),
-        ));
+        return Err(SaddleError::Invalid("the harmonic region is empty".into()));
     }
     let n = coords.len();
     let mut matrix = Array2::zeros((n, n));
@@ -2290,10 +2380,18 @@ fn hessian<S: PointSurface>(
     Ok((matrix, values.to_vec(), vectors))
 }
 
-fn curvature_along(hessian: &Array2<f64>, tangent: ArrayView1<f64>, atoms: Option<&[usize]>, n_full: usize) -> f64 {
+fn curvature_along(
+    hessian: &Array2<f64>,
+    tangent: ArrayView1<f64>,
+    atoms: Option<&[usize]>,
+    n_full: usize,
+) -> f64 {
     let coords: Vec<usize> = match atoms {
         None => (0..n_full).collect(),
-        Some(atoms) => atoms.iter().flat_map(|atom| [3 * atom, 3 * atom + 1, 3 * atom + 2]).collect(),
+        Some(atoms) => atoms
+            .iter()
+            .flat_map(|atom| [3 * atom, 3 * atom + 1, 3 * atom + 2])
+            .collect(),
     };
     let mut lambda = 0.0;
     for (i, &ci) in coords.iter().enumerate() {
@@ -2305,7 +2403,11 @@ fn curvature_along(hessian: &Array2<f64>, tangent: ArrayView1<f64>, atoms: Optio
 }
 
 fn positives(values: &[f64]) -> Vec<f64> {
-    values.iter().copied().filter(|value| *value > 1.0e-4).collect()
+    values
+        .iter()
+        .copied()
+        .filter(|value| *value > 1.0e-4)
+        .collect()
 }
 
 fn vineyard_frequency(
@@ -2453,9 +2555,7 @@ fn check_setup(setup: &PairSetup) -> Result<(), SaddleError> {
         ));
     }
     if setup.hops.is_empty() {
-        return Err(SaddleError::Invalid(
-            "the hop catalogue is empty".into(),
-        ));
+        return Err(SaddleError::Invalid("the hop catalogue is empty".into()));
     }
     for hop in &setup.hops {
         if hop.product.len() != n {
@@ -2482,7 +2582,10 @@ fn check_config(config: &DefectPairConfig) -> Result<(), SaddleError> {
         ));
     }
     if config.temperatures.is_empty()
-        || config.temperatures.iter().any(|t| !(t.is_finite() && *t > 0.0))
+        || config
+            .temperatures
+            .iter()
+            .any(|t| !(t.is_finite() && *t > 0.0))
     {
         return Err(SaddleError::Invalid(
             "at least one positive finite temperature is required".into(),
@@ -2526,12 +2629,21 @@ fn strain_between(reference: M3, cell: M3) -> Result<M3, SaddleError> {
     ])
 }
 
-fn mix(start: &Array1<f64>, end: &Array1<f64>, fraction: f64, cell: M3) -> Result<Array1<f64>, SaddleError> {
+fn mix(
+    start: &Array1<f64>,
+    end: &Array1<f64>,
+    fraction: f64,
+    cell: M3,
+) -> Result<Array1<f64>, SaddleError> {
     let delta = mic_positions(end, start, cell)?;
     Ok(start + delta * fraction)
 }
 
-fn mic_positions(end: &Array1<f64>, start: &Array1<f64>, cell: M3) -> Result<Array1<f64>, SaddleError> {
+fn mic_positions(
+    end: &Array1<f64>,
+    start: &Array1<f64>,
+    cell: M3,
+) -> Result<Array1<f64>, SaddleError> {
     if end.len() != start.len() {
         return Err(SaddleError::Shape(
             "geometries in one hop must share a length".into(),
@@ -2554,7 +2666,11 @@ fn mic_positions(end: &Array1<f64>, start: &Array1<f64>, cell: M3) -> Result<Arr
     Ok(out)
 }
 
-fn mobile_center(positions: ArrayView1<f64>, cell: M3, mobile: &[usize]) -> Result<[f64; 3], SaddleError> {
+fn mobile_center(
+    positions: ArrayView1<f64>,
+    cell: M3,
+    mobile: &[usize],
+) -> Result<[f64; 3], SaddleError> {
     let origin = mobile[0];
     let base = [
         positions[3 * origin],
@@ -2694,4 +2810,3 @@ fn push_kv(out: &mut String, key: &str, value: &str, comma: bool) {
     }
     out.push('\n');
 }
-

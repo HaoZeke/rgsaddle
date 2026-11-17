@@ -172,7 +172,11 @@ fn a_symmetric_control_has_equal_toward_and_away_rates() {
     let away = &catalogue.entries[1];
     assert_eq!(toward.direction, DirectionClass::Toward);
     assert_eq!(away.direction, DirectionClass::Away);
-    assert!(toward.connected && toward.index1, "toward {:?}", toward.outcome);
+    assert!(
+        toward.connected && toward.index1,
+        "toward {:?}",
+        toward.outcome
+    );
     assert!(away.connected && away.index1, "away {:?}", away.outcome);
     let barrier = 0.5;
     for entry in [&toward, &away] {
@@ -180,14 +184,14 @@ fn a_symmetric_control_has_equal_toward_and_away_rates() {
         let d_f = entry.d_f.expect("dF");
         assert!((d_e0 - barrier).abs() < 0.02, "dE0 {d_e0}");
         assert!(
-        (d_f - barrier).abs() < 0.05,
-        "dF {d_f} ± {} dE0 {} nu {:?} vineyard {:?} harm {:?}",
-        entry.d_f_error.unwrap(),
-        entry.d_e0,
-        entry.nu,
-        entry.vineyard,
-        entry.d_f_harmonic
-    );
+            (d_f - barrier).abs() < 0.05,
+            "dF {d_f} ± {} dE0 {} nu {:?} vineyard {:?} harm {:?}",
+            entry.d_f_error.unwrap(),
+            entry.d_e0,
+            entry.nu,
+            entry.vineyard,
+            entry.d_f_harmonic
+        );
         let kappa = entry.kappa.expect("kappa");
         assert!((kappa - 1.0).abs() < 0.05, "kappa {kappa}");
     }
@@ -290,7 +294,11 @@ fn kinetic_volume_counts_return_from_the_outer_shell() {
     let inner = 0.9 / 0.95;
     let outer = 0.45 / 0.95;
     let expected = 12.0 + 6.0 * inner + 12.0 * outer;
-    assert!((volume.total_sites - expected).abs() < 1.0e-9, "{}", volume.total_sites);
+    assert!(
+        (volume.total_sites - expected).abs() < 1.0e-9,
+        "{}",
+        volume.total_sites
+    );
     assert!((volume.spontaneous_sites - 12.0).abs() < 1.0e-12);
     assert!((volume.volume - expected).abs() < 1.0e-9);
     let nearest = volume
@@ -363,9 +371,17 @@ fn a_hop_into_a_spontaneous_shell_is_capture() {
         .iter()
         .find(|site| site.id == "outer")
         .expect("outer");
-    assert!((outer.probability - 0.5).abs() < 1.0e-12, "{}", outer.probability);
+    assert!(
+        (outer.probability - 0.5).abs() < 1.0e-12,
+        "{}",
+        outer.probability
+    );
     assert!((volume.spontaneous_sites - 6.0).abs() < 1.0e-12);
-    assert!((volume.kinetic_sites - 4.0).abs() < 1.0e-12, "{}", volume.kinetic_sites);
+    assert!(
+        (volume.kinetic_sites - 4.0).abs() < 1.0e-12,
+        "{}",
+        volume.kinetic_sites
+    );
     assert!((volume.volume - 20.0).abs() < 1.0e-12, "{}", volume.volume);
 }
 
@@ -697,7 +713,10 @@ fn eight_channels_set_the_diffusivity_and_rotation_does_not() {
     let quiet = rgsaddle::dumbbell_diffusivity(lattice, channel, 0.0).expect("D");
     let spinning = rgsaddle::dumbbell_diffusivity(lattice, channel, 5.0e12).expect("D");
     let expected = (2.0 / 3.0) * channel * lattice * lattice;
-    assert!((quiet - expected).abs() / expected < 1.0e-12, "{quiet} {expected}");
+    assert!(
+        (quiet - expected).abs() / expected < 1.0e-12,
+        "{quiet} {expected}"
+    );
     assert!((spinning - quiet).abs() / quiet < 1.0e-12, "{spinning}");
     // Twelve neighbor channels at the same jump length would be 3/2 of this.
     let twelve = 1.5 * expected;
@@ -735,7 +754,8 @@ fn the_smoluchowski_radius_does_not_grow_when_the_return_layer_does() {
             .iter()
             .find(|site| site.id == rgsaddle::FREE_CRYSTAL)
             .expect("layer");
-        let r_eff = rgsaddle::effective_capture_radius(layer.probability, distance).expect("radius");
+        let r_eff =
+            rgsaddle::effective_capture_radius(layer.probability, distance).expect("radius");
         volumes.push(volume.total_sites);
         radii.push(r_eff);
     }
@@ -748,7 +768,10 @@ fn the_smoluchowski_radius_does_not_grow_when_the_return_layer_does() {
     let atomic = 4.0_f64.powi(3) / 4.0;
     let per_atom = volume / atomic;
     let closed = 16.0 * std::f64::consts::PI * radius / ((2.0 / 3.0) * 4.0);
-    assert!((per_atom - closed).abs() / closed < 1.0e-4, "{per_atom} {closed}");
+    assert!(
+        (per_atom - closed).abs() / closed < 1.0e-4,
+        "{per_atom} {closed}"
+    );
 }
 
 #[test]
@@ -786,7 +809,11 @@ fn a_vanishing_interaction_is_the_free_diffusion_radius() {
     assert!((radius - inner).abs() < 1.0e-9, "{radius}");
     for distance in [4.0, 6.0, 10.0, 25.0] {
         let hit = rgsaddle::debye_hit_probability(inner, distance, thermal, zero).expect("hit");
-        let free = if distance <= inner { 1.0 } else { inner / distance };
+        let free = if distance <= inner {
+            1.0
+        } else {
+            inner / distance
+        };
         assert!((hit - free).abs() < 1.0e-8, "{distance} {hit} {free}");
     }
     let matched = rgsaddle::debye_matched_radius(3.5, 9.0, thermal, zero).expect("matched");
@@ -802,9 +829,13 @@ fn a_coulomb_interaction_matches_the_debye_closed_form() {
     let radius = rgsaddle::debye_radius(inner, thermal, attractive).expect("radius");
     let onsager = alpha / thermal;
     let closed = onsager / (1.0 - (-onsager / inner).exp());
-    assert!((radius - closed).abs() / closed < 1.0e-6, "{radius} {closed}");
+    assert!(
+        (radius - closed).abs() / closed < 1.0e-6,
+        "{radius} {closed}"
+    );
     assert!(radius > inner);
-    let repulsive = rgsaddle::debye_radius(inner, thermal, |radius| alpha / radius).expect("repulsive");
+    let repulsive =
+        rgsaddle::debye_radius(inner, thermal, |radius| alpha / radius).expect("repulsive");
     let closed_repulsive = onsager / ((onsager / inner).exp() - 1.0);
     assert!(
         (repulsive - closed_repulsive).abs() / closed_repulsive < 1.0e-6,
