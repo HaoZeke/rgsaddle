@@ -57,12 +57,14 @@ k_{\rm total}=m_{\rm path}m_{\rm plane}k_{\rm unique}.
 \]
 
 Each symmetry orbit belongs in exactly one factor.  The twelve fcc
-nearest-neighbour vacancy-hop directions are =m_path=12 when the HTST
-prefactor or path census already represents them; they must not also appear
-in =m_plane=.  A convention representing those same twelve images as regions
-uses =m_path=1= and =m_plane=12=.  Both give the same total.  Setting both to
-twelve counts 144 combinations and is correct only if twelve independent
-in-plane images exist for every one of twelve paths.
+nearest-neighbour vacancy-hop directions are =m_path=12.  They are not the
+degeneracy of one hop's dividing plane.  That factor is the order of the
+subgroup that fixes both the reactant and the chosen saddle, the in-plane
+symmetry of that plane.  Jóhannesson and Jónsson, Secs. II D and III D,
+sample one such part of the hyperplane; the construction is in
+@@rst::doc:`crystal operations and symmetry-unique regions <explanation/symmetry-regions>`@@.
+Putting the twelve directions into =m_plane= as well as =m_path= counts each
+hop twice.
 
 =AffineSymmetry= and =SymmetrySource= accept generic configuration-space
 point- or space-group maps.  =PeriodicSymmetryOperations= evaluates their

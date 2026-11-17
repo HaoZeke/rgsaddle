@@ -2,10 +2,11 @@
 //!
 //! A [`Region`] is an unbiased geometric restriction: molecular dynamics
 //! reflects at its faces and Monte Carlo rejects a proposal outside it.
-//! The primary implementation, [`SymmetryUniqueRegion`], is the Voronoi
-//! cell of one representative among symmetry-equivalent images on a
-//! hyperplane. Its degeneracy is the number of distinct images represented
-//! by that cell.
+//! [`SymmetryUniqueRegion::from_source`] is the Voronoi cell of one
+//! representative among symmetry images that preserve a hyperplane.
+//! [`SymmetryUniqueRegion::from_crystal_operations`] builds the asymmetric
+//! unit of one hop's dividing plane. Its degeneracy is the order of the
+//! joint stabilizer of that hop, not the number of equivalent hops.
 
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -485,6 +486,10 @@ impl CrystalSymmetryConfig {
 
 /// Voronoi cell of one representative among the symmetry images on a
 /// hyperplane.
+///
+/// [`Region::degeneracy`] is the number of in-plane copies the cell stands
+/// for. [`Self::from_source`] counts images of the supplied representative.
+/// [`Self::from_crystal_operations`] counts the joint stabilizer of one hop.
 #[derive(Clone, Debug)]
 pub struct SymmetryUniqueRegion {
     representative: Array1<f64>,
@@ -492,69 +497,127 @@ pub struct SymmetryUniqueRegion {
     degeneracy: usize,
 }
 
+/// Path multiplicity and in-plane asymmetric unit of one crystal hop.
+///
+/// Non-exhaustive result of [`SymmetryUniqueRegion::from_crystal_operations`].
+/// The fields are already split: pass [`Self::path_multiplicity`] to
+/// `RateMultiplicity::with_paths`, and use [`Self::region_degeneracy`] or
+/// [`Region::degeneracy`] as the in-plane factor.
+#[non_exhaustive]
+#[derive(Clone, Debug)]
+pub struct CrystalSymmetryRegion {
+    /// Asymmetric unit of the selected hop's dividing plane.
+    pub region: SymmetryUniqueRegion,
+    /// Distinct saddle images under the reactant stabilizer.
+    pub path_multiplicity: usize,
+    /// Order of the joint stabilizer of the reactant and that saddle.
+    pub region_degeneracy: usize,
+}
+
 impl SymmetryUniqueRegion {
-    /// Lift crystal point-group operations into a configuration-space cell.
+    /// Lift crystal operations into one hop's in-plane asymmetric unit.
     ///
-    /// Only operations that stabilize `reactant` contribute. Their atom
-    /// permutations are either supplied explicitly or obtained by
-    /// species-aware nearest-image matching. The returned degeneracy is the
-    /// number of distinct saddle images under that stabilizer.
+    /// Operations that stabilize `reactant` form the reactant stabilizer.
+    /// [`CrystalSymmetryRegion::path_multiplicity`] is the number of distinct
+    /// images of `saddle` under that stabilizer. Pass it to
+    /// `RateMultiplicity::with_paths`.
+    /// [`CrystalSymmetryRegion::region_degeneracy`] is the number of supplied
+    /// operations that stabilize both endpoints. Those operations map the
+    /// dividing plane of this hop onto itself. The region is the asymmetric
+    /// unit of that plane, and [`Region::degeneracy`] returns the same order.
+    ///
+    /// Jóhannesson and Jónsson, J. Chem. Phys. 115, 9644 (2001),
+    /// doi:10.1063/1.1415499, Secs. II D and III D, keep the thermal sample in
+    /// one symmetric part of the hyperplane by reflecting at the in-plane
+    /// mirror between equivalent directions.
+    ///
+    /// Permutations are either supplied or obtained by species-aware
+    /// nearest-image matching. The supplied group must include the identity
+    /// when that element is part of the stabilizer being counted.
+    ///
+    /// ```
+    /// use ndarray::{Array2, array};
+    /// use rgsaddle::{
+    ///     CrystalSymmetryConfig, CrystalSymmetryOperation, Region, SymmetryUniqueRegion,
+    /// };
+    ///
+    /// let reactant = array![[0.0, 0.0, 0.0]];
+    /// let saddle = array![[1.0, 0.0, 0.0]];
+    /// let identity = CrystalSymmetryOperation::default().with_rotation(Array2::eye(3));
+    /// let mirror = CrystalSymmetryOperation::default().with_rotation(array![
+    ///     [1.0, 0.0, 0.0],
+    ///     [0.0, -1.0, 0.0],
+    ///     [0.0, 0.0, 1.0],
+    /// ]);
+    /// let built = SymmetryUniqueRegion::from_crystal_operations(
+    ///     reactant.view(),
+    ///     saddle.view(),
+    ///     &[0],
+    ///     &[identity, mirror],
+    ///     &CrystalSymmetryConfig::default(),
+    /// )
+    /// .unwrap();
+    /// assert_eq!(built.path_multiplicity, 1);
+    /// assert_eq!(built.region_degeneracy, 2);
+    /// assert_eq!(built.region.degeneracy(), built.region_degeneracy);
+    /// let paths = built.path_multiplicity;
+    /// let in_plane = built.region_degeneracy;
+    /// assert_eq!(paths * in_plane, 2);
+    /// ```
     pub fn from_crystal_operations(
         reactant: ArrayView2<'_, f64>,
         saddle: ArrayView2<'_, f64>,
         species: &[usize],
         operations: &[CrystalSymmetryOperation],
         config: &CrystalSymmetryConfig,
-    ) -> Result<(Self, usize), SaddleError> {
+    ) -> Result<CrystalSymmetryRegion, SaddleError> {
         validate_crystal_input(reactant, saddle, species, operations, config)?;
-        let mut images = vec![flatten_geometry(saddle)];
-        let mut stabilizer_size = 0_usize;
+        let saddle_flat = flatten_geometry(saddle);
+        let mut saddle_images = vec![saddle_flat.clone()];
+        let mut joint = Vec::new();
+        let mut reactant_stabilizer = 0_usize;
 
-        for operation in operations {
+        for (index, operation) in operations.iter().enumerate() {
             validate_crystal_operation(operation, reactant.nrows(), species, config)?;
-            let transformed_reactant = transform_unpermuted(reactant, operation)?;
-            let permutation = match &operation.permutation {
-                Some(permutation) => {
-                    if !maps_reactant(transformed_reactant.view(), reactant, permutation, config)? {
-                        continue;
-                    }
-                    permutation.clone()
-                }
-                None => match derive_permutation(
-                    transformed_reactant.view(),
-                    reactant,
-                    species,
-                    config,
-                )? {
-                    Some(permutation) => permutation,
-                    None => continue,
-                },
+            let Some(permutation) = reactant_permutation(reactant, operation, species, config)?
+            else {
+                continue;
             };
-            stabilizer_size += 1;
-            let raw_image = permute_geometry(
-                transform_unpermuted(saddle, operation)?.view(),
-                &permutation,
-            )?;
-            let image = unwrap_against(saddle, raw_image.view(), config)?;
+            reactant_stabilizer += 1;
+            let image = mapped_flat(saddle, operation, &permutation, config)?;
+            if same_geometry(&saddle_flat, &image, config)? {
+                joint.push((index, permutation));
+                continue;
+            }
             let mut distinct = true;
-            for known in &images {
+            for known in &saddle_images {
                 if same_geometry(known, &image, config)? {
                     distinct = false;
                     break;
                 }
             }
             if distinct {
-                images.push(image);
+                saddle_images.push(image);
             }
         }
-        if stabilizer_size == 0 {
+        if reactant_stabilizer == 0 {
             return Err(SaddleError::Invalid(
                 "no supplied operation stabilizes the reactant".into(),
             ));
         }
-        let region = Self::from_images(images)?;
-        let degeneracy = region.degeneracy;
-        Ok((region, degeneracy))
+        if joint.is_empty() {
+            return Err(SaddleError::Invalid(
+                "no supplied operation stabilizes both the reactant and the saddle".into(),
+            ));
+        }
+        let normal = hop_displacement(reactant, saddle, config)?;
+        let images = separating_images(&saddle_flat, &normal, operations, &joint, config)?;
+        let region = asymmetric_unit(&saddle_flat, &images, joint.len())?;
+        Ok(CrystalSymmetryRegion {
+            region,
+            path_multiplicity: saddle_images.len(),
+            region_degeneracy: joint.len(),
+        })
     }
 
     /// Build the cell from operations that map `plane` onto itself.
@@ -643,36 +706,187 @@ impl SymmetryUniqueRegion {
         })
     }
 
-    fn from_images(images: Vec<Array1<f64>>) -> Result<Self, SaddleError> {
-        let representative = match images.first() {
-            Some(representative) => representative.clone(),
-            None => {
-                return Err(SaddleError::Invalid(
-                    "a symmetry orbit needs a representative".into(),
-                ));
-            }
-        };
-        let mut boundaries = Vec::with_capacity(images.len().saturating_sub(1));
-        for image in images.iter().skip(1) {
-            let direction = image - &representative;
-            let midpoint = 0.5 * (image + &representative);
-            boundaries.push(PlanarBoundary::containing(
-                midpoint,
-                direction,
-                representative.view(),
-            )?);
-        }
-        Ok(Self {
-            representative,
-            boundaries,
-            degeneracy: images.len(),
-        })
-    }
-
     /// Representative configuration of this cell.
     pub fn representative(&self) -> ArrayView1<'_, f64> {
         self.representative.view()
     }
+}
+
+fn reactant_permutation(
+    reactant: ArrayView2<'_, f64>,
+    operation: &CrystalSymmetryOperation,
+    species: &[usize],
+    config: &CrystalSymmetryConfig,
+) -> Result<Option<Vec<usize>>, SaddleError> {
+    let transformed = transform_unpermuted(reactant, operation)?;
+    match &operation.permutation {
+        Some(permutation) => {
+            if maps_reactant(transformed.view(), reactant, permutation, config)? {
+                Ok(Some(permutation.clone()))
+            } else {
+                Ok(None)
+            }
+        }
+        None => derive_permutation(transformed.view(), reactant, species, config),
+    }
+}
+
+fn mapped_flat(
+    reference: ArrayView2<'_, f64>,
+    operation: &CrystalSymmetryOperation,
+    permutation: &[usize],
+    config: &CrystalSymmetryConfig,
+) -> Result<Array1<f64>, SaddleError> {
+    let transformed = transform_unpermuted(reference, operation)?;
+    let permuted = permute_geometry(transformed.view(), permutation)?;
+    unwrap_against(reference, permuted.view(), config)
+}
+
+fn hop_displacement(
+    reactant: ArrayView2<'_, f64>,
+    saddle: ArrayView2<'_, f64>,
+    config: &CrystalSymmetryConfig,
+) -> Result<Array1<f64>, SaddleError> {
+    let mut normal = Array1::zeros(reactant.len());
+    for atom in 0..reactant.nrows() {
+        let displacement = displacement3(reactant.row(atom), saddle.row(atom), config)?;
+        for axis in 0..3 {
+            normal[3 * atom + axis] = displacement[axis];
+        }
+    }
+    Ok(normal)
+}
+
+fn reject_normal(seed: &Array1<f64>, normal: &Array1<f64>) -> Array1<f64> {
+    let norm_sq = normal.dot(normal);
+    if !(norm_sq.is_finite() && norm_sq > 0.0) {
+        return seed.clone();
+    }
+    let coefficient = seed.dot(normal) / norm_sq;
+    seed - &(normal * coefficient)
+}
+
+fn in_plane_probe(
+    saddle: &Array1<f64>,
+    normal: &Array1<f64>,
+    seed: &Array1<f64>,
+    config: &CrystalSymmetryConfig,
+) -> Option<Array1<f64>> {
+    let offset = reject_normal(seed, normal);
+    let raw = offset.dot(&offset).sqrt();
+    if !(raw.is_finite() && raw > config.orbit_tolerance) {
+        return None;
+    }
+    let hop = normal.dot(normal).sqrt();
+    let target = if hop.is_finite() && hop > config.orbit_tolerance {
+        hop
+    } else {
+        config.orbit_tolerance * (seed.len() as f64 + 1.0)
+    };
+    Some(saddle + &(offset * (target / raw)))
+}
+
+fn unflatten_geometry(flat: ArrayView1<'_, f64>) -> Result<Array2<f64>, SaddleError> {
+    if flat.is_empty() || !flat.len().is_multiple_of(3) {
+        return Err(SaddleError::Shape(
+            "a crystal configuration needs a positive multiple of three coordinates".into(),
+        ));
+    }
+    let mut geometry = Array2::zeros((flat.len() / 3, 3));
+    for atom in 0..geometry.nrows() {
+        for axis in 0..3 {
+            geometry[[atom, axis]] = flat[3 * atom + axis];
+        }
+    }
+    Ok(geometry)
+}
+
+fn probe_orbit(
+    probe: ArrayView1<'_, f64>,
+    operations: &[CrystalSymmetryOperation],
+    joint: &[(usize, Vec<usize>)],
+    config: &CrystalSymmetryConfig,
+) -> Result<Vec<Array1<f64>>, SaddleError> {
+    let geometry = unflatten_geometry(probe)?;
+    let mut images = vec![probe.to_owned()];
+    for (index, permutation) in joint {
+        let image = mapped_flat(geometry.view(), &operations[*index], permutation, config)?;
+        let mut distinct = true;
+        for known in &images {
+            if same_geometry(known, &image, config)? {
+                distinct = false;
+                break;
+            }
+        }
+        if distinct {
+            images.push(image);
+        }
+    }
+    Ok(images)
+}
+
+fn separating_images(
+    saddle: &Array1<f64>,
+    normal: &Array1<f64>,
+    operations: &[CrystalSymmetryOperation],
+    joint: &[(usize, Vec<usize>)],
+    config: &CrystalSymmetryConfig,
+) -> Result<Vec<Array1<f64>>, SaddleError> {
+    if joint.len() == 1 {
+        return Ok(vec![saddle.clone()]);
+    }
+    let mut seed = Array1::zeros(saddle.len());
+    for axis in 0..saddle.len() {
+        seed[axis] = (axis + 1) as f64;
+        let Some(probe) = in_plane_probe(saddle, normal, &seed, config) else {
+            continue;
+        };
+        let images = probe_orbit(probe.view(), operations, joint, config)?;
+        if images.len() == joint.len() {
+            return Ok(images);
+        }
+    }
+    Err(SaddleError::Invalid(
+        "no point in the dividing plane separates the joint stabilizer".into(),
+    ))
+}
+
+/// Dirichlet cell of `images` on the dividing plane through `saddle`.
+///
+/// The representative is the probe. Each face passes through the saddle, so
+/// the fixed point of the joint stabilizer lies on the boundary of the cell.
+fn asymmetric_unit(
+    saddle: &Array1<f64>,
+    images: &[Array1<f64>],
+    degeneracy: usize,
+) -> Result<SymmetryUniqueRegion, SaddleError> {
+    if degeneracy == 0 || images.len() != degeneracy {
+        return Err(SaddleError::Invalid(
+            "the in-plane asymmetric unit must match the joint stabilizer".into(),
+        ));
+    }
+    let representative = match images.first() {
+        Some(representative) => representative.clone(),
+        None => {
+            return Err(SaddleError::Invalid(
+                "an in-plane asymmetric unit needs a representative".into(),
+            ));
+        }
+    };
+    let mut boundaries = Vec::new();
+    for image in images.iter().skip(1) {
+        let direction = image - &representative;
+        boundaries.push(PlanarBoundary::containing(
+            saddle.clone(),
+            direction,
+            representative.view(),
+        )?);
+    }
+    Ok(SymmetryUniqueRegion {
+        representative,
+        boundaries,
+        degeneracy,
+    })
 }
 
 fn validate_crystal_input(

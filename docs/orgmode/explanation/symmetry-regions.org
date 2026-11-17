@@ -24,26 +24,51 @@ operations follow the conventions in International Tables for
 Crystallography, Volume A, edited by Theo Hahn, 5th edition (2005),
 doi:10.1107/97809553602060000100.
 
-* Stabilizer and degeneracy
+* Path multiplicity and region degeneracy
 
 Operations which map the reactant onto itself form the reactant stabilizer
-\(H\).  The constructor applies every member of \(H\) to the selected
-saddle and removes duplicate images.  Therefore
+\(H\).  Applied to the selected saddle, they produce an orbit.  The path
+multiplicity is the number of distinct images
 
 \[
-d = |H . s| = {|H| \over |H_s|},
+m_{\rm path} = |H \cdot s| = {|H| \over |H_s|},
 \]
 
-where \(H_s\) is the subgroup that also fixes the saddle.  This is the
-orbit-stabilizer theorem; see Jean-Pierre Serre, /Linear Representations of
-Finite Groups/, Springer (1977), doi:10.1007/978-1-4684-9458-7.
+where \(H_s\) is the joint stabilizer, the subgroup of \(H\) that also maps
+that saddle to itself.  This is the orbit-stabilizer theorem; see
+Jean-Pierre Serre, /Linear Representations of Finite Groups/, Springer
+(1977), doi:10.1007/978-1-4684-9458-7.  \(m_{\rm path}\) is the number of
+equivalent hops.  Callers pass it to =RateMultiplicity::with_paths=.  It is
+not the degeneracy of the sampled cell.
 
-The returned =SymmetryUniqueRegion= is the Voronoi cell of the selected
-saddle against the other images.  Every face is the perpendicular bisector
-between the representative and one image.  An identity-only group has one
-image, no faces, and degeneracy one.  The full octahedral stabilizer of an
-fcc vacancy sends one nearest-neighbour hop to twelve distinct hop
-directions, so that fixture has degeneracy twelve.
+\(H_s\) is the symmetry of one hop.  Each of its operations fixes the
+reactant and the saddle, and therefore maps the dividing plane of that hop
+onto itself.  The region degeneracy is the order \(|H_s|\).  The returned
+=SymmetryUniqueRegion= is the asymmetric unit of that plane, the Dirichlet
+cell of one generic in-plane point under \(H_s\), and =Region::degeneracy=
+reports the same order.  Faces lie in the plane.  Sampling the cell and
+multiplying by \(|H_s|\) restores the full plane of that one hop.
+Multiplying again by \(m_{\rm path}\) counts the other hops.
+
+Jóhannesson and Jónsson, /Optimization of hyperplanar transition states/,
+/The Journal of Chemical Physics/ 115, 9644-9656 (2001),
+doi:10.1063/1.1415499, build this kind of restricted sample in Sec. II D
+("Incorporation of symmetry").  For an \(n\)-fold axis, half-lines start at
+the reactant minimum and run toward each symmetry-equivalent product.  The
+sample is kept in the sector of one product: a step that comes closer to
+another half-line is rejected and the velocity is reflected in the mirror
+that exchanges the two product directions.  Their Eqs. 13-17 remove the
+part of that mirror normal parallel to the hyperplane normal, so the
+reflection stays in the plane.  Sec. III D ("Al adatom diffusion on
+Al(100)") uses the fourfold form of this construction for every thermal
+sample.  Without the constraint, the optimized hyperplane was an average of
+two symmetrically equivalent concerted-displacement channels.
+
+An identity-only group has path multiplicity one, region degeneracy one,
+and no faces.  The full octahedral stabilizer of an fcc vacancy sends one
+nearest-neighbour hop to twelve images.  Those twelve are the path
+multiplicity.  The region degeneracy is \(|H_s|\) for that hop, the
+operations that fix both the vacancy reactant and the chosen saddle.
 
 * Validation and tolerances
 

@@ -5,8 +5,8 @@
 The band and the minimum-mode search assemble a force and ask =rgmin::Solver= for one step. Hosts interleave trust regions, drift budgets, acquisition, or a hybrid minimum-mode following (MMF) between steps. =run= is a loop over =step=. The shared reflection, the point presets, and the chain are in @@rst::doc:`one stencil <explanation/one-stencil>`@@.
 
 * Crystal symmetry regions
-The operation lifting, reactant stabilizer, orbit degeneracy, and
-nearest-image convention are described in
+The operation lifting, the split between path multiplicity and in-plane
+region degeneracy, and the nearest-image convention are described in
 @@rst::doc:`crystal operations and symmetry-unique regions <explanation/symmetry-regions>`@@.
 
 * Index-1 Newton
