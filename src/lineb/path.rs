@@ -140,17 +140,23 @@ fn sample<S: PointSurface>(
 }
 
 /// Period integrand in the end-point coordinate `u`, where
-/// `λ = λ_turn ± u²` so `dλ = 2 u du`.
-fn end_rate(sample: &Sample, u: f64) -> Result<f64, SaddleError> {
+/// `λ = λ_turn ± u²` so `dλ = 2 u du`. On the end chord at the start the
+/// barrier lies toward larger `λ`; on the one at the end, toward smaller.
+fn end_rate(sample: &Sample, u: f64, from_start: bool) -> Result<f64, SaddleError> {
+    let rise = if from_start {
+        sample.slope
+    } else {
+        -sample.slope
+    };
     let rate = if sample.sigma > 0.0 && u > 0.0 {
         2.0 * u * sample.speed / sample.sigma
     } else if (u <= 0.0 || u.is_nan()) && (sample.sigma <= 0.0 || sample.sigma.is_nan()) {
-        if sample.slope <= 0.0 || sample.slope.is_nan() {
+        if rise <= 0.0 || rise.is_nan() {
             return Err(SaddleError::Invalid(
                 "the potential does not rise as the path enters the barrier".into(),
             ));
         }
-        2.0 * sample.speed / (2.0 * sample.slope).sqrt()
+        2.0 * sample.speed / (2.0 * rise).sqrt()
     } else if u <= 0.0 || u.is_nan() {
         // `V > E` at the knot, so the `u = 0` sample of `2 u / σ` is zero.
         0.0
@@ -418,7 +424,7 @@ fn simpson_s<S: PointSurface>(
     let mut acc = 0.0;
     for (s, weight) in [(s0, 1.0), (mid, 4.0), (s1, 1.0)] {
         let taken = level.sample(chord.lambda(s))?;
-        acc += weight * end_rate(&taken, chord.u(s))?;
+        acc += weight * end_rate(&taken, chord.u(s), chord.from_start)?;
     }
     Ok(acc * (s1 - s0) / 6.0)
 }

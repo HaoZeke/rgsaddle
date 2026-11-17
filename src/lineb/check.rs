@@ -167,13 +167,17 @@ fn chord<S: PointSurface>(
             }
             None => (left + width * index as f64, None),
         };
-        let sample = probe(
+        let mut sample = probe(
             level.surface,
             level.masses,
             level.curve,
             level.energy,
             lambda,
         )?;
+        if end == Some(false) {
+            // The barrier lies toward smaller `λ` on the end chord.
+            sample.slope = -sample.slope;
+        }
         let (action, period) = integrands(&sample, u)?;
         action_samples.push(action);
         period_samples.push(period);
