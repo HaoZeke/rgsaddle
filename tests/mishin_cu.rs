@@ -2588,56 +2588,118 @@ fn eam_eval_fast(
         bins[frac_bin(frac[i], nside)].push(i);
     }
     let cutoff2 = RC * RC;
+    let shifts: Vec<[i32; 3]> = (-nimg..=nimg)
+        .flat_map(|sx| {
+            (-nimg..=nimg).flat_map(move |sy| (-nimg..=nimg).map(move |sz| [sx, sy, sz]))
+        })
+        .collect();
+    let slots_at = |origin: [i32; 3]| {
+        let mut slots = Vec::with_capacity(27);
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    let ix = (origin[0] + dx).rem_euclid(nside[0]);
+                    let iy = (origin[1] + dy).rem_euclid(nside[1]);
+                    let iz = (origin[2] + dz).rem_euclid(nside[2]);
+                    let slot = ((ix * nside[1] + iy) * nside[2] + iz) as usize;
+                    if !slots.contains(&slot) {
+                        slots.push(slot);
+                    }
+                }
+            }
+        }
+        slots
+    };
+    let separation = |i: usize, j: usize, shift: [i32; 3]| -> [f64; 3] {
+        std::array::from_fn(|c| {
+            positions[3 * j + c] + shift[c] as f64 * cell[c][c] - positions[3 * i + c]
+        })
+    };
     let mut pairs = Vec::new();
+    let mut found: Vec<(usize, usize, usize, Pair)> = Vec::new();
     for i in 0..n {
-        for sx in -nimg..=nimg {
-            for sy in -nimg..=nimg {
-                for sz in -nimg..=nimg {
-                    let target = [
-                        (frac[i][0] - sx as f64).rem_euclid(1.0),
-                        (frac[i][1] - sy as f64).rem_euclid(1.0),
-                        (frac[i][2] - sz as f64).rem_euclid(1.0),
-                    ];
-                    let origin = frac_bin_ijk(target, nside);
-                    let mut slots = Vec::with_capacity(8);
-                    for dx in -1..=1 {
-                        for dy in -1..=1 {
-                            for dz in -1..=1 {
-                                let ix = (origin[0] + dx).rem_euclid(nside[0]);
-                                let iy = (origin[1] + dy).rem_euclid(nside[1]);
-                                let iz = (origin[2] + dz).rem_euclid(nside[2]);
-                                let slot = ((ix * nside[1] + iy) * nside[2] + iz) as usize;
-                                if !slots.contains(&slot) {
-                                    slots.push(slot);
+        let origins: Vec<[i32; 3]> = shifts
+            .iter()
+            .map(|s| {
+                frac_bin_ijk(
+                    std::array::from_fn(|c| (frac[i][c] - s[c] as f64).rem_euclid(1.0)),
+                    nside,
+                )
+            })
+            .collect();
+        // Every shift scans the same bins, so each candidate is tested once
+        // against the shifts whose components each stay inside the cutoff,
+        // and the hits are put back in the shift-major order of the full
+        // scan, which fixes the order of the sums in accumulate_eam.
+        if nimg == 1 && origins.iter().all(|origin| *origin == origins[0]) {
+            found.clear();
+            for (slot_index, slot) in slots_at(origins[0]).into_iter().enumerate() {
+                for (bin_index, &j) in bins[slot].iter().enumerate() {
+                    if j < i {
+                        continue;
+                    }
+                    let mut near = [[0_i32; 3]; 3];
+                    let mut count = [0_usize; 3];
+                    for c in 0..3 {
+                        for s in -nimg..=nimg {
+                            let d =
+                                positions[3 * j + c] + s as f64 * cell[c][c] - positions[3 * i + c];
+                            if d * d < cutoff2 && count[c] < 3 {
+                                near[c][count[c]] = s;
+                                count[c] += 1;
+                            }
+                        }
+                    }
+                    for &sx in &near[0][..count[0]] {
+                        for &sy in &near[1][..count[1]] {
+                            for &sz in &near[2][..count[2]] {
+                                if j == i && !positive_image(sx, sy, sz) {
+                                    continue;
+                                }
+                                let d = separation(i, j, [sx, sy, sz]);
+                                let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+                                if r2 > 1e-16 && r2 < cutoff2 {
+                                    let side = (2 * nimg + 1) as usize;
+                                    let shift_index = (((sx + nimg) as usize * side)
+                                        + (sy + nimg) as usize)
+                                        * side
+                                        + (sz + nimg) as usize;
+                                    found.push((
+                                        shift_index,
+                                        slot_index,
+                                        bin_index,
+                                        Pair {
+                                            i,
+                                            j,
+                                            d,
+                                            r: r2.sqrt(),
+                                        },
+                                    ));
                                 }
                             }
                         }
                     }
-                    for slot in slots {
-                        for &j in &bins[slot] {
-                            if j < i || (j == i && !positive_image(sx, sy, sz)) {
-                                continue;
-                            }
-                            let shift = [
-                                sx as f64 * cell[0][0],
-                                sy as f64 * cell[1][1],
-                                sz as f64 * cell[2][2],
-                            ];
-                            let d = [
-                                positions[3 * j] + shift[0] - positions[3 * i],
-                                positions[3 * j + 1] + shift[1] - positions[3 * i + 1],
-                                positions[3 * j + 2] + shift[2] - positions[3 * i + 2],
-                            ];
-                            let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
-                            if r2 > 1e-16 && r2 < cutoff2 {
-                                pairs.push(Pair {
-                                    i,
-                                    j,
-                                    d,
-                                    r: r2.sqrt(),
-                                });
-                            }
-                        }
+                }
+            }
+            found.sort_by_key(|hit| (hit.0, hit.1, hit.2));
+            pairs.extend(found.drain(..).map(|hit| hit.3));
+            continue;
+        }
+        for (shift, origin) in shifts.iter().zip(&origins) {
+            for slot in slots_at(*origin) {
+                for &j in &bins[slot] {
+                    if j < i || (j == i && !positive_image(shift[0], shift[1], shift[2])) {
+                        continue;
+                    }
+                    let d = separation(i, j, *shift);
+                    let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+                    if r2 > 1e-16 && r2 < cutoff2 {
+                        pairs.push(Pair {
+                            i,
+                            j,
+                            d,
+                            r: r2.sqrt(),
+                        });
                     }
                 }
             }
@@ -2671,9 +2733,9 @@ fn accumulate_eam(
     pairs: &[Pair],
     volume: f64,
 ) -> (f64, Array1<f64>, [[f64; 3]; 3]) {
+    let densities: Vec<(f64, f64)> = pairs.iter().map(|bond| density(bond.r)).collect();
     let mut rho = vec![0.0; n];
-    for bond in pairs {
-        let weight = density(bond.r).0;
+    for (bond, &(weight, _)) in pairs.iter().zip(&densities) {
         rho[bond.i] += weight;
         if bond.i != bond.j {
             rho[bond.j] += weight;
@@ -2690,9 +2752,8 @@ fn accumulate_eam(
     }
     let mut gradient = Array1::zeros(n_coord);
     let mut virial = [[0.0; 3]; 3];
-    for bond in pairs {
+    for (bond, &(_, drho)) in pairs.iter().zip(&densities) {
         let (v, dv) = pair(bond.r);
-        let (_, drho) = density(bond.r);
         let inv_r = 1.0 / bond.r;
         if bond.i != bond.j {
             energy += v;
