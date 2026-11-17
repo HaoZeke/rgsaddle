@@ -17,17 +17,10 @@ pub fn wrap_difference(cell: &Cell, diff: &mut Array1<f64>) {
             origin[1] + diff[3 * a + 1],
             origin[2] + diff[3 * a + 2],
         ];
-        let fp = cell.fractional(origin);
-        let fq = cell.fractional(q);
-        let ds = [
-            (fq[0] - fp[0]) - (fq[0] - fp[0]).round(),
-            (fq[1] - fp[1]) - (fq[1] - fp[1]).round(),
-            (fq[2] - fp[2]) - (fq[2] - fp[2]).round(),
-        ];
-        let cart = cell.cartesian([fp[0] + ds[0], fp[1] + ds[1], fp[2] + ds[2]]);
-        diff[3 * a] = cart[0] - origin[0];
-        diff[3 * a + 1] = cart[1] - origin[1];
-        diff[3 * a + 2] = cart[2] - origin[2];
+        let wrapped = cell.displacement_euclidean(origin, q);
+        diff[3 * a] = wrapped[0];
+        diff[3 * a + 1] = wrapped[1];
+        diff[3 * a + 2] = wrapped[2];
     }
 }
 
