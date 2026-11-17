@@ -9760,13 +9760,14 @@ fn assemble_run12() {
             f64::NAN
         };
         let tau_cell = cell_averaged_time(repeats, a, k_mig, max_r, tau_near);
-        let nu_tst = (2.0 / 3.0) * k_mig;
-        let nu_table = (2.0 / 3.0) * diffusivity(temperature) / (a * a);
+        let nu_tst = k_mig;
+        let nu_table =
+            rgsaddle::dumbbell_channel_rate(a, diffusivity(temperature)).unwrap_or(f64::NAN);
         if tau_cell.is_finite() && tau_cell > 0.0 {
             let volume_tst = n_atoms / (tau_cell * nu_tst);
             let volume_table = n_atoms / (tau_cell * nu_table);
-            writeln!(out, "{temperature},mean-time-tst,{volume_tst:.4},,{spont_sites:.4},,{demkowicz},tau {tau_cell:.6e} s; nu=(2/3)*k_translation from this run").unwrap();
-            writeln!(out, "{temperature},mean-time-table,{volume_table:.4},,{spont_sites:.4},,{demkowicz},same tau; nu=(2/3)*D/a^2 with D from their Table 1").unwrap();
+            writeln!(out, "{temperature},mean-time-tst,{volume_tst:.4},,{spont_sites:.4},,{demkowicz},tau {tau_cell:.6e} s; nu=k_translation from this run").unwrap();
+            writeln!(out, "{temperature},mean-time-table,{volume_table:.4},,{spont_sites:.4},,{demkowicz},same tau; nu=D/((2/3)*a^2) with D from their Table 1").unwrap();
             eprintln!(
                 "13^3 mean-time {temperature} K tst {volume_tst:.2} table-D {volume_table:.2} tau {tau_cell:.3e}"
             );
@@ -10865,7 +10866,7 @@ fn assemble_run13() {
                 700 => 0.910e12,
                 _ => f64::NAN,
             };
-            let nu = (2.0 / 3.0) * d_graph / (a * a);
+            let nu = rgsaddle::dumbbell_channel_rate(a, d_graph).unwrap_or(f64::NAN);
             let n_atoms = 4.0 * (13usize * 13 * 13) as f64;
             let energy = |radius: f64| {
                 field
@@ -10902,7 +10903,7 @@ fn assemble_run13() {
                 f64::NAN
             };
             writeln!(out, "{temperature},smoluchowski,{sphere:.4},,{spont_sites:.4},{r_eff:.4},{table},cutoff {cutoff:.1}; V(D_graph) {sphere:.2}; V(D_table) {with_table:.2}; D_graph {d_ps:.6}; D_table {d_tab:.6}; delta {delta:.4}", d_ps = d_graph / 1.0e12, d_tab = d_table / 1.0e12).unwrap();
-            writeln!(out, "{temperature},mean-time,{mean_volume:.4},,{spont_sites:.4},,{table},cutoff {cutoff:.1}; tau {tau_cell:.6e} s; nu=(2/3)*D_graph/a^2").unwrap();
+            writeln!(out, "{temperature},mean-time,{mean_volume:.4},,{spont_sites:.4},,{table},cutoff {cutoff:.1}; tau {tau_cell:.6e} s; nu=D_graph/((2/3)*a^2)").unwrap();
             writeln!(out, "{temperature},site-sum,{total:.4},{sigma:.4},{spont_sites:.4},,{table},cutoff {cutoff:.1}; this sum grows with the shell count").unwrap();
             eprintln!(
                 "run14 {temperature} K R {cutoff:.1} sphere {sphere:.2} (d {delta:.2}) R_eff {r_eff:.3} mean {mean_volume:.2} site-sum {total:.2} D {d_ps:.4}/{d_tab:.4}",

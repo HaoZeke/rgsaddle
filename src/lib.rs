@@ -89,11 +89,11 @@ pub use defect_pair::{
     RecombinationVolume, SPONTANEOUS_BARRIER_EV, SiteOutcome, SphereLanding, VolumePlacement,
     VolumeSite, attempt_frequency, capture_is_spontaneous, capture_is_spontaneous_within,
     classify_separation, debye_hit_probability, debye_matched_radius, debye_radius,
-    debye_resistance, defect_pair_rates, descend_limited, dumbbell_diffusivity,
-    dumbbell_translation_axis, effective_capture_radius, embed_free_migration, embed_sphere_return,
-    kinetic_recombination_volume, mean_absorption_time, pair_separation, product_tangent,
-    seeded_saddles, segment_band, shell_pair_factor, smoluchowski_rate, sphere_hit_probability,
-    spherical_return_probability, volume_from_frequency,
+    debye_resistance, defect_pair_rates, descend_limited, dumbbell_channel_rate,
+    dumbbell_diffusivity, dumbbell_translation_axis, effective_capture_radius,
+    embed_free_migration, embed_sphere_return, kinetic_recombination_volume, mean_absorption_time,
+    pair_separation, product_tangent, seeded_saddles, segment_band, shell_pair_factor,
+    smoluchowski_rate, sphere_hit_probability, spherical_return_probability, volume_from_frequency,
 };
 pub use elastic::{
     ElasticMultipole, LocalField, Octupole, Quadrupole, StrainGradient, quadrupole_energy,
