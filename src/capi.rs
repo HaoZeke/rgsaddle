@@ -36,7 +36,7 @@ use crate::tangent::TangentKind;
 /// The RGSADDLE ABI MAJOR.
 pub const RGSADDLE_ABI_MAJOR: u32 = 1;
 /// The RGSADDLE ABI MINOR.
-pub const RGSADDLE_ABI_MINOR: u32 = 41;
+pub const RGSADDLE_ABI_MINOR: u32 = 42;
 
 /// A band, min-mode or OCI-NEB config of this minor or newer certifies
 /// the saddle index at convergence by default.
@@ -64,6 +64,11 @@ pub const RGSADDLE_BAND_NO_MIN_MODE: u64 = 8;
 /// on the not-a-knot cubic spline instead of the polyline. Read only
 /// when the config minor is 38 or newer.
 pub const RGSADDLE_BAND_SPLINE_REPARAM: u64 = 16;
+/// Band config bit 5 (ABI minor 42). Simplified string method: evolve
+/// interior images under the full potential force and reparametrize to
+/// equal arc length after each step (`RGSADDLE_BAND_SPLINE_REPARAM`
+/// selects the not-a-knot spline, else the polyline).
+pub const RGSADDLE_BAND_STRING: u64 = 32;
 
 /// The trust-region reparametrization a band config asks for.
 pub(crate) fn rtr_reparametrization(cfg: &RgsaddleBandConfig) -> crate::Reparametrization {
@@ -71,6 +76,15 @@ pub(crate) fn rtr_reparametrization(cfg: &RgsaddleBandConfig) -> crate::Reparame
         crate::Reparametrization::NotAKnot
     } else {
         crate::Reparametrization::Linear
+    }
+}
+
+/// The simplified string configuration a band config asks for.
+pub(crate) fn string_config(cfg: &RgsaddleBandConfig) -> Option<crate::StringConfig> {
+    if cfg.version.minor >= 42 && cfg.flags & RGSADDLE_BAND_STRING != 0 {
+        Some(crate::StringConfig::default().with_reparametrization(rtr_reparametrization(cfg)))
+    } else {
+        None
     }
 }
 
@@ -677,7 +691,8 @@ pub(super) unsafe fn parse_band_config(
             .with_zoom(None)
             .with_saddle_check(
                 (cfg.version.minor >= SADDLE_INDEX_MINOR).then(SaddleIndexCheck::default),
-            ),
+            )
+            .with_string(string_config(cfg)),
         per_image: cfg.flags & RGSADDLE_BAND_PER_IMAGE != 0,
         method: cfg.method,
     })
