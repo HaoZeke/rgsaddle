@@ -59,6 +59,8 @@ mod config;
 
 #[cfg(feature = "ohtst")]
 pub mod adaptive_ohtst;
+mod vec3;
+
 pub mod art;
 pub mod autoneb;
 pub mod band;
