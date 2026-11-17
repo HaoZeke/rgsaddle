@@ -2109,10 +2109,10 @@ fn random_survival_note(csv: &std::path::Path) -> String {
     let measured = measured_diffusivity(kind, gamma, temperature, lattice);
     let defect_source = match measured {
         Some((_, _, file)) => format!(
-            "The defect-D column uses the Wigner-Seitz defect diffusivity of those dynamics (`{}`), the D_i the relation needs.",
+            "The defect-D column uses the Wigner-Seitz defect diffusivity of those dynamics (`{}`).",
             file.replace(".csv", ".md")
         ),
-        None => "The defect-D column, the D_i the relation needs, is empty: no free-dumbbell campaign ran with these dynamics at this lattice constant.".to_string(),
+        None => "The defect-D column is empty: no free-dumbbell campaign ran with these dynamics at this lattice constant.".to_string(),
     };
     let tracer = measured_tracer(kind, gamma, dt_fs, temperature, lattice);
     let tracer_source = match &tracer {
@@ -2124,7 +2124,7 @@ fn random_survival_note(csv: &std::path::Path) -> String {
     };
     let mut text = String::new();
     text.push_str("# Random-vacancy survival, Mishin Cu\n\n");
-    text.push_str("The vacancy is the lattice site nearest the cell center. The <100> dumbbell host is drawn uniformly from the other sites of the 13³ cell, and the dumbbell axis uniformly from the three orientations. Under periodic boundaries the separation is uniform over the cell, which is the ensemble in section 2 of Mwungeli, Liu, and Demkowicz, Phys. Rev. Materials 9, 023601 (2025). The fit is ln S(t) = -(k/V_model) t through the origin, sampled every 25 ps, with V_model the cell volume and S the Kaplan-Meier survival, in which an uncaptured trajectory is censored at the end of its window; with equal windows S = n(t)/N. Samples after S reaches zero are left out. V_iv/Ω = 4 α k / (a D_i) with α = 2/3 and Ω = a³/4, from K_iv = V_iv D_i / (α a²) = V_iv ν in section 1 of that paper, where ν is the rate of one of the eight translation jumps of the dumbbell. That ν is the defect's own jump rate, so the D_i the relation needs is the diffusivity of the defect.\n\n");
+    text.push_str("The vacancy is the lattice site nearest the cell center. The <100> dumbbell host is drawn uniformly from the other sites of the 13³ cell, and the dumbbell axis uniformly from the three orientations. Under periodic boundaries the separation is uniform over the cell, which is the ensemble in section 2 of Mwungeli, Liu, and Demkowicz, Phys. Rev. Materials 9, 023601 (2025). The fit is ln S(t) = -(k/V_model) t through the origin, sampled every 25 ps, with V_model the cell volume and S the Kaplan-Meier survival, in which an uncaptured trajectory is censored at the end of its window; with equal windows S = n(t)/N. Samples after S reaches zero are left out. V_iv/Ω = 4 α k / (a D_i) with α = 2/3 and Ω = a³/4, from K_iv = V_iv D_i / (α a²) = V_iv ν in section 1 of that paper, where ν is the rate of one of the eight translation jumps of the dumbbell. That ν is the defect's own jump rate, so the D_i the relation needs is (2/3)a²ν, the diffusivity of the defect when its successive jumps are uncorrelated; `direct_md_dynamics.md` tests that, and also converts k with ν counted from site changes.\n\n");
     let ours = match (kind, &dynamics) {
         (DynamicsKind::NphNve, Some((_, [equil_ps, rescale_ps, window_k, piston_ps]))) => format!(
             "Our k comes from the CSV's own NPH-then-NVE dynamics: {equil_ps:.0} ps of isotropic zero-pressure NPH (Andersen piston, period {piston_ps:.1} ps), then NVE in the mean box of the second half of that stage, with velocities rescaled to the target temperature every {rescale_ps:.2} ps whenever it is off by more than {window_k:.1} K. The capture clock starts at the Maxwellian start, NPH stage included, and the fit uses the mean production lattice constant {lattice:.6} Å of the trajectories that reached NVE."
@@ -3793,6 +3793,10 @@ struct TracerEstimate {
     lattice: f64,
     dt_fs: f64,
     seeds: usize,
+    /// Wigner-Seitz site changes per ps.
+    jumps_per_ps: (f64, f64),
+    /// Wigner-Seitz site, summed from sample to sample.
+    jump: (f64, f64),
     /// Wigner-Seitz site, block.
     defect: (f64, f64),
     /// N D*, the Ref. [12] fit.
@@ -3808,6 +3812,8 @@ fn tracer_estimate(rows: &[TracerRow], temperature: f64) -> Option<TracerEstimat
         lattice: seeds[0].lattice,
         dt_fs: head.dt_fs,
         seeds: seeds.len(),
+        jumps_per_ps: across_seeds(&seeds, |seed| seed.jumps_per_ps),
+        jump: across_seeds(&seeds, |seed| seed.jump),
         defect: across_seeds(&seeds, |seed| seed.ws),
         tracer: across_seeds(&seeds, |seed| seed.reference),
         correlation: correlation_factor(&seeds, |seed| seed.reference),
@@ -4031,7 +4037,7 @@ fn table_d_section(temperatures: &[f64]) -> String {
     text.push_str("- Ref. [12], Eq. (5) (p. 4): the \"generalized mean square displacement (MSD) per atom matrix\" G_MSD = (1/N) Σ_i [Δx_i², Δx_iΔy_i, …], with \"displacements of individual atoms from their initial positions\", \"2Dt = G_MSD in the limit of a long time\", and \"linear least-squares-fits to the corresponding elements of G_MSD over time\" after the first 1 ps. The cell has 4951 atoms with the SIA (p. 3); the volume follows thermal expansion and the runs are 2 ns of NVE (p. 4).\n");
     text.push_str("- Erratum, Phys. Rev. Materials 9, 069901(E) (2025), doi:10.1103/8hb2-86lm, replaces the p. 4 sentence that this D \"is the SIA diffusivity\" with \"The diffusivity thereby obtained is the self-diffusivity of Cu, not the SIA diffusivity, because G_MSD is computed on a per-atom basis\", and states that the diffusivities of Figs. 4 and 5(b) \"may be converted to SIA diffusivities by multiplying them by the number of atoms in the model, i.e., 4951.\" Fig. 4 of Ref. [12] (p. 9) plots those diffusivities at 700 K in µm²/s; at zero strain the components read 1.84 µm²/s = 1.84×10⁻⁴ Å²/ps, and 4951 times that is 0.911 Å²/ps, the 700 K D_i of Table 1 (0.910 ± 0.012).\n");
     text.push_str("- Potential: section 3 (p. 6), \"All atomistic simulations are carried out using the embedded atom method (EAM) potential for Cu by Mishin et al. [32]\"; Ref. [12] (p. 3), \"an embedded atom method (EAM) [24] potential for Cu developed by Mishin et al. [25]\". Both references are Y. Mishin, M. J. Mehl, D. A. Papaconstantopoulos, A. F. Voter, and J. D. Kress, Phys. Rev. B 63, 224106 (2001), the EAM1 of `tests/mishin_cu.rs` that every campaign here uses.\n\n");
-    text.push_str("Table 1 D_i is therefore 4951 D*, with D* the per-atom diffusivity of Eq. (5): N D* = Σ_i ⟨Δx_i²⟩/2t, a sum of tracer displacements. One Johnson jump moves one atom by the defect's own jump vector, so N D* would equal the defect diffusivity only if successive jumps moved uncorrelated atoms. They do not: the atom that has just moved is one of the two atoms of the new dumbbell, so it moves again at the next jump with probability 1/2, and that move points back along its last one on average. N D* = f D_defect defines the tracer correlation factor f of the mechanism, while the ν of section 1 needs D_defect itself. Both are measured below on the same free-dumbbell trajectories, with the dynamics of the whole-cell k ensembles (`direct_md_sia_tracer_*.md`). N D* is the Ref. [12] fit of drift-removed positions; defect D is the Wigner-Seitz block value of the same trajectories; f is N D* over defect D, the ratio of the two means. Ratios carry both errors in quadrature, and z is the difference over the two errors in quadrature.\n\n");
+    text.push_str("Table 1 D_i is therefore 4951 D*, with D* the per-atom diffusivity of Eq. (5): N D* = Σ_i ⟨Δx_i²⟩/2t, a sum of tracer displacements. One Johnson jump moves one atom by the defect's own jump vector, so N D* would equal the defect diffusivity only if successive jumps moved uncorrelated atoms. They do not: the atom that has just moved is one of the two atoms of the new dumbbell, so it moves again at the next jump with probability 1/2, and that move points back along its last one on average. N D* = f D_defect defines the tracer correlation factor f of the mechanism, while the ν of section 1 is the defect's own jump rate, with (2/3)a²ν = D_defect when successive defect jumps are uncorrelated. Both are measured below on the same free-dumbbell trajectories, with the dynamics of the whole-cell k ensembles (`direct_md_sia_tracer_*.md`). N D* is the Ref. [12] fit of drift-removed positions; defect D is the Wigner-Seitz block value of the same trajectories; f is N D* over defect D, the ratio of the two means. Ratios carry both errors in quadrature, and z is the difference over the two errors in quadrature.\n\n");
     text.push_str("| T (K) | dynamics | CSV | seeds | N D*, Ref. [12] fit (Å²/ps) | Table 1 D_i [12] | N D* / Table 1 | z | defect D (Å²/ps) | defect D / Table 1 | f |\n|---:|:---|:---|---:|---:|---:|---:|---:|---:|---:|---:|\n");
     let mut tracer_ratios = Vec::new();
     let mut defect_ratios = Vec::new();
@@ -4121,7 +4127,7 @@ fn timestep_section(temperatures: &[f64]) -> Option<String> {
     let coarse = read_tracer_rows(&validation_file(SIA_TRACER_CAMPAIGNS[0].file));
     let fine = read_tracer_rows(&validation_file(SIA_TRACER_CAMPAIGNS[2].file));
     let mut steps = String::new();
-    let mut against_table = Vec::new();
+    let mut remarks = Vec::new();
     for temperature in temperatures {
         let (Some(wide), Some(narrow)) = (
             tracer_estimate(&coarse, *temperature),
@@ -4130,6 +4136,8 @@ fn timestep_section(temperatures: &[f64]) -> Option<String> {
             continue;
         };
         for (label, top, bottom) in [
+            ("site changes/ps", narrow.jumps_per_ps, wide.jumps_per_ps),
+            ("D, jump sum", narrow.jump, wide.jump),
             ("defect D", narrow.defect, wide.defect),
             ("N D*, Ref. [12] fit", narrow.tracer, wide.tracer),
             ("f", narrow.correlation, wide.correlation),
@@ -4140,13 +4148,21 @@ fn timestep_section(temperatures: &[f64]) -> Option<String> {
                 top.0, top.1, narrow.seeds, bottom.0, bottom.1, wide.seeds
             ));
         }
+        let ((fine_walk, fine_walk_error, _), (coarse_walk, coarse_walk_error, _)) = (
+            ratio_with_error(narrow.defect, narrow.jump),
+            ratio_with_error(wide.defect, wide.jump),
+        );
+        remarks.push(format!(
+            "At {temperature:.0} K, defect D over the jump-sum D, which is 1 when successive defect jumps are uncorrelated, is {fine_walk:.3} ± {fine_walk_error:.3} at {:.0} fs and {coarse_walk:.3} ± {coarse_walk_error:.3} at {:.0} fs.",
+            narrow.dt_fs, wide.dt_fs
+        ));
         if let Some(table) = table_diffusivity(*temperature) {
             let ((fine_ratio, fine_error, fine_z), (coarse_ratio, coarse_error, coarse_z)) = (
                 ratio_with_error(narrow.tracer, table),
                 ratio_with_error(wide.tracer, table),
             );
-            against_table.push(format!(
-                "At {temperature:.0} K, N D* over the Table 1 D_i is {fine_ratio:.3} ± {fine_error:.3} (z = {fine_z:.2}) at {:.0} fs and {coarse_ratio:.3} ± {coarse_error:.3} (z = {coarse_z:.2}) at {:.0} fs.",
+            remarks.push(format!(
+                "N D* over the Table 1 D_i is {fine_ratio:.3} ± {fine_error:.3} (z = {fine_z:.2}) at {:.0} fs and {coarse_ratio:.3} ± {coarse_error:.3} (z = {coarse_z:.2}) at {:.0} fs.",
                 narrow.dt_fs, wide.dt_fs
             ));
         }
@@ -4163,10 +4179,7 @@ fn timestep_section(temperatures: &[f64]) -> Option<String> {
         fine[0].dt_fs,
         coarse[0].dt_fs
     );
-    if !against_table.is_empty() {
-        text.push_str(&format!("\n{}\n", against_table.join(" ")));
-    }
-    text.push('\n');
+    text.push_str(&format!("\n{}\n\n", remarks.join(" ")));
     Some(text)
 }
 
@@ -4360,8 +4373,10 @@ fn dynamics_note() -> String {
             };
             let defect = measured_diffusivity(set.kind, set.gamma, temperature, set.lattice)
                 .map(|(d, sigma, _)| (d, sigma));
-            let tracer = measured_tracer(set.kind, set.gamma, set.dt_fs, temperature, set.lattice)
-                .map(|(estimate, _)| estimate.tracer);
+            let measured =
+                measured_tracer(set.kind, set.gamma, set.dt_fs, temperature, set.lattice);
+            let tracer = measured.as_ref().map(|(estimate, _)| estimate.tracer);
+            let jump = measured.as_ref().map(|(estimate, _)| estimate.jump);
             let inverted = defect.map_or("-".to_string(), |(d_i, d_sigma)| {
                 let volume = rate * set.lattice * set.lattice
                     / ((2.0 / 3.0) * d_i)
@@ -4384,10 +4399,11 @@ fn dynamics_note() -> String {
                 set.lattice,
             ));
             volumes.push_str(&format!(
-                "| {temperature:.0} | {label} | {detector} | {} | {} | {} | {inverted} | {} |\n",
+                "| {temperature:.0} | {label} | {detector} | {} | {} | {} | {} | {inverted} | {} |\n",
                 convert(table_diffusivity(temperature)),
                 convert(tracer),
                 convert(defect),
+                convert(jump),
                 paper.map_or("-".to_string(), |(k_mean, k_sigma, ..)| format!(
                     "{k_mean:.0} ± {k_sigma:.0}"
                 )),
@@ -4416,7 +4432,7 @@ fn dynamics_note() -> String {
         text.push_str(&line);
         text.push('\n');
     }
-    text.push_str("\n## V_iv by D_i convention\n\nV_iv/Ω = 4αk/(aD_i) with α = 2/3 and the k of the table above, for three D_i: the Table 1 value, which is 4951 D* from Ref. [12]; N D* measured on our trajectories with the dynamics of the ensemble; and the defect D of those dynamics, which is the D_i of ν = D_i/(αa²). σ adds the relative errors of k and D_i in quadrature. The previous column is the conversion this driver used before, k a²/(α D_i Ω), with the defect D: α was inverted, which multiplies V by 1/α² = 9/4. The last column is Table 1, k-method, 8788 atoms.\n\n| T (K) | dynamics | detector | Table 1 D_i | N D*, ours | defect D, ours | previous: k a²/(αD), defect D | Table 1 |\n|---:|:---|:---|---:|---:|---:|---:|---:|\n");
+    text.push_str("\n## V_iv by D_i convention\n\nV_iv/Ω = 4αk/(aD_i) with α = 2/3 and the k of the table above, for four D_i: the Table 1 value, which is 4951 D* from Ref. [12]; N D* measured on our trajectories with the dynamics of the ensemble; the defect D of those dynamics; and their jump-sum D, (2/3)a²ν with ν the counted site changes over the eight jump paths, so that this column is k/ν. The defect D is the D_i of ν = D_i/(αa²) when successive defect jumps are uncorrelated, and then the defect-D and jump-sum columns agree; the Timestep section tests that. σ adds the relative errors of k and D_i in quadrature. The previous column is the conversion this driver used before, k a²/(α D_i Ω), with the defect D: α was inverted, which multiplies V by 1/α² = 9/4. The last column is Table 1, k-method, 8788 atoms.\n\n| T (K) | dynamics | detector | Table 1 D_i | N D*, ours | defect D, ours | jump-sum D, ours | previous: k a²/(αD), defect D | Table 1 |\n|---:|:---|:---|---:|---:|---:|---:|---:|---:|\n");
     text.push_str(&volumes);
     let mut factors = Vec::new();
     let mut reruns = Vec::new();
