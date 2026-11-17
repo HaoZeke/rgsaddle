@@ -161,7 +161,7 @@ pub use pair_network::{
 pub use prfo::{PrfoKind, partitioned_rfo_eigen, restricted_prfo_displacement};
 pub use projection::ProjectionKind;
 pub use projector::{
-    Hyperplane, HyperplaneCoordinates, HyperplaneEnsemble, HyperplaneObservation,
+    Hyperplane, HyperplaneCoordinates, HyperplaneEnsemble, HyperplaneModes, HyperplaneObservation,
     HyperplaneSampleBudget, HyperplaneSampler, ManifoldTangent, ProjectedConstraint,
     TangentProjector, UnitNormal,
 };

@@ -1061,6 +1061,23 @@ fn solve_block(
     }
 }
 
+/// Run the reorthogonalized block-Lanczos workspace on a caller-supplied
+/// symmetric matrix-free action.
+///
+/// This is the crate-internal waist used by constrained curvature
+/// consumers. Keeping the workspace here ensures index-k and hyperplane
+/// searches share the same Rayleigh--Ritz implementation and action
+/// accounting.
+pub(crate) fn block_lanczos(
+    seed: ArrayView2<f64>,
+    tol: f64,
+    max_iterations: usize,
+    apply: &mut Product<'_>,
+) -> Result<(Array2<f64>, Array1<f64>, usize), SaddleError> {
+    let block = BlockLanczosEigenpairs.lowest_eigenpairs(seed, tol, max_iterations, apply)?;
+    Ok((block.modes, block.values, block.actions))
+}
+
 impl LowestEigenpairs for LobpcgEigenpairs {
     fn lowest_eigenpairs(
         &mut self,
