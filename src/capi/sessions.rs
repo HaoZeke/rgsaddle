@@ -3351,6 +3351,34 @@ pub unsafe extern "C" fn rgsaddle_band_set_zoom(
     }
 }
 
+/// Simplified string method on the band (ABI minor 44); `enabled` 0
+/// clears it and `scheme` is an `rgsaddle_reparametrization_t`.
+///
+/// # Safety
+/// `band` is a live session or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_band_set_string(
+    band: *mut RgsaddleBand,
+    enabled: i32,
+    scheme: i32,
+) -> i32 {
+    if band.is_null() {
+        return RGSADDLE_NULL_BAND;
+    }
+    let string = match enabled {
+        0 => None,
+        1 => match crate::Reparametrization::from_abi(scheme) {
+            Some(reparam) => Some(crate::StringConfig::default().with_reparametrization(reparam)),
+            None => return RGSADDLE_INVALID_PARAMETER,
+        },
+        _ => return RGSADDLE_INVALID_PARAMETER,
+    };
+    match unsafe { (*band).session.set_string(string) } {
+        Ok(()) => RGSADDLE_OK,
+        Err(e) => status_of(&e),
+    }
+}
+
 /// # Safety
 /// `session` is a live session or null. `enabled` is 0 or 1.
 #[unsafe(no_mangle)]

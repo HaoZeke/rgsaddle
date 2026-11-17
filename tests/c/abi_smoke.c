@@ -624,6 +624,75 @@ int main(void) {
     rgsaddle_indexk_free(session);
   }
 
+  /* Simplified string method (ABI minor 44): flag creation, setter validation,
+   * spline and linear convergence to the double-well saddle, and project. */
+  {
+    /* A host stamped with ABI minor 43 may still carry reserved bit 5.
+     * The bit must stay inert until ABI minor 44. */
+    {
+      rgsaddle_band_config_t legacy = cfg;
+      legacy.version.minor = 43;
+      legacy.flags = RGSADDLE_BAND_STRING | RGSADDLE_BAND_NO_MIN_MODE;
+      legacy.ci_trigger_factor = 0.0;
+      legacy.spring_k = 0.0;
+      legacy.projection = RGSADDLE_PROJECTION_NEB;
+      const double c_pos[9] = {
+          -1.0, 0.0, 0.0,
+          0.4, 0.0, 0.0,
+          1.0, 0.0, 0.0,
+      };
+      const double c_energy[3] = {0.0, 0.7056, 0.0};
+      const double c_gradient[9] = {
+          0.0, 0.0, 0.0,
+          -1.344, 0.0, 0.0,
+          0.0, 0.0, 0.0,
+      };
+      double c_force[9] = {0.0};
+      int64_t c_ci = -2;
+      st = rgsaddle_band_project(&legacy, 3, 1, c_pos, c_energy, c_gradient, c_force, &c_ci);
+      if (st != RGSADDLE_OK || c_ci != -1 || fabs(c_force[3]) > 1e-12) {
+        fprintf(stderr, "legacy string bit leaked into ABI 43: fx=%g ci=%lld\n",
+                c_force[3], (long long)c_ci);
+        return fail(st == RGSADDLE_OK ? RGSADDLE_SOLVER : st, "legacy string bit");
+      }
+    }
+
+    if (rgsaddle_band_set_string(NULL, 1, RGSADDLE_REPARAM_NOT_A_KNOT) != RGSADDLE_NULL_BAND) {
+      return fail(RGSADDLE_NULL_BAND, "string setter null band");
+    }
+    rgsaddle_band_config_t sc = cfg;
+    sc.flags = RGSADDLE_BAND_NO_MIN_MODE | RGSADDLE_BAND_STRING | RGSADDLE_BAND_SPLINE_REPARAM;
+    sc.ci_trigger_factor = 0.5;
+    RgsaddleBand *sb = rgsaddle_band_create(&sc, n_images, n_atoms, pos);
+    if (!sb) {
+      return fail(RGSADDLE_SHAPE, "string band create failed");
+    }
+    if (rgsaddle_band_set_string(sb, 2, RGSADDLE_REPARAM_NOT_A_KNOT) != RGSADDLE_INVALID_PARAMETER ||
+        rgsaddle_band_set_string(sb, 1, 99) != RGSADDLE_INVALID_PARAMETER ||
+        rgsaddle_band_set_string(sb, 0, 99) != RGSADDLE_OK ||
+        rgsaddle_band_set_string(sb, 1, RGSADDLE_REPARAM_NOT_A_KNOT) != RGSADDLE_OK) {
+      return fail(RGSADDLE_INVALID_PARAMETER, "string setter validation");
+    }
+    climbing_seen_t sseen = {1, 0, -1};
+    rgsaddle_report_t sr;
+    memset(&sr, 0, sizeof sr);
+    int sk = 0;
+    do {
+      st = rgsaddle_band_step(sb, surface, &sseen, &sr);
+      if (st != RGSADDLE_OK) {
+        return fail(st, "string step");
+      }
+      ++sk;
+    } while (sr.status == RGSADDLE_STATUS_RUNNING && sk < 500);
+    double sp[9 * 3];
+    if (sr.status != RGSADDLE_STATUS_CONVERGED || sr.ci_index < 1 ||
+        rgsaddle_band_positions(sb, sp) != RGSADDLE_OK ||
+        fabs(sp[sr.ci_index * 3]) > 0.01) {
+      return fail(RGSADDLE_SOLVER, "string band did not reach the saddle");
+    }
+    rgsaddle_band_free(sb);
+  }
+
   printf("RGSADDLE_C_ABI_OK steps=%d ci=%lld\n", steps, (long long)rep.ci_index);
   return RGSADDLE_OK;
 }
