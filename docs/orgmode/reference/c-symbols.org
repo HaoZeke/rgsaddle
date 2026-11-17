@@ -132,8 +132,8 @@ The narrative for a session is the C and C++ how-to, not this list.
 - =rgsaddle_minmode_set_highs=. Purpose: Declared in include/rgsaddle.h. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_minmode_set_torque_window=. Purpose: ABI minor 32. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_minmode_set_rotation_stop_length=. Purpose: ABI minor 38. Parameters: the declaration. Units: the caller's.
-- =rgsaddle_artn_config_default=. Purpose: Fill ART nouveau controls with the published defaults, ABI minor 42. Parameters: the declaration. Units: the caller's.
-- =rgsaddle_minmode_set_artn=. Purpose: Enable ART nouveau controls on a Lanczos session, or disable them with NULL, ABI minor 42. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_artn_config_default=. Purpose: ABI minor 42. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_minmode_set_artn=. Purpose: ABI minor 42. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_band_set_exp_precon=. Purpose: Per-image exponential metric (Packwood et al. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_band_set_fixed_atoms=. Purpose: Per-atom fixed mask shared by every image, ABI minor 39. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_band_set_zoom=. Purpose: Zoom-NEB, eOn's zoom_* keys. Parameters: the declaration. Units: the caller's.
