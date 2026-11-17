@@ -64,6 +64,8 @@ pub mod idpp;
 pub mod indexk;
 #[cfg(feature = "lammps")]
 pub mod lammps;
+#[cfg(feature = "mdsession")]
+pub mod mdsession;
 pub mod minmode;
 pub mod nichols;
 pub mod occupancy;
@@ -133,6 +135,8 @@ pub use lammps::{
     LammpsHyperplaneSampler, LammpsSamplerConfig, LammpsSystem, LammpsThermostatKind,
     LammpsThermostatRecord,
 };
+#[cfg(feature = "mdsession")]
+pub use mdsession::{MdSessionBackend, MdSessionConfig, MdSessionSystem};
 pub use minmode::{
     FiniteDifference, MinModeConfig, MinModeKind, MinModeReport, MinModeSession, MinModeStatus,
     ModeEstimate, PointSurface, RaisedStep, halve_raised_energy, rotation_force_error,

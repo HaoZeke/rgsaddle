@@ -20,6 +20,9 @@ par = ["rgmin/par"]
 highs = ["rgmin/highs"]
 ohtst = []
 lammps = ["ohtst", "dep:capnp", "dep:libloading", "dep:rgpot-core"]
+# One backend for every engine that exports the rgpot MD session ABI
+# (<prefix>_md_*); the prefix and the library path are run-time data.
+mdsession = ["ohtst", "dep:libloading", "dep:rgpot-core"]
 readcon = ["dep:readcon-core"]
 # readcon-db 0.2 pins readcon-core = "=0.17.1", the same release as
 # below, so the corpus and the CON writer share one readcon-core.
