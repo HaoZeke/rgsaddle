@@ -37,6 +37,57 @@ The method sources are:
   Manifolds/, Princeton University Press (2008),
   doi:10.1515/9781400830244.
 
+* Symmetry-unique hard regions and rate multiplicity
+
+A dividing hyperplane is infinite.  In a crystal it can therefore intersect
+several symmetry-equivalent images of the same transition.  Sampling all of
+them is wasteful and can mix images.  =SymmetryUniqueRegion= instead builds
+the Voronoi cell of one representative configuration under point- or
+space-group operations that leave the plane invariant.  Its faces are hard
+half-spaces.  MD reflects the in-plane velocity normal to a crossed face;
+GHMC rejects an outside proposal.  There is no collective variable, spring,
+window, or soft wall.
+
+The region reports the number of distinct in-plane images as its
+=degeneracy=.  =RateMultiplicity= keeps that number separate from the number
+of paths or hop directions:
+
+\[
+k_{\rm total}=m_{\rm path}m_{\rm plane}k_{\rm unique}.
+\]
+
+Each symmetry orbit belongs in exactly one factor.  The twelve fcc
+nearest-neighbour vacancy-hop directions are =m_path=12 when the HTST
+prefactor or path census already represents them; they must not also appear
+in =m_plane=.  A convention representing those same twelve images as regions
+uses =m_path=1= and =m_plane=12=.  Both give the same total.  Setting both to
+twelve counts 144 combinations and is correct only if twelve independent
+in-plane images exist for every one of twelve paths.
+
+=AffineSymmetry= and =SymmetrySource= accept generic configuration-space
+point- or space-group maps.  =PeriodicSymmetryOperations= evaluates their
+per-atom displacements with =minimage::Cell=.  =readcon-core= currently
+supplies structures and cells but no generic symmetry-operation source, while
+=minimage= supplies periodic geometry but no space-group finder.  Automatic
+discovery therefore belongs as a future patch to one of those owning
+libraries; rgsaddle consumes operations supplied by the host and does not
+duplicate crystallographic symmetry discovery.
+
+=RegionIntersection= composes the primary symmetry cell with =PathSlab=
+(between neighbouring path planes) and =QuenchedTransitionRegion= (outside
+either rgmin-quenched basin).  It rejects more than one non-unit degeneracy,
+preventing accidental multiplication of overlapping symmetry counts.
+Predicate faces without a geometric penetration depth return to the last
+contained point before velocity reflection.
+
+The engine-neutral sampling budget carries the same region.  The analytic
+BAOAB/GHMC implementation consumes it through its existing drift or proposal
+step.  The LAMMPS adapter forwards planar faces through
+=lammpc_session_md_set_boundaries=.  The pinned lammpc ABI predates that
+entry point, so production use requires the corresponding generic-boundary
+patch in lammpc; rgsaddle reports that missing capability instead of adding a
+second local integrator.
+
 * One constraint and its metric
 
 Let Cartesian coordinates be \(x\), let \(M\) be a positive diagonal mass
@@ -147,6 +198,10 @@ projected by \(P_\nu=I-\nu\nu^T\), and the retraction is
 replace the sphere by rgmin's =SubspaceSphere=.  The offset is a Euclidean
 factor.  =PlaneOptimizer= assembles those factors as an rgmin
 =ProductManifold= and minimizes \(-A\) with its Riemannian trust region.
+In ambient dimension \(D=3N\), orientation has \(D-1=3N-1\) degrees of
+freedom and the signed offset has one.  The combined family therefore has
+\(D\) degrees of freedom before held rigid modes; \(3N-2\) is not the
+dimension stated by the OH-TST formulation.
 
 Sample sizing and convergence are separate.  The gradient norm test may grow
 the constrained ensemble up to =max_records=.  It does not decide

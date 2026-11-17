@@ -120,7 +120,9 @@ pub use optimize::{
 };
 pub use path::PlanePath;
 pub use plane::{FixedCell, Hyperplane, MassWeighted, mass_weighted_rigid_translations};
-pub use rate::{OhTstRate, PlaneDensity, flux_mass, ohtst_rate, plane_transmission};
+pub use rate::{
+    OhTstRate, PlaneDensity, RateMultiplicity, flux_mass, ohtst_rate, plane_transmission,
+};
 pub use reactant::{ReactantDensity, reactant_density};
 pub use sample::{
     AnalyticSurfaceSampler, LangevinConfig, PlaneIntegrator, PlaneSample, Uncontrolled,
@@ -134,8 +136,9 @@ pub use ti::{
 #[allow(deprecated)]
 pub use transmission::{
     AnalyticSurfaceDynamics, Basins, Counting, EndState, Endpoint, HyperplaneDynamics,
-    PermutationDistance, QuenchConfig, StateDistance, TransmissionCoefficient, TransmissionConfig,
-    TransmissionEstimate, transmission_coefficient, transmission_coefficient_on_surface,
+    PermutationDistance, QuenchConfig, QuenchedTransitionRegion, StateDistance,
+    TransmissionCoefficient, TransmissionConfig, TransmissionEstimate, transmission_coefficient,
+    transmission_coefficient_on_surface,
 };
 pub use transport::{GaussianTransport, Transport};
 #[allow(deprecated)]

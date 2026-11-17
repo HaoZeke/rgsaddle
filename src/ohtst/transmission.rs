@@ -44,6 +44,7 @@
 //! mass-weighted surface with unit masses, step for step.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ndarray::{Array1, Array2, ArrayView1, Zip};
@@ -55,6 +56,7 @@ use crate::error::SaddleError;
 use crate::mic::Cell;
 use crate::minmode::PointSurface;
 use crate::ohtst::plane::{Hyperplane, orthonormal_rows};
+use crate::region::{BoundaryViolation, Region};
 use crate::stats::{Rng, block_mean};
 
 /// A transmission coefficient and its standard error, the factor
@@ -523,6 +525,67 @@ impl Basins {
             None => None,
         };
         Ok((state, evaluations))
+    }
+}
+
+/// Hard transition region whose exterior is any basin reached by an rgmin
+/// steepest-descent quench.
+///
+/// The reflection normal joins the nearest reference minimum of the reached
+/// state to the nearest reference minimum of the opposite state. Membership
+/// itself comes from [`Basins::assign`], not from that linear normal model.
+pub struct QuenchedTransitionRegion<S> {
+    surface: Arc<S>,
+    basins: Basins,
+}
+
+impl<S> std::fmt::Debug for QuenchedTransitionRegion<S> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("QuenchedTransitionRegion")
+            .field("basins", &self.basins)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<S> QuenchedTransitionRegion<S> {
+    /// Build a basin-excluding predicate.
+    pub fn new(surface: Arc<S>, basins: Basins) -> Self {
+        Self { surface, basins }
+    }
+
+    /// Basin assignment used by the predicate.
+    pub fn basins(&self) -> &Basins {
+        &self.basins
+    }
+}
+
+impl<S: PointSurface + Send + Sync> Region for QuenchedTransitionRegion<S> {
+    fn violation(
+        &self,
+        point: ArrayView1<'_, f64>,
+    ) -> Result<Option<BoundaryViolation>, SaddleError> {
+        let (state, _) = self.basins.assign(self.surface.as_ref(), point)?;
+        let Some(state) = state else {
+            return Ok(None);
+        };
+        let (outside, opposite) = match state {
+            Endpoint::Reactant => (&self.basins.reactants, &self.basins.products),
+            Endpoint::Product => (&self.basins.products, &self.basins.reactants),
+        };
+        let nearest = |minima: &[Array1<f64>]| -> Result<Array1<f64>, SaddleError> {
+            let mut best: Option<(f64, Array1<f64>)> = None;
+            for minimum in minima {
+                let distance = self.basins.distance.distance(point, minimum.view())?;
+                if best.as_ref().is_none_or(|known| distance < known.0) {
+                    best = Some((distance, minimum.clone()));
+                }
+            }
+            best.map(|(_, minimum)| minimum)
+                .ok_or_else(|| SaddleError::Invalid("basin reference set is empty".into()))
+        };
+        let normal = &nearest(outside)? - &nearest(opposite)?;
+        Ok(Some(BoundaryViolation::predicate(normal)?))
     }
 }
 
@@ -1368,5 +1431,25 @@ mod tests {
             assert_eq!(state, expected, "{start:?}");
             assert!(evaluations > 0);
         }
+    }
+
+    #[test]
+    fn a_basin_escape_supplies_a_hard_reflection_normal() {
+        let a = (1.0_f64 + 1.0 / 32.0).sqrt();
+        let basins = Basins::new(vec![array![-a, a / 4.0]], vec![array![a, -a / 4.0]])
+            .with_quench(QuenchConfig::default().with_force_tol(1.0e-8));
+        let region = QuenchedTransitionRegion::new(Arc::new(TiltedWell), basins);
+        let escaped = array![-0.02, -1.0];
+        let violation = region
+            .violation(escaped.view())
+            .unwrap()
+            .expect("the quench reaches a basin");
+        let plane = Hyperplane::new(escaped, array![0.0, 1.0]).unwrap();
+        let mut velocity = array![0.7, 0.0];
+        let speed = velocity.dot(&velocity);
+        crate::reflect_velocity(&mut velocity, violation.normal.view(), &plane).unwrap();
+        assert!(velocity[0] < 0.0);
+        assert!(velocity[1].abs() <= 16.0 * f64::EPSILON);
+        assert!((velocity.dot(&velocity) - speed).abs() <= 64.0 * f64::EPSILON * speed);
     }
 }
