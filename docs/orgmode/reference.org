@@ -153,6 +153,9 @@ The importable package is =rgsaddle=. =rgsaddle._core= is the nanobind extension
 | =rgsaddle.Stencil= | Point search. =point=, =step=, =run=, =positions=, =mode=, =curvature=. =band= raises =ValueError= with the zoom seam |
 | =rgsaddle.connect= | Run-to-completion double-ended search. =surface(x)= is the one-image =(energy, gradient)= callback. =ConnectReport= holds the geometry, energy, gradient norm, kind, Hessian index, and evaluation count |
 | =rgsaddle.ase.Point= | ASE =Optimizer= driver for one point preset. =run(fmax, steps)= is ASE's own loop |
+| =rgsaddle.ase.NEB= | ASE's band call. =k= is a scalar or one value per spring. =method= is =improvedtangent=, =aseneb=, =eb=, or =dneb=. =spline=, =string=, =precon=, and DyNEB keywords raise =NotImplementedError=. =interpolate(method='idpp')= and =idpp_interpolate= run =idpp_path= |
+| =rgsaddle.idpp_path= | Image-dependent pair-potential path, endpoints included, shape =(n_images, 3N)=. =cell= is the 3x3 row-major lattice |
+| =rgsaddle.ase.DimerControl=, =MinModeAtoms=, =MinModeTranslate= | ASE's dimer. The mode and curvature come from =MinMode=. The trial step and conjugate gradient are ASE's. =order= other than 1 and a gauss displacement raise =NotImplementedError= |
 
 =SurfaceAdapter= keeps =get_forces(apply_constraint=False)= on =raw_forces=. The returned gradient is minus =get_forces()= after constraints. The adapter evaluates the given rows in order on the calling thread. =owners()= and =reentrant()= are what a driver uses to group. A second call while the first holds the adapter raises =RuntimeError=.
 
