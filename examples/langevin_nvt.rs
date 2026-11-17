@@ -3433,7 +3433,7 @@ fn sia_tracer_note(csv: &std::path::Path) -> String {
     };
     let dynamics = match (kind_of(&head.dynamics), &head.dynamics) {
         (DynamicsKind::NphNve, Some((_, [equil_ps, rescale_ps, _, piston_ps]))) => format!(
-            "{equil_ps:.0} ps of isotropic zero-pressure NPH (Andersen piston, period {piston_ps:.1} ps), then NVE in the mean box of the second half of that stage, both rescaled to the target temperature every {rescale_ps:.2} ps"
+            "{equil_ps:.0} ps of isotropic zero-pressure NPH (Andersen piston, period {piston_ps:.1} ps) from the zero-total-pressure lattice constant of `direct_md_lattice.csv`, then NVE in the mean box of the second half of that stage, both rescaled to the target temperature every {rescale_ps:.2} ps"
         ),
         _ => format!(
             "2 ps of Langevin at γ = 1/ps, then Langevin at γ = {}/ps, at the zero-total-pressure lattice constant of `direct_md_lattice.csv`",
@@ -3441,7 +3441,7 @@ fn sia_tracer_note(csv: &std::path::Path) -> String {
         ),
     };
     text.push_str("# Free dumbbell tracer diffusivity, Mishin Cu\n\n");
-    text.push_str(&format!("One <100> dumbbell in the perfect 13×13×13 cell (8789 atoms) on the Mishin EAM1 of `tests/mishin_cu.rs`, with the seeds, sampling, and blocks of the free-dumbbell D campaigns: Maxwellian start, {dynamics}, timestep {} fs. Every 0.1 ps the centre-of-mass drift is removed and every atom is assigned its nearest ideal-lattice site. The defect is located three ways: the one doubly occupied Wigner-Seitz cell (as in `direct_md_sia_d_*.md`), the midpoint of the two atoms in it, and the one of those two farther from the site. Each atom's site is unwrapped from sample to sample, and every atom's position less the drift is stored at the start of production and at the end of each block of τ.\n\n", head.dt_fs));
+    text.push_str(&format!("One <100> dumbbell in the perfect 13×13×13 cell (8789 atoms) on the Mishin EAM1 of `tests/mishin_cu.rs`, with the seeds and sampling of the free-dumbbell D campaigns: Maxwellian start, {dynamics}, timestep {} fs. Every 0.1 ps the centre-of-mass drift is removed and every atom is assigned its nearest ideal-lattice site. The defect is located three ways: the one doubly occupied Wigner-Seitz cell (as in `direct_md_sia_d_*.md`), the midpoint of the two atoms in it, and the one of those two farther from the site. Each atom's site is unwrapped from sample to sample, and every atom's position less the drift is stored at the start of production and at the end of each block of τ.\n\n", head.dt_fs));
     text.push_str("Two diffusivities are measured from the same trajectories. The defect diffusivity is the mean-square displacement of the defect over 6t. The tracer quantity is Σ_i |Δr_i|² over 6t, summed over every atom i; this is N D*, with D* the per-atom self-diffusivity that Eq. (5) of Ref. [12] (B. Zhang et al., Phys. Rev. Materials 6, 053605 (2022)) computes, G_MSD = (1/N) Σ_i Δx_i Δx_j with 2Dt = G_MSD at long times. Its erratum (Phys. Rev. Materials 9, 069901(E) (2025)) multiplies that D* by N = 4951 to report an SIA diffusivity, and Table 1 of Mwungeli, Liu, and Demkowicz lists those values. N D* is measured from atom sites (one atom changes site by λ = a/√2 per dumbbell jump, so the vibrational term is absent) and from the drift-removed positions. Every displacement is in the frame of the centre of mass.\n\n");
     text.push_str("Block values are the lag-τ mean over every block. Slope values fit the mean over all origins against lag, with an intercept, from lag L/8 to L/2 of the L blocks. The Ref. [12] column follows that paper: one origin, the start of production; each axis fitted as 2Dt with an intercept over every lag; the three axes averaged. f is N D* over the block D of the Wigner-Seitz site, each the mean over trajectories, with both standard errors in quadrature: f takes the sites slope and f (Ref. [12]) the Ref. [12] fit. The block D of the defect equals its slope when successive defect jumps are uncorrelated beyond τ, which the slope column tests; the block N D* lies above the slope because a block of n jumps has the lattice-walk f(n) of `direct_md_dynamics.md`, about 0.8/n above its limit. The jump column sums |Δr|² of the Wigner-Seitz site from sample to sample over 6t: the jump rate times λ²/6 when every move is one nearest-neighbour jump. Every value is the mean over trajectories ± the standard error across them.\n\n");
     let mut temperatures: Vec<f64> = rows.iter().map(|row| row.temperature).collect();
@@ -3764,8 +3764,8 @@ fn measured_diffusivity(
         })
 }
 
-/// The tracer campaigns, which rerun the trajectories of the free-dumbbell
-/// campaign with the same dynamics; the last repeats 500 K at a 2 fs step.
+/// The tracer campaigns, free dumbbells with the dynamics of the whole-cell k
+/// ensembles; the last repeats 500 K at a 2 fs step.
 const SIA_TRACER_CAMPAIGNS: [SiaCampaign; 3] = [
     SiaCampaign {
         kind: DynamicsKind::Langevin,
@@ -4111,9 +4111,17 @@ fn table_d_section(temperatures: &[f64]) -> String {
             "| {jumps} | {walks} | {factor:.4} ± {error:.4} |\n"
         ));
     }
+    text.push('\n');
+    text
+}
+
+/// The first tracer campaign against its repeat at a shorter timestep, or
+/// `None` before the repeat has a temperature in common with it.
+fn timestep_section(temperatures: &[f64]) -> Option<String> {
     let coarse = read_tracer_rows(&validation_file(SIA_TRACER_CAMPAIGNS[0].file));
     let fine = read_tracer_rows(&validation_file(SIA_TRACER_CAMPAIGNS[2].file));
     let mut steps = String::new();
+    let mut against_table = Vec::new();
     for temperature in temperatures {
         let (Some(wide), Some(narrow)) = (
             tracer_estimate(&coarse, *temperature),
@@ -4132,20 +4140,52 @@ fn table_d_section(temperatures: &[f64]) -> String {
                 top.0, top.1, narrow.seeds, bottom.0, bottom.1, wide.seeds
             ));
         }
+        if let Some(table) = table_diffusivity(*temperature) {
+            let ((fine_ratio, fine_error, fine_z), (coarse_ratio, coarse_error, coarse_z)) = (
+                ratio_with_error(narrow.tracer, table),
+                ratio_with_error(wide.tracer, table),
+            );
+            against_table.push(format!(
+                "At {temperature:.0} K, N D* over the Table 1 D_i is {fine_ratio:.3} ± {fine_error:.3} (z = {fine_z:.2}) at {:.0} fs and {coarse_ratio:.3} ± {coarse_error:.3} (z = {coarse_z:.2}) at {:.0} fs.",
+                narrow.dt_fs, wide.dt_fs
+            ));
+        }
     }
-    if !steps.is_empty() {
-        text.push_str(&format!("\n## Timestep\n\nEvery campaign above integrates at {:.0} fs. `{}` repeats the Langevin campaign at {:.0} fs with the same seeds and τ and half the blocks.\n\n| T (K) | quantity | {:.0} fs | {:.0} fs | ratio | z |\n|---:|:---|---:|---:|---:|---:|\n{steps}", coarse[0].dt_fs, SIA_TRACER_CAMPAIGNS[2].file, fine[0].dt_fs, fine[0].dt_fs, coarse[0].dt_fs));
+    if steps.is_empty() {
+        return None;
+    }
+    let mut text = format!(
+        "## Timestep\n\nEvery other campaign in this note integrates at {:.0} fs. `{}` repeats `{}` at {:.0} fs with the same seeds and τ and half the blocks. Neither Mwungeli, Liu, and Demkowicz nor Ref. [12] states an MD timestep.\n\n| T (K) | quantity | {:.0} fs | {:.0} fs | ratio | z |\n|---:|:---|---:|---:|---:|---:|\n{steps}",
+        coarse[0].dt_fs,
+        SIA_TRACER_CAMPAIGNS[2].file,
+        SIA_TRACER_CAMPAIGNS[0].file,
+        fine[0].dt_fs,
+        fine[0].dt_fs,
+        coarse[0].dt_fs
+    );
+    if !against_table.is_empty() {
+        text.push_str(&format!("\n{}\n", against_table.join(" ")));
     }
     text.push('\n');
-    text
+    Some(text)
 }
 
 fn dynamics_note() -> String {
     let temperatures = [300.0_f64, 500.0, 700.0];
     let mut text = String::new();
+    let timestep = timestep_section(&temperatures);
     text.push_str("# Thermostat, lattice, and detector tests, Mishin Cu\n\n");
-    text.push_str("Our free-dumbbell defect D is about twice the Table 1 D_i of Mwungeli, Liu, and Demkowicz, Phys. Rev. Materials 9, 023601 (2025), which they quote from Ref. [12], B. Zhang et al., Phys. Rev. Materials 6, 053605 (2022). The first section shows from both papers and from our own trajectories that the two are different quantities. The rest repeats the D measurement under the paper's protocol (NPH for 30 ps, then NVE with velocity rescaling, at zero pressure), under Langevin with ten times weaker friction, and under Langevin at the zero-total-pressure lattice; and the whole-cell k with a Wigner-Seitz capture test under Langevin and NPH-then-NVE. Every campaign uses the same potential, 13³ cell, seeds, and blocks, and the timestep of the section that lists it. Each number below is read from the CSV named in its row.\n\n");
+    text.push_str("Our free-dumbbell defect D is about twice the Table 1 D_i of Mwungeli, Liu, and Demkowicz, Phys. Rev. Materials 9, 023601 (2025), which they quote from Ref. [12], B. Zhang et al., Phys. Rev. Materials 6, 053605 (2022). The first section shows from both papers and from our own trajectories that the two are different quantities. The rest repeats the D measurement under the paper's protocol (NPH for 30 ps, then NVE with velocity rescaling, at zero pressure), under Langevin with ten times weaker friction, and under Langevin at the zero-total-pressure lattice; and the whole-cell k with a Wigner-Seitz capture test under Langevin and NPH-then-NVE. Every campaign uses the same potential, 13³ cell, timestep, seeds, and blocks");
+    text.push_str(if timestep.is_some() {
+        ", except the shorter-timestep repeat of the Timestep section, which has half the blocks"
+    } else {
+        ""
+    });
+    text.push_str(". Each number below is read from the CSV named in its row.\n\n");
     text.push_str(&table_d_section(&temperatures));
+    if let Some(section) = &timestep {
+        text.push_str(section);
+    }
     text.push_str("## Free dumbbell diffusivity\n\n");
     text.push_str("D for one trajectory is the block mean of |Δr|² over 6τ of the doubly occupied Wigner-Seitz cell; σ is the standard error across trajectories. Ratios carry both errors in quadrature, and z is the difference over the two errors in quadrature. The reference for the last two columns is the first campaign.\n\n");
     let sources: Vec<(&SiaCampaign, Vec<SiaBlock>)> = SIA_D_CAMPAIGNS
