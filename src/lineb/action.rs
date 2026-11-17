@@ -104,7 +104,7 @@ pub(crate) fn assemble<S: PointSurface>(
         let mut diff = aligned.row(j + 1).to_owned();
         diff -= &aligned.row(j);
         let length = l2(diff.view());
-        if !(length > 0.0) {
+        if length <= 0.0 || length.is_nan() {
             return Err(SaddleError::Invalid(
                 "two tunneling images coincide, so the path has no tangent".into(),
             ));
@@ -162,7 +162,7 @@ pub(crate) fn assemble<S: PointSurface>(
         let mut spring_force = into;
         spring_force *= spring * gap;
         let f_norm = l2(force.row(end));
-        if !(f_norm > 0.0) {
+        if f_norm <= 0.0 || f_norm.is_nan() {
             return Err(SaddleError::Invalid(
                 "an endpoint force vanishes, so the equipotential has no direction".into(),
             ));
@@ -179,11 +179,11 @@ pub(crate) fn assemble<S: PointSurface>(
 
     let mut drive = drive_aligned.clone();
     if let (Some(atoms), Some(placements)) = (masses.atoms, &placements) {
-        for i in 0..n {
+        for (i, placement) in placements.iter().enumerate() {
             let mut row = drive.row(i).to_owned();
             align::restore_force(
                 &mut row,
-                &placements[i],
+                placement,
                 aligned.row(i),
                 masses.sqrt_mass.view(),
                 atoms,
@@ -203,7 +203,7 @@ pub(crate) fn assemble<S: PointSurface>(
 
 fn momentum(potential: f64, energy: f64) -> Result<f64, SaddleError> {
     let gap = potential - energy;
-    if !(gap > 0.0) {
+    if gap <= 0.0 || gap.is_nan() {
         return Err(SaddleError::Invalid(
             "a tunneling image is not above the path energy".into(),
         ));
@@ -305,7 +305,7 @@ mod tests {
             // Relative to the larger of the two slopes. When both vanish,
             // the absolute measure is the action change across the probe.
             let mut scale = predicted.abs().max(slope.abs());
-            if !(scale > 0.0) {
+            if scale <= 0.0 || scale.is_nan() {
                 scale = (up - down).abs();
             }
             assert!(

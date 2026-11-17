@@ -46,7 +46,7 @@ impl Curve {
                 length_sq += d * d;
             }
             let length = length_sq.sqrt();
-            if !(length > 0.0) {
+            if length <= 0.0 || length.is_nan() {
                 return Err(SaddleError::Invalid(
                     "a cubic tunneling path needs a positive chord between images".into(),
                 ));
@@ -114,7 +114,7 @@ fn sample<S: PointSurface>(
     let q = curve.at(lambda);
     let tangent = curve.tangent(lambda);
     let speed = l2(tangent.view());
-    if !(speed > 0.0) {
+    if speed <= 0.0 || speed.is_nan() {
         return Err(SaddleError::Invalid(
             "the cubic path has a vanishing tangent".into(),
         ));
@@ -139,14 +139,14 @@ fn sample<S: PointSurface>(
 fn end_rate(sample: &Sample, u: f64) -> Result<f64, SaddleError> {
     let rate = if sample.sigma > 0.0 && u > 0.0 {
         2.0 * u * sample.speed / sample.sigma
-    } else if !(u > 0.0) && !(sample.sigma > 0.0) {
-        if !(sample.slope > 0.0) {
+    } else if (u <= 0.0 || u.is_nan()) && (sample.sigma <= 0.0 || sample.sigma.is_nan()) {
+        if sample.slope <= 0.0 || sample.slope.is_nan() {
             return Err(SaddleError::Invalid(
                 "the potential does not rise as the path enters the barrier".into(),
             ));
         }
         2.0 * sample.speed / (2.0 * sample.slope).sqrt()
-    } else if !(u > 0.0) {
+    } else if u <= 0.0 || u.is_nan() {
         // `V > E` at the knot, so the `u = 0` sample of `2 u / σ` is zero.
         0.0
     } else {
@@ -207,7 +207,13 @@ fn integrate<S: PointSurface>(
     for j in 0..last {
         let (left, right) = (curve.knots[j], curve.knots[j + 1]);
         let (segment_action, segment_half) = if j == 0 || j + 1 == last {
-            end_integral(surface, masses, curve, energy, left, right, pairs, j == 0)?
+            let level = Level {
+                surface,
+                masses,
+                curve,
+                energy,
+            };
+            end_integral(&level, EndChord::new(left, right, j == 0)?, pairs)?
         } else {
             open_integral(surface, masses, curve, energy, left, right, pairs)?
         };
@@ -236,7 +242,7 @@ fn open_integral<S: PointSurface>(
     for i in 0..=intervals {
         let weight = simpson_weight(i, intervals);
         let sample = sample(surface, masses, curve, energy, left + h * i as f64)?;
-        if !(sample.sigma > 0.0) {
+        if sample.sigma <= 0.0 || sample.sigma.is_nan() {
             return Err(SaddleError::Invalid(
                 "the tunneling momentum vanishes in the interior of the path".into(),
             ));
@@ -247,34 +253,82 @@ fn open_integral<S: PointSurface>(
     Ok((action * h / 3.0, half * h / 3.0))
 }
 
-fn end_integral<S: PointSurface>(
-    surface: &S,
-    masses: &Masses,
-    curve: &Curve,
-    energy: f64,
+/// The fixed-energy problem on one spline.
+pub(crate) struct Level<'a, S> {
+    pub(crate) surface: &'a S,
+    pub(crate) masses: &'a Masses,
+    pub(crate) curve: &'a Curve,
+    pub(crate) energy: f64,
+}
+
+impl<S: PointSurface> Level<'_, S> {
+    fn sample(&self, lambda: f64) -> Result<Sample, SaddleError> {
+        sample(self.surface, self.masses, self.curve, self.energy, lambda)
+    }
+}
+
+/// A chord that ends at a turning knot, in the coordinate `u` with
+/// `λ = λ_turn ± u²`.
+#[derive(Clone, Copy)]
+struct EndChord {
     left: f64,
     right: f64,
-    pairs: usize,
     from_start: bool,
+    u_max: f64,
+}
+
+impl EndChord {
+    fn new(left: f64, right: f64, from_start: bool) -> Result<Self, SaddleError> {
+        let u_max = (right - left).sqrt();
+        if u_max <= 0.0 || u_max.is_nan() {
+            return Err(SaddleError::Invalid(
+                "an end chord of the tunneling path has no length".into(),
+            ));
+        }
+        Ok(Self {
+            left,
+            right,
+            from_start,
+            u_max,
+        })
+    }
+
+    /// `λ` at the distance `s` from the chord's path-order start.
+    fn lambda(&self, s: f64) -> f64 {
+        if self.from_start {
+            self.left + s * s
+        } else {
+            let u = self.u_max - s;
+            self.right - u * u
+        }
+    }
+
+    /// `u` at the distance `s` from the chord's path-order start.
+    fn u(&self, s: f64) -> f64 {
+        if self.from_start { s } else { self.u_max - s }
+    }
+}
+
+fn end_integral<S: PointSurface>(
+    level: &Level<'_, S>,
+    chord: EndChord,
+    pairs: usize,
 ) -> Result<(f64, f64), SaddleError> {
     let intervals = 2 * pairs;
-    let u_max = (right - left).sqrt();
-    let h = u_max / intervals as f64;
+    let h = chord.u_max / intervals as f64;
     let mut action = 0.0;
     for i in 0..=intervals {
         let weight = simpson_weight(i, intervals);
         let u = h * i as f64;
-        let lambda = if from_start {
-            left + u * u
+        let lambda = if chord.from_start {
+            chord.left + u * u
         } else {
-            right - u * u
+            chord.right - u * u
         };
-        let sample = sample(surface, masses, curve, energy, lambda)?;
+        let sample = level.sample(lambda)?;
         action += weight * sample.sigma * sample.speed * 2.0 * u;
     }
-    let clock = end_clock(
-        surface, masses, curve, energy, left, right, pairs, from_start,
-    )?;
+    let clock = end_clock(level, chord, pairs)?;
     let half = clock
         .last()
         .map(|(_, period)| *period)
@@ -287,73 +341,39 @@ fn end_integral<S: PointSurface>(
 /// from the turning knot inward on the left. A piece no wider than the
 /// caller's panel is halved until Simpson and its two halves agree.
 fn end_clock<S: PointSurface>(
-    surface: &S,
-    masses: &Masses,
-    curve: &Curve,
-    energy: f64,
-    left: f64,
-    right: f64,
+    level: &Level<'_, S>,
+    chord: EndChord,
     pairs: usize,
-    from_start: bool,
 ) -> Result<Vec<(f64, f64)>, SaddleError> {
-    let u_max = (right - left).sqrt();
-    if !(u_max > 0.0) {
-        return Err(SaddleError::Invalid(
-            "an end chord of the tunneling path has no length".into(),
-        ));
-    }
+    let u_max = chord.u_max;
     let panels = (2 * pairs) as f64;
     let panel = u_max / panels;
-    let tol = (right - left) / panels.powi(4);
+    let tol = (chord.right - chord.left) / panels.powi(4);
     let mut s = 0.0;
     let mut period = 0.0;
-    let mut out = vec![(end_lambda(left, right, from_start, u_max, 0.0), 0.0)];
+    let mut out = vec![(chord.lambda(0.0), 0.0)];
     while u_max > s {
         let mut du = panel.min(u_max - s);
         loop {
-            if !(du > 0.0) {
+            if du <= 0.0 || du.is_nan() {
                 return Err(SaddleError::Stalled(
                     "the end-chord period step underflowed".into(),
                 ));
             }
-            let coarse = simpson_s(
-                surface,
-                masses,
-                curve,
-                energy,
-                left,
-                right,
-                from_start,
-                u_max,
-                s,
-                s + du,
-            )?;
+            let coarse = simpson_s(level, chord, s, s + du)?;
             let mid = s + 0.5 * du;
-            let fine = simpson_s(
-                surface, masses, curve, energy, left, right, from_start, u_max, s, mid,
-            )? + simpson_s(
-                surface,
-                masses,
-                curve,
-                energy,
-                left,
-                right,
-                from_start,
-                u_max,
-                mid,
-                s + du,
-            )?;
+            let fine = simpson_s(level, chord, s, mid)? + simpson_s(level, chord, mid, s + du)?;
             let allowance = tol * du / u_max;
             if (fine - coarse).abs() <= allowance {
                 let next = s + du;
-                if !(next > s) {
+                if next <= s || next.is_nan() {
                     return Err(SaddleError::Stalled(
                         "the end-chord period step stopped advancing".into(),
                     ));
                 }
                 period += fine + (fine - coarse) / 15.0;
                 s = next;
-                out.push((end_lambda(left, right, from_start, u_max, s), period));
+                out.push((chord.lambda(s), period));
                 break;
             }
             du *= 0.5;
@@ -362,34 +382,17 @@ fn end_clock<S: PointSurface>(
     Ok(out)
 }
 
-fn end_lambda(left: f64, right: f64, from_start: bool, u_max: f64, s: f64) -> f64 {
-    if from_start {
-        left + s * s
-    } else {
-        let u = u_max - s;
-        right - u * u
-    }
-}
-
 fn simpson_s<S: PointSurface>(
-    surface: &S,
-    masses: &Masses,
-    curve: &Curve,
-    energy: f64,
-    left: f64,
-    right: f64,
-    from_start: bool,
-    u_max: f64,
+    level: &Level<'_, S>,
+    chord: EndChord,
     s0: f64,
     s1: f64,
 ) -> Result<f64, SaddleError> {
     let mid = 0.5 * (s0 + s1);
     let mut acc = 0.0;
     for (s, weight) in [(s0, 1.0), (mid, 4.0), (s1, 1.0)] {
-        let u = if from_start { s } else { u_max - s };
-        let lambda = end_lambda(left, right, from_start, u_max, s);
-        let taken = sample(surface, masses, curve, energy, lambda)?;
-        acc += weight * end_rate(&taken, u)?;
+        let taken = level.sample(chord.lambda(s))?;
+        acc += weight * end_rate(&taken, chord.u(s))?;
     }
     Ok(acc * (s1 - s0) / 6.0)
 }
@@ -416,7 +419,7 @@ fn dynamics<S: PointSurface>(
     let started = sample(surface, masses, curve, energy, 0.0)?;
     let mut velocity = started.sigma / started.speed;
     let accel0 = acceleration(surface, masses, curve, 0.0, velocity)?;
-    if !(accel0 > 0.0) && !(velocity > 0.0) {
+    if (accel0 <= 0.0 || accel0.is_nan()) && (velocity <= 0.0 || velocity.is_nan()) {
         return Err(SaddleError::Invalid(
             "the path does not move into the barrier at its first image".into(),
         ));
@@ -427,7 +430,7 @@ fn dynamics<S: PointSurface>(
     let mut time = 0.0;
     while lambda < length {
         let remaining = length - lambda;
-        if !(remaining > tolerance) {
+        if remaining <= tolerance || remaining.is_nan() {
             // The last gap is inside one accepted step. On the way into a
             // turning point, v = √(2 |∂V/∂λ| · remaining), so the gap
             // takes twice remaining/v.
@@ -436,7 +439,7 @@ fn dynamics<S: PointSurface>(
             }
             break;
         }
-        if !(dt > 0.0) {
+        if dt <= 0.0 || dt.is_nan() {
             return Err(SaddleError::Stalled(format!(
                 "the half-period step underflowed at parameter {lambda} of {length} with velocity {velocity}"
             )));
@@ -456,7 +459,7 @@ fn dynamics<S: PointSurface>(
                 lambda = length;
             } else {
                 let advanced_to = half_lambda;
-                if !(advanced_to > lambda) {
+                if advanced_to <= lambda || advanced_to.is_nan() {
                     return Err(SaddleError::Stalled(
                         "the half-period step stopped advancing along the path".into(),
                     ));
@@ -464,7 +467,7 @@ fn dynamics<S: PointSurface>(
                 lambda = advanced_to;
                 velocity = half_velocity;
                 time += dt;
-                if !(discrepancy * 32.0 > tolerance) {
+                if discrepancy * 32.0 <= tolerance || discrepancy.is_nan() {
                     dt *= 2.0;
                 }
             }
@@ -518,7 +521,7 @@ fn acceleration<S: PointSurface>(
     }
     let force = masses.weighted_force(gradient.view())?;
     let scale = tangent.dot(&tangent);
-    if !(scale > 0.0) {
+    if scale <= 0.0 || scale.is_nan() {
         return Err(SaddleError::Invalid(
             "the cubic path has a vanishing tangent".into(),
         ));
@@ -563,7 +566,7 @@ pub(crate) fn replicas<S: PointSurface>(
     let curve = Curve::new(weighted)?;
     let table = time_table(surface, masses, &curve, energy, pairs)?;
     let half = table[table.len() - 1].1;
-    if !(half > 0.0) {
+    if half <= 0.0 || half.is_nan() {
         return Err(SaddleError::Invalid(
             "the path has no imaginary-time duration".into(),
         ));
@@ -601,10 +604,13 @@ fn time_table<S: PointSurface>(
     for j in 0..last {
         let (left, right) = (curve.knots[j], curve.knots[j + 1]);
         if j == 0 || j + 1 == last {
-            let from_start = j == 0;
-            let samples = end_clock(
-                surface, masses, curve, energy, left, right, pairs, from_start,
-            )?;
+            let level = Level {
+                surface,
+                masses,
+                curve,
+                energy,
+            };
+            let samples = end_clock(&level, EndChord::new(left, right, j == 0)?, pairs)?;
             let gained = samples.last().map(|(_, period)| *period).ok_or_else(|| {
                 SaddleError::Invalid("the end chord produced no period samples".into())
             })?;
@@ -638,17 +644,17 @@ fn time_table<S: PointSurface>(
 
 fn invert_time(table: &[(f64, f64)], time: f64) -> Result<f64, SaddleError> {
     let last = table.len() - 1;
-    if !(time > table[0].1) {
+    if time <= table[0].1 || time.is_nan() {
         return Ok(table[0].0);
     }
-    if !(time < table[last].1) {
+    if time >= table[last].1 || time.is_nan() {
         return Ok(table[last].0);
     }
     let mut lo = 0;
     let mut hi = last;
     while hi - lo > 1 {
         let mid = (lo + hi) / 2;
-        if !(table[mid].1 > time) {
+        if table[mid].1 <= time || table[mid].1.is_nan() {
             lo = mid;
         } else {
             hi = mid;
@@ -657,7 +663,7 @@ fn invert_time(table: &[(f64, f64)], time: f64) -> Result<f64, SaddleError> {
     let (lambda_left, time_left) = table[lo];
     let (lambda_right, time_right) = table[hi];
     let span = time_right - time_left;
-    if !(span > 0.0) {
+    if span <= 0.0 || span.is_nan() {
         return Err(SaddleError::Invalid(
             "the imaginary-time table stalled between samples".into(),
         ));

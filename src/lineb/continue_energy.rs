@@ -14,31 +14,75 @@ use super::optimize::{LinebConfig, LinebPath, LinebSession, LinebStatus};
 use crate::error::SaddleError;
 use crate::minmode::PointSurface;
 
-/// Optimal tunneling paths at `E_saddle − ΔE`, `E_saddle − 2ΔE`, …
+/// Energy ladder of [`continue_from_mep`].
 ///
-/// `images` is the number of LI-NEB images at every energy. `max_steps`
-/// is the iteration budget of each energy. A level that is still running
-/// after that budget is an error.
+/// The first tunneling energy is `E_saddle − delta` and each of the
+/// `levels` energies is `delta` below the last. Every energy uses
+/// `images` LI-NEB images and at most `max_steps` optimizer steps.
+///
+/// Non-exhaustive: start from [`Continuation::new`] and chain setters.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct Continuation {
+    /// Energy step `ΔE` between levels, and from the MEP top to the first.
+    pub delta: f64,
+    /// LI-NEB images at every energy.
+    pub images: usize,
+    /// Number of energies.
+    pub levels: usize,
+    /// Optimizer step budget at each energy. A level still running after
+    /// it is an error.
+    pub max_steps: usize,
+}
+
+with_setters!(Continuation {
+    with_delta => delta: val f64,
+    with_images => images: val usize,
+    with_levels => levels: val usize,
+    with_max_steps => max_steps: val usize,
+});
+
+impl Continuation {
+    /// `levels` energies `delta` apart on `images` images, 1000 steps each.
+    pub fn new(delta: f64, images: usize, levels: usize) -> Self {
+        Self {
+            delta,
+            images,
+            levels,
+            max_steps: 1000,
+        }
+    }
+
+    fn check(&self) -> Result<(), SaddleError> {
+        if !(self.delta.is_finite() && self.delta > 0.0) {
+            return Err(SaddleError::Invalid(
+                "the tunneling energy step must be finite and positive".into(),
+            ));
+        }
+        if self.images < 3 || self.levels < 1 {
+            return Err(SaddleError::Invalid(
+                "continuation needs at least one level and three images".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Optimal tunneling paths at `E_saddle − ΔE`, `E_saddle − 2ΔE`, …
 pub fn continue_from_mep<S: PointSurface>(
     surface: &S,
     mep: ArrayView2<f64>,
     masses: &Masses,
     config: &LinebConfig,
-    delta: f64,
-    images: usize,
-    levels: usize,
-    max_steps: usize,
+    ladder: &Continuation,
 ) -> Result<Vec<LinebPath>, SaddleError> {
-    if !(delta.is_finite() && delta > 0.0) {
-        return Err(SaddleError::Invalid(
-            "the tunneling energy step must be finite and positive".into(),
-        ));
-    }
-    if images < 3 || levels < 1 {
-        return Err(SaddleError::Invalid(
-            "continuation needs at least one level and three images".into(),
-        ));
-    }
+    ladder.check()?;
+    let &Continuation {
+        delta,
+        images,
+        levels,
+        max_steps,
+    } = ladder;
     if mep.nrows() < 3 || mep.ncols() != masses.dof() {
         return Err(SaddleError::Shape(
             "the MEP needs at least three images and one mass per coordinate".into(),
@@ -150,7 +194,7 @@ fn crossing_toward_start(
     }
     // The segment (index - 1, index) changes from at or below the target
     // to above it.
-    if !(energies[index] > target) {
+    if energies[index] <= target || energies[index].is_nan() {
         return Err(SaddleError::Invalid(
             "the reactant-side MEP crossing has no image above the tunneling energy".into(),
         ));
@@ -169,7 +213,7 @@ fn crossing_toward_end(energies: &[f64], saddle: usize, target: f64) -> Result<u
             "the MEP never falls to the tunneling energy on the product side".into(),
         ));
     }
-    if !(energies[index] > target) {
+    if energies[index] <= target || energies[index].is_nan() {
         return Err(SaddleError::Invalid(
             "the product-side MEP crossing has no image above the tunneling energy".into(),
         ));
@@ -198,8 +242,8 @@ fn onto_segment<S: PointSurface>(
     let mut eb = right_energy;
     loop {
         if let Some(above) = strictly_above(&a, ea, &b, eb, target) {
-            let difference = &b - &a;
-            if !(l2(difference.view()) > 0.0) {
+            let width = l2((&b - &a).view());
+            if width == 0.0 || width.is_nan() {
                 return Ok(above);
             }
             let mid = (&a + &b) * 0.5;
@@ -238,7 +282,7 @@ fn strictly_above(
     eb: f64,
     target: f64,
 ) -> Option<Array1<f64>> {
-    if ea > target && (!(eb > target) || (ea - target).abs() <= (eb - target).abs()) {
+    if ea > target && (eb <= target || eb.is_nan() || (ea - target).abs() <= (eb - target).abs()) {
         Some(a.clone())
     } else if eb > target {
         Some(b.clone())
@@ -286,13 +330,13 @@ fn walk_to_energy<S: PointSurface>(
     target: f64,
 ) -> Result<Array1<f64>, SaddleError> {
     let spacing = l2((&point - &neighbor).view());
-    if !(spacing > 0.0) {
+    if spacing <= 0.0 || spacing.is_nan() {
         return Err(SaddleError::Invalid(
             "an endpoint has no chord to walk along".into(),
         ));
     }
     let mut energy = potential(surface, masses, point.view())?;
-    if !(energy > target) {
+    if energy <= target || energy.is_nan() {
         return Err(SaddleError::Invalid(
             "an endpoint is already at or below the next tunneling energy".into(),
         ));
@@ -302,7 +346,7 @@ fn walk_to_energy<S: PointSurface>(
         let (_, gradient) = surface.eval(x.view())?;
         let force = masses.weighted_force(gradient.view())?;
         let norm = l2(force.view());
-        if !(norm > 0.0) {
+        if norm <= 0.0 || norm.is_nan() {
             return Err(SaddleError::Invalid(
                 "the downhill walk reached a vanishing force above the tunneling energy".into(),
             ));
@@ -310,17 +354,18 @@ fn walk_to_energy<S: PointSurface>(
         let mut next = point.clone();
         next.scaled_add(spacing / norm, &force);
         let next_energy = potential(surface, masses, next.view())?;
-        if !(next_energy < energy) {
+        if next_energy >= energy || next_energy.is_nan() {
             return Err(SaddleError::Invalid(
                 "walking along the force did not lower the energy".into(),
             ));
         }
-        if !(l2((&next - &point).view()) > 0.0) {
+        let advance = l2((&next - &point).view());
+        if advance == 0.0 || advance.is_nan() {
             return Err(SaddleError::Stalled(
                 "the downhill walk stopped above the tunneling energy".into(),
             ));
         }
-        if !(next_energy > target) {
+        if next_energy <= target || next_energy.is_nan() {
             return onto_segment(
                 surface,
                 masses,
@@ -362,7 +407,7 @@ fn resample(points: &[Array1<f64>], images: usize) -> Result<Array2<f64>, Saddle
         cumulative.push(cumulative[cumulative.len() - 1] + chord);
     }
     let total = cumulative[cumulative.len() - 1];
-    if !(total > 0.0) {
+    if total <= 0.0 || total.is_nan() {
         return Err(SaddleError::Invalid(
             "the polyline to resample has no length".into(),
         ));
@@ -373,7 +418,9 @@ fn resample(points: &[Array1<f64>], images: usize) -> Result<Array2<f64>, Saddle
     let mut segment = 0;
     for image in 1..images - 1 {
         let distance = total * image as f64 / (images - 1) as f64;
-        while segment + 2 < cumulative.len() && !(cumulative[segment + 1] > distance) {
+        while segment + 2 < cumulative.len()
+            && (cumulative[segment + 1] <= distance || cumulative[segment + 1].is_nan())
+        {
             segment += 1;
         }
         let (left, right) = (cumulative[segment], cumulative[segment + 1]);
