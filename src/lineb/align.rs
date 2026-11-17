@@ -146,7 +146,7 @@ fn centre_of_mass(
             moment[axis] += root * q[3 * atom + axis];
         }
     }
-    if !(mass > 0.0) {
+    if mass <= 0.0 || mass.is_nan() {
         return Err(SaddleError::Invalid(
             "a molecule needs a positive total mass".into(),
         ));
@@ -231,15 +231,15 @@ fn evecs_value(evals: &[f64; 4], k: usize) -> f64 {
 /// sum of squares, which is the fixed point of the iteration.
 fn jacobi4(mut a: [[f64; 4]; 4]) -> Result<([f64; 4], [[f64; 4]; 4]), SaddleError> {
     let mut v = [[0.0; 4]; 4];
-    for i in 0..4 {
-        v[i][i] = 1.0;
+    for (i, row) in v.iter_mut().enumerate() {
+        row[i] = 1.0;
     }
     let mut off = off_diagonal(&a);
     loop {
         for p in 0..4 {
             for q in (p + 1)..4 {
                 let apq = a[p][q];
-                if !(apq.abs() > 0.0) {
+                if apq == 0.0 || apq.is_nan() {
                     continue;
                 }
                 let theta = (a[q][q] - a[p][p]) / (2.0 * apq);
@@ -264,16 +264,16 @@ fn jacobi4(mut a: [[f64; 4]; 4]) -> Result<([f64; 4], [[f64; 4]; 4]), SaddleErro
                     a[i][q] = s * aip + c * aiq;
                     a[q][i] = a[i][q];
                 }
-                for row in 0..4 {
-                    let vip = v[row][p];
-                    let viq = v[row][q];
-                    v[row][p] = c * vip - s * viq;
-                    v[row][q] = s * vip + c * viq;
+                for row in v.iter_mut() {
+                    let vip = row[p];
+                    let viq = row[q];
+                    row[p] = c * vip - s * viq;
+                    row[q] = s * vip + c * viq;
                 }
             }
         }
         let next = off_diagonal(&a);
-        if !(next < off) {
+        if next >= off || next.is_nan() {
             break;
         }
         off = next;
@@ -287,9 +287,9 @@ fn jacobi4(mut a: [[f64; 4]; 4]) -> Result<([f64; 4], [[f64; 4]; 4]), SaddleErro
 
 fn off_diagonal(a: &[[f64; 4]; 4]) -> f64 {
     let mut sum = 0.0;
-    for p in 0..4 {
-        for q in (p + 1)..4 {
-            sum += a[p][q] * a[p][q];
+    for (p, row) in a.iter().enumerate() {
+        for value in &row[p + 1..] {
+            sum += value * value;
         }
     }
     sum
