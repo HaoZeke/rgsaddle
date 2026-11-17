@@ -161,28 +161,6 @@ impl SolidDimerConfig {
         Self::new(search).with_mask(CellMask::frozen())
     }
 
-    /// Dimer or Lanczos search and its rgmin translator.
-    #[must_use]
-    pub fn with_search(mut self, search: MinModeConfig) -> Self {
-        self.search = search;
-        self
-    }
-
-    /// Strains that move.
-    #[must_use]
-    pub fn with_mask(mut self, mask: CellMask) -> Self {
-        self.mask = mask;
-        self
-    }
-
-    /// External load in the sign of a pressure, positive inward. The
-    /// upper triangle is folded down.
-    #[must_use]
-    pub fn with_external_stress(mut self, stress: M3) -> Self {
-        self.external_stress = stress;
-        self
-    }
-
     /// Hydrostatic pressure. A positive value pushes the cell inward.
     #[must_use]
     pub fn with_pressure(mut self, pressure: f64) -> Self {
@@ -192,47 +170,23 @@ impl SolidDimerConfig {
         self
     }
 
-    /// Positive scale on the Jacobian.
-    #[must_use]
-    pub fn with_weight(mut self, weight: f64) -> Self {
-        self.weight = weight;
-        self
-    }
-
-    /// Set [`Self::index`]. A bare value is `Some`; `None` accepts the
-    /// minimum-mode test alone.
-    #[must_use]
-    pub fn with_index(mut self, index: impl Into<Option<IndexCheck>>) -> Self {
-        self.index = index.into();
-        self
-    }
-
     /// Require one negative projected eigenvalue at convergence.
     #[must_use]
     pub fn with_index_check(mut self, index: IndexCheck) -> Self {
         self.index = Some(index);
         self
     }
-
-    /// Tighten a flat negative mode to a harmonic residual of `flat`.
-    ///
-    /// Zero restores the search tolerance. A non-positive value other
-    /// than zero is refused by [`SolidDimer::new`].
-    #[must_use]
-    pub fn with_flat(mut self, flat: f64) -> Self {
-        self.flat = flat;
-        self
-    }
-
-    /// Run [`check_cauchy_stress`] before the first step, and stop
-    /// with [`SaddleError::Surface`] while the surface stress disagrees
-    /// with its energy. A frozen cell reads no stress and skips it.
-    #[must_use]
-    pub fn with_stress_check(mut self, check: StressCheck) -> Self {
-        self.stress_check = Some(check);
-        self
-    }
 }
+
+with_setters!(SolidDimerConfig {
+    with_search => search: val MinModeConfig,
+    with_mask => mask: val CellMask,
+    with_external_stress => external_stress: val M3,
+    with_weight => weight: val f64,
+    with_index => index: opt IndexCheck,
+    with_flat => flat: val f64,
+    with_stress_check => stress_check: opt StressCheck,
+});
 
 /// How a converged solid-state dimer checks that it is index 1.
 ///
