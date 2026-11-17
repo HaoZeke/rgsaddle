@@ -159,6 +159,48 @@ class SessionReport:
     def rotations(self) -> int:
         """Dimer rotations or Lanczos actions."""
 
+    @property
+    def saddle_index(self) -> int:
+        """Saddle index certified at the session's current position, or -1."""
+
+class SaddleIndex:
+    @property
+    def certified(self) -> bool:
+        """
+        True when a certificate holds for the current point; otherwise the counts are the session's.
+        """
+
+    @property
+    def index(self) -> int:
+        """Curvatures under -negative_tol; 1 for a first-order saddle."""
+
+    @property
+    def converged(self) -> bool:
+        """Every resolved pair met residual_tol, or the space filled."""
+
+    @property
+    def curvatures(self) -> NDArray[numpy.float64]:
+        """Lowest curvatures resolved, ascending, energy per length squared."""
+
+    @property
+    def evaluations(self) -> int:
+        """Surface evaluations of this certificate."""
+
+    @property
+    def total_evaluations(self) -> int:
+        """
+        Surface evaluations of every certificate and escape push of the session.
+        """
+
+    @property
+    def escapes(self) -> int:
+        """Escape pushes of the session."""
+
+def saddle_index(surface: Callable[..., tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]], x: numpy.typing.NDArray[numpy.float64], gradient: numpy.typing.NDArray[numpy.float64] | None = None, mode: numpy.typing.NDArray[numpy.float64] | None = None, fixed: numpy.typing.NDArray[numpy.uint8] | None = None, lowest: int = 4, max_actions: int = 100, dr: float = 0.001, residual_tol: float = 0.01, negative_tol: float = 0.001) -> SaddleIndex:
+    """
+    Saddle index of x (ABI minor 40): the lowest curvatures on the free coordinates by block Lanczos on forward-difference Hessian actions, each one surface call. surface(x) is one image shaped (1, 3N). gradient at x saves one call; mode seeds the space; fixed is one uint8 per atom, 1 for a fixed atom.
+    """
+
 def project_band(positions: numpy.typing.NDArray[numpy.float64], energies: numpy.typing.NDArray[numpy.float64], gradients: numpy.typing.NDArray[numpy.float64], k: float = 0.1, climb: bool = False, projection: str = 'neb', tangent: str = 'improved', remove_translation: bool = False, force_tol: float = 0.001, fixed: numpy.typing.NDArray[numpy.uint8] | None = None) -> tuple[numpy.typing.NDArray[numpy.float64], int]:
     """
     Project an evaluated band. Returns (forces, ci_index). forces is flat, one row per image including zero endpoints, in the ASE force convention. climb selects the interior image by the endpoint-slope rule on this call; a higher endpoint that slopes into the band does not climb. Units are the caller's. k is energy per length squared. fixed is one uint8 per atom, 1 for a fixed atom (ABI minor 39): its force rows are zero, tangents and springs use the free atoms, and the mean force stays. The endpoints must agree on every fixed atom.
@@ -189,7 +231,9 @@ class MinMode:
         """Refresh the lowest mode. surface(x) is one image shaped (1, 3N)."""
 
     def step(self, surface: Callable[..., tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]]) -> SessionReport:
-        """Estimate the mode, invert the force, and take one translation."""
+        """
+        Estimate the mode, invert the force, and take one translation. A converged step certifies the saddle index; with escape_attempts set, a step that pushes off a saddle of index two or more reports status 0.
+        """
 
     def set_position(self, x: Annotated[NDArray[numpy.float64], dict(shape=(None,), order='C', device='cpu', writable=False)], gradient: object | None = None) -> None:
         """
@@ -201,6 +245,16 @@ class MinMode:
 
     def mode(self) -> NDArray[numpy.float64]:
         """Copy of the current mode."""
+
+    def saddle_index(self) -> SaddleIndex:
+        """
+        Certificate of the current position (ABI minor 40). On by default; a push or a move drops it.
+        """
+
+    def set_saddle_check(self, enabled: bool = True, escape_attempts: int = 0, escape_push: float = 0.1, lowest: int = 4, max_actions: int = 100, dr: float = 0.001, residual_tol: float = 0.01, negative_tol: float = 0.001) -> None:
+        """
+        Replace the saddle check. enabled=False turns it off. escape_attempts above 0 pushes a converged point of index two or more by escape_push, the largest per-atom displacement, doubled on each later attempt, along its extra negative modes and searches again.
+        """
 
 class SellaSaddle:
     def __init__(self, x: Annotated[NDArray[numpy.float64], dict(shape=(None,), order='C', device='cpu', writable=False)], masses: Annotated[NDArray[numpy.float64], dict(shape=(None,), order='C', device='cpu', writable=False)], order: int = 1, delta: float = 0.1, force_tol: float = 0.001) -> None:

@@ -17,7 +17,7 @@ from typing import Any, Literal
 import numpy as np
 from numpy.typing import NDArray
 
-from rgsaddle._core import ClaimSlot
+from rgsaddle._core import ClaimSlot, SaddleIndex
 
 Float64 = NDArray[np.float64]
 Int64 = NDArray[np.int64]
@@ -312,6 +312,57 @@ def _fixed_atoms(images: list[Any]) -> Uint8 | None:
     return masks[0]
 
 
+def saddle_index(
+    atoms: Any,
+    mode: Any = None,
+    *,
+    lowest: int = 4,
+    max_actions: int = 100,
+    dr: float = 1e-3,
+    residual_tol: float = 1e-2,
+    negative_tol: float = 1e-3,
+) -> SaddleIndex:
+    """Saddle index of ``atoms`` on its calculator (rgsaddle ABI minor 40).
+
+    The lowest curvatures on the coordinates ``FixAtoms`` leaves free
+    come from block Lanczos on forward-difference Hessian actions of
+    displacement ``dr``, one force call each, in a space seeded with
+    ``mode`` when it is given and with pseudo-random vectors. ``index``
+    counts the curvatures under ``-negative_tol``: 1 for a first-order
+    saddle. ``atoms`` is left where it was.
+    """
+    from rgsaddle._core import saddle_index as certify
+
+    if getattr(atoms, "calc", None) is None:
+        raise ValueError("atoms has no calculator")
+    count = len(atoms)
+    saved = np.array(atoms.get_positions(), dtype=np.float64, copy=True)
+
+    def surface(positions: Float64) -> tuple[Float64, Float64]:
+        try:
+            row = np.asarray(positions, dtype=np.float64).reshape(count, 3)
+            atoms.set_positions(row, apply_constraint=False)
+            energy = float(atoms.get_potential_energy())
+            forces = atoms.get_forces(apply_constraint=False)
+            gradient = -np.ascontiguousarray(forces, dtype=np.float64).reshape(1, -1)
+        finally:
+            atoms.set_positions(saved, apply_constraint=False)
+        return np.array([energy], dtype=np.float64), gradient
+
+    seed = None if mode is None else np.ascontiguousarray(mode, dtype=np.float64).reshape(-1)
+    return certify(
+        surface,
+        saved.reshape(-1),
+        mode=seed,
+        fixed=_fixed_atoms([atoms]),
+        lowest=lowest,
+        max_actions=max_actions,
+        dr=dr,
+        residual_tol=residual_tol,
+        negative_tol=negative_tol,
+    )
+
+
 class _NebView:
     """ASE optimizable view of interior images."""
 
@@ -504,6 +555,22 @@ class NEB:
         self.emax = float(np.max(interior)) if interior.size else float("nan")
         self.ci = None if int(ci) < 0 else int(ci)
         return np.ascontiguousarray(forces[1:-1].reshape(-1, 3), dtype=np.float64)
+
+    def saddle_index(self, **options: Any) -> SaddleIndex:
+        """Saddle index of the climbing image, seeded with its tangent.
+
+        Call it once the band has converged with ``climb=True``.
+        ``options`` are the keywords of :func:`saddle_index`. A band
+        whose start shares a symmetry with the surface can converge on a
+        saddle of higher index; ``index`` above 1 says so.
+        """
+        if self.ci is None:
+            self.get_forces()
+        if self.ci is None:
+            raise ValueError("no interior image climbs")
+        positions = _image_positions(self.images)
+        tangent = positions[self.ci + 1] - positions[self.ci - 1]
+        return saddle_index(self.images[self.ci], tangent, **options)
 
 
 def _effective_force(forces: Float64, mode: Float64, curvature: float) -> Float64:

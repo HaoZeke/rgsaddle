@@ -13,12 +13,14 @@ from enum import IntEnum
 from rgsaddle._core import (
     ConnectReport as ConnectReport,
     NumericalError as NumericalError,
+    SaddleIndex as SaddleIndex,
     Stencil as Stencil,
     StencilReport as StencilReport,
     connect as connect,
     last_error as last_error,
     raise_status as raise_status,
     reparametrize as reparametrize,
+    saddle_index as saddle_index,
     version as _version,
 )
 
@@ -101,6 +103,7 @@ __all__ = [
     "MinModeKind",
     "NumericalError",
     "RestrictedKind",
+    "SaddleIndex",
     "Stencil",
     "StencilReport",
     "__version__",
@@ -108,4 +111,5 @@ __all__ = [
     "last_error",
     "raise_status",
     "reparametrize",
+    "saddle_index",
 ]

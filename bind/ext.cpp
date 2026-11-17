@@ -839,11 +839,12 @@ struct SessionReport {
   int evaluations = 0;
   std::int64_t ci_index = -1;
   std::int64_t rotations = 0;
+  std::int64_t saddle_index = -1;
 };
 
 SessionReport report_from(const rgsaddle_report_t &report) {
   return SessionReport{report.status, report.max_force, report.curvature, report.iteration,
-                       report.evaluations, report.ci_index, report.rotations};
+                       report.evaluations, report.ci_index, report.rotations, -1};
 }
 
 template <typename Call>
@@ -892,6 +893,147 @@ struct PyMinMode {
     }
   }
 };
+
+struct SaddleIndexPy {
+  bool certified = false;
+  int index = 0;
+  bool converged = false;
+  std::vector<double> curvatures;
+  std::int64_t evaluations = 0;
+  std::int64_t total_evaluations = 0;
+  std::int64_t escapes = 0;
+};
+
+SaddleIndexPy saddle_index_from(const rgsaddle_saddle_index_t &raw, std::vector<double> curvatures) {
+  const auto resolved = static_cast<std::size_t>(std::max(raw.n_curvatures, 0));
+  if (curvatures.size() > resolved) {
+    curvatures.resize(resolved);
+  }
+  SaddleIndexPy out;
+  out.certified = raw.certified != 0;
+  out.index = raw.index;
+  out.converged = raw.converged != 0;
+  out.curvatures = std::move(curvatures);
+  out.evaluations = raw.evaluations;
+  out.total_evaluations = raw.total_evaluations;
+  out.escapes = raw.escapes;
+  return out;
+}
+
+std::int32_t saddle_count(std::int64_t value, const char *name) {
+  if (value < 0 || value > INT32_MAX) {
+    throw nb::value_error((std::string(name) + " must be a count that fits 32 bits").c_str());
+  }
+  return static_cast<std::int32_t>(value);
+}
+
+rgsaddle_saddle_check_t saddle_check_of(std::int64_t lowest, std::int64_t max_actions, double dr,
+                                        double residual_tol, double negative_tol,
+                                        std::int64_t escape_attempts, double escape_push) {
+  rgsaddle_saddle_check_t check{};
+  const auto status = rgsaddle_saddle_check_default(&check);
+  if (status != RGSADDLE_OK) {
+    status_error(status);
+  }
+  check.lowest = saddle_count(lowest, "lowest");
+  check.max_actions = saddle_count(max_actions, "max_actions");
+  check.dr = dr;
+  check.residual_tol = residual_tol;
+  check.negative_tol = negative_tol;
+  check.escape_attempts = saddle_count(escape_attempts, "escape_attempts");
+  check.escape_push = escape_push;
+  return check;
+}
+
+SaddleIndexPy minmode_saddle_index(const PyMinMode &self) {
+  rgsaddle_saddle_index_t raw{};
+  auto status = rgsaddle_minmode_saddle_index(self.handle, &raw, nullptr, 0);
+  if (status != RGSADDLE_OK) {
+    status_error(status);
+  }
+  std::vector<double> curvatures(static_cast<std::size_t>(std::max(raw.n_curvatures, 0)));
+  if (!curvatures.empty()) {
+    status = rgsaddle_minmode_saddle_index(self.handle, &raw, curvatures.data(),
+                                           static_cast<std::int64_t>(curvatures.size()));
+    if (status != RGSADDLE_OK) {
+      status_error(status);
+    }
+  }
+  return saddle_index_from(raw, std::move(curvatures));
+}
+
+SessionReport with_saddle_index(SessionReport report, const PyMinMode &self) {
+  rgsaddle_saddle_index_t raw{};
+  if (rgsaddle_minmode_saddle_index(self.handle, &raw, nullptr, 0) == RGSADDLE_OK && raw.certified) {
+    report.saddle_index = raw.index;
+  }
+  return report;
+}
+
+void minmode_set_saddle_check(PyMinMode &self, bool enabled, std::int64_t escape_attempts,
+                              double escape_push, std::int64_t lowest, std::int64_t max_actions,
+                              double dr, double residual_tol, double negative_tol) {
+  rgsaddle_status_t status = RGSADDLE_OK;
+  if (enabled) {
+    const auto check = saddle_check_of(lowest, max_actions, dr, residual_tol, negative_tol,
+                                       escape_attempts, escape_push);
+    status = rgsaddle_minmode_set_saddle_check(self.handle, &check);
+  } else {
+    status = rgsaddle_minmode_set_saddle_check(self.handle, nullptr);
+  }
+  if (status != RGSADDLE_OK) {
+    status_error(status);
+  }
+}
+
+SaddleIndexPy saddle_index_py(nb::callable fn, Vector x, nb::handle gradient, nb::handle mode,
+                              nb::handle fixed, std::int64_t lowest, std::int64_t max_actions,
+                              double dr, double residual_tol, double negative_tol) {
+  if (x.shape(0) <= 0 || x.shape(0) % 3 != 0) {
+    throw nb::value_error("position must hold a positive multiple of three values");
+  }
+  const auto dof = static_cast<std::int64_t>(x.shape(0));
+  auto optional_vector = [&](nb::handle value, const char *name) -> std::vector<double> {
+    if (value.is_none()) {
+      return {};
+    }
+    auto view = nb::cast<Vector>(value);
+    if (static_cast<std::int64_t>(view.shape(0)) != dof) {
+      throw nb::value_error((std::string(name) + " length must match the position").c_str());
+    }
+    return std::vector<double>(view.data(), view.data() + view.shape(0));
+  };
+  const auto grad = optional_vector(gradient, "gradient");
+  const auto seed = optional_vector(mode, "mode");
+  std::vector<std::uint8_t> mask;
+  if (!fixed.is_none()) {
+    auto view = nb::cast<nb::ndarray<const std::uint8_t, nb::ndim<1>, nb::c_contig, nb::device::cpu>>(fixed);
+    if (static_cast<std::int64_t>(view.shape(0)) != dof / 3) {
+      throw nb::value_error("fixed must hold one entry per atom");
+    }
+    mask.assign(view.data(), view.data() + view.shape(0));
+  }
+  const auto check = saddle_check_of(lowest, max_actions, dr, residual_tol, negative_tol, 0, 0.1);
+  rgbind::CallContext ctx;
+  ConnectCallback state{&fn, &ctx};
+  rgsaddle_saddle_index_t raw{};
+  std::vector<double> curvatures(static_cast<std::size_t>(dof));
+  rgsaddle_status_t status = RGSADDLE_OK;
+  {
+    nb::gil_scoped_release release;
+    status = rgsaddle_saddle_index(&check, dof / 3, x.data(), grad.empty() ? nullptr : grad.data(),
+                                   seed.empty() ? nullptr : seed.data(),
+                                   mask.empty() ? nullptr : mask.data(), connect_python_surface,
+                                   &state, &raw, curvatures.data(), dof);
+  }
+  if (ctx.has_error()) {
+    ctx.rethrow_if_set();
+  }
+  if (status != RGSADDLE_OK) {
+    status_error(status);
+  }
+  return saddle_index_from(raw, std::move(curvatures));
+}
 
 struct PySella {
   RgsaddleSellaSaddle *handle = nullptr;
@@ -1250,7 +1392,39 @@ NB_MODULE(_core, m) {
       .def_ro("iteration", &SessionReport::iteration, "Steps taken.")
       .def_ro("evaluations", &SessionReport::evaluations, "Surface evaluations in this call.")
       .def_ro("ci_index", &SessionReport::ci_index, "Climbing image, or -1.")
-      .def_ro("rotations", &SessionReport::rotations, "Dimer rotations or Lanczos actions.");
+      .def_ro("rotations", &SessionReport::rotations, "Dimer rotations or Lanczos actions.")
+      .def_ro("saddle_index", &SessionReport::saddle_index,
+              "Saddle index certified at the session's current position, or -1.");
+
+  nb::class_<SaddleIndexPy>(m, "SaddleIndex")
+      .def_ro("certified", &SaddleIndexPy::certified,
+              "True when a certificate holds for the current point; otherwise the counts are "
+              "the session's.")
+      .def_ro("index", &SaddleIndexPy::index, "Curvatures under -negative_tol; 1 for a first-order saddle.")
+      .def_ro("converged", &SaddleIndexPy::converged,
+              "Every resolved pair met residual_tol, or the space filled.")
+      .def_prop_ro("curvatures", [](const SaddleIndexPy &self) { return copy_vector(self.curvatures); },
+                   nb::rv_policy::move, "Lowest curvatures resolved, ascending, energy per length squared.")
+      .def_ro("evaluations", &SaddleIndexPy::evaluations, "Surface evaluations of this certificate.")
+      .def_ro("total_evaluations", &SaddleIndexPy::total_evaluations,
+              "Surface evaluations of every certificate and escape push of the session.")
+      .def_ro("escapes", &SaddleIndexPy::escapes, "Escape pushes of the session.");
+
+  m.def(
+      "saddle_index", &saddle_index_py, nb::arg("surface"), nb::arg("x").noconvert(),
+      nb::arg("gradient") = nb::none(), nb::arg("mode") = nb::none(), nb::arg("fixed") = nb::none(),
+      nb::arg("lowest") = 4, nb::arg("max_actions") = 100, nb::arg("dr") = 1e-3,
+      nb::arg("residual_tol") = 1e-2, nb::arg("negative_tol") = 1e-3,
+      nb::sig("def saddle_index(surface: collections.abc.Callable[..., "
+              "tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]], "
+              "x: numpy.typing.NDArray[numpy.float64], gradient: numpy.typing.NDArray[numpy.float64] | "
+              "None = None, mode: numpy.typing.NDArray[numpy.float64] | None = None, fixed: "
+              "numpy.typing.NDArray[numpy.uint8] | None = None, lowest: int = 4, max_actions: int = 100, "
+              "dr: float = 0.001, residual_tol: float = 0.01, negative_tol: float = 0.001) -> SaddleIndex"),
+      "Saddle index of x (ABI minor 40): the lowest curvatures on the free coordinates by block "
+      "Lanczos on forward-difference Hessian actions, each one surface call. surface(x) is one "
+      "image shaped (1, 3N). gradient at x saves one call; mode seeds the space; fixed is one "
+      "uint8 per atom, 1 for a fixed atom.");
 
   m.def(
       "project_band", &project_band, nb::arg("positions").noconvert(), nb::arg("energies").noconvert(),
@@ -1321,9 +1495,11 @@ NB_MODULE(_core, m) {
       .def(
           "estimate",
           [](PyMinMode &self, nb::callable fn) {
-            return run_surface(fn, [&](rgsaddle_surface_fn surface, void *user, rgsaddle_report_t *out) {
-              return rgsaddle_minmode_estimate(self.handle, surface, user, out);
-            });
+            return with_saddle_index(
+                run_surface(fn, [&](rgsaddle_surface_fn surface, void *user, rgsaddle_report_t *out) {
+                  return rgsaddle_minmode_estimate(self.handle, surface, user, out);
+                }),
+                self);
           },
           nb::arg("surface"),
           nb::sig("def estimate(self, surface: collections.abc.Callable[..., "
@@ -1333,15 +1509,19 @@ NB_MODULE(_core, m) {
       .def(
           "step",
           [](PyMinMode &self, nb::callable fn) {
-            return run_surface(fn, [&](rgsaddle_surface_fn surface, void *user, rgsaddle_report_t *out) {
-              return rgsaddle_minmode_step(self.handle, surface, user, out);
-            });
+            return with_saddle_index(
+                run_surface(fn, [&](rgsaddle_surface_fn surface, void *user, rgsaddle_report_t *out) {
+                  return rgsaddle_minmode_step(self.handle, surface, user, out);
+                }),
+                self);
           },
           nb::arg("surface"),
           nb::sig("def step(self, surface: collections.abc.Callable[..., "
                   "tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]]) "
                   "-> SessionReport"),
-          "Estimate the mode, invert the force, and take one translation.")
+          "Estimate the mode, invert the force, and take one translation. A converged step "
+          "certifies the saddle index; with escape_attempts set, a step that pushes off a "
+          "saddle of index two or more reports status 0.")
       .def(
           "set_position", &minmode_set_position, nb::arg("x").noconvert(), nb::arg("gradient") = nb::none(),
           "Move to a new point. gradient, when given, skips the next centre evaluation.")
@@ -1366,7 +1546,18 @@ NB_MODULE(_core, m) {
             }
             return copy_vector(out);
           },
-          "Copy of the current mode.");
+          "Copy of the current mode.")
+      .def("saddle_index", &minmode_saddle_index,
+           "Certificate of the current position (ABI minor 40). On by default; a push or a move "
+           "drops it.")
+      .def("set_saddle_check", &minmode_set_saddle_check, nb::arg("enabled") = true,
+           nb::arg("escape_attempts") = 0, nb::arg("escape_push") = 0.1, nb::arg("lowest") = 4,
+           nb::arg("max_actions") = 100, nb::arg("dr") = 1e-3, nb::arg("residual_tol") = 1e-2,
+           nb::arg("negative_tol") = 1e-3,
+           "Replace the saddle check. enabled=False turns it off. escape_attempts above 0 pushes "
+           "a converged point of index two or more by escape_push, the largest per-atom "
+           "displacement, doubled on each later attempt, along its extra negative modes and "
+           "searches again.");
 
   nb::class_<PySella>(m, "SellaSaddle")
       .def(
