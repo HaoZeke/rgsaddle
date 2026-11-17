@@ -27,7 +27,7 @@ fn main() {
         ("ode12r", rgmin::Method::Ode12r),
     ];
     let mut csv = String::from(
-        "method,precon,atoms,fixed,images,force_tol,converged,steps,force_calls,force_calls_per_image,wall_ms,saddle_energy\n",
+        "method,precon,atoms,fixed,images,force_tol,converged,steps,force_calls,force_calls_per_image,wall_ms,climbing_image_energy\n",
     );
     for (name, method) in rows {
         for precon in [None, Some(ExpBandPrecon::default())] {

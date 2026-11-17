@@ -1,4 +1,4 @@
-method,precon,atoms,fixed,images,force_tol,converged,steps,force_calls,force_calls_per_image,wall_ms,saddle_energy
+method,precon,atoms,fixed,images,force_tol,converged,steps,force_calls,force_calls_per_image,wall_ms,climbing_image_energy
 fire,none,37,9,7,0.001,true,57,342,68.40,3.8,-50.650375248
 fire,exp,37,9,7,0.001,true,80,459,91.80,16.4,-50.650375325
 lbfgs,none,37,9,7,0.001,true,20,107,21.40,1.2,-50.650375506
