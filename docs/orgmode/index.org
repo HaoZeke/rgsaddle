@@ -87,6 +87,7 @@ while report.status != BandStatus::Converged {
    howto/formal
    explanation/mep
    explanation/one-stencil
+   explanation/hyperplane-methods
    reference/architecture
    reference/bibliography
    reference/c-symbols

@@ -364,7 +364,7 @@ A second, independent stationarity guard splits that tail in half.  It
 requires
 
 \[
-|\bar f_1-\bar f_2|\le 4\sqrt{\mathrm{SE}_1^2+\mathrm{SE}_2^2},
+\left|\bar f_1-\bar f_2\right|\le 4\sqrt{\mathrm{SE}_1^2+\mathrm{SE}_2^2},
 \]
 
 where each standard error comes from correlation-length block means.  The
