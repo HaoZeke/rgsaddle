@@ -149,8 +149,9 @@ pub use ohtst::{
     ThermodynamicIntegrationConfig, ThermodynamicIntegrationEstimate, ThermodynamicIntegrationNode,
     TransmissionCoefficient, TransmissionConfig, TransmissionEstimate, Transport, Uncontrolled,
     WorkEstimate, WorkNode, anharmonic_correction, basin_density, flux_mass, ohtst_rate,
-    plane_transmission, reactant_density, reversible_work, reversible_work_along, sample_plane,
-    sample_plane_with_sampler, thermodynamic_integration, transmission_coefficient,
+    plane_transmission, reactant_density, restricted_thermodynamic_integration, reversible_work,
+    reversible_work_along, sample_plane, sample_plane_with_sampler, thermodynamic_integration,
+    transmission_coefficient,
 };
 pub use pafi::{
     ArcPath, FreeEnergyProfile, HyperplaneAverage, PafiConfig, PathFrame, PathGeometry,
