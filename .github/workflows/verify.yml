@@ -183,8 +183,13 @@ jobs:
   libm-diff:
     runs-on: ubuntu-latest
     needs: libm
+    # Successful runs finish in a few seconds. A stalled download should
+    # not hold the workflow until the run-level limit.
+    timeout-minutes: 10
     steps:
       - uses: actions/download-artifact@v4
+        with:
+          pattern: libm-*
       - name: Diff the three targets
         run: |
           set +e
