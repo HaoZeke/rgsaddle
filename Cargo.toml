@@ -34,6 +34,9 @@ verify = ["dep:proptest", "dep:rug"]
 # would turn this feature on. The verify workflow overrides that command
 # and does not pass `--ignore-global-asm`.
 faer = ["dep:faer"]
+# Finite-difference Hessians that compare the matrix-free tunneling rate.
+# Off the default build. Tests and benches that call it request it.
+lineb-oracle = []
 
 [dependencies]
 dlpk = { version = "0.1.5", features = ["ndarray"] }
@@ -66,6 +69,15 @@ sha2 = "0.10"
 [[bench]]
 name = "ohtst"
 harness = false
+
+[[test]]
+name = "lineb"
+required-features = ["lineb-oracle"]
+
+[[bench]]
+name = "lineb"
+harness = false
+required-features = ["lineb-oracle"]
 
 [profile.dev.package.faer]
 opt-level = 3
