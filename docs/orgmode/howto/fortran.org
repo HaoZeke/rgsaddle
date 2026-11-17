@@ -1,7 +1,7 @@
 #+TITLE: Use the Fortran bindings
 #+OPTIONS: toc:nil num:nil author:nil
 
-The optional Fortran layer builds a Fortran 2008 module, =rgsaddle=, over =include/rgsaddle.h= (ABI major 1, minor 44) using =iso_c_binding=. See @@rst::doc:`the reference page <../reference>`@@ for the full symbol table of the module.
+The optional Fortran layer builds a Fortran 2008 module, =rgsaddle=, over =include/rgsaddle.h= (ABI major 1, minor 45) using =iso_c_binding=. See @@rst::doc:`the reference page <../reference>`@@ for the full symbol table of the module.
 
 * Build and link
 The feature is off by default in the top-level =meson.build=. Build the Rust C ABI library first, then configure and install the Fortran wrapper with meson:
