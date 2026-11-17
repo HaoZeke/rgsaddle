@@ -123,7 +123,7 @@ pub use indexk::{
     indexk_step, reflect_force, translated_force,
 };
 pub use line_neb::{
-    LineNebConfig, LineNebReport, LineNebSession, LineNebStatus, fixed_energy_action,
+    LineNebConfig, LineNebReport, LineNebSession, LineNebStatus, NaturalCubic, fixed_energy_action,
     fixed_energy_action_force,
 };
 pub use minmode::{

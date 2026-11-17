@@ -377,6 +377,119 @@ fn evaluate(
     })
 }
 
+/// Natural cubic interpolation of vector-valued data on a strict knot grid.
+///
+/// LI-NEB consumers use this for coordinates, parallel forces, and Hessian
+/// elements. Sampling returns the value and its first two knot derivatives.
+#[derive(Clone, Debug)]
+pub struct NaturalCubic {
+    knots: Vec<f64>,
+    values: Vec<Vec<f64>>,
+    second: Vec<Vec<f64>>,
+}
+
+impl NaturalCubic {
+    pub fn new(knots: Vec<f64>, values: Vec<Vec<f64>>) -> Result<Self, SaddleError> {
+        if knots.len() != values.len() || knots.len() < 2 {
+            return Err(SaddleError::Shape(
+                "cubic interpolation needs at least two equally counted knots and rows".into(),
+            ));
+        }
+        let width = values[0].len();
+        if width == 0 || values.iter().any(|row| row.len() != width) {
+            return Err(SaddleError::Shape(
+                "cubic interpolation rows must have one common nonzero width".into(),
+            ));
+        }
+        let count = knots.len();
+        let mut second = vec![vec![0.0; width]; count];
+        if count > 2 {
+            for component in 0..width {
+                let interior = count - 2;
+                let mut diagonal = vec![0.0; interior];
+                let mut upper = vec![0.0; interior];
+                let mut rhs = vec![0.0; interior];
+                for row in 0..interior {
+                    let i = row + 1;
+                    let left = knots[i] - knots[i - 1];
+                    let right = knots[i + 1] - knots[i];
+                    if !(left.is_finite() && right.is_finite() && left > 0.0 && right > 0.0) {
+                        return Err(SaddleError::Invalid(
+                            "cubic interpolation knots must be finite and strictly increasing"
+                                .into(),
+                        ));
+                    }
+                    diagonal[row] = 2.0 * (left + right);
+                    if row + 1 < interior {
+                        upper[row] = right;
+                    }
+                    rhs[row] = 6.0
+                        * ((values[i + 1][component] - values[i][component]) / right
+                            - (values[i][component] - values[i - 1][component]) / left);
+                    if row > 0 {
+                        let factor = left / diagonal[row - 1];
+                        diagonal[row] -= factor * upper[row - 1];
+                        rhs[row] -= factor * rhs[row - 1];
+                    }
+                }
+                for row in (0..interior).rev() {
+                    let next = if row + 1 < interior {
+                        upper[row] * second[row + 2][component]
+                    } else {
+                        0.0
+                    };
+                    second[row + 1][component] = (rhs[row] - next) / diagonal[row];
+                }
+            }
+        }
+        if !values.iter().flatten().all(|value| value.is_finite())
+            || !second.iter().flatten().all(|value| value.is_finite())
+        {
+            return Err(SaddleError::NonFinite("cubic interpolation"));
+        }
+        Ok(Self {
+            knots,
+            values,
+            second,
+        })
+    }
+
+    pub fn knots(&self) -> &[f64] {
+        &self.knots
+    }
+
+    pub fn sample(&self, x: f64) -> Result<(Vec<f64>, Vec<f64>, Vec<f64>), SaddleError> {
+        if !x.is_finite() || x < self.knots[0] || x > self.knots[self.knots.len() - 1] {
+            return Err(SaddleError::Invalid(
+                "cubic interpolation sample lies outside its knot interval".into(),
+            ));
+        }
+        let i = match self.knots.binary_search_by(|value| value.total_cmp(&x)) {
+            Ok(index) => index.min(self.knots.len() - 2),
+            Err(index) => index.saturating_sub(1).min(self.knots.len() - 2),
+        };
+        let h = self.knots[i + 1] - self.knots[i];
+        let a = (self.knots[i + 1] - x) / h;
+        let b = (x - self.knots[i]) / h;
+        let width = self.values[i].len();
+        let mut value = vec![0.0; width];
+        let mut first = vec![0.0; width];
+        let mut second = vec![0.0; width];
+        for component in 0..width {
+            let y0 = self.values[i][component];
+            let y1 = self.values[i + 1][component];
+            let m0 = self.second[i][component];
+            let m1 = self.second[i + 1][component];
+            value[component] =
+                a * y0 + b * y1 + ((a * a * a - a) * m0 + (b * b * b - b) * m1) * h * h / 6.0;
+            first[component] =
+                (y1 - y0) / h + ((-3.0 * a * a + 1.0) * m0 + (3.0 * b * b - 1.0) * m1) * h / 6.0;
+            second[component] = a * m0 + b * m1;
+        }
+        Ok((value, first, second))
+    }
+}
+
 /// Fixed-image-count LI-NEB session using rgmin's global eOn
 /// quick-min velocity projection with a fixed time step.
 pub struct LineNebSession {

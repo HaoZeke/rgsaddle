@@ -1,7 +1,7 @@
 use ndarray::{Array1, Array2, ArrayView2, array};
 use rgsaddle::{
-    BandSurface, LineNebConfig, LineNebSession, LineNebStatus, SaddleError, fixed_energy_action,
-    fixed_energy_action_force,
+    BandSurface, LineNebConfig, LineNebSession, LineNebStatus, NaturalCubic, SaddleError,
+    fixed_energy_action, fixed_energy_action_force,
 };
 
 fn analytic_surface(positions: ArrayView2<'_, f64>) -> (Array1<f64>, Array2<f64>) {
@@ -83,6 +83,16 @@ fn endpoint_restraint_may_cross_the_target_energy() {
     )
     .unwrap();
     assert!(action.is_finite());
+}
+
+#[test]
+fn natural_cubic_returns_value_and_derivatives() {
+    let spline =
+        NaturalCubic::new(vec![0.0, 1.0, 2.0], vec![vec![1.0], vec![3.0], vec![5.0]]).unwrap();
+    let (value, first, second) = spline.sample(0.5).unwrap();
+    assert_eq!(value, vec![2.0]);
+    assert_eq!(first, vec![2.0]);
+    assert_eq!(second, vec![0.0]);
 }
 
 struct DoubleWell;
