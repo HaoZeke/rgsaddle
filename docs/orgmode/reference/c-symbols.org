@@ -7,6 +7,9 @@ Parameters are that declaration.
 Units are the caller's unless the sentence names them.
 The narrative for a session is the C and C++ how-to, not this list.
 
+- =rgsaddle_hyperplane_sampler_create=. Purpose: Declared in include/rgsaddle.h. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_hyperplane_sampler_free=. Purpose: Declared in include/rgsaddle.h. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_hyperplane_thermodynamic_integration=. Purpose: Declared in include/rgsaddle.h. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_abi_version=. Purpose: (major << 16) | minor. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_abi_stamp=. Purpose: Declared in include/rgsaddle.h. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_status_name=. Purpose: Human-readable name for a status code. Parameters: the declaration. Units: the caller's.
