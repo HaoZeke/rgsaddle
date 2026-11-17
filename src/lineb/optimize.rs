@@ -376,8 +376,8 @@ impl LinebSession {
                 attempted
             };
             let shorter = 0.5 * base;
-            if !(shorter > 0.0) {
-                if !(attempted > 0.0) {
+            if shorter <= 0.0 || shorter.is_nan() {
+                if attempted <= 0.0 || attempted.is_nan() {
                     return Err(SaddleError::Invalid(
                         "a tunneling step left the region above the energy without moving".into(),
                     ));
@@ -390,8 +390,7 @@ impl LinebSession {
                     config.spring,
                     config.endpoint_scale,
                 )?;
-                let converged =
-                    !(held.perp_max > config.perp_tol) && !(held.opt_max > config.opt_tol);
+                let converged = held.perp_max <= config.perp_tol && held.opt_max <= config.opt_tol;
                 if converged {
                     return Ok(LinebReport {
                         status: LinebStatus::Converged,
@@ -418,9 +417,8 @@ impl LinebSession {
         let displacement = action::l2(delta.view());
         self.weighted = action::unpack(x.view(), n, dof);
         self.iteration += 1;
-        let converged =
-            !(assembly.perp_max > config.perp_tol) && !(assembly.opt_max > config.opt_tol);
-        if !(displacement > 0.0) && !converged {
+        let converged = assembly.perp_max <= config.perp_tol && assembly.opt_max <= config.opt_tol;
+        if (displacement <= 0.0 || displacement.is_nan()) && !converged {
             return Err(SaddleError::Stalled(format!(
                 "tunneling path unchanged with nudged force {} above {}",
                 assembly.opt_max, config.opt_tol
