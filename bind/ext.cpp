@@ -1371,7 +1371,6 @@ NB_MODULE(_core, m) {
         "Thread-local slot reserved for the C ABI last-error text. Returns an empty "
         "string unless an error text was set. raise_status reads it and then clears it.");
 
-  m.def(
   m.attr("THERMODYNAMIC_DERIVATIVE") =
       std::string(rgsaddle_thermodynamic_derivative_observable());
   m.def(

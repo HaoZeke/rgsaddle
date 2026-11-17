@@ -5,8 +5,9 @@ from pathlib import Path
 import numpy as np
 
 import rgsaddle
-from rgsaddle import hyperplane_thermodynamic_integration
+from rgsaddle import THERMODYNAMIC_DERIVATIVE, hyperplane_thermodynamic_integration
 from rgsaddle._core import hyperplane_thermodynamic_integration as core_ti
+from rgsaddle._core import THERMODYNAMIC_DERIVATIVE as CORE_DERIVATIVE
 
 STUB = Path(rgsaddle.__file__).resolve().parent / "_core.pyi"
 DOC = (
@@ -15,6 +16,10 @@ DOC = (
     "stride and samples, and returns float64 C-contiguous "
     "V_full - V_harmonic observations."
 )
+
+
+def test_thermodynamic_derivative_name_is_stable() -> None:
+    assert THERMODYNAMIC_DERIVATIVE == CORE_DERIVATIVE == "potential.full_minus_harmonic"
 
 
 def test_constant_derivative_integrates_exactly() -> None:
