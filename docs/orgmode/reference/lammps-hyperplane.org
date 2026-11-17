@@ -16,6 +16,7 @@ shared libraries and are not needed by default builds.
 | =LammpsThermostatKind= | Thermostat enum stored in records; currently =BaoabLangevin= |
 | =LammpsThermostatRecord= | Serializable thermostat metadata with =thermostat= and =effective_degrees_of_freedom= |
 | =LammpsHyperplaneSampler= | Persistent lammpc session implementing =HyperplaneSampler= |
+| =LammpsHyperplaneDynamics= | Unconstrained-NVE lammpc session implementing =HyperplaneDynamics= |
 
 All configuration structs are =#[non_exhaustive]=, implement =Default=, and
 provide =with_*= builders. A default system is incomplete and validation
@@ -74,6 +75,38 @@ step count.
 
 The extension is generic. It does not contain an OH-TST, PAFI, pair-style,
 or material type. rgsaddle maps those arrays into =HyperplaneObservation=.
+
+* Transmission coefficient shooting
+
+=LammpsHyperplaneDynamics= uses the additive unconstrained NVE ABI in
+lammpc =cdade6617014fb44fea1e0f651b219d543234016=.  It probes lammpc's
+feature table for all of:
+
+#+begin_src c
+lammpc_session_nve_set_positions(...);
+lammpc_session_nve_set_velocities(...);
+lammpc_session_nve_step(...);
+lammpc_session_nve_state(...);
+#+end_src
+
+before opening a session, and reports a clear missing-feature error for an
+older library.  Each half-shot restores its plane configuration, draws the
+flux-weighted Maxwell--Boltzmann velocity itself, and uses the NVE functions
+to propagate it and its exact time reverse.  The backend requires
+=TransmissionConfig::friction = 0= and =EndState::Side=: lammpc supplies
+unconstrained phase-space propagation but does not expose an energy/gradient
+oracle for the steepest-descent quench used by =EndState::Quench=.
+
+For a mass-weighted plane (the default, with no masses in
+=TransmissionConfig=), rgsaddle converts coordinates to Cartesian angstrom
+before setting LAMMPS state and converts them back for plane-side tests.
+When Cartesian coordinates are requested, the supplied coordinate masses must
+equal the per-atom =LammpsSystem= masses expanded over x, y, and z.  The
+thermal energy is eV and the time step is ps, matching lammpc metal units.
+
+The C callback ABI and Python module currently expose
+=HyperplaneSampler=, not =HyperplaneDynamics=, so this additive Rust trait
+implementation does not change either public foreign-function surface.
 
 * Errors
 

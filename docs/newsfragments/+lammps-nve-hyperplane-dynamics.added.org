@@ -1,0 +1,5 @@
+The opt-in =lammps= feature now provides =LammpsHyperplaneDynamics=, a
+=HyperplaneDynamics= implementation that launches flux-weighted,
+time-reversed NVE shots through lammpc's unconstrained-session ABI.  It
+checks the runtime feature table before use and reports an actionable error
+when the installed lammpc library predates that ABI.

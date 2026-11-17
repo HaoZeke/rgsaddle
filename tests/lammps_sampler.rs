@@ -7,9 +7,10 @@ use capnp::serialize;
 use ndarray::{Array1, ArrayView1};
 use rgpot_core::Potentials_capnp::potential_config;
 use rgsaddle::{
-    AnalyticSurfaceSampler, Hyperplane, HyperplaneCoordinates, HyperplaneSampleBudget,
-    HyperplaneSampler, LammpsHyperplaneSampler, LammpsSamplerConfig, LammpsSystem, LangevinConfig,
-    PointSurface, SaddleError, sample_plane_with_sampler,
+    AnalyticSurfaceDynamics, AnalyticSurfaceSampler, Hyperplane, HyperplaneCoordinates,
+    HyperplaneSampleBudget, HyperplaneSampler, LammpsHyperplaneDynamics, LammpsHyperplaneSampler,
+    LammpsSamplerConfig, LammpsSystem, LangevinConfig, PointSurface, SaddleError,
+    TransmissionConfig, sample_plane_with_sampler, transmission_coefficient,
 };
 
 const EPSILON: f64 = 0.2;
@@ -187,6 +188,90 @@ fn lammps_and_analytic_lj_mean_forces_agree_with_their_error_bars() {
         lammps_sample.normal_force_error,
         analytic_sample.normal_force,
         analytic_sample.normal_force_error
+    );
+}
+
+#[test]
+fn lammps_nve_hyperplane_shooting_smoke() {
+    let Some(library) = library_path() else {
+        return;
+    };
+    let mut backend = LammpsHyperplaneDynamics::new(
+        lj_system(),
+        LammpsSamplerConfig::default().with_library_path(library),
+    );
+    let point = backend.system().positions.clone();
+    let plane = Hyperplane::new(
+        point.clone(),
+        Array1::from_vec(vec![-1.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
+    )
+    .expect("plane");
+    let config = TransmissionConfig::default()
+        .with_thermal(0.01)
+        .with_time_step(0.0002)
+        .with_steps(20)
+        .with_check_every(5)
+        .with_shots(8)
+        .with_blocks(2)
+        .with_seed(41);
+    let coefficient =
+        transmission_coefficient(&mut backend, &plane, &[point], &config).expect("NVE shooting");
+    assert!(coefficient.kappa.is_finite());
+    assert!(coefficient.error.is_finite());
+    assert_eq!(coefficient.time.len(), 4);
+    assert!(coefficient.evaluations > 0);
+}
+
+#[test]
+fn lammps_nve_kappa_agrees_with_the_analytic_lj_pair() {
+    let Some(library) = library_path() else {
+        return;
+    };
+    let system = lj_system();
+    let point = system.positions.clone();
+    let plane = Hyperplane::new(
+        point.clone(),
+        Array1::from_vec(vec![-1.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
+    )
+    .expect("plane");
+    let lammps_config = TransmissionConfig::default()
+        .with_thermal(0.01)
+        .with_time_step(0.0002)
+        .with_steps(20)
+        .with_check_every(5)
+        .with_shots(16)
+        .with_blocks(4)
+        .with_seed(43);
+    let mut lammps = LammpsHyperplaneDynamics::new(
+        system,
+        LammpsSamplerConfig::default().with_library_path(library),
+    );
+    let lammps_kappa =
+        transmission_coefficient(&mut lammps, &plane, &[point.clone()], &lammps_config)
+            .expect("LAMMPS NVE kappa");
+
+    let surface = LjTether {
+        reference: point.clone(),
+    };
+    let mut analytic = AnalyticSurfaceDynamics::new(&surface);
+    let analytic_kappa = transmission_coefficient(
+        &mut analytic,
+        &plane,
+        &[point],
+        &lammps_config
+            .clone()
+            .with_time_step(lammps_config.time_step / 1.036_426_965_626_217_5e-4_f64.sqrt()),
+    )
+    .expect("analytic NVE kappa");
+    let difference = (lammps_kappa.kappa - analytic_kappa.kappa).abs();
+    let combined = lammps_kappa.error.hypot(analytic_kappa.error);
+    assert!(
+        difference <= 4.0 * combined + 64.0 * f64::EPSILON,
+        "LAMMPS {} +/- {}, analytic {} +/- {}",
+        lammps_kappa.kappa,
+        lammps_kappa.error,
+        analytic_kappa.kappa,
+        analytic_kappa.error
     );
 }
 
