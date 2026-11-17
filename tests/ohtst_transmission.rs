@@ -1,3 +1,5 @@
+#![cfg(feature = "ohtst")]
+
 //! The transmission coefficient of planes through a quadratic saddle
 //! against closed forms.
 //!

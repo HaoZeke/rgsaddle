@@ -1,3 +1,5 @@
+#![cfg(feature = "ohtst")]
+
 //! The sampled force and torque on a hyperplane against finite differences
 //! of its free energy: a closed form on a Gaussian, and quadrature of the
 //! line free energy on the LEPS plus harmonic oscillator surface.

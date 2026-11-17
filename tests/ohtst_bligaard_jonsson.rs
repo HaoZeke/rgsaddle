@@ -1,3 +1,5 @@
+#![cfg(feature = "ohtst")]
+
 //! OH-TST on the two-dimensional surfaces of Bligaard and Jónsson, Comput.
 //! Phys. Commun. 169, 284 (2005), and Jóhannesson and Jónsson, J. Chem.
 //! Phys. 115, 9644 (2001).
