@@ -337,7 +337,8 @@ mod tests {
     #[test]
     fn thermodynamic_derivative_observable_is_stable() {
         // SAFETY: returns a process-static NUL-terminated string.
-        let name = unsafe { std::ffi::CStr::from_ptr(rgsaddle_thermodynamic_derivative_observable()) };
+        let name =
+            unsafe { std::ffi::CStr::from_ptr(rgsaddle_thermodynamic_derivative_observable()) };
         assert_eq!(name.to_str().unwrap(), THERMODYNAMIC_DERIVATIVE);
     }
 

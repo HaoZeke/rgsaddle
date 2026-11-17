@@ -137,8 +137,8 @@ pub use indexk::{
 };
 #[cfg(feature = "lammps")]
 pub use lammps::{
-    LammpsHyperplaneSampler, LammpsSamplerConfig, LammpsSystem, LammpsThermostatKind,
-    LammpsThermodynamicReference, LammpsThermostatRecord,
+    LammpsHyperplaneSampler, LammpsSamplerConfig, LammpsSystem, LammpsThermodynamicReference,
+    LammpsThermostatKind, LammpsThermostatRecord,
 };
 pub use minmode::{
     FiniteDifference, MinModeConfig, MinModeKind, MinModeReport, MinModeSession, MinModeStatus,
@@ -159,17 +159,16 @@ pub use ocineb::{
 pub use ohtst::{
     AnalyticSurfaceDynamics, AnalyticSurfaceSampler, AnalyticThermodynamicSampler,
     AnharmonicConfig, AnharmonicCorrection, BasinConfig, BasinDensity, BasinEnd, Basins, Counting,
-    EndState, Endpoint, ExactGaussianPlaneSampler, FixedCell, GaussianTransport, HarmonicReference,
-    HyperplaneDynamics, HyperplaneObservable, LangevinConfig, MassWeighted, OhTstRate,
-    PermutationDistance, PlaneDensity, PlaneIntegrator, PlaneMetric, PlaneOptimizer,
+    EndState, Endpoint, ExactGaussianPlaneSampler, FixedCell, GaussianTransport, HarmonicExpansion,
+    HarmonicReference, HyperplaneDynamics, HyperplaneObservable, LangevinConfig, MassWeighted,
+    OhTstRate, PermutationDistance, PlaneDensity, PlaneIntegrator, PlaneMetric, PlaneOptimizer,
     PlaneOptimizerConfig, PlaneOptimizerStatus, PlaneOptimum, PlanePath, PlaneSample, PlaneTrace,
     QuadraticModel, QuenchConfig, QuenchedTransitionRegion, RateMultiplicity, ReactantDensity,
     ReversibleWork, ReversibleWorkConfig, StateDistance, THERMODYNAMIC_DERIVATIVE,
     ThermodynamicDerivative, ThermodynamicIntegrationConfig, ThermodynamicIntegrationEstimate,
     ThermodynamicIntegrationNode, ThermodynamicSampler, ThermodynamicSurfaceSampler,
-    HarmonicExpansion, harmonic_energy_at,
     TransmissionCoefficient, TransmissionConfig, TransmissionEstimate, Transport, Uncontrolled,
-    WorkEstimate, WorkNode, anharmonic_correction, basin_density, flux_mass,
+    WorkEstimate, WorkNode, anharmonic_correction, basin_density, flux_mass, harmonic_energy_at,
     mass_weighted_rigid_translations, ohtst_rate, optimize_plane, plane_transmission,
     reactant_density, restricted_thermodynamic_integration, reversible_work, reversible_work_along,
     reversible_work_along_on_surface, reversible_work_on_surface, sample_plane,

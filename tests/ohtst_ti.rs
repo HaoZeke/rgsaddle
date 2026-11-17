@@ -5,8 +5,8 @@
 use ndarray::array;
 use rgsaddle::{
     AnalyticThermodynamicSampler, HarmonicReference, Hyperplane, LangevinConfig, PointSurface,
-    SaddleError, ThermodynamicIntegrationConfig, ThermodynamicSurfaceSampler,
-    THERMODYNAMIC_DERIVATIVE, harmonic_energy_at, thermodynamic_integration,
+    SaddleError, THERMODYNAMIC_DERIVATIVE, ThermodynamicIntegrationConfig,
+    ThermodynamicSurfaceSampler, harmonic_energy_at, thermodynamic_integration,
 };
 
 include!(concat!(
@@ -57,7 +57,7 @@ fn quartic_line_ti_matches_partition_quadrature() {
         .with_seed(41)
         .with_observable(THERMODYNAMIC_DERIVATIVE);
     let estimate = thermodynamic_integration(&mut sampler, &plane, &config).unwrap();
-  let full = |y: f64| 0.25 * y.powi(4);
+    let full = |y: f64| 0.25 * y.powi(4);
     let harmonic = |y: f64| 0.5 * y * y;
     let expected = anharmonic_line_free_energy(&full, &harmonic, thermal, 8.0);
     assert!(
