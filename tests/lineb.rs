@@ -219,6 +219,37 @@ fn constant_hessian_log_dets_agree() {
     );
 }
 
+/// The unoptimized nine-image chain on `[−end, end]`, measured at
+/// `energy`.
+fn straight_path<S: PointSurface>(surface: &S, end: f64, energy: f64) -> rgsaddle::LinebPath {
+    let images = Array2::from_shape_fn((9, 1), |(i, _)| -end + 2.0 * end * i as f64 / 8.0);
+    let tol = 2.0 * end / 8.0 * f64::EPSILON.sqrt();
+    LinebSession::new(
+        LinebConfig::new(tol, tol),
+        Masses::coordinates(Array1::ones(1).view()).unwrap(),
+        images,
+        energy,
+    )
+    .unwrap()
+    .path(surface)
+    .unwrap()
+}
+
+/// Both end knots sit exactly on the turning points `x = ±1` of the
+/// parabola at `E = 1/2`. The half period of the inverted harmonic well
+/// is `π` at every energy.
+#[test]
+fn turning_knots_at_both_ends_give_the_harmonic_half_period() {
+    let path = straight_path(&Parabola, 1.0, 0.5);
+    let panels = (2 * path_pairs()) as f64;
+    let slack = (2.0 / 8.0 / panels.powi(4)).sqrt();
+    assert!(
+        (path.half_period - std::f64::consts::PI).abs() <= slack,
+        "{}",
+        path.half_period
+    );
+}
+
 fn unstable_mode(saddle: [f64; 2]) -> (Array1<f64>, f64) {
     let scale = saddle[0].abs().max(saddle[1].abs());
     let step = scale * f64::EPSILON.sqrt();
