@@ -370,14 +370,16 @@ fn muller_brown_action_and_period_match_a_fine_grid() {
     )
     .unwrap();
     assert_eq!(paths.len(), levels);
-    let per_energy = calls.load(Ordering::Relaxed) / levels;
-    // Ásgeirsson, Arnaldsson and Jónsson (2018) quote about 900 force
-    // calls per energy on the systems in that paper.
+    let total = calls.load(Ordering::Relaxed);
+    let optimizer: usize = paths.iter().map(|path| path.calls.optimizer).sum();
+    let measure: usize = paths.iter().map(|path| path.calls.measure).sum();
+    let dynamics: usize = paths.iter().map(|path| path.calls.dynamics).sum();
+    let seed = total - optimizer - measure - dynamics;
     eprintln!(
-        "Müller-Brown force calls per energy: {per_energy} (paper about 900, ratio {})",
-        per_energy as f64 / 900.0
+        "Müller-Brown force calls over {levels} energies: optimizer {optimizer}, measure {measure}, dynamics {dynamics}, seeds {seed}"
     );
-    assert!(per_energy > 0);
+    assert!(optimizer > 0 && measure > 0 && dynamics > 0);
+    assert!(seed < total);
     for path in &paths {
         let grid = fine_grid(&MullerBrown, path).unwrap();
         assert!(

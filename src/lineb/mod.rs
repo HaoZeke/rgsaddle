@@ -87,7 +87,7 @@ mod check;
 
 pub use continue_energy::{Continuation, continue_from_mep};
 pub use mass::Masses;
-pub use optimize::{LinebConfig, LinebPath, LinebReport, LinebSession, LinebStatus};
+pub use optimize::{LinebCalls, LinebConfig, LinebPath, LinebReport, LinebSession, LinebStatus};
 #[cfg(any(test, feature = "lineb-oracle"))]
 pub use rate::hqtst_rate_interpolated_hessian;
 pub use rate::{HqtstRate, hqtst_rate};
