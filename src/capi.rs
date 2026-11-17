@@ -303,9 +303,34 @@ struct CSurface {
 unsafe impl Sync for CSurface {}
 unsafe impl Send for CSurface {}
 
+/// Write `values` into `out` in order.
+///
+/// # Safety
+/// `out` must point at `n` writable doubles. A longer iterator panics,
+/// the same as indexing that slice.
+unsafe fn write_doubles(out: *mut f64, n: usize, values: impl Iterator<Item = f64>) {
+    let dst = unsafe { slice::from_raw_parts_mut(out, n) };
+    for (i, value) in values.enumerate() {
+        dst[i] = value;
+    }
+}
+
 impl CSurface {
     fn evaluation_rows_checked(&self) -> Option<i32> {
         i32::try_from(self.rows.load(std::sync::atomic::Ordering::Relaxed)).ok()
+    }
+
+    /// One geometry, with no per-image or climbing request flags.
+    fn point(f: RgsaddleSurfaceFn, user: *mut c_void, n_atoms: i64) -> Self {
+        Self {
+            f,
+            user,
+            n_atoms,
+            n_images: 1,
+            per_image: false,
+            climbing_request: false,
+            rows: Default::default(),
+        }
     }
 
     fn evaluation_rows(&self) -> i32 {
@@ -1132,10 +1157,7 @@ pub unsafe extern "C" fn rgsaddle_band_positions(band: *const RgsaddleBand, out:
     let band = unsafe { &*band };
     let pos = band.session.positions();
     let total = (band.n_images * 3 * band.n_atoms) as usize;
-    let dst = unsafe { slice::from_raw_parts_mut(out, total) };
-    for (i, v) in pos.iter().enumerate() {
-        dst[i] = *v;
-    }
+    unsafe { write_doubles(out, total, pos.iter().copied()) };
     RGSADDLE_OK
 }
 
@@ -1375,15 +1397,7 @@ pub unsafe extern "C" fn rgsaddle_minmode_step(
         return RGSADDLE_NULL_SURFACE;
     };
     let session = unsafe { &mut *session };
-    let cs = CSurface {
-        f,
-        user,
-        n_atoms: session.n_atoms,
-        n_images: 1,
-        per_image: false,
-        climbing_request: false,
-        rows: Default::default(),
-    };
+    let cs = CSurface::point(f, user, session.n_atoms);
     match session.session.step(&cs) {
         Ok(report) => {
             let out = unsafe { &mut *out };
@@ -1424,15 +1438,7 @@ pub unsafe extern "C" fn rgsaddle_minmode_estimate(
         return RGSADDLE_NULL_SURFACE;
     };
     let session = unsafe { &mut *session };
-    let cs = CSurface {
-        f,
-        user,
-        n_atoms: session.n_atoms,
-        n_images: 1,
-        per_image: false,
-        climbing_request: false,
-        rows: Default::default(),
-    };
+    let cs = CSurface::point(f, user, session.n_atoms);
     match session.session.push_estimate(&cs) {
         Ok(est) => {
             let out = unsafe { &mut *out };
@@ -1527,10 +1533,7 @@ pub unsafe extern "C" fn rgsaddle_minmode_position(
     }
     let session = unsafe { &*session };
     let dof = (3 * session.n_atoms) as usize;
-    let dst = unsafe { slice::from_raw_parts_mut(out, dof) };
-    for (i, v) in session.session.position().iter().enumerate() {
-        dst[i] = *v;
-    }
+    unsafe { write_doubles(out, dof, session.session.position().iter().copied()) };
     RGSADDLE_OK
 }
 
@@ -1549,10 +1552,7 @@ pub unsafe extern "C" fn rgsaddle_minmode_mode(
     }
     let session = unsafe { &*session };
     let dof = (3 * session.n_atoms) as usize;
-    let dst = unsafe { slice::from_raw_parts_mut(out, dof) };
-    for (i, v) in session.session.mode().iter().enumerate() {
-        dst[i] = *v;
-    }
+    unsafe { write_doubles(out, dof, session.session.mode().iter().copied()) };
     RGSADDLE_OK
 }
 
@@ -1667,10 +1667,7 @@ pub unsafe extern "C" fn rgsaddle_nichols_step(
         mode,
     ) {
         Ok(dx) => {
-            let dst = unsafe { slice::from_raw_parts_mut(displacement, n) };
-            for (i, v) in dx.iter().enumerate() {
-                dst[i] = *v;
-            }
+            unsafe { write_doubles(displacement, n, dx.iter().copied()) };
             RGSADDLE_OK
         }
         Err(e) => status_of(&e),
@@ -1725,10 +1722,7 @@ pub unsafe extern "C" fn rgsaddle_prfo_step(
         kind,
     ) {
         Ok(dx) => {
-            let dst = unsafe { slice::from_raw_parts_mut(displacement, n) };
-            for (i, v) in dx.iter().enumerate() {
-                dst[i] = *v;
-            }
+            unsafe { write_doubles(displacement, n, dx.iter().copied()) };
             RGSADDLE_OK
         }
         Err(e) => status_of(&e),
@@ -1785,10 +1779,7 @@ fn hessian_update(
     };
     match result {
         Ok(()) => {
-            let dst = unsafe { slice::from_raw_parts_mut(hessian, n * n) };
-            for (i, v) in h.iter().enumerate() {
-                dst[i] = *v;
-            }
+            unsafe { write_doubles(hessian, n * n, h.iter().copied()) };
             RGSADDLE_OK
         }
         Err(e) => status_of(&e),
@@ -1911,10 +1902,7 @@ pub unsafe extern "C" fn rgsaddle_cap_max_abs(n: i64, step: *mut f64, trust_radi
     let mut dx = Array1::from(unsafe { slice::from_raw_parts(step, n) }.to_vec());
     match cap_max_abs(&mut dx, trust_radius) {
         Ok(()) => {
-            let dst = unsafe { slice::from_raw_parts_mut(step, n) };
-            for (i, v) in dx.iter().enumerate() {
-                dst[i] = *v;
-            }
+            unsafe { write_doubles(step, n, dx.iter().copied()) };
             RGSADDLE_OK
         }
         Err(e) => status_of(&e),
@@ -1998,15 +1986,7 @@ pub unsafe extern "C" fn rgsaddle_index1_step(
         return RGSADDLE_NULL_SURFACE;
     };
     let session = unsafe { &mut *session };
-    let cs = CSurface {
-        f,
-        user,
-        n_atoms: session.n_atoms,
-        n_images: 1,
-        per_image: false,
-        climbing_request: false,
-        rows: Default::default(),
-    };
+    let cs = CSurface::point(f, user, session.n_atoms);
     match session.session.step(&cs) {
         Ok(report) => {
             let out = unsafe { &mut *out };
@@ -2043,10 +2023,7 @@ pub unsafe extern "C" fn rgsaddle_index1_position(
     }
     let session = unsafe { &*session };
     let dof = (3 * session.n_atoms) as usize;
-    let dst = unsafe { slice::from_raw_parts_mut(out, dof) };
-    for (i, v) in session.session.position().iter().enumerate() {
-        dst[i] = *v;
-    }
+    unsafe { write_doubles(out, dof, session.session.position().iter().copied()) };
     RGSADDLE_OK
 }
 
@@ -2069,10 +2046,7 @@ pub unsafe extern "C" fn rgsaddle_index1_hessian(
         return RGSADDLE_SHAPE;
     };
     let dof = (3 * session.n_atoms) as usize;
-    let dst = unsafe { slice::from_raw_parts_mut(out, dof * dof) };
-    for (i, v) in h.iter().enumerate() {
-        dst[i] = *v;
-    }
+    unsafe { write_doubles(out, dof * dof, h.iter().copied()) };
     RGSADDLE_OK
 }
 
