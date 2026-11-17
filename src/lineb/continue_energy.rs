@@ -256,8 +256,10 @@ fn onto_segment<S: PointSurface>(
             if !em.is_finite() {
                 return Err(SaddleError::NonFinite("equipotential bisection"));
             }
-            let same_side_as_left = (ea - target) * (em - target);
-            if same_side_as_left > 0.0 {
+            // Sides are `V > E` and `V ≤ E`. A midpoint exactly at `E`
+            // joins the side at or below, so the bracket keeps a point
+            // strictly above.
+            if (em > target) == (ea > target) {
                 a = mid;
                 ea = em;
             } else {
@@ -447,4 +449,37 @@ fn to_cartesian(masses: &Masses, weighted: ArrayView2<f64>) -> Result<Array2<f64
             .assign(&masses.to_cartesian(weighted.row(i))?);
     }
     Ok(cartesian)
+}
+
+#[cfg(test)]
+mod tests {
+    use ndarray::array;
+
+    use super::*;
+
+    struct Ramp;
+
+    impl PointSurface for Ramp {
+        fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+            Ok((x[0], array![1.0]))
+        }
+    }
+
+    /// The first midpoint of `V = x` on `[-1, 1]` lands exactly on
+    /// `E = 0`; the bisection still ends on a point strictly above.
+    #[test]
+    fn a_midpoint_on_the_energy_keeps_a_point_above() {
+        let masses = Masses::coordinates(array![1.0].view()).unwrap();
+        let point = onto_segment(
+            &Ramp,
+            &masses,
+            array![-1.0].view(),
+            array![1.0].view(),
+            -1.0,
+            1.0,
+            0.0,
+        )
+        .unwrap();
+        assert!(point[0] > 0.0 && point[0] <= f64::EPSILON, "{}", point[0]);
+    }
 }
