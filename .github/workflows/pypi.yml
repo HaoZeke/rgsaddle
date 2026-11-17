@@ -1,0 +1,227 @@
+name: pypi
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v* tag to build and publish. Empty builds the selected ref and uploads nothing.
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pypi-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  # A tag cut before this workflow existed carries no helper script, so
+  # the comparison is inline. The later jobs check out the commit
+  # recorded here, so a tag moved mid-run does not change what is built.
+  versions:
+    name: Tag, Cargo.toml and pyproject.toml agree
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      sha: ${{ steps.check.outputs.sha }}
+      tag: ${{ steps.check.outputs.tag }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || '' }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Compare the tag with the Cargo and Python versions
+        id: check
+        shell: bash
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          tag="${DISPATCH_TAG}"
+          if [ -z "${tag}" ] && [ "${REF_TYPE}" = tag ]; then
+            tag="${REF_NAME}"
+          fi
+          version="$(TAG="${tag}" python - <<'PY'
+          import os
+          import sys
+          import tomllib
+
+          tag = os.environ["TAG"]
+          with open("Cargo.toml", "rb") as handle:
+              cargo = tomllib.load(handle)["package"]["version"]
+          with open("pyproject.toml", "rb") as handle:
+              python = tomllib.load(handle)["project"]["version"]
+          print(f"tag            {tag or '(none, nothing is published)'}", file=sys.stderr)
+          print(f"Cargo.toml     {cargo}", file=sys.stderr)
+          print(f"pyproject.toml {python}", file=sys.stderr)
+          if python != cargo or (tag and tag != f"v{cargo}"):
+              sys.exit("::error::the tag, Cargo.toml and pyproject.toml versions disagree")
+          print(cargo)
+          PY
+          )"
+          {
+            echo "sha=$(git rev-parse HEAD)"
+            echo "tag=${tag}"
+            echo "version=${version}"
+          } >> "${GITHUB_OUTPUT}"
+
+  wheels:
+    name: wheels (${{ matrix.os }}, ${{ matrix.arch }})
+    needs: versions
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            arch: aarch64
+          - os: macos-15
+            arch: arm64
+          - os: macos-15-intel
+            arch: x86_64
+          - os: windows-2022
+            arch: AMD64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.versions.outputs.sha }}
+          persist-credentials: false
+      # The [tool.cibuildwheel] table of pyproject.toml picks the
+      # interpreters, images and tests. Its macOS archs list only arm64,
+      # and CIBW_ARCHS overrides that list. cibuildwheel runs abi3audit
+      # --strict on the abi3 wheel.
+      - uses: pypa/cibuildwheel@adba99c781d3746d38b3a09b1cf797965bcb7fe6 # v4.3.0
+        with:
+          output-dir: wheelhouse
+        env:
+          CIBW_ARCHS: ${{ matrix.arch }}
+          CIBW_TEST_EXTRAS: test
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pypi-wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  sdist:
+    name: sdist
+    needs: versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.versions.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Build the sdist
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install build==1.6.1
+          python -m build --sdist --outdir dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pypi-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  # No checkout, so the import cannot resolve to python/rgsaddle. The
+  # sdist row compiles the extension with the runner's Rust toolchain.
+  smoke:
+    name: smoke (${{ matrix.os }}, ${{ matrix.python }}, ${{ matrix.dist }})
+    needs: [versions, wheels, sdist]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15, macos-15-intel, windows-2022]
+        python: ["3.10", "3.14", "3.14t"]
+        dist: [wheel]
+        include:
+          - os: ubuntu-latest
+            python: "3.12"
+            dist: sdist
+    steps:
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ matrix.dist == 'sdist' && 'pypi-sdist' || format('pypi-wheels-{0}', matrix.os) }}
+          path: dist
+      - name: Install into a fresh venv and import rgsaddle
+        shell: bash
+        env:
+          DIST: ${{ matrix.dist }}
+          FREE_THREADED: ${{ endsWith(matrix.python, 't') }}
+          VERSION: ${{ needs.versions.outputs.version }}
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          python -m venv "${work}/venv"
+          py="${work}/venv/bin/python"
+          if [ ! -x "${py}" ]; then
+            py="${work}/venv/Scripts/python.exe"
+          fi
+          if [ "${DIST}" = sdist ]; then
+            "${py}" -m pip install "dist/rgsaddle-${VERSION}.tar.gz"
+          else
+            "${py}" -m pip install --no-index --no-deps --only-binary :all: --find-links dist "rgsaddle==${VERSION}"
+            "${py}" -m pip install --only-binary :all: --find-links dist "rgsaddle==${VERSION}"
+          fi
+          cd "${work}"
+          "${py}" -W error::RuntimeWarning - <<'PY'
+          import importlib.metadata
+          import os
+          import sys
+          import sysconfig
+
+          import rgsaddle
+          import rgsaddle._core
+
+          expected = os.environ["VERSION"]
+          dist = importlib.metadata.distribution("rgsaddle")
+          wheel = dist.read_text("WHEEL") or ""
+          tags = [line[4:].strip() for line in wheel.splitlines() if line.startswith("Tag:")]
+          free = sysconfig.get_config_var("Py_GIL_DISABLED") == 1
+          print(f"rgsaddle {rgsaddle.__version__} {' '.join(tags)} from {rgsaddle.__file__}")
+          if dist.version != expected or rgsaddle.__version__ != expected:
+              sys.exit(f"installed {dist.version}, __version__ {rgsaddle.__version__}, expected {expected}")
+          if free != (os.environ["FREE_THREADED"] == "true"):
+              sys.exit(f"free-threaded interpreter is {free}, matrix asks for {os.environ['FREE_THREADED']}")
+          if free and sys._is_gil_enabled():
+              sys.exit("importing rgsaddle enabled the GIL")
+          PY
+
+  publish:
+    name: Publish to PyPI
+    needs: [versions, wheels, sdist, smoke]
+    if: needs.versions.outputs.tag != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: pypi-*
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
