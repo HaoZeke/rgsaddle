@@ -1893,7 +1893,7 @@ dependencies = [
 [[package]]
 name = "rgpot-core"
 version = "3.7.0"
-source = "git+https://github.com/OmniPotentRPC/rgpot?rev=4ca8e03a#4ca8e03a600049539707542d25ef610011d3730e"
+source = "git+https://github.com/OmniPotentRPC/rgpot?branch=feat%2Fmd-session-openmm#4ca8e03a600049539707542d25ef610011d3730e"
 dependencies = [
  "capnp",
  "capnpc",
