@@ -50,9 +50,7 @@ fn converged_calls() -> usize {
 
 fn eckart_force_calls(c: &mut Criterion) {
     let calls = converged_calls();
-    eprintln!(
-        "one converged Eckart LI-NEB: {calls} force calls at one energy; Ásgeirsson, Arnaldsson and Jónsson, J. Chem. Phys. 148, 102334 (2018) report about 900 per energy"
-    );
+    eprintln!("one converged Eckart LI-NEB: {calls} force calls at one energy");
     let mut group = c.benchmark_group("lineb_eckart");
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(5));
