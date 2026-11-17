@@ -3,9 +3,29 @@
 
 ~MinModeSession~ estimates a low-curvature direction by dimer rotation or Lanczos, then advances on the min-mode force. L-BFGS takes ~Accept::Step~ and rgmin's NEB guards: the reflected force is not a potential gradient (Goswami, Gunde, and Jónsson, Front. Chem. (2026), doi:10.3389/fchem.2026.1807063, Eq. 9), an empty memory scales the step by 0.01, and a two-loop step that reaches the per-atom cap or faces away from the force drops its pairs. Lanczos stops when the relative change in the lowest Ritz value falls under ~rotation_tol~, or when the residual does, and a repeat visit whose Rayleigh quotient still agrees with the retained curvature returns after one product (Olsen, Kroes, Henkelman, Arnaldsson, and Jónsson, J. Chem. Phys. 121, 9776 (2004), doi:10.1063/1.1809574; eOn ~quit_early~). While the curvature along that mode is not negative the step is one full per-atom ~max_move~ along the mode (the perpendicular force is dropped). Once the curvature is negative the perpendicular force stays and the parallel part is reflected, and the L-BFGS pairs and the FIRE velocity survive a mode turn inside 45 degrees. A turn past that cone drops the memory and zeros the FIRE velocity. FIRE's timestep stays 1. From rest the move is a quarter of the reflected force, because a zero power halves the step before the Euler update. When the per-atom cap shortens that step and the arrival is no longer negative, the move is replaced from the last negative point by 0.01 times the reflected force, the empty-memory scale of the L-BFGS guard. A capped step that stays negative is kept. L-BFGS is unchanged, and no C field was added. Lanczos uses the same translation. At the stock ~rotation_tol~ of 1e-4 the dimer also stops after one rotation once the rotational force is under 1; a tighter residual keeps iterating. ~FiniteDifference~ selects forward or central Hessian actions. A surface can supply analytic actions and excluded directions through ~PointSurface~.
 
-The reported force norm must satisfy the selected ~ForceGate~, and the estimated curvature must be negative. If a translation reaches a stationary point, the session measures curvature at that accepted position before reporting convergence. This directional test does not certify the full Hessian index.
+The reported force norm must satisfy the selected ~ForceGate~, and the estimated curvature must be negative. If a translation reaches a stationary point, the session measures curvature at that accepted position before reporting convergence. This directional test does not certify the full Hessian index; the saddle check below does.
 
-~set_kappa~ selects the basin constraint. ~set_highs~ selects the optional feasible-step control. Call ~reset~ at a surface change and use ~set_force_gate~ to select the physical stopping norm. Hosts that require exactly one imaginary mode must perform their full index check.
+~set_kappa~ selects the basin constraint. ~set_highs~ selects the optional feasible-step control. Call ~reset~ at a surface change and use ~set_force_gate~ to select the physical stopping norm.
+
+** Certify the saddle index
+
+~MinModeConfig::saddle_check~ holds a ~SaddleIndexCheck~, on by default.
+At the first converged step at a position the session estimates the lowest curvatures there by block Lanczos on forward-difference Hessian actions, one gradient each, seeded with its own mode and pseudo-random vectors, off the directions that ~PointSurface::excluded_modes~ names; ~index~ counts those under ~-negative_tol~ (1e-3).
+The controls and the method are those of the band's check in =howto/band=.
+A coordinate that is zero in the gradient and stays zero under one forward action along all such coordinates is left out as well, so a host that zeroes the force on the atoms it holds needs no exclusion for them.
+~MinModeReport::saddle_index~ carries the result and its evaluations count in ~MinModeReport::evaluations~; ~MinModeSession::saddle_index~ returns it while the session stays at that position, and ~saddle_evaluations~ and ~saddle_escapes~ sum the session's.
+The search takes the same steps with the check on or off, and ~with_saddle_check(None)~ or ~set_saddle_check(None)~ turns it off.
+A first-order saddle has one negative Hessian eigenvalue, the count eOn requires of the saddle Hessian it builds for a prefactor.
+A start that shares a symmetry with the surface can stop the search on a saddle of higher index, since a mode the symmetry keeps out of the force never moves the point; Zhang and Du, SIAM J. Numer. Anal. 50, 1899 (2012), doi:10.1137/110843149, Theorem 3.2, show that such a point is a fixed point of the Euler scheme of shrinking dimer dynamics, though not a contractive one.
+
+With ~SaddleIndexCheck::escape~ set to a ~SaddleEscape~, a converged point of index two or more keeps the negative Ritz vector closest to the session's mode as the reaction mode, moves by ~push~ (0.1, the largest per-atom displacement) along the other negative modes, each to the side of lower energy that two evaluations find, and searches again from there along the reaction mode.
+That is the downward search of Yin, Wang, Chen, Zhang, and Zhang, Phys. Rev. Lett. 124, 090601 (2020), doi:10.1103/PhysRevLett.124.090601, at index one.
+The step that pushes reports ~Running~ with the index it left; a later attempt pushes twice as far, and after ~max_attempts~ (2) the session reports the index it has.
+~set_position~ to a new point, ~reset~ and ~set_saddle_check~ start the attempts again.
+
+On the frozen-layer Morse slab of =tests/band_fixed_atoms.rs=, Lanczos started on the stationary point of index 3 that the symmetric band converges to, with the band tangent as its mode and ~force_tol~ 1e-4, certifies index 3, pushes once, and converges on the first-order saddle at -50.6761672669 with index 1, in 1292 evaluations, 126 of them for the two certificates and the push.
+At ~force_tol~ 1e-3 the dimer and Lanczos both stop after two pushes at index 2, near -50.67580, with curvatures -1.147 and -0.0076: the force falls under the tolerance on that soft second mode before the search leaves it.
+The band's escape, whose climb steps on a quasi-Newton model, reaches the first-order saddle at 1e-3 from the same band (=howto/band=).
 
 ** Keep one session across a host search
 

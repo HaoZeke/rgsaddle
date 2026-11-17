@@ -1,7 +1,7 @@
 #+TITLE: Use the C and C++ interfaces
 #+OPTIONS: toc:nil num:nil
 
-~include/rgsaddle.h~ declares the C application binary interface (ABI), major 1, minor 39. It preserves the main band, minimum-mode and index-1 layouts and adds intrinsic reaction coordinate (IRC), Sella, constraint and geometry controls. Include this header rather than duplicating its structures. Check ~rgsaddle_abi_stamp~ before constructing a session. A meson project takes the headers from the top-level ~meson.build~; see @@rst::doc:`the meson how-to <meson>`@@.
+~include/rgsaddle.h~ declares the C application binary interface (ABI), major 1, minor 40. It preserves the main band, minimum-mode and index-1 layouts and adds intrinsic reaction coordinate (IRC), Sella, constraint and geometry controls. Include this header rather than duplicating its structures. Check ~rgsaddle_abi_stamp~ before constructing a session. A meson project takes the headers from the top-level ~meson.build~; see @@rst::doc:`the meson how-to <meson>`@@.
 
 A surface callback returns ~rgsaddle_status_t~ and receives one ~rgsaddle_surface_request_t~. Positions and gradients are image-major Cartesian triples. The host supplies the energy and gradient arrays for every requested image; the library performs no Message Passing Interface (MPI) communication.
 
@@ -83,3 +83,15 @@ Fixed atoms never move, carry no force in the report, and leave the mean force i
 A host that loads the library at run time checks ~rgsaddle_abi_version()~ for at least minor 39 before resolving either symbol.
 The C++ ~Band~ wrapper calls it as ~set_fixed_atoms~, from a pointer to the band's ~n_atoms~ bytes or from a ~std::vector<std::uint8_t>~ whose size is passed as ~n_atoms~, and throws on a failing status.
 Python's ~project_band~ takes the mask as ~fixed~, and ~rgsaddle.ase.NEB~ reads it from ~FixAtoms~.
+
+ABI minor 40 adds the saddle-index check of =howto/band= and =howto/minmode=.
+A band, min-mode or OCI-NEB config stamped with minor 40 or newer certifies the converged point by default, with the settings ~rgsaddle_saddle_check_default~ writes into an ~rgsaddle_saddle_check_t~; a config stamped below minor 40 runs without the check, as before.
+The check's surface calls count in the step's ~evaluations~.
+~rgsaddle_band_set_saddle_check~, ~rgsaddle_minmode_set_saddle_check~ and ~rgsaddle_ocineb_set_saddle_check~ replace the check between steps, and NULL turns it off.
+A positive ~escape_attempts~ with a positive ~escape_push~ turns the escape on; the step that pushes reports ~RGSADDLE_STATUS_RUNNING~.
+~rgsaddle_band_saddle_index~, ~rgsaddle_minmode_saddle_index~ and ~rgsaddle_ocineb_saddle_index~ fill an ~rgsaddle_saddle_index_t~ and write up to ~capacity~ curvatures in ascending order.
+Its ~certified~ is 1 while a certificate holds for the current point, the climbing image for a band; ~index~, ~converged~, ~n_curvatures~ and ~evaluations~ then describe it, and ~total_evaluations~ and ~escapes~ sum the session's checks and pushes either way.
+~rgsaddle_saddle_index~ certifies one point through the surface callback of ~rgsaddle_minmode_step~, with an optional gradient, seed mode and fixed-atom mask.
+A host that loads the library at run time checks ~rgsaddle_abi_version()~ for at least minor 40 before resolving these symbols.
+The C++ ~Band~, ~MinMode~ and ~Ocineb~ wrappers have ~set_saddle_check~ and ~saddle_index~, ~rgsaddle::saddle_check()~ returns the defaults and ~rgsaddle::saddle_index~ certifies one point.
+Python's ~MinMode~ reports the index in ~SessionReport.saddle_index~ and has ~saddle_index~ and ~set_saddle_check~, ~rgsaddle.saddle_index~ certifies one point, and ~rgsaddle.ase.saddle_index~ and ~rgsaddle.ase.NEB.saddle_index~ certify ASE atoms and the climbing image of an ASE band.
