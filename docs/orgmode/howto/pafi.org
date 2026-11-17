@@ -20,7 +20,7 @@ The average is over the Boltzmann distribution on the plane. =ψ= corrects for t
 
 The Jacobian term of the paper's Eq. (8) is left out, as it is in LAMMPS =fix pafi= and in the reference code of Swinburne and Marinica. What is integrated is then the free energy of the flat hyperplanes, =-kT ln ∫ δ((x - X) · n / |n|) exp(-E/kT) dx=, which does not depend on how the path is parametrized.
 
-PAFI gives a barrier and a profile. It does not give a rate prefactor. =defect_pair_rates= (see =howto/defect-pair-rates=) builds a rate on a PAFI barrier, and =howto/oh-tst= has a related method that does not need a path.
+PAFI gives a barrier and a profile. It does not give a rate prefactor. =defect_pair_rates= (see =howto/defect-pair-rates=) builds a rate on a PAFI barrier. The section Related methods says how PAFI differs from optimal hyperplanar TST.
 
 * What the surface must provide
 =rgsaddle::PointSurface= is the caller's surface for one geometry. PAFI uses only =eval=:
@@ -222,6 +222,9 @@ The reference code, github.com/tomswinburne/pafi, commit 1661a1d, ships two NEB 
 The reference runs need the data of the reference code, which =benchmarks/pafi_reference.sh= fetches at the pinned commit with checksums, and are ignored in a plain =cargo test=. The script writes =benchmarks/pafi_reference.csv= and =benchmarks/pafi_reference_planes.csv=. With =PAFI_REFERENCE_CODE=1= it also runs the reference code itself, which needs its Python package, the LAMMPS Python module and mpi4py, and writes =benchmarks/pafi_reference_code.csv= and =benchmarks/pafi_reference_code_planes.csv=. What does run in CI is the =eam/fs= reader against LAMMPS on a synthetic table, the integral of the reference =ResultsProcessor= against scipy on the nine gradients, and the pipeline on a small hop.
 
 The test file computes two integrals of a profile. One is the trapezoid sum of =FreeEnergyProfile= itself. The other is that of the reference =ResultsProcessor=, a not-a-knot cubic through the plane gradients on =10 n= evenly spaced points, then the cumulative trapezoid and its maximum. The two differ on a coarse set of planes, and the CSV has both.
+
+* Related methods
+Optimal hyperplanar transition state theory (OH-TST), in =rgsaddle::ohtst=, also works with free energies on hyperplanes, but it asks a different question. PAFI fixes the path first. It integrates the mean force across a series of planes normal to that path, and the result is a profile along it. OH-TST optimizes one hyperplane variationally, both its position and its orientation, to the maximum of its free energy, which gives the smallest hyperplanar TST rate (Jóhannesson and Jónsson, J. Chem. Phys. 115, 9644 (2001); Bligaard and Jónsson, Comput. Phys. Commun. 169, 284 (2005)). Its plane is not tied to a path, though =PlanePath= can integrate along the planes of one. See @@rst::doc:`the OH-TST how-to </howto/oh-tst>`@@.
 
 * Limits
 - There is no equilibration test (see above).
