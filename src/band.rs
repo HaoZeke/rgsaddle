@@ -23,14 +23,18 @@ use crate::tangent::TangentKind;
 use crate::tangent::compute_tangent;
 
 mod climb;
+mod growing_string;
 mod min_mode;
 mod pair_model;
 mod saddle_check;
 mod string;
 mod zoom;
+pub use growing_string::{
+    GrowingStringConfig, GrowingStringPhase, GrowingStringReport, GrowingStringSession,
+};
 pub use min_mode::MinModeRefine;
 pub(crate) use min_mode::RefinePhase;
-pub use string::StringConfig;
+pub use string::{StringConfig, StringSession};
 pub use zoom::ZoomConfig;
 
 /// Row-major 3x3 simulation cell: row `i` is lattice vector `a_i`.
@@ -698,6 +702,21 @@ pub trait BandSurface: Sync {
         gradients: &mut Array2<f64>,
     ) -> Result<(), SaddleError>;
 
+    /// Fill `energies[r]` and row `r` of `gradients` for each row `r` of
+    /// `positions`, tagged with its stable [`crate::stencil::ImageId`].
+    /// Defaults to [`BandSurface::eval`], and [`crate::stencil::Surface`]
+    /// overrides it to forward `ids` to [`crate::stencil::Surface::eval`].
+    fn eval_with_ids(
+        &self,
+        ids: &[crate::stencil::ImageId],
+        positions: ArrayView2<f64>,
+        energies: &mut Array1<f64>,
+        gradients: &mut Array2<f64>,
+    ) -> Result<(), SaddleError> {
+        let _ = ids;
+        self.eval(positions, energies, gradients)
+    }
+
     /// Energies, Cartesian gradients and Cauchy stresses for a
     /// solid-state band. `cells` has one entry per row of `positions`,
     /// in the same order as [`BandSurface::eval`]. `stresses` is
@@ -804,12 +823,15 @@ struct BandState {
     /// The band's fixed mask, empty when every atom is free. Gradient
     /// components of fixed atoms are zeroed as the surface answers.
     fixed: Vec<bool>,
+    /// Stable per-image identities when tracking across growth or remeshing.
+    ids: Vec<crate::stencil::ImageId>,
 }
 
 impl BandState {
     fn new() -> Self {
         Self {
             fixed: Vec::new(),
+            ids: Vec::new(),
             force_gate: ForceGate::LinfNorm,
             baseline: Mutex::new(None),
             atom_baseline: Mutex::new(None),
@@ -829,10 +851,18 @@ impl BandState {
     fn eval_rows(
         &self,
         surface: &dyn BandSurface,
+        range: std::ops::Range<usize>,
         positions: ArrayView2<f64>,
         energies: &mut Array1<f64>,
         gradients: &mut Array2<f64>,
     ) -> Result<(), SaddleError> {
+        if range.end <= self.ids.len() && range.len() == positions.nrows() {
+            let ids = &self.ids[range];
+            return match &self.pool {
+                Some(pool) => pool.eval_with_ids(surface, ids, positions, energies, gradients),
+                None => surface.eval_with_ids(ids, positions, energies, gradients),
+            };
+        }
         match &self.pool {
             Some(pool) => pool.eval(surface, positions, energies, gradients),
             None => surface.eval(positions, energies, gradients),
@@ -1136,6 +1166,7 @@ fn fill_band(
             fit2(&mut work.interior_g, (n_images - 2, dof));
             state.eval_rows(
                 surface,
+                1..last,
                 interior,
                 &mut work.interior_e,
                 &mut work.interior_g,
@@ -1167,6 +1198,7 @@ fn fill_band(
             }
             state.eval_rows(
                 surface,
+                0..n_images,
                 work.whole.view(),
                 &mut next.energies,
                 &mut next.gradients,
@@ -2950,6 +2982,33 @@ impl BandSession {
     /// Cartesian coordinates. A band stores one row per image.
     pub fn positions(&self) -> ArrayView2<'_, f64> {
         self.positions.view()
+    }
+
+    /// Stable image identifiers, when installed via [`BandSession::set_ids`].
+    #[must_use]
+    pub fn ids(&self) -> &[crate::stencil::ImageId] {
+        &self.state.ids
+    }
+
+    /// Install one stable [`crate::stencil::ImageId`] per band image so
+    /// [`BandSurface::eval_with_ids`] and [`crate::stencil::Surface::eval`]
+    /// receive those identifiers on whole-band and interior evaluations.
+    pub fn set_ids(&mut self, ids: Vec<crate::stencil::ImageId>) -> Result<(), SaddleError> {
+        if !ids.is_empty() && ids.len() != self.positions.nrows() {
+            return Err(SaddleError::Shape(format!(
+                "band image id count {} does not match {} images",
+                ids.len(),
+                self.positions.nrows()
+            )));
+        }
+        self.state.ids = ids;
+        Ok(())
+    }
+
+    /// Completed band iterations so far.
+    #[must_use]
+    pub fn iteration(&self) -> usize {
+        self.iteration
     }
 
     /// Oriented cells, one per image, when the band carries the
