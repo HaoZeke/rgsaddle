@@ -1153,10 +1153,20 @@ class GrowingString:
         self.ci: int | None = None
         self._session: Any = None
         self._report: Any = None
+        self._endpoints: tuple[Float64, Float64] | None = None
         self._observers: list[tuple[Any, int, tuple[Any, ...], dict[str, Any]]] = []
 
     def attach(self, function: Any, interval: int = 1, *args: Any, **kwargs: Any) -> None:
         self._observers.append((function, interval, args, kwargs))
+
+    def _restore_endpoints(self) -> None:
+        # Image ids run 0..n-1, so the adapter evaluates the last list slot
+        # as an interior node. The endpoints must not keep that geometry.
+        if self._endpoints is None:
+            return
+        reactant, product = self._endpoints
+        self.images[0].set_positions(reactant, apply_constraint=False)
+        self.images[-1].set_positions(product, apply_constraint=False)
 
     def _surface(self, x: Float64) -> tuple[Float64, Float64]:
         assert self._session is not None
@@ -1186,6 +1196,10 @@ class GrowingString:
             product = np.ascontiguousarray(
                 self.images[-1].get_positions(), dtype=np.float64
             ).reshape(-1)
+            self._endpoints = (
+                np.array(self.images[0].get_positions(), dtype=np.float64, copy=True),
+                np.array(self.images[-1].get_positions(), dtype=np.float64, copy=True),
+            )
             self._session = CoreGrowingString(
                 reactant,
                 product,
@@ -1216,22 +1230,26 @@ class GrowingString:
     ) -> bool:
         session = self._ensure(fmax)
         natoms = len(self.images[0])
-        for _ in range(steps):
-            report = session.step(self._surface)
-            self._report = report
-            self.ci = None if int(report.ci_index) < 0 else int(report.ci_index)
-            if session.joined():
-                updated = np.asarray(session.positions(), dtype=np.float64).reshape(
-                    len(self.images), natoms, 3
-                )
-                for idx in range(1, len(self.images) - 1):
-                    self.images[idx].set_positions(updated[idx], apply_constraint=False)
-            for function, interval, args, kwargs in self._observers:
-                if int(report.iteration) % max(int(interval), 1) == 0:
-                    function(*args, **kwargs)
-            if int(report.status) == 1:
-                return True
-        return False
+        try:
+            for _ in range(steps):
+                report = session.step(self._surface)
+                self._restore_endpoints()
+                self._report = report
+                self.ci = None if int(report.ci_index) < 0 else int(report.ci_index)
+                if session.joined():
+                    updated = np.asarray(session.positions(), dtype=np.float64).reshape(
+                        len(self.images), natoms, 3
+                    )
+                    for idx in range(1, len(self.images) - 1):
+                        self.images[idx].set_positions(updated[idx], apply_constraint=False)
+                for function, interval, args, kwargs in self._observers:
+                    if int(report.iteration) % max(int(interval), 1) == 0:
+                        function(*args, **kwargs)
+                if int(report.status) == 1:
+                    return True
+            return False
+        finally:
+            self._restore_endpoints()
 
     def saddle_index(self) -> SaddleIndex:
         if self._session is None:
