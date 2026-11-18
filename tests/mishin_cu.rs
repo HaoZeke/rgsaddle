@@ -2571,6 +2571,21 @@ fn eam_eval_fast(
         return eam_eval(positions, cell);
     }
     let n = positions.len() / 3;
+    let pairs = image_pairs(positions, cell, false);
+    accumulate_eam(n, positions.len(), &pairs, det(cell).abs())
+}
+
+/// Pairs within [`RC`] in an orthorhombic `cell`, in the order of a scan
+/// that tries every image shift of an atom against the bins around it.
+/// Unless `every_shift` is set, a neighbor is tried only at the shifts
+/// that bring each of its coordinate differences inside the cutoff: a
+/// rounded sum of squares is no smaller than any of its terms, so no other
+/// shift passes. A stable sort on the shift then restores the scan order,
+/// and the pairs are those of the full scan, bit for bit and in order. An
+/// atom whose shifts land in different bins, and a cell that needs more
+/// than one image, take the full scan.
+fn image_pairs(positions: ArrayView1<f64>, cell: [[f64; 3]; 3], every_shift: bool) -> Vec<Pair> {
+    let n = positions.len() / 3;
     let lengths = [cell[0][0].abs(), cell[1][1].abs(), cell[2][2].abs()];
     let nimg = ((RC / lengths.into_iter().fold(f64::MAX, f64::min)).ceil() as i32).max(1);
     let nside = lengths.map(|length| ((length / RC).floor() as i32).max(1));
@@ -2589,61 +2604,115 @@ fn eam_eval_fast(
     }
     let cutoff2 = RC * RC;
     let mut pairs = Vec::new();
+    let mut found = Vec::new();
     for i in 0..n {
-        for sx in -nimg..=nimg {
-            for sy in -nimg..=nimg {
-                for sz in -nimg..=nimg {
-                    let target = [
-                        (frac[i][0] - sx as f64).rem_euclid(1.0),
-                        (frac[i][1] - sy as f64).rem_euclid(1.0),
-                        (frac[i][2] - sz as f64).rem_euclid(1.0),
-                    ];
-                    let origin = frac_bin_ijk(target, nside);
-                    let mut slots = Vec::with_capacity(8);
-                    for dx in -1..=1 {
-                        for dy in -1..=1 {
-                            for dz in -1..=1 {
-                                let ix = (origin[0] + dx).rem_euclid(nside[0]);
-                                let iy = (origin[1] + dy).rem_euclid(nside[1]);
-                                let iz = (origin[2] + dz).rem_euclid(nside[2]);
-                                let slot = ((ix * nside[1] + iy) * nside[2] + iz) as usize;
-                                if !slots.contains(&slot) {
-                                    slots.push(slot);
+        let origin = |shift: [i32; 3]| {
+            frac_bin_ijk(
+                [0, 1, 2].map(|c| (frac[i][c] - shift[c] as f64).rem_euclid(1.0)),
+                nside,
+            )
+        };
+        let centre = origin([0; 3]);
+        if every_shift || nimg != 1 || origin([-1; 3]) != centre || origin([1; 3]) != centre {
+            for sx in -nimg..=nimg {
+                for sy in -nimg..=nimg {
+                    for sz in -nimg..=nimg {
+                        for slot in neighbor_slots(origin([sx, sy, sz]), nside) {
+                            for &j in &bins[slot] {
+                                if j < i || (j == i && !positive_image(sx, sy, sz)) {
+                                    continue;
+                                }
+                                let shift = [
+                                    sx as f64 * cell[0][0],
+                                    sy as f64 * cell[1][1],
+                                    sz as f64 * cell[2][2],
+                                ];
+                                let d = [
+                                    positions[3 * j] + shift[0] - positions[3 * i],
+                                    positions[3 * j + 1] + shift[1] - positions[3 * i + 1],
+                                    positions[3 * j + 2] + shift[2] - positions[3 * i + 2],
+                                ];
+                                let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+                                if r2 > 1e-16 && r2 < cutoff2 {
+                                    pairs.push(Pair {
+                                        i,
+                                        j,
+                                        d,
+                                        r: r2.sqrt(),
+                                    });
                                 }
                             }
                         }
                     }
-                    for slot in slots {
-                        for &j in &bins[slot] {
-                            if j < i || (j == i && !positive_image(sx, sy, sz)) {
+                }
+            }
+            continue;
+        }
+        for slot in neighbor_slots(centre, nside) {
+            'neighbor: for &j in &bins[slot] {
+                if j < i {
+                    continue;
+                }
+                let mut near = [[(0, 0.0); 3]; 3];
+                let mut count = [0; 3];
+                for (c, axis) in near.iter_mut().enumerate() {
+                    for shift in -1..=1 {
+                        let d =
+                            positions[3 * j + c] + shift as f64 * cell[c][c] - positions[3 * i + c];
+                        if d.abs() < RC {
+                            axis[count[c]] = (shift, d);
+                            count[c] += 1;
+                        }
+                    }
+                    if count[c] == 0 {
+                        continue 'neighbor;
+                    }
+                }
+                for &(sx, dx) in &near[0][..count[0]] {
+                    for &(sy, dy) in &near[1][..count[1]] {
+                        for &(sz, dz) in &near[2][..count[2]] {
+                            if j == i && !positive_image(sx, sy, sz) {
                                 continue;
                             }
-                            let shift = [
-                                sx as f64 * cell[0][0],
-                                sy as f64 * cell[1][1],
-                                sz as f64 * cell[2][2],
-                            ];
-                            let d = [
-                                positions[3 * j] + shift[0] - positions[3 * i],
-                                positions[3 * j + 1] + shift[1] - positions[3 * i + 1],
-                                positions[3 * j + 2] + shift[2] - positions[3 * i + 2],
-                            ];
-                            let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+                            let r2 = dx * dx + dy * dy + dz * dz;
                             if r2 > 1e-16 && r2 < cutoff2 {
-                                pairs.push(Pair {
+                                let pair = Pair {
                                     i,
                                     j,
-                                    d,
+                                    d: [dx, dy, dz],
                                     r: r2.sqrt(),
-                                });
+                                };
+                                found.push((9 * sx + 3 * sy + sz, pair));
                             }
                         }
                     }
                 }
             }
         }
+        found.sort_by_key(|&(shift, _)| shift);
+        pairs.extend(found.drain(..).map(|(_, pair)| pair));
     }
-    accumulate_eam(n, positions.len(), &pairs, det(cell).abs())
+    pairs
+}
+
+/// The bins at offsets `-1..=1` from `origin` along each axis, each once,
+/// in the order the offsets first reach them.
+fn neighbor_slots(origin: [i32; 3], nside: [i32; 3]) -> Vec<usize> {
+    let mut slots = Vec::with_capacity(27);
+    for dx in -1..=1 {
+        for dy in -1..=1 {
+            for dz in -1..=1 {
+                let ix = (origin[0] + dx).rem_euclid(nside[0]);
+                let iy = (origin[1] + dy).rem_euclid(nside[1]);
+                let iz = (origin[2] + dz).rem_euclid(nside[2]);
+                let slot = ((ix * nside[1] + iy) * nside[2] + iz) as usize;
+                if !slots.contains(&slot) {
+                    slots.push(slot);
+                }
+            }
+        }
+    }
+    slots
 }
 
 fn frac_bin(s: [f64; 3], nside: [i32; 3]) -> usize {
@@ -2750,6 +2819,40 @@ fn fast_mishin_matches_the_direct_pair_sum() {
     for a in 0..3 {
         for b in 0..3 {
             assert!((stress[a][b] - fast_s[a][b]).abs() < 1e-6);
+        }
+    }
+}
+
+#[test]
+fn image_pairs_match_the_full_scan_bit_for_bit() {
+    let mut rng = SplitRng::new(29);
+    for n in [2, 3, 4, 6, 7] {
+        let (mut positions, cell) = fcc(n, 3.615);
+        for value in positions.iter_mut() {
+            *value += 0.3 * rng.normal();
+        }
+        let atoms = positions.len() / 3;
+        for atom in (0..atoms).step_by(7) {
+            positions[3 * atom] += cell[0][0];
+        }
+        for atom in (2..atoms).step_by(11) {
+            positions[3 * atom + 2] -= cell[2][2];
+        }
+        // A few ulps from a bin edge, an atom's shifts can land in other bins.
+        let nside = ((cell[1][1] / RC).floor() as usize).max(1);
+        for (k, atom) in (5..atoms).step_by(5).enumerate().take(48) {
+            let edge = cell[1][1] * (k % (nside + 1)) as f64 / nside as f64;
+            let ulps = (k / (nside + 1)) as f64 - 4.0;
+            positions[3 * atom + 1] = edge + ulps * edge.abs().max(1.0) * f64::EPSILON;
+        }
+        let fast = image_pairs(positions.view(), cell, false);
+        let scan = image_pairs(positions.view(), cell, true);
+        assert!(!fast.is_empty(), "{n}");
+        assert_eq!(fast.len(), scan.len(), "{n}");
+        for (left, right) in fast.iter().zip(&scan) {
+            assert_eq!((left.i, left.j), (right.i, right.j), "{n}");
+            assert_eq!(left.d.map(f64::to_bits), right.d.map(f64::to_bits), "{n}");
+            assert_eq!(left.r.to_bits(), right.r.to_bits(), "{n}");
         }
     }
 }
