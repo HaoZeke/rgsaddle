@@ -115,8 +115,8 @@ The pinned lammpc embed exposed three generic owning-library defects: C helper
 implementations were linked into a C++ translation unit without `extern "C"`
 declarations; its capability schema identifier omitted the canonical `0x`
 prefix required by rgpot; and its direct LAMMPS setup did not allocate
-per-type atom arrays before assigning masses. The separate lammpc mboxes
-under `patches/` fix those ABI and setup defects. The first passes lammpc's
+per-type atom arrays before assigning masses. The lammpc fixes
+are in https://github.com/OmniPotentRPC/lammpc/pull/4 and fix those ABI and setup defects. The first passes lammpc's
 four stub/schema tests; the moderate EAM smoke exercises both patches through
 the real embed. No potential code is copied into rgsaddle.
 
