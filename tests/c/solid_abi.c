@@ -89,6 +89,12 @@ int main(void) {
     p[3] = 0.5 * a;
     p[4] = p[5] = 2.0;
   }
+  if (rgsaddle_band_create_solid(NULL, N_IMAGES, N_ATOMS, positions, cells, 0.0, 1.0) != NULL ||
+      rgsaddle_band_create_solid(&cfg, N_IMAGES, N_ATOMS, NULL, cells, 0.0, 1.0) != NULL ||
+      rgsaddle_band_create_solid(&cfg, N_IMAGES, N_ATOMS, positions, NULL, 0.0, 1.0) != NULL) {
+    printf("create_solid accepted a NULL input\n");
+    return 1;
+  }
   RgsaddleBand *band =
       rgsaddle_band_create_solid(&cfg, N_IMAGES, N_ATOMS, positions, cells, 0.0, 1.0);
   if (band == NULL) {
@@ -96,6 +102,18 @@ int main(void) {
     return 1;
   }
   double jacobian = 0.0;
+  rgsaddle_report_t rep;
+  memset(&rep, 0, sizeof rep);
+  if (rgsaddle_band_step_solid(NULL, surface, NULL, &rep) != RGSADDLE_NULL_BAND ||
+      rgsaddle_band_step_solid(band, surface, NULL, NULL) != RGSADDLE_NULL_REPORT ||
+      rgsaddle_band_step_solid(band, NULL, NULL, &rep) != RGSADDLE_NULL_SURFACE ||
+      rgsaddle_band_cells(NULL, cells) != RGSADDLE_NULL_BAND ||
+      rgsaddle_band_cells(band, NULL) != RGSADDLE_INVALID_PARAMETER ||
+      rgsaddle_band_solid_jacobian(NULL, &jacobian) != RGSADDLE_NULL_BAND ||
+      rgsaddle_band_solid_jacobian(band, NULL) != RGSADDLE_INVALID_PARAMETER) {
+    printf("solid entry point accepted a NULL handle or output\n");
+    return 2;
+  }
   if (rgsaddle_band_solid_jacobian(band, &jacobian) != RGSADDLE_OK) {
     return 2;
   }
@@ -104,8 +122,6 @@ int main(void) {
     printf("jacobian %.15g\n", jacobian);
     return 3;
   }
-  rgsaddle_report_t rep;
-  memset(&rep, 0, sizeof rep);
   if (rgsaddle_band_step(band, atomic, NULL, &rep) != RGSADDLE_INVALID_PARAMETER) {
     printf("the atomic step was accepted on a solid band\n");
     return 4;

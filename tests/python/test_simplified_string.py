@@ -121,6 +121,74 @@ def test_band_string_validation_and_toggle() -> None:
     session.reset()
 
 
+def test_linear_string_step_uses_arc_length_and_not_the_spline() -> None:
+    initial = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.1, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 2.0, 0.0],
+            [2.0, 2.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    expected = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [1.0, 2.0, 0.0],
+            [2.0, 2.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+
+    def flat(positions: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        return np.zeros(positions.shape[0]), np.zeros_like(positions)
+
+    linear = rgsaddle.Band(
+        initial,
+        climb=False,
+        min_mode=False,
+        remove_translation=False,
+        string=True,
+        reparametrization="linear",
+    )
+    linear.step(flat)
+    np.testing.assert_allclose(
+        linear.positions(), expected, rtol=0.0, atol=16.0 * np.finfo(float).eps
+    )
+
+    spline = _core.reparametrize(initial, scheme="spline")
+    assert float(np.max(np.abs(spline - expected))) > 0.01
+
+
+def test_python_reparametrization_wraps_cell_and_validates_inputs() -> None:
+    cell = np.diag([10.0, 10.0, 10.0])
+    crossing = np.array(
+        [
+            [9.0, 0.0, 0.0],
+            [9.2, 0.0, 0.0],
+            [0.2, 0.0, 0.0],
+            [1.8, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    placed = _core.reparametrize(crossing, scheme="linear", cell=cell)
+    differences = np.diff(placed[:, 0])
+    differences -= 10.0 * np.round(differences / 10.0)
+    np.testing.assert_allclose(
+        differences, 0.75, rtol=0.0, atol=64.0 * np.finfo(float).eps
+    )
+    with pytest.raises(ValueError):
+        _core.reparametrize(crossing, scheme="quintic")
+    with pytest.raises(ValueError):
+        _core.reparametrize(crossing, scheme="linear", anchor=0)
+    with pytest.raises(ValueError):
+        _core.reparametrize(crossing, scheme="linear", cell=np.zeros((2, 2)))
+
+
 def test_ase_simplified_string_driver_and_fixed_atoms() -> None:
     if os.environ.get("RGSADDLE_REQUIRE_ASE") != "1":
         pytest.importorskip("ase")
