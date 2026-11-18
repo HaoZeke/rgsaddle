@@ -3,7 +3,8 @@
 set -euo pipefail
 
 PAFI_COMMIT=1661a1d61b2ccbbd33ec4c9656d60947b8b74cc1
-LAMMPC_COMMIT=88cb40a21efc81e94a43210e5e00846d1d776f11
+# lammpc fix/embed-profile-abi (OmniPotentRPC/lammpc#4) on main 88cb40a2.
+LAMMPC_COMMIT=56b3c696e0f7009bf5411b43d94ff1667f01336d
 LAMMPS_TAG=stable_22Jul2025
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 WORK=$(mktemp -d)
@@ -20,11 +21,8 @@ CXX=${BENCHBOT_CXX:-g++}
 git clone --quiet https://github.com/tomswinburne/pafi "${WORK}/pafi"
 git -C "${WORK}/pafi" checkout --quiet "${PAFI_COMMIT}"
 git clone --quiet https://github.com/OmniPotentRPC/lammpc "${WORK}/lammpc"
+git -C "${WORK}/lammpc" fetch --quiet origin "${LAMMPC_COMMIT}"
 git -C "${WORK}/lammpc" checkout --quiet "${LAMMPC_COMMIT}"
-git -C "${WORK}/lammpc" apply \
-  "${ROOT}/benchmarks/pafi-swinburne-repro/patches/0001-fix-embed-satisfy-canonical-profile-ABI.patch"
-git -C "${WORK}/lammpc" apply \
-  "${ROOT}/benchmarks/pafi-swinburne-repro/patches/0002-fix-embed-allocate-per-type-atom-arrays.patch"
 
 curl -fsSL --retry 4 \
   "https://github.com/lammps/lammps/archive/refs/tags/${LAMMPS_TAG}.tar.gz" \
