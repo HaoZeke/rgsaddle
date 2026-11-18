@@ -7,6 +7,14 @@
 //! `project` / `retract` / `transport`. Dense eigen lives in
 //! [`crate::eigensolve`]. Approximate Hessian lives in [`crate::qn`].
 //! Sparse internals stay in vocn.
+//!
+//! Units and shapes: `x0` is the flat `3N` point in Angstrom (atom-major),
+//! `g0` the gradient there in eV/Angstrom, `v` a direction (any unit; the
+//! product scales with it), `eta` the finite-difference displacement in
+//! Angstrom, and a Hessian-vector product comes back in eV/Angstrom^2 times
+//! the unit of `v`. `Uproj` is an `n3 x m` basis lifting a reduced vector of
+//! length `m` into the `3N` frame. Failures are [`SaddleError::Shape`] for
+//! inconsistent lengths, and whatever the surface returns.
 
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
 use rgmin::Manifold;
@@ -17,6 +25,11 @@ use crate::minmode::PointSurface;
 
 /// Sella displacement sign: descend, else toward the origin, else first
 /// nonzero component positive.
+///
+/// The sign is +1 when `v . g0 < -1e-4` (the displacement lowers the energy), -1 when
+/// `v . g0 > 1e-4`; otherwise the same test on `v . x0`; otherwise the sign of the
+/// first component of `v` larger than `1e-4` in magnitude; and +1 when there is
+/// none. `v`, `g0` and `x0` have the same length.
 pub fn hessian_vec_sign(v: ArrayView1<f64>, g0: ArrayView1<f64>, x0: ArrayView1<f64>) -> f64 {
     let vdotg = dot(v, g0);
     if vdotg.abs() > 1e-4 {
@@ -38,6 +51,8 @@ pub fn hessian_vec_sign(v: ArrayView1<f64>, g0: ArrayView1<f64>, x0: ArrayView1<
 }
 
 /// Lift a reduced vector through Sella `Uproj`: `U @ v`.
+///
+/// `uproj` is `n3 x m` and `v` has `m` entries; the result has `n3` entries.
 pub fn lift_through(uproj: ArrayView2<f64>, v: ArrayView1<f64>) -> Array1<f64> {
     let mut out = Array1::zeros(uproj.nrows());
     for i in 0..uproj.nrows() {
@@ -47,6 +62,8 @@ pub fn lift_through(uproj: ArrayView2<f64>, v: ArrayView1<f64>) -> Array1<f64> {
 }
 
 /// Project a full-space vector through Sella `Uproj`: `U^T @ av`.
+///
+/// `uproj` is `n3 x m` and `av` has `n3` entries; the result has `m` entries.
 pub fn project_through(uproj: ArrayView2<f64>, av: ArrayView1<f64>) -> Array1<f64> {
     let mut out = Array1::zeros(uproj.ncols());
     for j in 0..uproj.ncols() {
@@ -57,7 +74,43 @@ pub fn project_through(uproj: ArrayView2<f64>, av: ArrayView1<f64>) -> Array1<f6
 
 /// Two-sided (or one-sided) Hessian-vector product of a surface.
 ///
-/// Euclidean Sella `_matvec` without `Uproj`. A zero `v` returns zero.
+/// Euclidean Sella `_matvec` without `Uproj`. A zero `v` returns zero. With
+/// `threepoint` true the product is the central difference of the gradients at
+/// `x0 +- eta v / |v|`; with it false it is the forward difference against `g0`
+/// (one gradient evaluation). Returns `H v` in eV/Angstrom^2 times the unit of `v`.
+///
+/// # Errors
+///
+/// [`SaddleError::Shape`] when `v` or `g0` differs in length from `x0`, and the
+/// errors of `surface.eval`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::{Array1, ArrayView1, array};
+/// use rgsaddle::SaddleError;
+/// use rgsaddle::linalg::numerical_hvp;
+/// use rgsaddle::minmode::PointSurface;
+///
+/// // E = 0.5 * (2 x^2 + 3 y^2), so the Hessian is diag(2, 3) eV/Angstrom^2.
+/// struct Bowl;
+///
+/// impl PointSurface for Bowl {
+///     fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+///         let energy = 0.5 * (2.0 * x[0] * x[0] + 3.0 * x[1] * x[1]);
+///         Ok((energy, array![2.0 * x[0], 3.0 * x[1]]))
+///     }
+/// }
+///
+/// let x0 = array![0.5, -0.25];
+/// let g0 = array![1.0, -0.75];
+/// let v = array![1.0, 1.0];
+/// // The central difference is exact on a quadratic: H v = (2, 3).
+/// let hv = numerical_hvp(&Bowl, x0.view(), g0.view(), v.view(), 0.01, true)?;
+/// assert!((hv[0] - 2.0).abs() < 0.001);
+/// assert!((hv[1] - 3.0).abs() < 0.001);
+/// # Ok::<(), SaddleError>(())
+/// ```
 pub fn numerical_hvp<S: PointSurface>(
     surface: &S,
     x0: ArrayView1<f64>,
@@ -70,6 +123,16 @@ pub fn numerical_hvp<S: PointSurface>(
 }
 
 /// Sella `_matvec` with optional `Uproj` (free-subspace lift / project).
+///
+/// With `uproj` of shape `n3 x m`, `v` has `m` entries: it is lifted to the `3N`
+/// frame, differenced as in [`numerical_hvp`], and the product is projected back,
+/// so the result has `m` entries. Without `uproj` this is [`numerical_hvp`].
+///
+/// # Errors
+///
+/// [`SaddleError::Shape`] when `uproj` does not have `x0.len()` rows and `v.len()`
+/// columns, or when `v` or `g0` disagrees with `x0`; and the errors of
+/// `surface.eval`.
 pub fn numerical_hvp_proj<S: PointSurface>(
     surface: &S,
     x0: ArrayView1<f64>,
@@ -131,7 +194,7 @@ pub fn numerical_hvp_proj<S: PointSurface>(
     }
 }
 
-/// Project an HVP direction onto `T_x`.
+/// Project an HVP direction onto `T_x`, the tangent space of `man` at `x`.
 pub fn project_hvp<M: Manifold>(man: &M, x: &Array1<f64>, v: &Array1<f64>) -> Array1<f64> {
     man.project(x, v)
 }
@@ -140,6 +203,9 @@ pub fn project_hvp<M: Manifold>(man: &M, x: &Array1<f64>, v: &Array1<f64>) -> Ar
 ///
 /// `sign` is Sella's displacement sign; the tangent increment is
 /// `sign * eta / ||v|| * v`.
+///
+/// `x` is the point in Angstrom, `v` the direction and `eta` the step length in
+/// Angstrom; the result is a point on `man` in Angstrom. A zero `v` returns `x`.
 pub fn retract_hvp<M: Manifold>(
     man: &M,
     x: &Array1<f64>,
@@ -157,7 +223,7 @@ pub fn retract_hvp<M: Manifold>(
     man.retract(x, &s)
 }
 
-/// Vector transport of an HVP increment from `x_from` to `x_to`.
+/// Vector transport of an HVP increment from `x_from` to `x_to` along `man`.
 pub fn transport_hvp<M: Manifold>(
     man: &M,
     x_from: &Array1<f64>,
@@ -171,6 +237,13 @@ pub fn transport_hvp<M: Manifold>(
 ///
 /// Project `v` onto `T_x`, retract the finite-difference step, evaluate,
 /// transport the Riemannian gradient back, and project the HVP.
+///
+/// The result has `x0.len()` entries, in eV/Angstrom^2 times the unit of `v`.
+///
+/// # Errors
+///
+/// [`SaddleError::Shape`] when `v` or `g0` differs in length from `x0`, and the
+/// errors of `surface.eval`.
 pub fn numerical_hvp_on<S: PointSurface, M: Manifold>(
     man: &M,
     surface: &S,
@@ -216,6 +289,9 @@ pub fn numerical_hvp_on<S: PointSurface, M: Manifold>(
 }
 
 /// Sella `linalg.NumericalHessian`: cached FD HVP for a stepper.
+///
+/// Holds the base point, its gradient and the finite-difference settings, and
+/// records every `(V, AV)` pair that [`NumericalHessian::matvec`] evaluates.
 #[derive(Clone, Debug)]
 pub struct NumericalHessian {
     x0: Array1<f64>,
@@ -229,6 +305,15 @@ pub struct NumericalHessian {
 
 impl NumericalHessian {
     /// Sella `NumericalHessian(func, x0, g0, eta, threepoint, Uproj)`.
+    ///
+    /// `x0` is the `3N` point in Angstrom, `g0` its gradient in eV/Angstrom, `eta` the
+    /// finite-difference step in Angstrom, `threepoint` selects the central difference
+    /// and `uproj` the optional `3N x m` reduced basis.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] when `g0` differs in length from `x0` or `uproj` does not
+    /// have `x0.len()` rows.
     pub fn new(
         x0: Array1<f64>,
         g0: Array1<f64>,
@@ -260,17 +345,26 @@ impl NumericalHessian {
         })
     }
 
-    /// Cached full-space trial directions (`NumericalHessian.Vs`).
+    /// Cached full-space trial directions (`NumericalHessian.Vs`), one per column:
+    /// a `3N x k` view after `k` products.
     pub fn vs(&self) -> ArrayView2<'_, f64> {
         self.vs.view()
     }
 
-    /// Cached full-space actions (`NumericalHessian.AVs`).
+    /// Cached full-space actions (`NumericalHessian.AVs`), one per column, matching
+    /// [`Self::vs`].
     pub fn avs(&self) -> ArrayView2<'_, f64> {
         self.avs.view()
     }
 
     /// Sella `_matvec`. Caches the full-space pair `(V, AV)`.
+    ///
+    /// `v` has `m` entries when a `uproj` was given and `3N` otherwise. The result has
+    /// the same length as `v`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`numerical_hvp`].
     pub fn matvec<S: PointSurface>(
         &mut self,
         surface: &S,
@@ -296,6 +390,12 @@ impl NumericalHessian {
     }
 
     /// `_matvec` whose displaced point stays on `man`.
+    ///
+    /// Arguments and result as [`Self::matvec`].
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`numerical_hvp_on`].
     pub fn matvec_on<S: PointSurface, M: Manifold>(
         &mut self,
         man: &M,
@@ -343,8 +443,12 @@ impl NumericalHessian {
 }
 
 /// Modified Gram-Schmidt. Columns of `x` are orthonormalized against
-/// each other and against the optional `y` basis. Columns with
-/// residual below `eps` are dropped.
+/// each other and against the optional `y` basis, which is assumed
+/// orthonormal already. Columns with residual norm at most `eps` are dropped.
+///
+/// `x` is `n x k` and `y` is `n x j`. The result is `n x k_kept` with `k_kept <= k`,
+/// its columns orthonormal and orthogonal to `y` (the columns of `y` are not
+/// returned). `eps` is a norm in the units of `x`.
 pub fn modified_gram_schmidt(
     x: ArrayView2<f64>,
     y: Option<ArrayView2<f64>>,
@@ -380,9 +484,10 @@ pub fn modified_gram_schmidt(
     out
 }
 
-/// Symmetrize a rectangular pair `(V, AV)` the Sella `symm=2` way:
-/// `0.5 (V^T AV + (V^T AV)^T)` projected back is done by the caller;
-/// this returns the symmetric `V^T AV`.
+/// Sella `symm=2` projected operator `V^T AV`, symmetrised as
+/// `(M + M^T) / 2` with `M = V^T AV`.
+///
+/// `v` and `av` are `n x k`; the result is `k x k` and symmetric.
 pub fn symmetrize_vt_av(v: ArrayView2<f64>, av: ArrayView2<f64>) -> Array2<f64> {
     let k = v.ncols();
     let mut a = Array2::<f64>::zeros((k, k));
