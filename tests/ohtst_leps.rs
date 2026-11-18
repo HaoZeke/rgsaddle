@@ -818,17 +818,55 @@ fn section_iii_b_reproduces_the_printed_rates() {
         .unwrap();
         rates.push(estimate.rate);
     }
-    let mean = rates.iter().sum::<f64>() / rates.len() as f64;
-    let variance =
-        rates.iter().map(|rate| (rate - mean).powi(2)).sum::<f64>() / (rates.len() - 1) as f64;
-    let error = (variance / rates.len() as f64).sqrt();
+    let count = rates.len() as f64;
+    let mean = rates.iter().sum::<f64>() / count;
+    let variance = rates.iter().map(|rate| (rate - mean).powi(2)).sum::<f64>() / (count - 1.0);
+    let spread = variance.sqrt();
+    let error = (variance / count).sqrt();
+    let lowest = rates.iter().copied().fold(f64::INFINITY, f64::min);
+    let highest = rates.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+
+    let prose_kt = 0.1 * geometry.barrier;
+    let prose_speed = (2.0 * prose_kt / std::f64::consts::PI).sqrt();
+    let prose_harmonic = harmonic_rate(&geometry, prose_kt);
+    let (published, published_error) = (4.5e-7_f64, 0.2e-7_f64);
+    let (band_low, band_high) = (published - published_error, published + published_error);
     eprintln!(
-        "Section III B: kT={kt}, E_A={}, <|v|>={speed}, k_hTST={harmonic:e}, \
-         k_OH-TST={mean:e} ± {error:e}, quadrature={quadrature:e}; seeds {rates:?}",
-        geometry.barrier
+        "Section III B potential: E_A={}, reactant={:?}, saddle={:?}",
+        geometry.barrier, geometry.reactant, geometry.saddle
     );
+    eprintln!(
+        "Section III B prose convention: kT=0.1 E_A={prose_kt}, <|v|>={prose_speed}, \
+         k_hTST={prose_harmonic:e}, 0.25 / kT={}",
+        kt / prose_kt
+    );
+    eprintln!(
+        "Section III B printed-rate convention: kT={kt}, <|v|>={speed}, \
+         k_hTST={harmonic:e}, quadrature={quadrature:e}"
+    );
+    for (seed, rate) in (1..=8).zip(&rates) {
+        eprintln!("Section III B seed {seed}: k_OH-TST={rate:e}");
+    }
+    eprintln!(
+        "Section III B k_OH-TST over {count} seeds: mean={mean:e}, sample sd={spread:e}, \
+         standard error={error:e}, lowest={lowest:e}, highest={highest:e}"
+    );
+    eprintln!(
+        "Section III B against ({published:e} ± {published_error:e}): \
+         mean - published={:e} ({} of the published error, {} standard errors), \
+         mean - lower edge={:e} ({} standard errors), upper edge - mean={:e}",
+        mean - published,
+        (mean - published) / published_error,
+        (mean - published) / error,
+        mean - band_low,
+        (mean - band_low) / error,
+        band_high - mean
+    );
+    // The published interval is the only tolerance the paper gives. It is
+    // applied to the mean as printed, with no allowance for this estimate's
+    // own standard error.
     assert!(
-        (4.3e-7..=4.7e-7).contains(&mean),
+        (band_low..=band_high).contains(&mean),
         "sampled OH-TST {mean:e} ± {error:e}; quadrature {quadrature:e}"
     );
 }

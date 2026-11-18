@@ -1500,9 +1500,11 @@ with stochastic collisions; it does not report a time step, collision
 frequency, trajectory length, number of planes, masses, or physical units.
 The test therefore states its sample counts rather than attributing them to
 the paper. It keeps the paper's crossing estimator and trapezoidal
-integration; Simpson quadrature gives $4.211\times10^{-7}$ and exposes the
-small upward discretization bias that puts the paper-style estimate inside
-the printed band.
+integration. The mean sits $0.160\times10^{-7}$ below the printed
+$4.5\times10^{-7}$ and $0.040\times10^{-7}$ above the lower edge of the
+printed band, so it is compatible with the paper but does not reproduce its
+central value. `docs/design/ohtst-paper-reproduction.md` gives the
+per-seed rates, the standard error, and the command that prints them.
 
 The apparent $Q^\ddagger/Q_{Z_R}=0.765$ is a label error: Eq. (3) needs
 $Q_{Z_R}/Q_R$ in the prefactor, while $Q^\ddagger/Q_{Z_R}$ is the

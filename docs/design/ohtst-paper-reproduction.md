@@ -120,21 +120,70 @@ samples, or number of work planes.
 | \(2k_c[x-(r_{AC}/2-y/c)]^2\) | `2.0*K_C*stretch*stretch` |
 | all Appendix B parameters | exact decimal values listed above |
 
-No potential mismatch was found. The analytic Hessian now used for Vineyard
-hTST differentiates those same terms; the reproduction does not use hand
-finite differences.
+No potential mismatch was found. The Vineyard hTST rate uses the analytic
+Hessian of those same terms (`LepsHo::hessian`). The quadrature references
+in `tests/ohtst_leps.rs` locate the optimal line by Newton's method on
+central differences of the quadrature free energy; they are test-only
+cross-checks and no sampled rate depends on them.
+
+## Regenerating every number
+
+Every number below that is not a quotation from the paper is printed by one
+command from a clean checkout of this repository, at the revision that
+contains this file. The paper quotations can be checked against the PDF
+named at the top:
+
+```bash
+curl -L -o paperOHTST-JCP01.pdf https://hj.hi.is/papers/paperOHTST-JCP01.pdf
+sha256sum paperOHTST-JCP01.pdf
+```
+
+The reproduction is one integration test. It takes a few seconds after the
+crate has been built:
+
+```bash
+cargo test --test ohtst_leps section_iii_b_reproduces_the_printed_rates -- --nocapture
+```
+
+`--nocapture` is required, because the test reports through standard
+error. It prints these lines, and cargo then reports the test as `ok`:
+
+```text
+Section III B potential: E_A=3.6339513165591186, reactant=[0.7415206639943598, 1.303418963134847], saddle=[2.0208277343663372, -0.17290120545875307]
+Section III B prose convention: kT=0.1 E_A=0.36339513165591186, <|v|>=0.4809828749490712, k_hTST=4.041014867543564e-5, 0.25 / kT=0.6879563819713403
+Section III B printed-rate convention: kT=0.25, <|v|>=0.3989422804014327, k_hTST=4.331269928384644e-7, quadrature=4.201484800516092e-7
+Section III B seed 1: k_OH-TST=4.5280923324556635e-7
+Section III B seed 2: k_OH-TST=4.560986734779895e-7
+Section III B seed 3: k_OH-TST=3.9261333126697063e-7
+Section III B seed 4: k_OH-TST=4.4348413057494177e-7
+Section III B seed 5: k_OH-TST=3.6507495025465244e-7
+Section III B seed 6: k_OH-TST=4.7465717146380427e-7
+Section III B seed 7: k_OH-TST=4.2821212936180344e-7
+Section III B seed 8: k_OH-TST=4.5904921118016843e-7
+Section III B k_OH-TST over 8 seeds: mean=4.3399985385323714e-7, sample sd=3.7243550174667995e-8, standard error=1.3167583441984583e-8, lowest=3.6507495025465244e-7, highest=4.7465717146380427e-7
+Section III B against (4.5e-7 ± 2e-8): mean - published=-1.6000146146762842e-8 (-0.8000073073381421 of the published error, -1.2151163664356732 standard errors), mean - lower edge=3.999853853237178e-9 (0.3037652178822518 standard errors), upper edge - mean=3.600014614676286e-8
+```
+
+The seeds are fixed (1 to 8), so the output repeats exactly on the same
+toolchain. Setting `RAYON_NUM_THREADS=1` gave identical output. A different
+compiler or math library may change the trailing digits of the sampled
+rates.
+
+Where the sections below quote a number, it is the printed value rounded to
+the digits shown. The paper's own values (0.399, 4.3, 4.5 ± 0.2, 0.765 ± 0.005)
+are quotations, not output.
 
 ## Convention decision
 
-Evaluating Appendix B gives the reactant minimum
-\((0.74152,1.30342)\), the printed saddle, and
-\(E_A=3.63395\) in the potential's own energy unit. Thus the literal
-\(k_BT=0.1E_A=0.363395\), with unit mass, gives
-\(\langle|v|\rangle=0.480983\) and
-\(k_{\mathrm{hTST}}=4.0410\times10^{-5}\), not the printed values.
+Evaluating Appendix B gives, in the first line of the output, the reactant
+minimum \((0.74152,1.30342)\), the printed saddle, and \(E_A=3.63395\) in
+the potential's own energy unit. Thus the literal \(k_BT=0.1E_A=0.363395\),
+with unit mass, gives \(\langle|v|\rangle=0.480983\) and
+\(k_{\mathrm{hTST}}=4.0410\times10^{-5}\) (second line), not the printed
+values.
 
 Both independently printed quantities select \(k_BT=0.25\) in the Appendix B
-energy unit with unit mass:
+energy unit with unit mass (third line):
 
 * Eq. (23): \(\sqrt{2k_BT/\pi}=0.398942\);
 * analytic Vineyard hTST: \(4.33127\times10^{-7}\).
@@ -142,49 +191,114 @@ energy unit with unit mass:
 Therefore the numerical convention behind the printed rates is
 \(k_BT=0.25\), unit mass, and the potential's own energy, length, and time
 units. The prose \(0.1E_A\) is inconsistent with Appendix B by a factor
-\(0.25/(0.1\times3.63395)=0.688\). The printed
+\(0.25/(0.1E_A)=0.688\) (the last field of the second line). The printed
 \(Q^\ddagger/Q_{Z_R}=0.765\) is also mislabeled: Eq. (3), p. 9646, uses
 \(Q_{Z_R}/Q_R\) in the prefactor, while \(Q^\ddagger/Q_{Z_R}\) is the
 exponentially small reversible-work factor.
 
-## Rates
+## How the rate is obtained from the eight seeds
 
-The executable reproduction uses the paper's Eq. (22) crossing estimator,
-sampled plane optimization, and trapezoidal reversible work. Because the
-paper omits all sample counts, the test declares its own: eight independent
-seeds; 1000 records per plane-optimization sample; 8000 records for the
-crossing trajectory; and 2000 records on each of 17 work planes. Rgsaddle's
-BAOAB thermostat samples the same canonical distribution; an exact
-Andersen-collision schedule cannot be reconstructed because the paper does
-not give its time step or collision frequency.
+The paper omits all sample counts, so the test declares its own. For each
+seed \(s=1,\dots,8\) it makes three independent samples, each with the
+BAOAB thermostat at \(k_BT=0.25\), time step 0.1, friction 1, 300 burn-in
+steps and a stride of 5 (`sampler` in `tests/ohtst_leps.rs`), seeded with
+\(s\):
+
+1. plane optimization from the dimer's saddle plane: 1000 records per
+   sample, at most 1000 records in all (`with_max_records`);
+2. the Eq. (22) crossing estimate \(\rho_s\) of \(Q_{Z_R}/Q_R\) on the
+   guideline plane through the reactant minimum, from one trajectory of
+   8000 records, with the optimized plane as the wall;
+3. the reversible work \(W_s\) from that plane to the optimized plane over
+   17 work planes of 2000 records each, integrated by the trapezoidal rule
+   (`with_simpson(false)`), as in the paper.
+
+The seed's rate is
+
+\[
+k_s=\sqrt{\frac{k_BT}{2\pi}}\;\rho_s\,e^{-W_s/k_BT},
+\]
+
+computed by `rate_from_parts`. The quoted rate is the mean of the eight
+\(k_s\). The error is the standard error of that mean, which is the sample
+standard deviation (denominator \(n-1\)) divided by \(\sqrt 8\). The
+per-seed errors of \(\rho_s\) and \(W_s\) are not propagated into it.
+BAOAB samples the same canonical distribution as the paper's Andersen
+collisions; an exact collision schedule cannot be reconstructed because the
+paper does not give its time step or collision frequency.
+
+Measured per-seed rates, in units of \(10^{-7}\):
+
+| Seed | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| \(k_s\) | 4.528 | 4.561 | 3.926 | 4.435 | 3.651 | 4.747 | 4.282 | 4.590 |
+
+The spread between seeds is large: the sample standard deviation is
+\(0.372\times10^{-7}\) and the seeds range from \(3.651\times10^{-7}\) to
+\(4.747\times10^{-7}\). The mean is \(4.340\times10^{-7}\) with standard
+error \(0.132\times10^{-7}\), so a single seed is a poor estimate and the
+mean over eight is what carries the result.
+
+## Rates
 
 | Quantity | Result | Published |
 |---|---:|---:|
 | \(\langle|v|\rangle\) | 0.398942 | 0.399 |
 | analytic Vineyard \(k_{\mathrm{hTST}}\) | \(4.33127\times10^{-7}\) | \(4.3\times10^{-7}\) |
 | optimal-line quadrature \(k_{\mathrm{OH-TST}}\) | \(4.20148\times10^{-7}\) | — |
-| Eq. (22) + trapezoidal work \(k_{\mathrm{OH-TST}}\) | \((4.340\pm0.132)\times10^{-7}\) | \((4.5\pm0.2)\times10^{-7}\) |
+| Eq. (22) + trapezoidal work \(k_{\mathrm{OH-TST}}\), mean of 8 seeds | \((4.340\pm0.132)\times10^{-7}\) | \((4.5\pm0.2)\times10^{-7}\) |
 
-The uncertainty is the standard error of the mean over independent seeds.
-The estimate lies in the unmodified published band
-\([4.3,4.7]\times10^{-7}\). Simpson integration gives
-\((4.211\pm0.136)\times10^{-7}\), 2.06% below its lower edge; the likely
-source of the difference is the paper's trapezoidal discretization, since
-the converged quadrature value is also just below the band.
+The quoted uncertainty is the standard error of the mean, not the spread
+of one seed.
 
-## Verification
+## Where the mean sits relative to the published rate
 
-All logs begin with the tested Git SHA and are included in the delivery
-archive.
+The mean, \(4.340\times10^{-7}\), is below the published central value
+\(4.5\times10^{-7}\) by \(0.160\times10^{-7}\). That is 0.80 of the
+published \(\pm0.2\times10^{-7}\) and 1.22 of this estimate's standard
+error. It is inside the published interval \([4.3,4.7]\times10^{-7}\), but
+near its lower edge: it is \(0.040\times10^{-7}\) above it, which is 0.30
+standard errors, and \(0.360\times10^{-7}\) below the upper edge. Three
+seeds (3, 5 and 7) lie below \(4.3\times10^{-7}\) and one (seed 6) lies
+above \(4.7\times10^{-7}\), so the interval describes the mean and not the
+individual seeds. The result is therefore compatible with the published
+rate, with the sampled mean on its low side; it does not reproduce the
+central value, and the data here cannot say whether the 0.160 gap is a
+difference in method or sampling noise. The paper does not say what its
+\(\pm0.2\times10^{-7}\) measures.
 
-| Command | Passed | Failed | Ignored/skipped |
-|---|---:|---:|---:|
-| `cargo test --features capi` | 970 | 0 | 36 |
-| Meson consumer, subproject mode | 1 | 0 | 0 |
-| Meson consumer, installed pkg-config mode | 1 | 0 | 0 |
-| `pytest tests/python` | 81 | 0 | 0 |
+The optimal-line quadrature, \(4.20148\times10^{-7}\), is below the
+interval. It is the converged rate for this line and these conventions, so
+it is not itself a sample of the published value, and the sampled mean lies
+\(0.139\times10^{-7}\) above it (the difference of the two printed
+values), which is about one standard error.
 
-The Rust total sums all 103 test-harness and doctest summaries in
-`cargo-test.log`. The C and C++ ABI smoke programs are among the Rust
-integration tests; `meson-tests.log` additionally records both supported
-Meson consumer modes.
+The test asserts the published interval unmodified:
+`(band_low..=band_high).contains(&mean)` with \(4.5\times10^{-7}\mp
+0.2\times10^{-7}\). That interval is the only tolerance the paper gives, and
+using it without widening makes the check mean what the paper's number
+means. The tolerance does not include an allowance for this estimate's own
+standard error, which is why the 0.30 standard-error margin at the lower
+edge matters: the assertion passes with fixed seeds, and a different set of
+eight seeds, or a platform that changes the sampled rates in the last
+digits, could land outside the interval without anything being wrong. If
+that happens the test should be re-examined against the standard error
+printed above, not loosened to fit.
+
+## Other checks
+
+Run the suites with
+
+```bash
+cargo test --features capi
+cargo test --test ohtst_leps
+```
+
+Both must report zero failed tests. The C and C++ ABI smoke programs are
+among the Rust integration tests. The Python binding has its own tests in
+`tests/python/test_ohtst.py`, run with `pytest tests/python` after
+`pip install .`, and the two Meson consumer modes are exercised by
+`ci/meson_consumer.sh subproject target/debug/librgsaddle.so` and
+`ci/meson_consumer.sh pkgconfig target/debug/librgsaddle.so` after
+`cargo build --features capi`. No test counts are quoted here: they change
+with every test added, and the commands above print the current ones.
