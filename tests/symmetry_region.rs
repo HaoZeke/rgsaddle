@@ -434,3 +434,19 @@ fn same_point_set(
     }
     true
 }
+
+#[test]
+fn a_group_without_the_identity_is_rejected() {
+    let reactant = array![[0.0, 0.0, 0.0]];
+    let saddle = array![[1.0, 0.0, 0.0]];
+    let mirror = operation(array![[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0],]);
+    let error = SymmetryUniqueRegion::from_crystal_operations(
+        reactant.view(),
+        saddle.view(),
+        &[0],
+        &[mirror],
+        &CrystalSymmetryConfig::default(),
+    )
+    .expect_err("a crystal group without the identity");
+    assert!(error.to_string().contains("identity"), "{error}");
+}
