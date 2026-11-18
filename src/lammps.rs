@@ -454,6 +454,51 @@ impl LammpsHyperplaneSampler {
 }
 
 impl HyperplaneSampler for LammpsHyperplaneSampler {
+    fn constrained_directions(
+        &mut self,
+        plane: &Hyperplane,
+    ) -> Result<Vec<Array1<f64>>, SaddleError> {
+        let count = self.config.excluded_modes;
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        let dimension = plane.dim();
+        if count >= dimension {
+            return Err(SaddleError::Invalid(
+                "LAMMPS excluded modes do not fit in the plane".into(),
+            ));
+        }
+        let normal = plane.normal();
+        let mut seeds = Array2::zeros((count, dimension));
+        let mut placed = 0usize;
+        for axis in 0..dimension {
+            if placed == count {
+                break;
+            }
+            let mut row = Array1::zeros(dimension);
+            row[axis] = 1.0;
+            let along = normal[axis];
+            row.scaled_add(-along, &normal);
+            if row.iter().all(|value| *value == 0.0) {
+                continue;
+            }
+            seeds.row_mut(placed).assign(&row);
+            placed += 1;
+        }
+        if placed != count {
+            return Err(SaddleError::Invalid(
+                "LAMMPS excluded modes do not fit in the plane".into(),
+            ));
+        }
+        let directions = crate::projector::orthonormal_rows(seeds.view(), dimension);
+        if directions.len() != count {
+            return Err(SaddleError::Invalid(
+                "LAMMPS excluded modes are not independent in the plane".into(),
+            ));
+        }
+        Ok(directions)
+    }
+
     fn sample_hyperplane(
         &mut self,
         plane: &Hyperplane,
@@ -1208,6 +1253,29 @@ mod tests {
                 Ok(1.0)
             }
         }
+    }
+
+    #[test]
+    fn excluded_modes_are_constrained_directions() {
+        let mut sampler = LammpsHyperplaneSampler::new(
+            LammpsSystem::default()
+                .with_positions(Array1::zeros(6))
+                .with_atomic_numbers(vec![1, 1])
+                .with_masses(vec![1.0, 1.0])
+                .with_config_bytes(vec![1]),
+            LammpsSamplerConfig::default().with_excluded_modes(2),
+        );
+        let mut normal = Array1::zeros(6);
+        normal[0] = 1.0;
+        let plane = Hyperplane::new(Array1::zeros(6), normal).unwrap();
+        let directions = sampler.constrained_directions(&plane).unwrap();
+        assert_eq!(directions.len(), 2);
+        assert_eq!(plane.dim() - 1 - directions.len(), 3);
+        for direction in &directions {
+            assert!(plane.normal().dot(direction).abs() < 1.0e-12);
+            assert!((direction.dot(direction) - 1.0).abs() < 1.0e-12);
+        }
+        assert!(directions[0].dot(&directions[1]).abs() < 1.0e-12);
     }
 
     #[test]
