@@ -76,6 +76,9 @@ with_setters!(PafiConfig {
 });
 
 impl Default for PafiConfig {
+    /// `kT` of 300 K in eV, unit mobility, time step 1e-3, 200
+    /// thermalization steps, 200 samples 5 steps apart in 5 blocks, seed 1,
+    /// the center of mass held, 16 kept configurations, one pass.
     fn default() -> Self {
         Self {
             thermal: 0.02585,
