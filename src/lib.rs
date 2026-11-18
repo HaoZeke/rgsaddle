@@ -87,6 +87,7 @@ pub mod projection;
 pub mod projector;
 pub mod region;
 pub mod relax;
+pub mod ring;
 pub mod saddle_index;
 pub mod solid_dimer;
 pub mod solid_state;
@@ -158,8 +159,8 @@ pub use lammps::{
     LammpsThermostatKind, LammpsThermostatRecord,
 };
 pub use minmode::{
-    ArtNConfig, FiniteDifference, MinModeConfig, MinModeKind, MinModeReport, MinModeSession,
-    MinModeStatus, ModeEstimate, PointSurface, RaisedStep, halve_raised_energy,
+    ArtNConfig, CartesianLayout, FiniteDifference, MinModeConfig, MinModeKind, MinModeReport,
+    MinModeSession, MinModeStatus, ModeEstimate, PointSurface, RaisedStep, halve_raised_energy,
     rotation_force_error,
 };
 pub use nichols::{
@@ -218,6 +219,12 @@ pub use relax::{
     DEFAULT_FORCE_TOL, DEFAULT_MAX_STEPS, RelaxConfig, Relaxation, max_atom_force,
     relax_to_tolerance,
 };
+pub use ring::{
+    BeadSample, RingPolymer, RingSettings, bead_study, centroid_hyperplane, centroid_path,
+    collapsed,
+};
+#[cfg(feature = "readcon")]
+pub use ring::{RingCon, orbit_from_con, ring_path_from_con};
 pub use saddle_index::{SaddleEscape, SaddleIndex, SaddleIndexCheck, saddle_index};
 pub use solid_dimer::{
     CellMask, IndexCheck, IndexReport, JointChart, STRAIN_VOIGT, SolidDimer, SolidDimerConfig,
