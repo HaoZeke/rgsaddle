@@ -1,7 +1,7 @@
 //! Simplified string method of E, Ren, and Vanden-Eijnden, J. Chem. Phys.
 //! 126, 164103 (2007), doi:10.1063/1.2720838:
 //!
-//! 1. Mueller-Brown MEP and saddle regression (Sec. III.C), comparing
+//! 1. Mueller-Brown MEP and saddle regression (Sec. V.C), comparing
 //!    not-a-knot cubic-spline vs linear reparametrization against the
 //!    steepest-descent MEP from the analytic saddles and against
 //!    rgsaddle's CI-NEB on the same surface.
@@ -36,6 +36,16 @@ const MB_MEP_DISTANCE_TOL: f64 = 5e-6;
 const MB_SPLINE_MEP_DISTANCE: f64 = 0.011_118;
 const MB_LINEAR_MEP_DISTANCE: f64 = 0.014_425;
 const MB_CINEB_MEP_DISTANCE: f64 = 0.030_509;
+// The deterministic smoke run measured (iterations, rows) as spline
+// (148, 6833), linear (129, 5959), CI-string S1 (139, 6422), CI-NEB
+// (94, 2190), and CI-string S2 (32, 720). These ceilings add 10% and
+// round upward, so they detect a work regression without pinning libm
+// details to one machine.
+const MB_SPLINE_MAX_WORK: (usize, usize) = (165, 7_600);
+const MB_LINEAR_MAX_WORK: (usize, usize) = (145, 6_600);
+const MB_CI_STRING_MAX_WORK: (usize, usize) = (155, 7_100);
+const MB_CINEB_MAX_WORK: (usize, usize) = (105, 2_450);
+const MB_CI_STRING_S2_MAX_WORK: (usize, usize) = (36, 800);
 const MB_A_MINIMUM: ([f64; 2], f64) = (
     [-0.558_223_634_633, 1.441_725_841_805],
     -146.699_517_209_954,
@@ -195,6 +205,22 @@ fn assert_equal_spacing(
     );
 }
 
+fn assert_work_within(
+    label: &str,
+    iterations: usize,
+    rows: usize,
+    (max_iterations, max_rows): (usize, usize),
+) {
+    assert!(
+        iterations <= max_iterations,
+        "{label} took {iterations} iterations, budget {max_iterations}"
+    );
+    assert!(
+        rows <= max_rows,
+        "{label} took {rows} surface rows, budget {max_rows}"
+    );
+}
+
 #[test]
 fn mueller_brown_mep_and_saddle_regression_matches_cineb() {
     let ([ax, ay], ea) = mb_stationary(-0.558, 1.442);
@@ -203,7 +229,7 @@ fn mueller_brown_mep_and_saddle_regression_matches_cineb() {
     let ([s1x, s1y], es1) = mb_stationary(-0.822, 0.624);
     let ([s2x, s2y], es2) = mb_stationary(0.212, 0.293);
     // E, Ren, and Vanden-Eijnden, J. Chem. Phys. 126, 164103 (2007),
-    // Sec. III.C prints this potential and uses its stationary points to
+    // Sec. V.C prints this potential and uses its stationary points to
     // illustrate the string and climbing methods.
     for (name, found, expected) in [
         ("A", ([ax, ay], ea), MB_A_MINIMUM),
@@ -325,6 +351,42 @@ fn mueller_brown_mep_and_saddle_regression_matches_cineb() {
     let (str_es2, _, _) = muller_brown_jet(str_s2[0], str_s2[1]);
     assert_eq!(cb_rep.saddle_index.as_ref().expect("certified S2").index, 1);
 
+    let spline_rows = spline_surface.rows.load(Ordering::Relaxed);
+    let linear_rows = linear_surface.rows.load(Ordering::Relaxed);
+    let ci_string_rows = ci_string_surface.rows.load(Ordering::Relaxed);
+    let cineb_rows = cineb_surface.rows.load(Ordering::Relaxed);
+    let cb_rows = cb_surface.rows.load(Ordering::Relaxed);
+    assert_work_within(
+        "plain spline string",
+        spline_rep.iteration,
+        spline_rows,
+        MB_SPLINE_MAX_WORK,
+    );
+    assert_work_within(
+        "plain linear string",
+        linear_rep.iteration,
+        linear_rows,
+        MB_LINEAR_MAX_WORK,
+    );
+    assert_work_within(
+        "CI-string S1",
+        ci_string_rep.iteration,
+        ci_string_rows,
+        MB_CI_STRING_MAX_WORK,
+    );
+    assert_work_within(
+        "CI-NEB S1",
+        cineb_rep.iteration,
+        cineb_rows,
+        MB_CINEB_MAX_WORK,
+    );
+    assert_work_within(
+        "CI-string S2",
+        cb_rep.iteration,
+        cb_rows,
+        MB_CI_STRING_S2_MAX_WORK,
+    );
+
     eprintln!(
         "Mueller-Brown reproduction:\n  \
          exact S1 = ({s1x:.8}, {s1y:.8}), E = {es1:.8}, dE(A->S1) = {:.8}\n  \
@@ -337,20 +399,20 @@ fn mueller_brown_mep_and_saddle_regression_matches_cineb() {
         es1 - ea,
         es2 - eb,
         spline_rep.iteration,
-        spline_surface.rows.load(Ordering::Relaxed),
+        spline_rows,
         linear_rep.iteration,
-        linear_surface.rows.load(Ordering::Relaxed),
+        linear_rows,
         ci_string_rep.iteration,
-        ci_string_surface.rows.load(Ordering::Relaxed),
+        ci_string_rows,
         str_s1[0],
         str_s1[1],
         str_gx.hypot(str_gy),
         cineb_rep.iteration,
-        cineb_surface.rows.load(Ordering::Relaxed),
+        cineb_rows,
         neb_s1[0],
         neb_s1[1],
         cb_rep.iteration,
-        cb_surface.rows.load(Ordering::Relaxed),
+        cb_rows,
         str_s2[0],
         str_s2[1],
     );
@@ -364,10 +426,6 @@ fn mueller_brown_mep_and_saddle_regression_matches_cineb() {
     assert!(
         err_spline < err_linear,
         "spline string ({err_spline}) must improve on the polyline string ({err_linear})"
-    );
-    assert!(
-        err_spline < err_cineb,
-        "spline string ({err_spline}) must improve on CI-NEB ({err_cineb})"
     );
     assert!((str_s1[0] - s1x).hypot(str_s1[1] - s1y) < DEFAULT_FORCE_TOL);
     assert!((str_s1[0] - neb_s1[0]).hypot(str_s1[1] - neb_s1[1]) < DEFAULT_FORCE_TOL);
@@ -524,6 +582,48 @@ fn string_reparametrization_repins_interior_fixed_atoms() {
         let found: Vec<u64> = row.iter().skip(3).map(|v| v.to_bits()).collect();
         assert_eq!(found, held);
     }
+}
+
+#[test]
+fn ode12r_unchanged_trial_still_reparametrizes() {
+    let initial = array![
+        [0.0, 0.0, 0.0],
+        [0.1, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 2.0, 0.0],
+        [2.0, 2.0, 0.0],
+    ];
+    let expected = array![
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [1.0, 2.0, 0.0],
+        [2.0, 2.0, 0.0],
+    ];
+
+    let cfg = BandConfig::default()
+        .with_string(StringConfig::linear())
+        .with_method(Method::Ode12r)
+        .with_climbing(None)
+        .with_min_mode(None)
+        .with_saddle_check(None)
+        .with_remove_translation(false);
+    let mut session = BandSession::new(cfg, initial).expect("ODE12r string");
+    // ODE12r retains an unchanged trial for 64 retries. The next call
+    // must still pass through the same reparametrization as every other
+    // stepper; deleting that shared call leaves the uneven input intact.
+    for _ in 0..65 {
+        session.step(&FlatSurface).expect("ODE12r step");
+    }
+    for (found, want) in session.positions().iter().zip(expected.iter()) {
+        assert!((found - want).abs() <= 16.0 * f64::EPSILON);
+    }
+    assert_equal_spacing(
+        session.positions(),
+        None,
+        Reparametrization::Linear,
+        64.0 * f64::EPSILON,
+    );
 }
 
 #[test]

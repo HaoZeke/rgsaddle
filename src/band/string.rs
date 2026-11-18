@@ -467,37 +467,38 @@ impl BandSession {
         let is_ode12r = !self.config.quickmin && matches!(self.config.method, Method::Ode12r);
         let mut x_evol = before.clone();
 
-        let trial = if is_ode12r {
-            let config = &self.config;
-            let state = &self.state;
-            let start_grad = -&step_force_start;
-            let oracle = Oracle::unbounded(interior_dof, |xv: ArrayView1<f64>| {
-                if xv == before.view() {
-                    return (e_start, start_grad.clone());
-                }
-                match assemble_string_with(
-                    config,
-                    state,
-                    surface,
-                    endpoint_first.view(),
-                    endpoint_last.view(),
-                    xv,
-                    metrics,
-                ) {
-                    Ok((e, _, drv, _)) => (e, -drv),
-                    Err(err) => {
-                        state.record_error(err);
-                        (f64::INFINITY, Array1::zeros(interior_dof))
-                    }
-                }
-            });
-            let stepped = self.solver.step(&oracle, &mut x_evol);
-            drop(oracle);
-            if let Some(err) = self.state.take_error() {
-                self.solver.forget_evaluation();
-                return Err(err);
+        let config = &self.config;
+        let state = &self.state;
+        let start_grad = -&step_force_start;
+        let oracle = Oracle::unbounded(interior_dof, |xv: ArrayView1<f64>| {
+            if xv == before.view() {
+                return (e_start, start_grad.clone());
             }
-            stepped.map_err(|e| SaddleError::Solver(e.to_string()))?;
+            match assemble_string_with(
+                config,
+                state,
+                surface,
+                endpoint_first.view(),
+                endpoint_last.view(),
+                xv,
+                metrics,
+            ) {
+                Ok((e, _, step_f, _)) => (e, -step_f),
+                Err(err) => {
+                    state.record_error(err);
+                    (f64::INFINITY, Array1::zeros(interior_dof))
+                }
+            }
+        });
+        let stepped = self.solver.step(&oracle, &mut x_evol);
+        drop(oracle);
+        if let Some(err) = self.state.take_error() {
+            self.solver.forget_evaluation();
+            return Err(err);
+        }
+        stepped.map_err(|e| SaddleError::Solver(e.to_string()))?;
+
+        if is_ode12r {
             if x_evol == before {
                 if self.unmoved < 64 {
                     self.unmoved += 1;
@@ -524,69 +525,7 @@ impl BandSession {
                 }
             }
             self.unmoved = 0;
-            let mut band = self.positions.clone();
-            for i in 1..n_images - 1 {
-                band.row_mut(i)
-                    .assign(&x_evol.slice(s![(i - 1) * dof..i * dof]));
-            }
-            reparametrize(
-                &mut band,
-                anchor_before,
-                self.config.cell.as_ref(),
-                string_cfg.reparametrization,
-            );
-            pin_fixed_rows(&self.state.fixed, &mut band);
-            let x_after: Array1<f64> = band
-                .slice(s![1..n_images - 1, ..])
-                .iter()
-                .copied()
-                .collect();
-            let (_, evol_after, _, target) = assemble_string_with(
-                &self.config,
-                &self.state,
-                surface,
-                endpoint_first.view(),
-                endpoint_last.view(),
-                x_after.view(),
-                metrics,
-            )?;
-            ReparamTrial {
-                band,
-                x: x_after,
-                evol_force: evol_after,
-                climb_target: target,
-            }
         } else {
-            let config = &self.config;
-            let state = &self.state;
-            let start_grad = -&step_force_start;
-            let oracle = Oracle::unbounded(interior_dof, |xv: ArrayView1<f64>| {
-                if xv == before.view() {
-                    return (e_start, start_grad.clone());
-                }
-                match assemble_string_with(
-                    config,
-                    state,
-                    surface,
-                    endpoint_first.view(),
-                    endpoint_last.view(),
-                    xv,
-                    metrics,
-                ) {
-                    Ok((e, _, step_f, _)) => (e, -step_f),
-                    Err(err) => {
-                        state.record_error(err);
-                        (f64::INFINITY, Array1::zeros(interior_dof))
-                    }
-                }
-            });
-            let stepped = self.solver.step(&oracle, &mut x_evol);
-            drop(oracle);
-            if let Some(err) = self.state.take_error() {
-                self.solver.forget_evaluation();
-                return Err(err);
-            }
-            stepped.map_err(|e| SaddleError::Solver(e.to_string()))?;
             if !x_evol.iter().all(|v| v.is_finite()) {
                 return Err(SaddleError::NonFinite("band step"));
             }
@@ -599,38 +538,39 @@ impl BandSession {
                     )));
                 }
             }
-            let mut band = self.positions.clone();
-            for i in 1..n_images - 1 {
-                band.row_mut(i)
-                    .assign(&x_evol.slice(s![(i - 1) * dof..i * dof]));
-            }
-            reparametrize(
-                &mut band,
-                anchor_before,
-                self.config.cell.as_ref(),
-                string_cfg.reparametrization,
-            );
-            pin_fixed_rows(&self.state.fixed, &mut band);
-            let x_after: Array1<f64> = band
-                .slice(s![1..n_images - 1, ..])
-                .iter()
-                .copied()
-                .collect();
-            let (_, evol_after, _, target) = assemble_string_with(
-                &self.config,
-                &self.state,
-                surface,
-                endpoint_first.view(),
-                endpoint_last.view(),
-                x_after.view(),
-                metrics,
-            )?;
-            ReparamTrial {
-                band,
-                x: x_after,
-                evol_force: evol_after,
-                climb_target: target,
-            }
+        }
+
+        let mut band = self.positions.clone();
+        for i in 1..n_images - 1 {
+            band.row_mut(i)
+                .assign(&x_evol.slice(s![(i - 1) * dof..i * dof]));
+        }
+        reparametrize(
+            &mut band,
+            anchor_before,
+            self.config.cell.as_ref(),
+            string_cfg.reparametrization,
+        );
+        pin_fixed_rows(&self.state.fixed, &mut band);
+        let x_after: Array1<f64> = band
+            .slice(s![1..n_images - 1, ..])
+            .iter()
+            .copied()
+            .collect();
+        let (_, evol_after, _, target) = assemble_string_with(
+            &self.config,
+            &self.state,
+            surface,
+            endpoint_first.view(),
+            endpoint_last.view(),
+            x_after.view(),
+            metrics,
+        )?;
+        let trial = ReparamTrial {
+            band,
+            x: x_after,
+            evol_force: evol_after,
+            climb_target: target,
         };
 
         if !trial.x.iter().all(|v| v.is_finite()) {
