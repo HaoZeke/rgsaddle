@@ -47,9 +47,9 @@ use crate::eigensolve::exact_eigh;
 use crate::error::SaddleError;
 use crate::linalg::numerical_hvp;
 use crate::minmode::PointSurface;
-#[cfg(any(test, feature = "lineb-oracle"))]
-use crate::ohtst::spline::Spline;
 use crate::sparse_hessian::lanczos_spectrum;
+#[cfg(any(test, feature = "lineb-oracle"))]
+use crate::spline::Spline;
 
 /// Ring-polymer instanton rate at the temperature of a tunneling path.
 #[derive(Clone, Debug)]
