@@ -18,6 +18,9 @@ const DEFAULT_RANK_TOLERANCE: f64 = 0.000_000_000_1;
 const DIFFERENCE_STEP: f64 = 0.000_001;
 const VECTOR_TOLERANCE: f64 = 0.000_000_000_001;
 const JACOBI_SWEEPS_PER_DIMENSION: usize = 24;
+const ANGLE_WARNING_COSINE: f64 = 0.906_307_787_036_649_9;
+const ANGLE_UNSTABLE_COSINE: f64 = 0.965_925_826_289_068_3;
+const ANGLE_FAILURE_COSINE: f64 = 0.996_194_698_091_745_5;
 
 /// Controls for constructing a nonredundant TRIC system.
 ///
@@ -57,6 +60,8 @@ pub enum TricPrimitive {
     Distance(usize, usize),
     /// Angle `a-b-c`.
     Angle(usize, usize, usize),
+    /// One of two bends spanning a linear angle.
+    LinearBend(usize, usize, usize, [f64; 3]),
     /// Dihedral `a-b-c-d`.
     Dihedral(usize, usize, usize, usize),
     /// Mean fragment position along one Cartesian axis.
@@ -72,6 +77,7 @@ impl TricPrimitive {
         match self {
             Self::Distance(a, b) => distance(positions, *a, *b),
             Self::Angle(a, b, c) => angle(positions, *a, *b, *c),
+            Self::LinearBend(a, b, c, direction) => linear_bend(positions, *a, *b, *c, *direction),
             Self::Dihedral(a, b, c, d) => dihedral(positions, *a, *b, *c, *d),
             Self::Translation(coordinate) => coordinate.value(positions),
             Self::Rotation(coordinate) => coordinate.value(positions),
@@ -86,7 +92,27 @@ impl TricPrimitive {
             Self::Angle(a, b, c) => angle_derivative(positions, *a, *b, *c),
             Self::Translation(coordinate) => coordinate.gradient(positions),
             Self::Rotation(coordinate) => coordinate.gradient(positions),
-            Self::Dihedral(..) => central_derivative(self, positions),
+            Self::Dihedral(..) | Self::LinearBend(..) => central_derivative(self, positions),
+        }
+    }
+
+    /// Numerical stability level from zero through three.
+    ///
+    /// Zero is regular. One warns that an angular primitive is close
+    /// to linear, two marks it unstable under small perturbations, and
+    /// three marks imminent coordinate failure.
+    pub fn diagnostic(&self, positions: ArrayView1<'_, f64>) -> u8 {
+        match self {
+            Self::Angle(a, b, c) => angular_diagnostic(positions, &[(*a, *b, *c)]),
+            Self::Dihedral(a, b, c, d) => {
+                angular_diagnostic(positions, &[(*a, *b, *c), (*b, *c, *d)])
+            }
+            Self::LinearBend(a, b, c, _) => linear_angular_diagnostic(positions, *a, *b, *c),
+            Self::Distance(a, b) => match distance(positions, *a, *b) {
+                Ok(_) => 0,
+                Err(_) => 3,
+            },
+            Self::Translation(_) | Self::Rotation(_) => 0,
         }
     }
 
@@ -127,7 +153,7 @@ impl TricSystem {
             None => infer_bonds(reference, config.bond_factor)?,
         };
         let fragments = fragments(n_atoms, &bonds);
-        let mut primitives = molecular_primitives(&bonds, n_atoms);
+        let mut primitives = molecular_primitives(&bonds, n_atoms, reference)?;
         for fragment in fragments {
             for axis in CartAxis::ALL {
                 primitives.push(TricPrimitive::Translation(Translation::new(
@@ -200,6 +226,58 @@ impl TricSystem {
         let primitive = primitive_wilson_b(&self.primitives, positions)?;
         Ok(self.basis.t().dot(&primitive))
     }
+
+    /// Highest primitive stability diagnostic at `positions`.
+    pub fn diagnostic(&self, positions: ArrayView1<'_, f64>) -> u8 {
+        self.primitives
+            .iter()
+            .map(|primitive| primitive.diagnostic(positions))
+            .max()
+            .unwrap_or_default()
+    }
+}
+
+/// Build one TRIC system per image of an initial path.
+pub fn tric_systems(
+    path: ndarray::ArrayView2<'_, f64>,
+    config: &TricConfig,
+) -> Result<Vec<TricSystem>, SaddleError> {
+    if path.nrows() < 2 || path.ncols() == 0 || !path.ncols().is_multiple_of(3) {
+        return Err(SaddleError::Shape(
+            "a TRIC path needs at least two 3N images".into(),
+        ));
+    }
+    path.outer_iter()
+        .map(|image| TricSystem::new(image, config))
+        .collect()
+}
+
+/// Diagnostic matrix `D`.
+///
+/// Row `i` evaluates the TRIC system built at image `i` on every path
+/// image `j`. Entries range from zero for a regular system to three
+/// for imminent failure.
+pub fn diagnostic_matrix(
+    systems: &[TricSystem],
+    path: ndarray::ArrayView2<'_, f64>,
+) -> Result<Array2<u8>, SaddleError> {
+    if systems.len() != path.nrows() {
+        return Err(SaddleError::Shape(
+            "the TRIC diagnostic needs one system per path image".into(),
+        ));
+    }
+    if systems
+        .iter()
+        .any(|system| system.reference.len() != path.ncols())
+    {
+        return Err(SaddleError::Shape(
+            "a TRIC system and path image have different dimensions".into(),
+        ));
+    }
+    Ok(Array2::from_shape_fn(
+        (systems.len(), path.nrows()),
+        |(system, image)| systems[system].diagnostic(path.row(image)),
+    ))
 }
 
 fn check_config(config: &TricConfig) -> Result<(), SaddleError> {
@@ -364,6 +442,88 @@ fn angle_derivative(
     Ok(derivative)
 }
 
+fn angular_diagnostic(positions: ArrayView1<'_, f64>, angles: &[(usize, usize, usize)]) -> u8 {
+    let mut result = 0;
+    for &(left, center, right) in angles {
+        let Ok(value) = angle(positions, left, center, right) else {
+            return 3;
+        };
+        let cosine = value.cos().abs();
+        let level = if cosine >= ANGLE_FAILURE_COSINE {
+            3
+        } else if cosine >= ANGLE_UNSTABLE_COSINE {
+            2
+        } else if cosine >= ANGLE_WARNING_COSINE {
+            1
+        } else {
+            0
+        };
+        result = result.max(level);
+    }
+    result
+}
+
+fn linear_bend(
+    positions: ArrayView1<'_, f64>,
+    left: usize,
+    center: usize,
+    right: usize,
+    direction: [f64; 3],
+) -> Result<f64, SaddleError> {
+    let u = sub(atom(positions, left)?, atom(positions, center)?);
+    let v = sub(atom(positions, right)?, atom(positions, center)?);
+    let (nu, nv) = (norm(u), norm(v));
+    if nu <= VECTOR_TOLERANCE || nv <= VECTOR_TOLERANCE {
+        return Err(SaddleError::Invalid(
+            "TRIC linear bend has a zero length leg".into(),
+        ));
+    }
+    Ok(dot(
+        [
+            u[0] / nu + v[0] / nv,
+            u[1] / nu + v[1] / nv,
+            u[2] / nu + v[2] / nv,
+        ],
+        direction,
+    ))
+}
+
+fn linear_angular_diagnostic(
+    positions: ArrayView1<'_, f64>,
+    left: usize,
+    center: usize,
+    right: usize,
+) -> u8 {
+    let Ok(value) = angle(positions, left, center, right) else {
+        return 3;
+    };
+    let cosine = value.cos().abs();
+    if cosine < 0.4 {
+        3
+    } else if cosine < 0.6 {
+        2
+    } else if cosine < 0.8 {
+        1
+    } else {
+        0
+    }
+}
+
+fn perpendicular_directions(axis: [f64; 3]) -> ([f64; 3], [f64; 3]) {
+    let seed = if axis[0].abs() <= axis[1].abs() && axis[0].abs() <= axis[2].abs() {
+        [1.0, 0.0, 0.0]
+    } else if axis[1].abs() <= axis[2].abs() {
+        [0.0, 1.0, 0.0]
+    } else {
+        [0.0, 0.0, 1.0]
+    };
+    let first_raw = cross(axis, seed);
+    let first = scale(first_raw, 1.0 / norm(first_raw));
+    let second_raw = cross(axis, first);
+    let second = scale(second_raw, 1.0 / norm(second_raw));
+    (first, second)
+}
+
 fn dihedral(
     positions: ArrayView1<'_, f64>,
     a: usize,
@@ -514,7 +674,11 @@ fn fragments(n_atoms: usize, bonds: &[(usize, usize)]) -> Vec<Vec<usize>> {
     result
 }
 
-fn molecular_primitives(bonds: &[(usize, usize)], n_atoms: usize) -> Vec<TricPrimitive> {
+fn molecular_primitives(
+    bonds: &[(usize, usize)],
+    n_atoms: usize,
+    reference: ArrayView1<'_, f64>,
+) -> Result<Vec<TricPrimitive>, SaddleError> {
     let mut adjacency = vec![Vec::new(); n_atoms];
     let mut primitives = Vec::new();
     for &(left, right) in bonds {
@@ -528,11 +692,28 @@ fn molecular_primitives(bonds: &[(usize, usize)], n_atoms: usize) -> Vec<TricPri
     for center in 0..n_atoms {
         for first in 0..adjacency[center].len() {
             for second in first + 1..adjacency[center].len() {
-                primitives.push(TricPrimitive::Angle(
-                    adjacency[center][first],
-                    center,
-                    adjacency[center][second],
-                ));
+                let left = adjacency[center][first];
+                let right = adjacency[center][second];
+                let value = angle(reference, left, center, right)?;
+                if value.cos().abs() >= ANGLE_FAILURE_COSINE {
+                    let bond = sub(atom(reference, left)?, atom(reference, center)?);
+                    let axis = scale(bond, 1.0 / norm(bond));
+                    let (first_direction, second_direction) = perpendicular_directions(axis);
+                    primitives.push(TricPrimitive::LinearBend(
+                        left,
+                        center,
+                        right,
+                        first_direction,
+                    ));
+                    primitives.push(TricPrimitive::LinearBend(
+                        left,
+                        center,
+                        right,
+                        second_direction,
+                    ));
+                } else {
+                    primitives.push(TricPrimitive::Angle(left, center, right));
+                }
             }
         }
     }
@@ -561,7 +742,7 @@ fn molecular_primitives(bonds: &[(usize, usize)], n_atoms: usize) -> Vec<TricPri
             .into_iter()
             .map(|(a, b, c, d)| TricPrimitive::Dihedral(a, b, c, d)),
     );
-    primitives
+    Ok(primitives)
 }
 
 fn fragment_positions(positions: ArrayView1<'_, f64>, fragment: &[usize]) -> Array2<f64> {
@@ -684,5 +865,17 @@ mod tests {
         let chain = array![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 2.0, 0.2, 0.0];
         let bonds = infer_bonds(chain.view(), DEFAULT_BOND_FACTOR).unwrap();
         assert_eq!(bonds, vec![(0, 1), (1, 2)]);
+    }
+
+    #[test]
+    fn diagnostic_matrix_flags_a_collinear_angle() {
+        let bent = array![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.7, 0.7, 0.0];
+        let linear = array![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 2.0, 0.0, 0.0];
+        let path = ndarray::stack(ndarray::Axis(0), &[bent.view(), linear.view()]).unwrap();
+        let config = TricConfig::default().with_bonds(Some(vec![(0, 1), (1, 2)]));
+        let systems = tric_systems(path.view(), &config).unwrap();
+        let diagnostic = diagnostic_matrix(&systems, path.view()).unwrap();
+        assert_eq!(diagnostic[(0, 0)], 0);
+        assert_eq!(diagnostic[(0, 1)], 3);
     }
 }

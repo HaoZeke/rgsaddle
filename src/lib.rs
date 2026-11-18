@@ -240,7 +240,10 @@ pub use strain_rate::{
     split_translational_modes, symmetrize, transform_tensor, vineyard_prefactor,
 };
 pub use tangent::TangentKind;
-pub use trics::{TricConfig, TricPrimitive, TricSystem};
+pub use trics::{
+    TricConfig, TricPrimitive, TricSystem, diagnostic_matrix as tric_diagnostic_matrix,
+    tric_systems,
+};
 
 pub mod cell_log;
 pub mod constraints;
