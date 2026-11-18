@@ -750,3 +750,59 @@ fn join_tol_joins_even_when_no_node_is_added_on_the_step() {
     assert!(!report.joined_this_step, "gap 7 > 6 with nothing added");
     assert_eq!(report.phase, GrowingStringPhase::Growing);
 }
+
+#[test]
+fn config_builders_store_every_value() {
+    let cell = Cell([[7.0, 0.0, 0.0], [0.0, 8.0, 0.0], [0.0, 0.0, 9.0]]);
+    let config = GrowingStringConfig::default()
+        .with_reparametrization(Reparametrization::Linear)
+        .with_force_tol(0.123)
+        .with_max_move(0.0456)
+        .with_method(Method::QuickMin)
+        .with_climbing(None)
+        .with_min_mode(None)
+        .with_saddle_check(None)
+        .with_cell(Some(cell))
+        .with_fixed_atoms(vec![true, false])
+        .with_remove_translation(false)
+        .with_time_step(0.375)
+        .with_quickmin(true)
+        .with_n_images(13)
+        .with_frontier_tol(0.31)
+        .with_min_steps_per_node(4)
+        .with_max_steps_per_node(Some(9))
+        .with_join_tol(Some(2.5));
+
+    let string = config.band.string.expect("string config");
+    assert_eq!(string.reparametrization, Reparametrization::Linear);
+    assert_eq!(config.band.force_tol, 0.123);
+    assert_eq!(config.band.max_move, 0.0456);
+    assert!(matches!(config.band.method, Method::QuickMin));
+    assert!(config.band.climbing.is_none());
+    assert!(config.band.min_mode.is_none());
+    assert!(config.band.saddle_check.is_none());
+    let stored = config.band.cell.expect("cell");
+    assert_eq!(stored.0[0][0], 7.0);
+    assert_eq!(stored.0[2][2], 9.0);
+    assert_eq!(config.band.fixed_atoms, vec![true, false]);
+    assert!(!config.band.remove_translation);
+    assert_eq!(config.band.time_step, 0.375);
+    assert!(config.band.quickmin);
+    assert_eq!(config.n_images, 13);
+    assert_eq!(config.frontier_tol, 0.31);
+    assert_eq!(config.min_steps_per_node, 4);
+    assert_eq!(config.max_steps_per_node, Some(9));
+    assert_eq!(config.join_tol, Some(2.5));
+
+    let armed = GrowingStringConfig::default()
+        .with_climbing(Some(CiConfig::default().with_trigger_force(7.0)))
+        .with_min_mode(Some(rgsaddle::MinModeRefine::default()))
+        .with_saddle_check(Some(rgsaddle::SaddleIndexCheck::default()))
+        .with_quickmin(false)
+        .with_remove_translation(true);
+    assert_eq!(armed.band.climbing.expect("climbing").trigger_force, 7.0);
+    assert!(armed.band.min_mode.is_some());
+    assert!(armed.band.saddle_check.is_some());
+    assert!(!armed.band.quickmin);
+    assert!(armed.band.remove_translation);
+}
