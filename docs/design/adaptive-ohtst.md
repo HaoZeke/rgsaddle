@@ -94,8 +94,9 @@ retained tail of length \(r\), requested count \(b\), and correlation width
 \(r\) divided by that width. The effective-sample gate uses that actual count,
 not the requested count: a 14-record iid production redraw is therefore not
 required to supply seven effective observations merely because its pilot
-requested seven blocks. At least two correlation-width blocks remain
-mandatory. A tail shorter than one block is dropped.
+requested seven blocks. Four effective observations and at least two
+correlation-width blocks remain mandatory. A tail shorter than one block is
+dropped.
 
 This width is applied inside the shared engine-backed plane sampler, so every
 engine hyperplane sample, not only the adaptive string, inherits the
