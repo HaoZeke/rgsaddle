@@ -34,15 +34,17 @@ Surface callbacks are available in two forms:
 1. A native Fortran callback, =surface_proc= or =point_surface_proc=. The trampoline passes the number of rows that are actually in the buffers. For =RGSADDLE_REQ_ONE_IMAGE= that number is 1 and =image= is the band index; a batch passes =image = -1=.
 2. A raw C callback path (=step_c= / =run_c=) that takes a =c_funptr= to an existing C-compatible callback.
 
-The position, energy, and gradient arguments (and =frames= on =pafi_handle%create=) are assumed-size. The caller, and the trampoline, must supply the length the C request describes. A request whose row count does not fit in the default integer returns =RGSADDLE_SHAPE= and does not call the callback. In C, band buffers are row-major =n_images= by =3 * n_atoms= (image stride =3 * n_atoms=) and PAFI frames are row-major =n_frames= by =n_dof= (frame stride =n_dof=). Because Fortran stores arrays in column-major order (the first subscript varies fastest in memory), coordinate dimensions come first and the image or frame dimension comes last, mapping directly onto the C layout without transposing:
+The position, energy, and gradient arguments on =band_handle= and =minmode_handle= (and =frames= on =pafi_handle%create=) are assumed-size. The caller, and the trampoline, must supply the length the C request describes. A request whose row count does not fit in the default integer returns =RGSADDLE_SHAPE= and does not call the callback. In C, band buffers are row-major =n_images= by =3 * n_atoms= (image stride =3 * n_atoms=) and PAFI frames are row-major =n_frames= by =n_dof= (frame stride =n_dof=). Because Fortran stores arrays in column-major order (the first subscript varies fastest in memory), coordinate dimensions come first and the image or frame dimension comes last, mapping directly onto the C layout without transposing:
 
 #+begin_src fortran
-real(c_double) :: band(3, n_atoms, n_images)
+type(band_handle) :: band
+type(pafi_handle) :: pafi
+real(c_double) :: positions(3, n_atoms, n_images)
 real(c_double) :: frames(n_dof, n_frames)
 
-! Atom a of image i occupies three contiguous doubles at band(:, a, i).
-band(:, a, i) = [x, y, z]
-status = neb%create(bcfg, int(n_images, c_int64_t), int(n_atoms, c_int64_t), band)
+! Atom a of image i occupies three contiguous doubles at positions(:, a, i).
+positions(:, a, i) = [x, y, z]
+status = band%create(bcfg, int(n_images, c_int64_t), int(n_atoms, c_int64_t), positions)
 
 ! Frame k occupies n_dof contiguous doubles at frames(:, k).
 frames(:, k) = q(:)
@@ -67,13 +69,18 @@ Both callback routes call the same Rust C ABI. The Fortran tests check convergen
 Minimum-mode uses the same pattern through =rgsaddle_minmode_config_t= and =minmode_handle=.
 
 * Runnable PAFI and OH-TST example
-Both =pafi_handle= and =ohtst_handle= take a =point_surface_proc= callback (or =c_funptr= via =run_c=). Save the following program as =pafi_ohtst_demo.f90=:
+Both =pafi_handle= and =ohtst_handle= take a =point_surface_proc= callback (or =c_funptr= via =run_c=). Every =surface_proc= and =point_surface_proc= signature carries the =user= dummy argument, so gfortran warns with =-Wunused-dummy-argument= under =-Wall= or =-Wextra= when a callback ignores =user=. Unpack =user= with =c_f_pointer= when passing caller state (as =quad_saddle= does below), or reject an unexpected non-null pointer with =if (c_associated(user))= when =user= is omitted (as =double_well= does below). Save the following program as =pafi_ohtst_demo.f90=:
 
 #+begin_src fortran
 module demo_surfaces
   use, intrinsic :: iso_c_binding
   use rgsaddle, only: RGSADDLE_OK, RGSADDLE_INVALID_PARAMETER
   implicit none
+
+  type :: saddle_params
+    real(c_double) :: transverse_k = 4.0_c_double
+  end type saddle_params
+
 contains
   recursive integer(c_int) function double_well(user, n_dof, position, energy, gradient) result(status)
     type(c_ptr), value :: user
@@ -82,7 +89,7 @@ contains
     real(c_double), intent(inout) :: energy
     real(c_double), intent(inout) :: gradient(*)
     real(c_double) :: x
-    if (n_dof /= 1_c_int64_t) then
+    if (c_associated(user) .or. n_dof /= 1_c_int64_t) then
       status = RGSADDLE_INVALID_PARAMETER
       return
     end if
@@ -98,13 +105,15 @@ contains
     real(c_double), intent(in) :: position(*)
     real(c_double), intent(inout) :: energy
     real(c_double), intent(inout) :: gradient(*)
-    if (n_dof /= 2_c_int64_t) then
+    type(saddle_params), pointer :: params
+    if (.not. c_associated(user) .or. n_dof /= 2_c_int64_t) then
       status = RGSADDLE_INVALID_PARAMETER
       return
     end if
-    energy = 0.5_c_double * (-position(1) ** 2 + 4.0_c_double * position(2) ** 2)
+    call c_f_pointer(user, params)
+    energy = 0.5_c_double * (-position(1) ** 2 + params%transverse_k * position(2) ** 2)
     gradient(1) = -position(1)
-    gradient(2) = 4.0_c_double * position(2)
+    gradient(2) = params%transverse_k * position(2)
     status = RGSADDLE_OK
   end function quad_saddle
 end module demo_surfaces
@@ -128,6 +137,7 @@ program pafi_ohtst_demo
   type(ohtst_handle) :: tx
   type(rgsaddle_ohtst_config_t) :: ocfg
   type(rgsaddle_ohtst_result_t) :: oout
+  type(saddle_params), target :: params
   real(c_double) :: point(2), normal(2), t(32), kappa_t(32)
 
   call init_pafi_config(pcfg)
@@ -150,7 +160,7 @@ program pafi_ohtst_demo
   status = pafi%create(pcfg, int(n_frames, c_int64_t), 1_c_int64_t, frames, arcs)
   if (status /= RGSADDLE_OK) stop 1
   cb => double_well
-  status = pafi%run(cb, c_null_ptr)
+  status = pafi%run(cb)
   if (status /= RGSADDLE_OK) stop 2
   status = pafi%result(pout)
   if (status /= RGSADDLE_OK) stop 3
@@ -166,7 +176,7 @@ program pafi_ohtst_demo
   status = tx%create(ocfg, 2_c_int64_t, point, normal)
   if (status /= RGSADDLE_OK) stop 5
   cb => quad_saddle
-  status = tx%run(cb, c_null_ptr)
+  status = tx%run(cb, c_loc(params))
   if (status /= RGSADDLE_OK) stop 6
   status = tx%result(oout)
   if (status /= RGSADDLE_OK) stop 7
@@ -174,6 +184,8 @@ program pafi_ohtst_demo
   if (status /= RGSADDLE_OK) stop 8
 
   write(*, '(a,1x,f8.5,1x,a,1x,f8.5)') 'barrier=', pout%barrier, 'kappa=', oout%kappa
+  call pafi%release()
+  call tx%release()
 end program pafi_ohtst_demo
 #+end_src
 
@@ -184,7 +196,7 @@ cargo build --locked --features capi
 meson setup build -Dfortran=enabled --prefix "$PWD/dist" --libdir=lib
 meson install -C build
 PKG_CONFIG_PATH="$PWD/dist/lib/pkgconfig:$PWD/dist/share/pkgconfig" \
-  gfortran -std=f2008 -fcheck=all \
+  gfortran -std=f2008 -Wall -Wextra -fcheck=all \
   $(pkg-config --cflags rgsaddle-fortran) \
   pafi_ohtst_demo.f90 \
   -Ltarget/debug -Wl,-rpath,"$PWD/target/debug" \
