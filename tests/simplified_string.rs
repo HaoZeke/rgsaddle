@@ -1,7 +1,7 @@
 //! Simplified string method of E, Ren, and Vanden-Eijnden, J. Chem. Phys.
 //! 126, 164103 (2007), doi:10.1063/1.2720838:
 //!
-//! 1. Mueller-Brown MEP and saddle reproduction (Sec. III.A), comparing
+//! 1. Mueller-Brown MEP and saddle regression (Sec. III.C), comparing
 //!    not-a-knot cubic-spline vs linear reparametrization against the
 //!    steepest-descent MEP from the analytic saddles and against
 //!    rgsaddle's CI-NEB on the same surface.
@@ -15,10 +15,11 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use ndarray::{Array1, Array2, ArrayView2, array};
 use rgmin::{FireKind, Method, QuickMinOptions};
+use rgsaddle::reparam::segment_lengths;
 use rgsaddle::{
     AutoNeb, AutoNebTuning, BandConfig, BandSession, BandStatus, BandSurface, Cell, CiConfig,
-    DEFAULT_FORCE_TOL, ExpBandPrecon, RtrConfig, SaddleError, SaddleIndexCheck, SpringKind,
-    StringConfig, band_forces, linear_path,
+    DEFAULT_FORCE_TOL, ExpBandPrecon, Reparametrization, RtrConfig, SaddleError, SaddleIndexCheck,
+    SpringKind, StringConfig, band_forces, linear_path,
 };
 
 const MB_A: [f64; 4] = [-200.0, -100.0, -170.0, 15.0];
@@ -27,6 +28,25 @@ const MB_XY: [f64; 4] = [0.0, 0.0, 11.0, 0.6];
 const MB_YY: [f64; 4] = [-10.0, -10.0, -6.5, 0.7];
 const MB_X0: [f64; 4] = [1.0, 0.0, -0.5, -1.0];
 const MB_Y0: [f64; 4] = [0.0, 0.5, 1.5, 1.0];
+const MB_STATIONARY_TOL: f64 = 5e-10;
+const MB_CLIMBING_ENERGY_TOL: f64 = 5e-8;
+const MB_MEP_DISTANCE_TOL: f64 = 5e-6;
+// Self-measured regression pins from this implementation, not values
+// reported by E, Ren, and Vanden-Eijnden.
+const MB_SPLINE_MEP_DISTANCE: f64 = 0.011_118;
+const MB_LINEAR_MEP_DISTANCE: f64 = 0.014_425;
+const MB_CINEB_MEP_DISTANCE: f64 = 0.030_509;
+const MB_A_MINIMUM: ([f64; 2], f64) = (
+    [-0.558_223_634_633, 1.441_725_841_805],
+    -146.699_517_209_954,
+);
+const MB_B_MINIMUM: ([f64; 2], f64) =
+    ([0.623_499_404_931, 0.028_037_758_529], -108.166_724_116_852);
+const MB_C_MINIMUM: ([f64; 2], f64) =
+    ([-0.050_010_822_998, 0.466_694_104_872], -80.767_818_129_659);
+const MB_S1_SADDLE: ([f64; 2], f64) =
+    ([-0.822_001_558_733, 0.624_312_802_815], -40.664_843_508_657);
+const MB_S2_SADDLE: ([f64; 2], f64) = ([0.212_486_582_001, 0.292_988_325_107], -72.248_940_112_325);
 
 /// Analytic energy, gradient, and 2x2 Hessian of the Mueller-Brown potential.
 fn muller_brown_jet(x: f64, y: f64) -> (f64, [f64; 2], [[f64; 2]; 2]) {
@@ -158,13 +178,47 @@ fn max_distance_to_curve(band: ArrayView2<f64>, curve: &[[f64; 2]]) -> f64 {
         .fold(0.0_f64, f64::max)
 }
 
+fn assert_equal_spacing(
+    band: ArrayView2<f64>,
+    cell: Option<&Cell>,
+    scheme: Reparametrization,
+    relative_tolerance: f64,
+) {
+    let lengths = segment_lengths(&band.to_owned(), cell, scheme);
+    let mean = lengths.iter().sum::<f64>() / lengths.len() as f64;
+    let spread = lengths.iter().fold(0.0_f64, |largest, length| {
+        largest.max((length - mean).abs())
+    });
+    assert!(
+        spread <= relative_tolerance * mean,
+        "{scheme:?} segment lengths are not equal: {lengths:?}"
+    );
+}
+
 #[test]
-fn mueller_brown_mep_and_saddle_reproduce_paper_and_match_cineb() {
+fn mueller_brown_mep_and_saddle_regression_matches_cineb() {
     let ([ax, ay], ea) = mb_stationary(-0.558, 1.442);
     let ([bx, by], eb) = mb_stationary(0.623, 0.028);
-    let ([cx, cy], _) = mb_stationary(-0.050, 0.467);
+    let ([cx, cy], ec) = mb_stationary(-0.050, 0.467);
     let ([s1x, s1y], es1) = mb_stationary(-0.822, 0.624);
     let ([s2x, s2y], es2) = mb_stationary(0.212, 0.293);
+    // E, Ren, and Vanden-Eijnden, J. Chem. Phys. 126, 164103 (2007),
+    // Sec. III.C prints this potential and uses its stationary points to
+    // illustrate the string and climbing methods.
+    for (name, found, expected) in [
+        ("A", ([ax, ay], ea), MB_A_MINIMUM),
+        ("B", ([bx, by], eb), MB_B_MINIMUM),
+        ("C", ([cx, cy], ec), MB_C_MINIMUM),
+        ("S1", ([s1x, s1y], es1), MB_S1_SADDLE),
+        ("S2", ([s2x, s2y], es2), MB_S2_SADDLE),
+    ] {
+        assert!(
+            (found.0[0] - expected.0[0]).abs() <= MB_STATIONARY_TOL
+                && (found.0[1] - expected.0[1]).abs() <= MB_STATIONARY_TOL
+                && (found.1 - expected.1).abs() <= MB_STATIONARY_TOL,
+            "{name}: got {found:?}, expected {expected:?}"
+        );
+    }
     let mep = analytic_mb_mep();
 
     let min_a = array![ax, ay, 0.0];
@@ -204,6 +258,18 @@ fn mueller_brown_mep_and_saddle_reproduce_paper_and_match_cineb() {
 
     let err_spline = max_distance_to_curve(spline_session.positions(), &mep);
     let err_linear = max_distance_to_curve(linear_session.positions(), &mep);
+    assert_equal_spacing(
+        spline_session.positions(),
+        None,
+        Reparametrization::NotAKnot,
+        5e-3,
+    );
+    assert_equal_spacing(
+        linear_session.positions(),
+        None,
+        Reparametrization::Linear,
+        4e-2,
+    );
 
     // 2. Climbing-image simplified string on A -> B (locates primary saddle S1)
     //    and on C -> B (locates secondary saddle S2), plus CI-NEB on the same surface.
@@ -289,24 +355,26 @@ fn mueller_brown_mep_and_saddle_reproduce_paper_and_match_cineb() {
         str_s2[1],
     );
 
+    // Self-measured 25-image regression values. The tolerance accommodates ordinary
+    // libm last-bit variation while rejecting a changed evolution or
+    // reparametrization equation.
+    assert!((err_spline - MB_SPLINE_MEP_DISTANCE).abs() <= MB_MEP_DISTANCE_TOL);
+    assert!((err_linear - MB_LINEAR_MEP_DISTANCE).abs() <= MB_MEP_DISTANCE_TOL);
+    assert!((err_cineb - MB_CINEB_MEP_DISTANCE).abs() <= MB_MEP_DISTANCE_TOL);
     assert!(
         err_spline < err_linear,
-        "cubic-spline string ({err_spline}) must lie closer to the MEP than polyline string ({err_linear})"
-    );
-    assert!(
-        err_spline < 0.02,
-        "25-image cubic-spline string deviated from the Mueller-Brown MEP by {err_spline}"
+        "spline string ({err_spline}) must improve on the polyline string ({err_linear})"
     );
     assert!(
         err_spline < err_cineb,
-        "25-image cubic-spline string ({err_spline}) should improve on 25-image CI-NEB ({err_cineb})"
+        "spline string ({err_spline}) must improve on CI-NEB ({err_cineb})"
     );
     assert!((str_s1[0] - s1x).hypot(str_s1[1] - s1y) < DEFAULT_FORCE_TOL);
     assert!((str_s1[0] - neb_s1[0]).hypot(str_s1[1] - neb_s1[1]) < DEFAULT_FORCE_TOL);
-    assert!((str_es1 - es1).abs() < DEFAULT_FORCE_TOL);
+    assert!((str_es1 - MB_S1_SADDLE.1).abs() < MB_CLIMBING_ENERGY_TOL);
     assert!((str_es1 - neb_es1).abs() < DEFAULT_FORCE_TOL);
     assert!((str_s2[0] - s2x).hypot(str_s2[1] - s2y) < DEFAULT_FORCE_TOL);
-    assert!((str_es2 - es2).abs() < DEFAULT_FORCE_TOL);
+    assert!((str_es2 - MB_S2_SADDLE.1).abs() < MB_CLIMBING_ENERGY_TOL);
 }
 
 struct CoupledDoubleWell;
@@ -326,6 +394,135 @@ impl BandSurface for CoupledDoubleWell {
             gradients[(i, 2)] = 6.0 * z;
         }
         Ok(())
+    }
+}
+
+struct FlatSurface;
+
+impl BandSurface for FlatSurface {
+    fn eval(
+        &self,
+        positions: ArrayView2<f64>,
+        energies: &mut Array1<f64>,
+        gradients: &mut Array2<f64>,
+    ) -> Result<(), SaddleError> {
+        energies.fill(0.0);
+        gradients.fill(0.0);
+        assert_eq!(positions.dim(), gradients.dim());
+        Ok(())
+    }
+}
+
+fn reparametrize_once(
+    initial: Array2<f64>,
+    string: StringConfig,
+    cell: Option<Cell>,
+    fixed: Vec<bool>,
+) -> BandSession {
+    let mut config = BandConfig::default()
+        .with_string(string)
+        .with_climbing(None)
+        .with_min_mode(None)
+        .with_saddle_check(None)
+        .with_remove_translation(false)
+        .with_fixed_atoms(fixed);
+    if let Some(periodic) = cell {
+        config = config.with_cell(periodic);
+    }
+    let mut session = BandSession::new(config, initial).expect("flat string");
+    session.step(&FlatSurface).expect("reparametrization step");
+    session
+}
+
+#[test]
+fn linear_string_reparametrizes_by_arc_length_and_differs_from_spline() {
+    let initial = array![
+        [0.0, 0.0, 0.0],
+        [0.1, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 2.0, 0.0],
+        [2.0, 2.0, 0.0],
+    ];
+    let linear = reparametrize_once(initial.clone(), StringConfig::linear(), None, Vec::new());
+    let expected = array![
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [1.0, 2.0, 0.0],
+        [2.0, 2.0, 0.0],
+    ];
+    for (found, want) in linear.positions().iter().zip(expected.iter()) {
+        assert!((found - want).abs() <= 16.0 * f64::EPSILON);
+    }
+    assert_equal_spacing(
+        linear.positions(),
+        None,
+        Reparametrization::Linear,
+        16.0 * f64::EPSILON,
+    );
+
+    let spline = reparametrize_once(initial, StringConfig::spline(), None, Vec::new());
+    let difference = spline
+        .positions()
+        .iter()
+        .zip(expected.iter())
+        .fold(0.0_f64, |largest, (found, want)| {
+            largest.max((found - want).abs())
+        });
+    assert!(
+        difference > 0.01,
+        "spline unexpectedly matched the polyline"
+    );
+}
+
+#[test]
+fn periodic_string_reparametrizes_across_the_cell_boundary() {
+    let length = 10.0;
+    let cell = Cell([[length, 0.0, 0.0], [0.0, length, 0.0], [0.0, 0.0, length]]);
+    let initial = array![
+        [9.0, 0.0, 0.0],
+        [9.2, 0.0, 0.0],
+        [0.2, 0.0, 0.0],
+        [1.8, 0.0, 0.0],
+        [2.0, 0.0, 0.0],
+    ];
+    let session = reparametrize_once(initial, StringConfig::linear(), Some(cell), Vec::new());
+    assert_equal_spacing(
+        session.positions(),
+        Some(&cell),
+        Reparametrization::Linear,
+        64.0 * f64::EPSILON,
+    );
+}
+
+#[test]
+fn string_reparametrization_repins_interior_fixed_atoms() {
+    let endpoint_gap = 0.5e-10;
+    let initial = array![
+        [0.0, 0.0, 0.0, 2.0, -0.5, 0.25],
+        [0.1, 0.0, 0.0, 3.0, 1.0, 2.0],
+        [1.0, 0.0, 0.0, 4.0, 2.0, 3.0],
+        [1.0, 2.0, 0.0, 5.0, 3.0, 4.0],
+        [2.0, 2.0, 0.0, 2.0 + endpoint_gap, -0.5, 0.25],
+    ];
+    assert!(
+        initial
+            .outer_iter()
+            .skip(1)
+            .take(3)
+            .any(|row| row[3] != initial[(0, 3)])
+    );
+    let session = reparametrize_once(initial, StringConfig::linear(), None, vec![false, true]);
+    let held: Vec<u64> = session
+        .positions()
+        .row(0)
+        .iter()
+        .skip(3)
+        .map(|v| v.to_bits())
+        .collect();
+    for row in session.positions().outer_iter().skip(1).take(3) {
+        let found: Vec<u64> = row.iter().skip(3).map(|v| v.to_bits()).collect();
+        assert_eq!(found, held);
     }
 }
 

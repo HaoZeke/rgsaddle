@@ -20,9 +20,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use eindir_core::{Bounds, DifferentiableObjective, Gradient, Objective};
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
 use rgmin::{Control, Method, Solver};
+use rgsaddle::reparam::segment_lengths;
 use rgsaddle::{
     BandConfig, BandSession, BandStatus, BandSurface, Cell, CiConfig, DEFAULT_FORCE_TOL,
-    ExpBandPrecon, SaddleError, SpringKind, StringConfig,
+    ExpBandPrecon, Reparametrization, SaddleError, SpringKind, StringConfig,
 };
 
 const R0: f64 = 2.55;
@@ -30,6 +31,7 @@ const MORSE_A: f64 = 4.0;
 const EPS: f64 = 1.0;
 const CUTOFF: f64 = 5.3;
 const CELLS: usize = 3;
+const CU_VACANCY_BARRIER_DIFFERENCE_EV: f64 = 1e-5;
 
 fn lattice() -> f64 {
     R0 * 2.0_f64.sqrt()
@@ -398,12 +400,23 @@ fn simplified_string_matches_neb_cu_vacancy_barrier() {
         - e0;
     let neb_per_image = neb_surface.rows.load(Ordering::Relaxed) as f64 / interior;
 
-    for (label, string_cfg, climbing) in [
-        ("string-spline", StringConfig::spline(), None),
-        ("string-linear", StringConfig::linear(), None),
+    for (label, string_cfg, scheme, climbing) in [
+        (
+            "string-spline",
+            StringConfig::spline(),
+            Reparametrization::NotAKnot,
+            None,
+        ),
+        (
+            "string-linear",
+            StringConfig::linear(),
+            Reparametrization::Linear,
+            None,
+        ),
         (
             "ci-string-spline",
             StringConfig::spline(),
+            Reparametrization::NotAKnot,
             Some(CiConfig::after(0.5)),
         ),
     ] {
@@ -441,8 +454,21 @@ fn simplified_string_matches_neb_cu_vacancy_barrier() {
             rep.iteration, neb_rep.iteration
         );
         assert!(
-            (barrier - neb_barrier).abs() < 0.05 * DEFAULT_FORCE_TOL,
+            (barrier - neb_barrier).abs() < CU_VACANCY_BARRIER_DIFFERENCE_EV,
             "{label}: barrier {barrier} vs NEB {neb_barrier}"
+        );
+        assert!(
+            mid_grad <= DEFAULT_FORCE_TOL,
+            "{label}: Converged with middle-image |g|={mid_grad:e} above the tolerance"
+        );
+        let lengths = segment_lengths(&session.positions().to_owned(), Some(&cell), scheme);
+        let mean = lengths.iter().sum::<f64>() / lengths.len() as f64;
+        let spread = lengths.iter().fold(0.0_f64, |largest, length| {
+            largest.max((length - mean).abs())
+        });
+        assert!(
+            spread <= 5e-3 * mean,
+            "{label}: converged string was not reparametrized: {lengths:?}"
         );
     }
 }
