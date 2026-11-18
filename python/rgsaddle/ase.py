@@ -1101,3 +1101,139 @@ class SimplifiedString:
         positions = _image_positions(self.images)
         tangent = positions[self.ci + 1] - positions[self.ci - 1]
         return saddle_index(self.images[self.ci], tangent, **options)
+
+
+class GrowingString:
+    """Growing string method over a list of ASE ``Atoms``.
+
+    Peters, Heyden, Bell, and Chakraborty, J. Chem. Phys. 120, 7877
+    (2004), doi:10.1063/1.1691018, handing off upon join to the
+    simplified string method of E, Ren, and Vanden-Eijnden, J. Chem.
+    Phys. 126, 164103 (2007), doi:10.1063/1.2720838.
+    """
+
+    def __init__(
+        self,
+        images: list[Any],
+        *,
+        frontier_tol: float = 0.2,
+        min_steps_per_node: int = 1,
+        max_steps_per_node: int = 0,
+        join_tol: float = 0.0,
+        climb: bool = True,
+        ci_after: float = 0.5,
+        ci_after_rel: float = 0.0,
+        reparametrization: str = "not-a-knot",
+        method: str = "fire",
+        memory: int = 20,
+        max_move: float = 0.2,
+        remove_rotation_and_translation: bool = False,
+        min_mode: bool = False,
+        allow_shared_calculator: bool = False,
+    ) -> None:
+        if len(images) < 4:
+            raise ValueError("a growing string needs at least four image slots")
+        if reparametrization not in ("linear", "not-a-knot", "spline"):
+            raise ValueError("reparametrization must be linear, not-a-knot, or spline")
+        self.images = images
+        self.frontier_tol = float(frontier_tol)
+        self.min_steps_per_node = int(min_steps_per_node)
+        self.max_steps_per_node = int(max_steps_per_node)
+        self.join_tol = float(join_tol)
+        self.climb = bool(climb)
+        self.ci_after = float(ci_after)
+        self.ci_after_rel = float(ci_after_rel)
+        self.reparametrization = reparametrization
+        self.method = method
+        self.memory = int(memory)
+        self.max_move = float(max_move)
+        self.remove_rotation_and_translation = bool(remove_rotation_and_translation)
+        self.min_mode = bool(min_mode)
+        self._adapter = SurfaceAdapter(images, allow_shared_calculator=allow_shared_calculator)
+        self.ci: int | None = None
+        self._session: Any = None
+        self._report: Any = None
+        self._observers: list[tuple[Any, int, tuple[Any, ...], dict[str, Any]]] = []
+
+    def attach(self, function: Any, interval: int = 1, *args: Any, **kwargs: Any) -> None:
+        self._observers.append((function, interval, args, kwargs))
+
+    def _surface(self, x: Float64) -> tuple[Float64, Float64]:
+        assert self._session is not None
+        rows = int(x.shape[0])
+        active_ids = np.asarray(self._session.ids(), dtype=np.int64)
+        if rows == int(active_ids.shape[0]):
+            ids = active_ids
+        elif rows == int(active_ids.shape[0]) - 2:
+            ids = active_ids[1:-1]
+        elif rows == 1:
+            target = 1 if self.ci is None else int(active_ids[self.ci])
+            ids = np.array([target], dtype=np.int64)
+        else:
+            ids = np.arange(rows, dtype=np.int64)
+        return self._adapter(
+            np.ascontiguousarray(ids, dtype=np.int64),
+            np.ascontiguousarray(x, dtype=np.float64),
+        )
+
+    def _ensure(self, force_tol: float) -> Any:
+        if self._session is None:
+            from rgsaddle._core import GrowingString as CoreGrowingString
+
+            reactant = np.ascontiguousarray(
+                self.images[0].get_positions(), dtype=np.float64
+            ).reshape(-1)
+            product = np.ascontiguousarray(
+                self.images[-1].get_positions(), dtype=np.float64
+            ).reshape(-1)
+            self._session = CoreGrowingString(
+                reactant,
+                product,
+                n_images=len(self.images),
+                frontier_tol=self.frontier_tol,
+                min_steps_per_node=self.min_steps_per_node,
+                max_steps_per_node=self.max_steps_per_node,
+                join_tol=self.join_tol,
+                climb=self.climb,
+                ci_after=self.ci_after,
+                ci_after_rel=self.ci_after_rel,
+                method=self.method,
+                memory=self.memory,
+                force_tol=force_tol,
+                max_move=self.max_move,
+                remove_translation=self.remove_rotation_and_translation,
+                min_mode=self.min_mode,
+                reparametrization=self.reparametrization,
+                cell=_periodic_cell(self.images),
+                fixed=_fixed_atoms(self.images),
+            )
+        return self._session
+
+    def run(
+        self,
+        fmax: float = 0.05,
+        steps: int = 500,
+    ) -> bool:
+        session = self._ensure(fmax)
+        natoms = len(self.images[0])
+        for _ in range(steps):
+            report = session.step(self._surface)
+            self._report = report
+            self.ci = None if int(report.ci_index) < 0 else int(report.ci_index)
+            if session.joined():
+                updated = np.asarray(session.positions(), dtype=np.float64).reshape(
+                    len(self.images), natoms, 3
+                )
+                for idx in range(1, len(self.images) - 1):
+                    self.images[idx].set_positions(updated[idx], apply_constraint=False)
+            for function, interval, args, kwargs in self._observers:
+                if int(report.iteration) % max(int(interval), 1) == 0:
+                    function(*args, **kwargs)
+            if int(report.status) == 1:
+                return True
+        return False
+
+    def saddle_index(self) -> SaddleIndex:
+        if self._session is None:
+            raise ValueError("growing string has not run")
+        return self._session.saddle_index()
