@@ -207,6 +207,16 @@ pub extern "C" fn rgsaddle_hyperplane_sampler_create(
     })
 }
 
+/// Stable observable name for `V_full - V_harmonic`.
+#[unsafe(no_mangle)]
+pub extern "C" fn rgsaddle_thermodynamic_derivative_observable() -> *const std::ffi::c_char {
+    static POINTER: std::sync::OnceLock<std::ffi::CString> = std::sync::OnceLock::new();
+    let name = POINTER.get_or_init(|| {
+        std::ffi::CString::new(THERMODYNAMIC_DERIVATIVE).expect("thermodynamic derivative name")
+    });
+    name.as_ptr()
+}
+
 /// Free a callback sampler. Null is accepted.
 ///
 /// # Safety
@@ -322,6 +332,14 @@ mod tests {
             }
         }
         RGSADDLE_OK
+    }
+
+    #[test]
+    fn thermodynamic_derivative_observable_is_stable() {
+        // SAFETY: returns a process-static NUL-terminated string.
+        let name =
+            unsafe { std::ffi::CStr::from_ptr(rgsaddle_thermodynamic_derivative_observable()) };
+        assert_eq!(name.to_str().unwrap(), THERMODYNAMIC_DERIVATIVE);
     }
 
     #[test]

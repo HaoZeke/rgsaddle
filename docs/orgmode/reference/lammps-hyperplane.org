@@ -12,7 +12,8 @@ shared libraries and are not needed by default builds.
 | Type | Contract |
 |------+----------|
 | =LammpsSystem= | Flat =PotentialConfig=, Cartesian positions, atomic numbers, masses, and optional cell |
-| =LammpsSamplerConfig= | Shared library path, BAOAB time step in ps, Langevin friction in inverse ps, thermostat kind, and the excluded-mode count used in \(3N - 1 - n_{\mathrm{excluded}}\) |
+| =LammpsSamplerConfig= | Shared library path, BAOAB time step in ps, Langevin friction in inverse ps, thermostat kind, the excluded-mode count used in \(3N - 1 - n_{\mathrm{excluded}}\), and an optional Taylor reference for lambda mixing |
+| =LammpsThermodynamicReference= | Reference geometry, energy, gradient, and dense Hessian in the sampler coordinates of the plane |
 | =LammpsThermostatKind= | Thermostat enum stored in records; currently =BaoabLangevin= |
 | =LammpsThermostatRecord= | Serializable thermostat metadata with =thermostat= and =effective_degrees_of_freedom= |
 | =LammpsHyperplaneSampler= | Persistent lammpc session implementing =HyperplaneSampler= |
@@ -81,6 +82,55 @@ sampling budget with a region.
 
 The extension is generic. It does not contain an OH-TST, PAFI, pair-style,
 or material type. rgsaddle maps those arrays into =HyperplaneObservation=.
+
+* Thermodynamic integration coupling
+
+When =HyperplaneSampleBudget::lambda= is set, =LammpsHyperplaneSampler=
+requires =LammpsSamplerConfig::thermodynamic_reference=: a Taylor harmonic
+model stored as reference geometry, energy, gradient, and dense Hessian in
+the sampler coordinates of the plane. Those are the coordinates selected by
+=HyperplaneSampleBudget::coordinates= and passed to =md_initialize=.
+
+Until lammpc exposes a mixing hook, lambda sampling fails with a surface
+error. The additive ABI is:
+
+#+begin_src c
+typedef struct {
+  double lambda;
+  double reference_energy;
+} lammpc_md_thermodynamic_coupling_t;
+
+int lammpc_session_md_set_thermodynamic_coupling(
+    LammpcSession *session,
+    const lammpc_md_thermodynamic_coupling_t *coupling,
+    const double *reference_point,
+    const double *reference_gradient,
+    const double *reference_hessian,
+    size_t dimension);
+#+end_src
+
+=reference_point=, =reference_gradient=, and =reference_hessian= are in the
+sampler frame. The Hessian is passed already symmetrized. Each MD step adds
+=(1-lambda) F_harmonic= in that frame, with
+=F_harmonic = -(g_0 + H (x - x_0))=, and the engine converts that force to
+the Cartesian LAMMPS force with the same mass metric it uses for the
+constraint. The hook is not tied to a pair style or a material.
+
+The observable also needs the unmixed full potential. A missing symbol is a
+surface error when lambda is set:
+
+#+begin_src c
+int lammpc_session_md_potential_energy(
+    LammpcSession *session,
+    const double *position,
+    size_t dimension,
+    double *energy);
+#+end_src
+
+=position= is the Cartesian geometry returned by =md_state=. The scalar
+energy is frame invariant. rgsaddle evaluates =V_harm= itself at the
+sampler-frame image of that geometry, including the mass-weighted scaling
+=q = M^{1/2} x= when the budget asks for mass-weighted coordinates.
 
 * Errors
 

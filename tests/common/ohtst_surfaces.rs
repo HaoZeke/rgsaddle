@@ -420,6 +420,28 @@ mod ohtst_surfaces {
         ]
     }
 
+    /// One-dimensional Boltzmann partition function `∫ exp(-V/kT) dy`.
+    pub fn boltzmann_line_partition(
+        potential: &dyn Fn(f64) -> f64,
+        kt: f64,
+        extent: f64,
+    ) -> f64 {
+        bump_integral(&|y| (-potential(y) / kt).exp(), extent, 1.0e-11)
+    }
+
+    /// `F_full - F_harm` for a one-dimensional line density with potentials
+    /// `full` and `harmonic`.
+    pub fn anharmonic_line_free_energy(
+        full: &dyn Fn(f64) -> f64,
+        harmonic: &dyn Fn(f64) -> f64,
+        kt: f64,
+        extent: f64,
+    ) -> f64 {
+        let full_partition = boltzmann_line_partition(full, kt, extent);
+        let harmonic_partition = boltzmann_line_partition(harmonic, kt, extent);
+        -kt * (full_partition / harmonic_partition).ln()
+    }
+
     /// Eigenvalues (ascending) and the unit eigenvector of the lower one
     /// of a symmetric 2×2 matrix.
     pub fn eigen2(h: [[f64; 2]; 2]) -> (f64, f64, [f64; 2]) {

@@ -44,6 +44,8 @@ def last_error() -> str:
     Thread-local slot reserved for the C ABI last-error text. Returns an empty string unless an error text was set. raise_status reads it and then clears it.
     """
 
+THERMODYNAMIC_DERIVATIVE: str = 'potential.full_minus_harmonic'
+
 def hyperplane_thermodynamic_integration(sampler: Callable[..., numpy.typing.NDArray[numpy.float64]], point: numpy.typing.NDArray[numpy.float64], normal: numpy.typing.NDArray[numpy.float64], thermal: float = 0.02585, nodes: int = 8, thermalize: int = 500, stride: int = 5, samples: int = 2000, blocks: int = 20, seed: int = 1) -> tuple[float, float, int]:
     """
     Fixed-plane lambda TI through a Python sampler. The callback receives point, normal, lambda, thermal, seed, thermalize, stride and samples, and returns float64 C-contiguous V_full - V_harmonic observations.
