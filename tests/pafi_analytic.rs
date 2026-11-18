@@ -610,6 +610,55 @@ fn basin_test_refuses_a_plane_that_cannot_hold_the_basin() {
     }
 }
 
+/// A target that is not a finite positive number cannot be reached or
+/// missed, so it is refused where the configuration is checked rather
+/// than read as a ratio that is never at or below it.
+#[test]
+fn target_error_must_be_finite_and_positive() {
+    let frames = line(9);
+    let path = ArcPath::from_positions(&frames).expect("path");
+    let arcs = path.arcs();
+    let base = PafiConfig::default()
+        .with_thermal(0.02)
+        .with_mobility(1.0)
+        .with_time_step(0.01)
+        .with_thermalize(5)
+        .with_stride(1)
+        .with_samples(8)
+        .with_blocks(2)
+        .with_fix_com(false)
+        .with_retain(0)
+        .with_max_rounds(3);
+    for target in [
+        f64::NAN,
+        -f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        0.0,
+        -0.5,
+    ] {
+        let config = base.clone().with_target_error(target);
+        match pafi_profile(&AlongX, &path, &arcs, &config) {
+            Err(SaddleError::Invalid(message)) => {
+                assert!(message.contains("target error"), "{target}: {message}");
+            }
+            other => panic!("target {target} was not refused: {other:?}"),
+        }
+        let geometry = path.geometry(0.5).expect("mid");
+        assert!(
+            matches!(
+                average_hyperplane(&AlongX, &geometry, &config),
+                Err(SaddleError::Invalid(_))
+            ),
+            "average_hyperplane accepted target {target}"
+        );
+    }
+    let (profile, planes) = pafi_profile(&AlongX, &path, &arcs, &base.with_target_error(1.0e3))
+        .expect("a finite positive target is accepted");
+    assert_eq!(planes.len(), arcs.len());
+    assert!(profile.barrier.is_finite());
+}
+
 /// [`Widening`] with one fault, to see what the quench of the basin test
 /// does with it.
 enum Fault {

@@ -180,7 +180,8 @@ pub enum PafiMeanForce {
 /// configuration on entry: `kT`, the mobility and the step must be finite
 /// and positive, the stride and [`PafiConfig::trajectories`] positive,
 /// [`PafiConfig::blocks`] at least 2, [`PafiConfig::samples`] at least
-/// twice the blocks, and a given `max_jump` finite and positive.
+/// twice the blocks, and a given `target_error` or `max_jump` finite and
+/// positive.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct PafiConfig {
@@ -326,6 +327,13 @@ impl PafiConfig {
         {
             return Err(SaddleError::Invalid(
                 "PAFI needs a positive stride and trajectory count, at least two blocks, and two samples per block".into(),
+            ));
+        }
+        if let Some(target) = self.target_error
+            && !(target.is_finite() && target > 0.0)
+        {
+            return Err(SaddleError::Invalid(
+                "PAFI target error must be finite and positive".into(),
             ));
         }
         if let Some(jump) = self.max_jump {
