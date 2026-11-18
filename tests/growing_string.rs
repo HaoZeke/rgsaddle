@@ -20,9 +20,9 @@ use ndarray::{Array1, Array2, ArrayView2, ArrayViewMut2, array};
 use rgmin::Method;
 use rgsaddle::stencil::{ImageId, Surface};
 use rgsaddle::{
-    BandConfig, BandSession, BandStatus, BandSurface, Cell, CiConfig, DEFAULT_FORCE_TOL,
-    ForceGate, GrowingStringConfig, GrowingStringPhase, GrowingStringSession, Reparametrization,
-    SaddleError, linear_path,
+    BandConfig, BandSession, BandStatus, BandSurface, Cell, CiConfig, DEFAULT_FORCE_TOL, ForceGate,
+    GrowingStringConfig, GrowingStringPhase, GrowingStringSession, Reparametrization, SaddleError,
+    linear_path,
 };
 
 /// 2D curved parabolic valley `y = 1 - x^2` connecting reactant `(-1, 0)`
@@ -601,15 +601,31 @@ fn frontier_gap(session: &GrowingStringSession) -> f64 {
 #[test]
 fn node_placement_fractions_are_exact_on_each_growth_step() {
     let mut session = flat_session(flat_config(10));
-    assert_abscissae(abscissae(session.left_fragment()), &[0.0, 1.0], "start left");
-    assert_abscissae(abscissae(session.right_fragment()), &[8.0, 9.0], "start right");
+    assert_abscissae(
+        abscissae(session.left_fragment()),
+        &[0.0, 1.0],
+        "start left",
+    );
+    assert_abscissae(
+        abscissae(session.right_fragment()),
+        &[8.0, 9.0],
+        "start right",
+    );
 
     // Gap 1..8 with seven vacant slots left of the eight-slot string: the
     // left node takes 1/7 of the gap and the right node 6/7 of it.
     let first = session.step(&FlatSurface).expect("step 1");
     assert_eq!(first.nodes_added, 2);
-    assert_abscissae(abscissae(session.left_fragment()), &[0.0, 1.0, 2.0], "step 1 left");
-    assert_abscissae(abscissae(session.right_fragment()), &[7.0, 8.0, 9.0], "step 1 right");
+    assert_abscissae(
+        abscissae(session.left_fragment()),
+        &[0.0, 1.0, 2.0],
+        "step 1 left",
+    );
+    assert_abscissae(
+        abscissae(session.right_fragment()),
+        &[7.0, 8.0, 9.0],
+        "step 1 right",
+    );
     assert_eq!(session.left_ids(), &[0, 2, 4]);
     assert_eq!(session.right_ids(), &[5, 3, 1]);
     assert_eq!((first.left_nodes, first.right_nodes), (3, 3));
@@ -650,7 +666,11 @@ fn node_placement_uses_the_spline_curve_for_not_a_knot() {
     let mut session = flat_session(config);
     session.step(&FlatSurface).expect("step");
     assert_abscissae(abscissae(session.left_fragment()), &[0.0, 1.0, 2.0], "left");
-    assert_abscissae(abscissae(session.right_fragment()), &[7.0, 8.0, 9.0], "right");
+    assert_abscissae(
+        abscissae(session.right_fragment()),
+        &[7.0, 8.0, 9.0],
+        "right",
+    );
 }
 
 #[test]
@@ -718,14 +738,13 @@ fn fragments_follow_the_reparametrized_string_after_an_early_join() {
         .with_n_images(8)
         .with_join_tol(Some(10.0))
         .with_remove_translation(false);
-    let mut session = GrowingStringSession::new(
-        config,
-        array![-1.0, 0.0, 0.0],
-        array![1.0, 0.0, 0.0],
-    )
-    .expect("session");
+    let mut session =
+        GrowingStringSession::new(config, array![-1.0, 0.0, 0.0], array![1.0, 0.0, 0.0])
+            .expect("session");
 
-    let report = session.step(&CurvedChannel2D::default()).expect("join step");
+    let report = session
+        .step(&CurvedChannel2D::default())
+        .expect("join step");
     assert!(report.joined_this_step);
 
     let positions = session.positions();
@@ -776,7 +795,10 @@ fn join_tol_boundary_is_inclusive_and_a_smaller_tolerance_keeps_growing() {
     let mut probe = flat_session(flat_config(10));
     probe.step(&FlatSurface).expect("probe step");
     let gap = frontier_gap(&probe);
-    assert!((gap - 5.0).abs() <= 16.0 * f64::EPSILON, "gap after step 1: {gap}");
+    assert!(
+        (gap - 5.0).abs() <= 16.0 * f64::EPSILON,
+        "gap after step 1: {gap}"
+    );
 
     let mut exact = flat_session(flat_config(10).with_join_tol(Some(gap)));
     let report = exact.step(&FlatSurface).expect("exact step");
@@ -792,7 +814,10 @@ fn join_tol_boundary_is_inclusive_and_a_smaller_tolerance_keeps_growing() {
 
     let mut zero = flat_session(flat_config(10).with_join_tol(Some(0.0)));
     let report = zero.step(&FlatSurface).expect("zero step");
-    assert!(!report.joined_this_step, "a zero join_tol never joins a positive gap");
+    assert!(
+        !report.joined_this_step,
+        "a zero join_tol never joins a positive gap"
+    );
 }
 
 #[test]
@@ -921,7 +946,10 @@ fn a_full_string_joins_only_when_a_node_was_added_or_both_frontiers_are_ready() 
     let mut four = symmetric_endpoints(asymmetric_config(4));
     let report = four.step(&AsymmetricValley).expect("step");
     assert_eq!(report.nodes_added, 0);
-    assert!(!report.joined_this_step, "only the reactant frontier is ready");
+    assert!(
+        !report.joined_this_step,
+        "only the reactant frontier is ready"
+    );
     assert_eq!(report.phase, GrowingStringPhase::Growing);
     assert_eq!((report.left_nodes, report.right_nodes), (2, 2));
     assert!(!four.is_joined());
@@ -937,7 +965,10 @@ fn a_full_string_joins_only_when_a_node_was_added_or_both_frontiers_are_ready() 
     let mut five = symmetric_endpoints(asymmetric_config(5));
     let report = five.step(&AsymmetricValley).expect("step");
     assert_eq!(report.nodes_added, 1);
-    assert!(report.joined_this_step, "a node was added into the last slot");
+    assert!(
+        report.joined_this_step,
+        "a node was added into the last slot"
+    );
     assert_eq!(report.n_images, 5);
     assert!(five.is_joined());
 }
@@ -1002,7 +1033,10 @@ fn step_counters_and_run_limit_follow_the_steps_taken() {
     assert_eq!(second.iteration, 2);
     assert_eq!(joined.iteration(), 2);
     assert!(second.surface_rows > 0);
-    assert_eq!(joined.total_surface_rows(), rows_at_join + second.surface_rows);
+    assert_eq!(
+        joined.total_surface_rows(),
+        rows_at_join + second.surface_rows
+    );
     assert_eq!(second.total_surface_rows, joined.total_surface_rows());
     assert_eq!(joined.energies().len(), 6);
 }
@@ -1020,7 +1054,9 @@ fn image_threads_and_fixed_atoms_apply_to_the_running_session() {
     session.step(&FlatSurface).expect("threaded step");
 
     let mut handed_off = flat_session(flat_config(6).with_join_tol(Some(1000.0)));
-    handed_off.set_image_threads(2).expect("threads before join");
+    handed_off
+        .set_image_threads(2)
+        .expect("threads before join");
     handed_off.step(&FlatSurface).expect("step");
     let joined = handed_off.string_session().expect("joined");
     assert_eq!(joined.image_threads(), 2, "the join keeps the thread count");
@@ -1037,7 +1073,10 @@ fn image_threads_and_fixed_atoms_apply_to_the_running_session() {
     )
     .expect("two atoms");
     assert!(fixed.set_fixed_atoms(vec![true]).is_err(), "mask length");
-    assert!(fixed.set_fixed_atoms(vec![true, true]).is_err(), "no free atom");
+    assert!(
+        fixed.set_fixed_atoms(vec![true, true]).is_err(),
+        "no free atom"
+    );
     fixed.set_fixed_atoms(vec![false, true]).expect("mask");
     for _ in 0..3 {
         fixed.step(&AsymmetricValley).expect("step after the mask");
@@ -1046,7 +1085,11 @@ fn image_threads_and_fixed_atoms_apply_to_the_running_session() {
         assert_eq!(&row.as_slice().unwrap()[3..], &[3.0, 4.0, 5.0]);
     }
     assert!(
-        fixed.left_fragment().outer_iter().skip(1).any(|r| r[1] != 0.0),
+        fixed
+            .left_fragment()
+            .outer_iter()
+            .skip(1)
+            .any(|r| r[1] != 0.0),
         "the free atom relaxed"
     );
 }
@@ -1105,7 +1148,10 @@ fn invalid_configurations_and_endpoints_are_refused() {
     assert!(sized(array![0.0, 0.0, 0.0], array![1.0, 0.0, 0.0, 0.0, 0.0, 0.0]).is_err());
     assert!(sized(array![f64::NAN, 0.0, 0.0], array![1.0, 0.0, 0.0]).is_err());
     assert!(sized(array![0.0, 0.0, 0.0], array![f64::INFINITY, 0.0, 0.0]).is_err());
-    assert!(sized(array![0.0, 0.0, 0.0], array![0.0, 0.0, 0.0]).is_err(), "coincident");
+    assert!(
+        sized(array![0.0, 0.0, 0.0], array![0.0, 0.0, 0.0]).is_err(),
+        "coincident"
+    );
 
     let rows = Array2::zeros((3, 3));
     assert!(GrowingStringSession::from_endpoints(base(), rows.view()).is_err());
@@ -1156,35 +1202,203 @@ const GOLDEN_TRAJECTORIES: &[(&str, &str, usize, usize, f64, f64)] = &[
     ("fire", "linear", 5, 4, 1.0, 2.5),
     ("fire", "linear", 6, 6, 1.924090908060685, 6.734318178212398),
     ("fire", "linear", 8, 6, 2.376087591023748, 8.31630656858312),
-    ("fire", "linear", 12, 9, 4.870698356315499, 24.35369373433049),
-    ("fire", "spline", 5, 4, 0.6466045396553552, 1.616511349138388),
+    (
+        "fire",
+        "linear",
+        12,
+        9,
+        4.870698356315499,
+        24.35369373433049,
+    ),
+    (
+        "fire",
+        "spline",
+        5,
+        4,
+        0.6466045396553552,
+        1.616511349138388,
+    ),
     ("fire", "spline", 6, 6, 1.669963401674019, 5.844871905941059),
     ("fire", "spline", 8, 6, 1.731733117284771, 6.061065910587134),
-    ("fire", "spline", 12, 8, 3.308413025356654, 14.88785861431214),
+    (
+        "fire",
+        "spline",
+        12,
+        8,
+        3.308413025356654,
+        14.88785861431214,
+    ),
     ("fire-v1", "linear", 5, 4, 1.0, 2.5),
-    ("fire-v1", "linear", 6, 6, 1.773873852967226, 6.208558485385293),
-    ("fire-v1", "linear", 8, 6, 2.248965319199389, 7.871378617197862),
-    ("fire-v1", "linear", 12, 9, 4.915805376171914, 24.57875047437767),
-    ("fire-v1", "spline", 5, 6, 1.690422760624184, 5.916479661789108),
-    ("fire-v1", "spline", 6, 6, 1.718129720274779, 6.01345402054491),
-    ("fire-v1", "spline", 8, 6, 1.760928332536802, 6.163249163429728),
-    ("fire-v1", "spline", 12, 8, 3.360847106655585, 15.12381197924003),
+    (
+        "fire-v1",
+        "linear",
+        6,
+        6,
+        1.773873852967226,
+        6.208558485385293,
+    ),
+    (
+        "fire-v1",
+        "linear",
+        8,
+        6,
+        2.248965319199389,
+        7.871378617197862,
+    ),
+    (
+        "fire-v1",
+        "linear",
+        12,
+        9,
+        4.915805376171914,
+        24.57875047437767,
+    ),
+    (
+        "fire-v1",
+        "spline",
+        5,
+        6,
+        1.690422760624184,
+        5.916479661789108,
+    ),
+    (
+        "fire-v1",
+        "spline",
+        6,
+        6,
+        1.718129720274779,
+        6.01345402054491,
+    ),
+    (
+        "fire-v1",
+        "spline",
+        8,
+        6,
+        1.760928332536802,
+        6.163249163429728,
+    ),
+    (
+        "fire-v1",
+        "spline",
+        12,
+        8,
+        3.360847106655585,
+        15.12381197924003,
+    ),
     ("lbfgs", "linear", 5, 4, 1.0, 2.5),
-    ("lbfgs", "linear", 6, 6, 1.773873852967226, 6.208558485385293),
-    ("lbfgs", "linear", 8, 6, 2.248965319199389, 7.871378617197862),
-    ("lbfgs", "linear", 12, 9, 4.71236297187415, 23.56024115993499),
-    ("lbfgs", "spline", 5, 6, 1.663283013343839, 5.821490546884619),
-    ("lbfgs", "spline", 6, 6, 1.731549766702423, 6.060424183660089),
-    ("lbfgs", "spline", 8, 8, 3.509594134514499, 15.79317360575033),
-    ("lbfgs", "spline", 12, 9, 4.838030055048254, 24.1894579568356),
+    (
+        "lbfgs",
+        "linear",
+        6,
+        6,
+        1.773873852967226,
+        6.208558485385293,
+    ),
+    (
+        "lbfgs",
+        "linear",
+        8,
+        6,
+        2.248965319199389,
+        7.871378617197862,
+    ),
+    (
+        "lbfgs",
+        "linear",
+        12,
+        9,
+        4.71236297187415,
+        23.56024115993499,
+    ),
+    (
+        "lbfgs",
+        "spline",
+        5,
+        6,
+        1.663283013343839,
+        5.821490546884619,
+    ),
+    (
+        "lbfgs",
+        "spline",
+        6,
+        6,
+        1.731549766702423,
+        6.060424183660089,
+    ),
+    (
+        "lbfgs",
+        "spline",
+        8,
+        8,
+        3.509594134514499,
+        15.79317360575033,
+    ),
+    (
+        "lbfgs",
+        "spline",
+        12,
+        9,
+        4.838030055048254,
+        24.1894579568356,
+    ),
     ("quickmin", "linear", 5, 4, 1.0, 2.5),
-    ("quickmin", "linear", 6, 6, 1.773873852967226, 6.208558485385293),
-    ("quickmin", "linear", 8, 6, 2.248965319199389, 7.871378617197862),
-    ("quickmin", "linear", 12, 9, 4.915805376171914, 24.57875047437767),
-    ("quickmin", "spline", 5, 6, 1.690422760624184, 5.916479661789108),
-    ("quickmin", "spline", 6, 6, 1.718129720274779, 6.01345402054491),
-    ("quickmin", "spline", 8, 6, 1.760928332536802, 6.163249163429728),
-    ("quickmin", "spline", 12, 8, 3.360847106655585, 15.12381197924003),
+    (
+        "quickmin",
+        "linear",
+        6,
+        6,
+        1.773873852967226,
+        6.208558485385293,
+    ),
+    (
+        "quickmin",
+        "linear",
+        8,
+        6,
+        2.248965319199389,
+        7.871378617197862,
+    ),
+    (
+        "quickmin",
+        "linear",
+        12,
+        9,
+        4.915805376171914,
+        24.57875047437767,
+    ),
+    (
+        "quickmin",
+        "spline",
+        5,
+        6,
+        1.690422760624184,
+        5.916479661789108,
+    ),
+    (
+        "quickmin",
+        "spline",
+        6,
+        6,
+        1.718129720274779,
+        6.01345402054491,
+    ),
+    (
+        "quickmin",
+        "spline",
+        8,
+        6,
+        1.760928332536802,
+        6.163249163429728,
+    ),
+    (
+        "quickmin",
+        "spline",
+        12,
+        8,
+        3.360847106655585,
+        15.12381197924003,
+    ),
 ];
 
 #[test]
@@ -1253,7 +1467,9 @@ fn converged_growing_string_certifies_its_saddle_through_the_session() {
     let report = session.run(&CurvedChannel2D::default(), 600).expect("run");
     assert_eq!(report.status, BandStatus::Converged);
     assert!(report.saddle_index.is_some());
-    let certificate = session.saddle_index().expect("certificate from the session");
+    let certificate = session
+        .saddle_index()
+        .expect("certificate from the session");
     assert!(certificate.converged);
     assert_eq!(certificate.index, 1);
 }

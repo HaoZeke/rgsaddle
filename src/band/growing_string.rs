@@ -592,7 +592,8 @@ impl GrowingStringSession {
             if s[i] - s[last] > tol {
                 kept.push(i);
             } else if i + 1 == n && last != 0 {
-                kept[kept.len() - 1] = i;
+                let end = kept.len() - 1;
+                kept[end] = i;
             }
         }
         let knots = kept.iter().map(|&i| s[i]).collect::<Vec<_>>();
@@ -603,11 +604,7 @@ impl GrowingStringSession {
         (kept, knots, values)
     }
 
-    fn fit_chain_spline(
-        &self,
-        unwrapped: &Array2<f64>,
-        s: &[f64],
-    ) -> Option<(Vec<usize>, Spline)> {
+    fn fit_chain_spline(&self, unwrapped: &Array2<f64>, s: &[f64]) -> Option<(Vec<usize>, Spline)> {
         let (kept, knots, values) = self.distinct_knots_for_spline(s, unwrapped);
         Spline::fit(&knots, &values).map(|spline| (kept, spline))
     }
@@ -919,9 +916,9 @@ impl GrowingStringSession {
 
     fn force_norm(&self, force: ArrayView1<'_, f64>) -> f64 {
         match self.config.force_gate {
-            ForceGate::LinfNorm => force.iter().fold(0.0_f64, |largest, value| {
-                largest.max(value.abs())
-            }),
+            ForceGate::LinfNorm => force
+                .iter()
+                .fold(0.0_f64, |largest, value| largest.max(value.abs())),
             gate => gate.value(force),
         }
     }
@@ -1510,12 +1507,9 @@ mod tests {
             .with_n_images(9)
             .with_frontier_tol(f64::MIN_POSITIVE)
             .with_remove_translation(false);
-        let mut session = GrowingStringSession::new(
-            config,
-            array![-1.0, 0.0, 0.0],
-            array![1.0, 0.0, 0.0],
-        )
-        .expect("session");
+        let mut session =
+            GrowingStringSession::new(config, array![-1.0, 0.0, 0.0], array![1.0, 0.0, 0.0])
+                .expect("session");
         let cap = session.max_steps_per_node();
         for _ in 0..cap - 1 {
             let report = session.step(&ConstantPush).expect("step before cap");
