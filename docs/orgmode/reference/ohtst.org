@@ -1,0 +1,82 @@
+#+TITLE: OH-TST types
+#+OPTIONS: toc:nil num:nil
+
+Full API documentation for every item below is on [[https://docs.rs/rgsaddle][docs.rs/rgsaddle]], under =rgsaddle::ohtst=; =cargo doc --open= builds the same pages from a checkout. This page is the inventory: every public configuration and result type the module exports. =howto/oh-tst= is the dense narrative reference for how the pieces fit together, with every citation; =tutorials/oh-tst= walks through using them once, end to end; =explanation/pafi-ohtst= has the theory.
+
+* Coordinates and the plane
+| Type | Role |
+|------+------|
+| =MassWeighted= | Wraps a Cartesian =PointSurface= in mass-weighted coordinates, =q = M^(1/2) x= |
+| =FixedCell= | Holds a crystal's cell fixed, for one temperature at a time |
+| =Hyperplane= | A point and a unit normal, in mass-weighted coordinates, pointing from reactant to product. =from_min_mode= seeds one from a converged =MinModeSession= or Lanczos search; =oriented_toward= fixes the sign toward a given configuration; =packed= / =from_packed= give the =[p; normal]= layout =PlaneSample::directional= also uses; =from_cartesian= / =to_cartesian= convert |
+
+* Sampling
+| Type | Role |
+|------+------|
+| =LangevinConfig= | Non-exhaustive; chain =with_*= setters from =default=. =thermal=, =time_step=, =friction= set the Langevin dynamics; =burn_in=, =stride=, =records= control the production run; =seed= fixes the noise stream; =with_control= adds Stein control variates from a =HarmonicReference=. =sample_plane='s own =start= argument (not a field of this config) continues a chain from a previous =PlaneSample::last= instead of the plane's own point (=howto/pafi-ohtst-restarting=) |
+| =PlaneIntegrator= | =Baoab= (projected BAOAB, the default, exact on a harmonic plane for any stable step) or =Ghmc= (generalized hybrid Monte Carlo, exact for any step) |
+| =HarmonicReference= | A reference point (usually the saddle) whose Hessian, reached only through Hessian actions, builds the zero-variance control variates =LangevinConfig::with_control= adds |
+| =sample_plane= | =sample_plane(surface, plane, start, config)= runs plane-restricted Langevin dynamics once and returns a =PlaneSample=; =start= is =None= to begin from the plane's own point, or =Some(configuration)= to continue a chain |
+| =PlaneSample= | One plane's sampled result: =normal_force= and its error (the Euclidean gradient block along the normal), =grad_normal= and its error (=Uncontrolled= holds the raw values when control variates are applied), the centroid =torque= and its length, the in-plane =virial= and its error (compare against =free_dimensions * thermal= at equilibrium, =howto/pafi-ohtst-checking-convergence=), =tau= and =effective_samples= (the same autocorrelation pair as PAFI's =HyperplaneAverage=), =records=, =retained= configurations, and =last= (the final configuration, for restarting) |
+| =Uncontrolled= | The raw (uncontrolled) =normal_force=, its error, =grad_normal= and its error, kept on =PlaneSample= whenever control variates were applied |
+
+* Engines
+| Type | Role |
+|------+------|
+| =HyperplaneSampler= | The trait every constrained-ensemble engine implements: it samples one =Hyperplane= under a =HyperplaneSampleBudget= and returns a =HyperplaneEnsemble= of =HyperplaneObservation=. =reversible_work=, =reversible_work_along= and PAFI's =average_hyperplane_with_sampler= take one |
+| =AnalyticSurfaceSampler= | The reference =HyperplaneSampler= for a =PointSurface=: projected BAOAB or GHMC dynamics. =new(&surface, config)= then =with_start(position)= seeds the first plane, as the =start= argument of =sample_plane= does |
+| =HyperplaneDynamics= | The trait that shoots trajectories from a plane for =transmission_coefficient= |
+| =AnalyticSurfaceDynamics= | The reference =HyperplaneDynamics= for a =PointSurface=: =new(&surface)= |
+
+* Plane optimization
+| Type | Role |
+|------+------|
+| =PlaneOptimizerConfig= | Non-exhaustive. =with_sampler= sets the =LangevinConfig= each trial plane is sampled with; =with_max_iterations= bounds the outer trust-region loop; =with_metric= picks =PlaneMetric=; =with_rotation_basis= restricts the sphere of normals to a subspace |
+| =PlaneMetric= | =Blocks= (the default, weights the sphere by =l^2= with =l = max_translation / max_rotation=) or =Harmonic(HarmonicReference)= (the Hessian at a reference point as the sphere's tangent metric, so a step on a quadratic saddle is a Newton step) |
+| =PlaneOptimizer= | =new(seed, config)= then =run(surface)=: a Riemannian trust region on the product manifold of the sphere of normals and the offset along it, reporting the optimized plane in =PlaneOptimum::plane= |
+| =PlaneOptimum= | The optimized =plane=, outer and inner (truncated conjugate-gradient) iteration counts, accepted planes, planes sampled, and force (and Hessian-action) evaluations |
+| =PlaneTrace= | One of the optimizer's accepted planes along its own iterates: =plane=, =normal_force= and its error, and the length of the torque about the pivot. =PlanePath::trace= threads these into a path for =reversible_work_along= |
+
+* Reactant normalization
+| Type | Role |
+|------+------|
+| =BasinConfig= | Non-exhaustive. =with_sampler= sets the per-plane =LangevinConfig=; =cap=, =width= and =refine= bound the window on each side of the minimum and the leave-one-out spline refinement; =with_control= adds Stein control variates from the Hessian at the minimum |
+| =basin_density= | =basin_density(surface, minimum, normal, config)= samples planes parallel to =normal=, spreading from =minimum=, and returns a =BasinDensity= |
+| =BasinDensity= | =plane= (through the minimum, with the integration normal), =thermal=, =density= (=Z_H(0)/Z_R=) and its =density_error=, the harmonic =spread= (=sigma_xi=) and =harmonic_density=, per-plane =offsets=, =slopes= and their errors, the integrated =profile=, the =window= and how each side =ends= (=BasinEnd=), the extrapolated-tail fraction =tail=, a leave-one-out =quadrature_error=, and =evaluations=. Implements =PlaneDensity=, the trait =ohtst_rate= reads a reactant normalization through |
+| =BasinEnd= | =Cap= (the free energy rose past =BasinConfig::cap=), =Turn= (it turned over: the true edge of the basin), or =Width= (the window ran out at =BasinConfig::width= before either) |
+| =PlaneDensity= | Trait =BasinDensity= and =ReactantDensity= both implement: =plane=, =thermal=, and =density()= returning =(value, error)=. =ohtst_rate= takes any =PlaneDensity= |
+| =ReactantDensity= | =reactant_density= returns this: the 2001 paper's own crossing estimator (Eq. 22) on one sampled basin, kept for reference; its weight has a second moment that diverges at slow crossings, so =basin_density='s mean-force integral is the one to use for anything but a direct comparison |
+
+* The path between planes, and the work along it
+| Type | Role |
+|------+------|
+| =PlanePath= | =legs= (straight legs between given planes), =curve= (PAFI-style planes through a curve of points, normal to a chord-length cubic spline, with optional clamped end tangents), =trace= (an optimizer's own accepted =PlaneTrace= iterates), =then= (joins two paths that share an endpoint plane) |
+| =ReversibleWorkConfig= | Non-exhaustive. =with_sampler= sets the per-node =LangevinConfig=; =with_nodes= sets the node count (=nodes >= 2= always; =with_simpson(true)=, the default past two nodes, additionally needs an odd count); =with_bar_samples= bounds samples used for BAR; =with_transport= picks =Transport=; =with_mbar(true)= turns on MBAR across every node; =with_estimate= picks the =WorkEstimate= that =ReversibleWork::work= reads; =min_overlap= (0.03 by default) is the two-state overlap threshold below which a node pair is named in =ReversibleWork::warnings= |
+| =Transport= | =Rigid= (the default: the minimal rotation between neighbouring planes) or =Gaussian(GaussianTransport)=, built with =GaussianTransport::default().into()=: an optimal-transport map between the planes' fitted Gaussian moments, shrunk toward the rigid map by a James-Stein factor |
+| =GaussianTransport= | Settings of the Gaussian map: fitting =rank=, =shrinkage= of each fitted covariance toward the identity, and the James-Stein shrinkage of the fitted change toward the rigid one |
+| =WorkEstimate= | =Integration=, =Bar= or =Mbar=: which value =ReversibleWork::work= (and so the rate functions) read |
+| =reversible_work= | =reversible_work(sampler, planes, config)= integrates =dA= along straight legs between the given planes, sampling them with any =HyperplaneSampler= |
+| =reversible_work_along= | =reversible_work_along(sampler, path, config)= integrates =dA= along any =PlanePath= |
+| =ReversibleWork= | =work= / =error= (the =WorkEstimate= choice) and =estimate= (which one); =integrated_work= / =integrated_error= (quadrature, always computed); =bar_work= / =bar_error= (=Option=, Bennett's acceptance ratio between neighbours); =mbar_work= / =mbar_error= (=Option=, only when =with_mbar(true)=); per-node =nodes= (=WorkNode=, each with its own =overlap= and =bar_work=/=mbar_work=); the MBAR =overlap= matrix; the sample =end=; total =evaluations=; and =warnings= naming any pair below =min_overlap= or a Gaussian map that fell back to the rigid one |
+| =WorkNode= | One node along a =PlanePath=: =leg= and =s= (position on the segment), the sampled =plane=, =derivative= (=dA/ds=) and its =error=, trapezoid =work= from the first plane, =bar_work= and =overlap= with the node before, =transport_weight= of the Gaussian map, and =mbar_work= |
+
+* The rate and the transmission correction
+| Type | Role |
+|------+------|
+| =ohtst_rate= | =ohtst_rate(density, work)= with any =PlaneDensity= and a =ReversibleWork=: =k = sqrt(kT / 2*pi) * (Z_H/Z_R) * exp(-DeltaA/kT)=, unit mass in mass-weighted coordinates |
+| =OhTstRate= | =rate= and =error=, plus =log_rate=/=log_rate_error=, =flux= (=sqrt(kT/2*pi)=), =density=/=density_error= and =free_energy=/=free_energy_error=: the bare rate before any transmission correction, and the pieces that built it. =transmitted(&transmission) -> (f64, f64)= multiplies by any =TransmissionEstimate=\='s =kappa= and propagates the error |
+| =TransmissionConfig= | Non-exhaustive. =with_thermal=, =with_friction=, =with_time_step= set the shooting dynamics (the friction must match the dynamics =kappa= corrects); =with_steps= and =with_check_every= bound each shot and how often its state is checked; =with_shots= and =with_blocks= set the sample count and block error; =with_seed= fixes the stream; =counting= picks =Counting=; =end_state= picks =EndState= |
+| =Counting= | =Final= (the Bennett-Chandler reactive flux, counting only each trajectory's final state) or =FirstCrossing= (the effective positive flux of van Erp, Moroni and Bolhuis, counting a reactive trajectory once even if it recrosses) |
+| =EndState= | =Side= (which side of the plane a shot ends on) or =Quench(Basins)= (the basin a steepest-descent quench reaches) |
+| =Endpoint= | =Reactant= or =Product=: which side a shot ended on, under =EndState::Side= |
+| =Basins= | Reference minima (=reactants=, =products=) and a =StateDistance= for =EndState::Quench= to assign a quenched configuration to one of them |
+| =StateDistance= | =Euclidean= (the default) or =Permutation(Box<PermutationDistance>)=, built with =PermutationDistance::...into()=, so relabelled like atoms count as one state |
+| =PermutationDistance= | The intensive permutation-invariant distance of Goswami and Jónsson, ChemPhysChem 27, e202500730 (2026), doi:10.1002/cphc.202500730: =species= (which atoms may be exchanged), an optional periodic =cell=, and optional =masses= when the coordinates are mass-weighted |
+| =transmission_coefficient= | =transmission_coefficient(dynamics, plane, starts, config)= shoots trajectories from a =PlaneSample=\='s =retained= configurations with any =HyperplaneDynamics= and returns a =TransmissionCoefficient= |
+| =plane_transmission= | =plane_transmission(surface, sample, config)= is the plain Bennett-Chandler shooting of a =PlaneSample='s =retained= configurations under a =ShootingConfig=, with unit mass in mass-weighted coordinates |
+| =TransmissionCoefficient= | =kappa= and its =error=, plus the checkpoint =time=/=kappa_of_t= series, =shots= that reached a state on both halves, =unassigned= shots that did not, =reactive= shots and =recrossed= backward halves, and =evaluations=. Implements =TransmissionEstimate=, the trait =OhTstRate::transmitted= reads =kappa= through |
+| =anharmonic_correction= | First-order correction to harmonic TST, =ln(k / k_HTST) = c_1 * kT + O(kT^2)=, and the first-order offset of the optimal plane, from Hessian actions and directional derivatives at Gaussian probes; no full Hessian is formed. =AnharmonicConfig= sets the probe count and step; =AnharmonicCorrection= holds =reactant=/=reactant_error= and =saddle=/=saddle_error= of the harmonic free energies the correction builds from |
+| =flux_mass= | =flux_mass(normal, masses)= is =1 / sum(n_i^2 / m_i)=, the Cartesian flux mass along a normal; the 2001 paper's Eq. 24, =mu = sum(m_i n_i^2)=, agrees with it only for equal masses |
+
+* What the tests check
+=tests/ohtst_estimators.rs=, =tests/ohtst_transmission.rs=, =tests/ohtst_bligaard_jonsson.rs=, =tests/ohtst_skewed_well.rs=, =tests/ohtst_coupled_modes.rs= and =tests/ohtst_leps.rs= check every piece above against closed forms, line or product quadrature, or exact draws; the full list with the numbers each test checks is in =reference.org='s main table and =howto/oh-tst=\='s own. =examples/ohtst_tutorial.rs= runs the same kind of pipeline on a simpler, separable surface, with numbers printed rather than asserted; =tutorials/oh-tst= walks through it.
