@@ -4,11 +4,11 @@ from pathlib import Path
 
 import numpy as np
 
+import rgsaddle
 from rgsaddle import hyperplane_thermodynamic_integration
 from rgsaddle._core import hyperplane_thermodynamic_integration as core_ti
 
-ROOT = Path(__file__).resolve().parents[2]
-STUB = ROOT / "python" / "rgsaddle" / "_core.pyi"
+STUB = Path(rgsaddle.__file__).resolve().parent / "_core.pyi"
 DOC = (
     "Fixed-plane lambda TI through a Python sampler. "
     "The callback receives point, normal, lambda, thermal, seed, thermalize, "
