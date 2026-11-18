@@ -35,7 +35,8 @@ module rgsaddle_fortran_callback_fixtures
   public :: shifted_surface, null_user_surface, c_shifted_surface, &
     scaled_pafi_surface, scaled_ohtst_surface, null_user_point_surface, &
     c_scaled_point_surface, nested_outer_band_surface, &
-    nested_outer_pafi_surface, nested_outer_ohtst_surface
+    nested_outer_minmode_surface, nested_outer_pafi_surface, &
+    nested_outer_ohtst_surface
 
 contains
 
@@ -403,6 +404,124 @@ contains
     status = RGSADDLE_OK
   end function nested_outer_band_surface
 
+  recursive integer(c_int) function nested_outer_minmode_surface(user, n_images, n_atoms, &
+      positions, energies, gradients, image) result(status)
+    type(c_ptr), value :: user
+    integer(c_int64_t), value :: n_images
+    integer(c_int64_t), value :: n_atoms
+    real(c_double), intent(in) :: positions(*)
+    real(c_double), intent(inout) :: energies(*)
+    real(c_double), intent(inout) :: gradients(*)
+    integer(c_int64_t), value :: image
+    type(nested_surface_ctx), pointer :: outer
+    type(surface_ctx), target :: inner_band_ctx, inner_mm_ctx
+    type(rgsaddle_band_config_t) :: bcfg
+    type(rgsaddle_minmode_config_t) :: mcfg
+    type(band_handle) :: inner_band
+    type(minmode_handle) :: inner_mm
+    type(rgsaddle_report_t) :: brep, mrep
+    procedure(surface_proc), pointer :: icb
+    real(c_double) :: bpos(3, 5), start(3), mode(3), saddle(3)
+    real(c_double) :: row(3), grad(3), energy, t
+    integer(c_int) :: st
+    integer :: k
+
+    if (.not. c_associated(user)) then
+      status = RGSADDLE_INVALID_PARAMETER
+      return
+    end if
+    call c_f_pointer(user, outer)
+    if (.not. associated(outer)) then
+      status = RGSADDLE_INVALID_PARAMETER
+      return
+    end if
+    if (outer%magic /= OUTER_CTX_MAGIC .or. .not. c_associated(user, outer%self_ptr)) then
+      status = RGSADDLE_INVALID_PARAMETER
+      return
+    end if
+    if (n_images /= 1_c_int64_t .or. n_atoms /= 1_c_int64_t .or. image < -1_c_int64_t) then
+      status = RGSADDLE_INVALID_PARAMETER
+      return
+    end if
+    outer%outer_calls = outer%outer_calls + 1_c_int64_t
+
+    inner_band_ctx%magic = SURFACE_CTX_MAGIC
+    inner_band_ctx%self_ptr = c_loc(inner_band_ctx)
+    inner_band_ctx%center = [0.4_c_double, -0.2_c_double, 0.0_c_double]
+    inner_band_ctx%scale = 1.5_c_double
+    inner_band_ctx%calls = 0_c_int64_t
+    do k = 1, 5
+      t = real(k - 1, c_double) / 4.0_c_double
+      bpos(1, k) = inner_band_ctx%center(1) - 1.0_c_double + 2.0_c_double * t
+      bpos(2, k) = inner_band_ctx%center(2) + 0.3_c_double * sin(acos(-1.0_c_double) * t)
+      bpos(3, k) = inner_band_ctx%center(3)
+    end do
+    call init_band_config(bcfg)
+    bcfg%max_move = 0.1_c_double
+    st = inner_band%create(bcfg, 5_c_int64_t, 1_c_int64_t, bpos)
+    if (st /= RGSADDLE_OK) then
+      status = st
+      return
+    end if
+    icb => shifted_surface
+    st = inner_band%step(icb, c_loc(inner_band_ctx), brep)
+    if (st /= RGSADDLE_OK .or. inner_band_ctx%calls < 1_c_int64_t) then
+      status = RGSADDLE_SURFACE_FAILED
+      return
+    end if
+    outer%inner_band_calls = outer%inner_band_calls + inner_band_ctx%calls
+
+    inner_mm_ctx%magic = SURFACE_CTX_MAGIC
+    inner_mm_ctx%self_ptr = c_loc(inner_mm_ctx)
+    inner_mm_ctx%center = [outer%target_x, 0.0_c_double, 0.0_c_double]
+    inner_mm_ctx%scale = 1.0_c_double
+    inner_mm_ctx%calls = 0_c_int64_t
+    start = [outer%target_x + 0.3_c_double, 0.15_c_double, -0.1_c_double]
+    mode = [0.9_c_double, 0.2_c_double, 0.1_c_double]
+    call init_minmode_config(mcfg, int(RGSADDLE_MINMODE_LANCZOS, c_int32_t))
+    mcfg%force_tol = 1.0_c_double / 10000.0_c_double
+    mcfg%max_move = 0.1_c_double
+    st = inner_mm%create(mcfg, 1_c_int64_t, start, mode)
+    if (st /= RGSADDLE_OK) then
+      status = st
+      return
+    end if
+    mrep%status = RGSADDLE_STATUS_RUNNING
+    do k = 1, 500
+      st = inner_mm%step(icb, c_loc(inner_mm_ctx), mrep)
+      if (st /= RGSADDLE_OK) then
+        status = st
+        return
+      end if
+      if (mrep%status == RGSADDLE_STATUS_CONVERGED) exit
+    end do
+    if (mrep%status /= RGSADDLE_STATUS_CONVERGED .or. inner_mm_ctx%calls < 1_c_int64_t) then
+      status = RGSADDLE_SURFACE_FAILED
+      return
+    end if
+    st = inner_mm%position(saddle)
+    if (st /= RGSADDLE_OK) then
+      status = st
+      return
+    end if
+    if (abs(saddle(1) - outer%target_x) > 1.0_c_double / 100.0_c_double) then
+      status = RGSADDLE_SURFACE_FAILED
+      return
+    end if
+    outer%inner_minmode_calls = outer%inner_minmode_calls + inner_mm_ctx%calls
+
+    if (outer%magic /= OUTER_CTX_MAGIC .or. .not. c_associated(user, outer%self_ptr)) then
+      status = RGSADDLE_SURFACE_FAILED
+      return
+    end if
+
+    row = positions(1:3)
+    call eval_shifted_well(row, [saddle(1), 0.0_c_double, 0.0_c_double], 1.0_c_double, energy, grad)
+    energies(1) = energy
+    gradients(1:3) = grad
+    status = RGSADDLE_OK
+  end function nested_outer_minmode_surface
+
   recursive integer(c_int) function nested_outer_pafi_surface(user, n_dof, position, energy, gradient) result(status)
     type(c_ptr), value :: user
     integer(c_int64_t), value :: n_dof
@@ -563,6 +682,8 @@ program test_callbacks
   call check_pafi_user_forwarding()
   call check_ohtst_user_forwarding()
   call check_nested_surface_reentrancy()
+  call check_nested_minmode_reentrancy(int(RGSADDLE_MINMODE_DIMER, c_int32_t))
+  call check_nested_minmode_reentrancy(int(RGSADDLE_MINMODE_LANCZOS, c_int32_t))
   call check_nested_point_reentrancy()
   write(*, '(a)') 'PASS callbacks and re-entrancy'
 
@@ -906,6 +1027,70 @@ contains
       stop 6
     end if
   end subroutine check_nested_surface_reentrancy
+
+  subroutine check_nested_minmode_reentrancy(kind)
+    integer(c_int32_t), value, intent(in) :: kind
+    type(nested_surface_ctx), target :: outer
+    type(rgsaddle_minmode_config_t) :: config
+    type(minmode_handle) :: session
+    type(rgsaddle_report_t) :: report
+    real(c_double) :: start(3), seed(3), pos(3), mode(3)
+    procedure(surface_proc), pointer :: cb
+    integer(c_int) :: status
+    integer :: step
+
+    outer%magic = OUTER_CTX_MAGIC
+    outer%self_ptr = c_loc(outer)
+    outer%target_x = -0.25_c_double
+    outer%outer_calls = 0_c_int64_t
+    outer%inner_band_calls = 0_c_int64_t
+    outer%inner_minmode_calls = 0_c_int64_t
+
+    start = [outer%target_x + 0.35_c_double, 0.20_c_double, -0.15_c_double]
+    seed = [0.8_c_double, 0.2_c_double, 0.1_c_double]
+
+    call init_minmode_config(config, kind)
+    config%force_tol = 1.0_c_double / 1000.0_c_double
+    config%max_move = 0.1_c_double
+
+    status = session%create(config, 1_c_int64_t, start, seed)
+    call check_status("create nested outer minmode", status)
+    cb => nested_outer_minmode_surface
+    report%status = RGSADDLE_STATUS_RUNNING
+    do step = 1, 200
+      status = session%step(cb, c_loc(outer), report)
+      call check_status("nested outer minmode step", status)
+      if (report%status == RGSADDLE_STATUS_CONVERGED) exit
+    end do
+    if (report%status /= RGSADDLE_STATUS_CONVERGED) then
+      write(*, '(a,1x,i0,1x,i0)') 'FAIL nested outer minmode convergence', kind, step
+      stop 6
+    end if
+    if (.not. (report%curvature < 0.0_c_double)) then
+      write(*, '(a,1x,f12.6)') 'FAIL nested outer minmode curvature', report%curvature
+      stop 6
+    end if
+    if (outer%outer_calls < 2_c_int64_t .or. outer%inner_band_calls < 2_c_int64_t .or. &
+        outer%inner_minmode_calls < 4_c_int64_t) then
+      write(*, '(a,3(1x,i0))') 'FAIL nested outer minmode call counts', outer%outer_calls, &
+        outer%inner_band_calls, outer%inner_minmode_calls
+      stop 6
+    end if
+    status = session%position(pos)
+    call check_status("nested outer minmode position", status)
+    status = session%mode(mode)
+    call check_status("nested outer minmode mode", status)
+    if (abs(pos(1) - outer%target_x) > 2.0_c_double / 100.0_c_double .or. &
+        abs(pos(2)) > 2.0_c_double / 100.0_c_double .or. &
+        abs(pos(3)) > 2.0_c_double / 100.0_c_double) then
+      write(*, '(a,1x,3f12.6)') 'FAIL nested outer minmode saddle', pos
+      stop 6
+    end if
+    if (abs(mode(1)) < 0.9_c_double .or. abs(mode(2)) > 0.2_c_double .or. abs(mode(3)) > 0.2_c_double) then
+      write(*, '(a,1x,3f12.6)') 'FAIL nested outer minmode mode', mode
+      stop 6
+    end if
+  end subroutine check_nested_minmode_reentrancy
 
   subroutine check_nested_point_reentrancy()
     integer, parameter :: n_frames = 21
