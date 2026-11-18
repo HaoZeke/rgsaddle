@@ -270,8 +270,8 @@ pub fn sphere_coverage(
 
 /// Unresolved mesh point farthest from the samples already searched.
 ///
-/// Distance is the angular distance, read from the largest dot product
-/// with a sample. Points tied within [`ANGLE_TIE`] are broken by a Weyl
+/// Distance is the axial angle `acos(|u·v| / (|u||v|))`. Points tied
+/// within [`ANGLE_TIE`] are broken by a Weyl
 /// draw from `seed`, so an empty search does not always restart on the
 /// first mesh vector. With no unresolved point the first mesh vector is
 /// returned.
@@ -302,10 +302,10 @@ pub fn sphere_probe(
         } else {
             samples
                 .iter()
-                .map(|s| dot(point, *s))
-                .fold(f64::NEG_INFINITY, f64::max)
+                .map(|s| axial_angle(point, *s).unwrap_or(std::f64::consts::FRAC_PI_2))
+                .fold(f64::INFINITY, f64::min)
         };
-        let distance = 1.0 - nearest;
+        let distance = nearest;
         if distance > best + ANGLE_TIE {
             best = distance;
             tied.clear();
@@ -329,9 +329,11 @@ pub fn sphere_probe(
 
 /// Mesh points that no searched direction lands on.
 ///
-/// A point is searched when it matches a sample to within
-/// [`CONE_RESIDUAL`]. This is not cone coverage: a quadrature point can
-/// sit inside a sampled cone and still be a direction nobody evaluated.
+/// A point is searched when it lies on the same axis as a sample, to
+/// within [`CONE_RESIDUAL`]. The axis is undirected: the distance is
+/// `acos(|u·v| / (|u||v|))`, so the opposite displacement is the same
+/// search. This is not cone coverage: a quadrature point can sit inside
+/// a sampled cone and still be a direction nobody evaluated.
 ///
 /// # Errors
 ///
@@ -350,7 +352,7 @@ pub fn unsearched_indices(
         let point = unit(*point)?;
         let searched = samples
             .iter()
-            .any(|sample| dot(point, *sample) >= 1.0 - CONE_RESIDUAL);
+            .any(|sample| dot(point, *sample).abs() >= 1.0 - CONE_RESIDUAL);
         if !searched {
             missed.push(index);
         }
@@ -384,11 +386,11 @@ fn mesh_point_covered(point: &[f64; 3], samples: &[([f64; 3], i64)]) -> bool {
     }
     let mut best = f64::NEG_INFINITY;
     for (vector, _) in samples {
-        best = best.max(dot(*point, *vector));
+        best = best.max(dot(*point, *vector).abs());
     }
     let mut labels = Vec::new();
     for (vector, label) in samples {
-        if dot(*point, *vector) + ANGLE_TIE >= best && !labels.contains(label) {
+        if dot(*point, *vector).abs() + ANGLE_TIE >= best && !labels.contains(label) {
             labels.push(*label);
         }
     }
@@ -406,7 +408,7 @@ fn mesh_point_covered(point: &[f64; 3], samples: &[([f64; 3], i64)]) -> bool {
 
 fn in_positive_cone(point: &[f64; 3], vectors: &[[f64; 3]]) -> bool {
     for vector in vectors {
-        if dot(*point, *vector) >= 1.0 - CONE_RESIDUAL {
+        if dot(*point, *vector).abs() >= 1.0 - CONE_RESIDUAL {
             return true;
         }
     }
@@ -503,6 +505,45 @@ fn unit(v: [f64; 3]) -> Result<[f64; 3], CoverageError> {
     Ok([v[0] / norm, v[1] / norm, v[2] / norm])
 }
 
+/// Whether a min-mode start has crossed the inflection of the convex bowl.
+///
+/// Inside the bowl the Hessian is positive definite and a min-mode search
+/// funnels onto the softest axis (Pedersen and Luiser, J. Chem. Phys. 141,
+/// 024109 (2014); Gunde et al., J. Chem. Phys. 160, 232501 (2024); the
+/// κ-dimer of Xiao, Wu and Henkelman, 2014). The boundary is the sign
+/// change of the lowest curvature. A negative curvature means the start is
+/// outside that bowl. Zero is the boundary itself and is not counted as a
+/// crossing.
+///
+/// # Errors
+///
+/// [`CoverageError::InvalidInput`] when `curvatures` is empty or holds a
+/// non-finite value.
+pub fn crossed_inflection(curvatures: &[f64]) -> Result<bool, CoverageError> {
+    if curvatures.is_empty() || curvatures.iter().any(|value| !value.is_finite()) {
+        return Err(CoverageError::InvalidInput {
+            reason: "curvatures must be a non-empty list of finite values".into(),
+        });
+    }
+    Ok(curvatures.iter().copied().fold(f64::INFINITY, f64::min) < 0.0)
+}
+
+/// Axial angle between two displacements, in radians.
+///
+/// A kick and its opposite are one search direction, so the distance is
+/// `acos(|u·v| / (|u||v|))` and lies in `[0, π/2]`.
+///
+/// # Errors
+///
+/// [`CoverageError::InvalidInput`] when either vector has zero length or
+/// a non-finite component.
+pub fn axial_angle(u: [f64; 3], v: [f64; 3]) -> Result<f64, CoverageError> {
+    let u = unit(u)?;
+    let v = unit(v)?;
+    let cosine = dot(u, v).abs().clamp(0.0, 1.0);
+    Ok(cosine.acos())
+}
+
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
@@ -592,9 +633,40 @@ mod tests {
     }
 
     #[test]
+    fn opposite_displacements_are_one_axis() {
+        let angle = axial_angle([1.0, 0.0, 0.0], [-2.0, 0.0, 0.0]).unwrap();
+        assert!(angle.abs() < 1e-12);
+        let right = axial_angle([1.0, 0.0, 0.0], [0.0, 3.0, 0.0]).unwrap();
+        assert!((right - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+        // Searching +x evaluates the axis, so -x is not an unsearched direction.
+        let missed =
+            unsearched_indices(&[[1.0, 0.0, 0.0]], &[[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]]).unwrap();
+        assert!(missed.is_empty());
+    }
+
+    #[test]
+    fn a_near_full_turn_uses_the_short_arc() {
+        // The circle is a 1-d torus. 0 and 2π − 0.2 are 0.2 apart, not
+        // almost a full turn. The unresolved gap of one label is the long arc.
+        let tau = std::f64::consts::TAU;
+        let coverage = circle_coverage(&[0.0, tau - 0.2], &[0, 0]).unwrap();
+        assert_eq!(coverage.gaps.len(), 1);
+        assert!((coverage.gaps[0].length - (tau - 0.2)).abs() < 1e-9);
+    }
+
+    #[test]
     fn an_empty_mesh_is_an_error() {
         let err = sphere_coverage(&[[1.0, 0.0, 0.0]], &[0], &[]).unwrap_err();
         let text = err.to_string();
         assert!(text.contains("perturbation mesh"), "{text}");
+    }
+
+    #[test]
+    fn a_negative_curvature_has_crossed_the_inflection() {
+        assert!(!crossed_inflection(&[0.4, 1.2, 3.0]).unwrap());
+        assert!(!crossed_inflection(&[0.0, 0.2]).unwrap());
+        assert!(crossed_inflection(&[0.4, -1.0e-9, 2.0]).unwrap());
+        assert!(crossed_inflection(&[]).is_err());
+        assert!(crossed_inflection(&[1.0, f64::NAN]).is_err());
     }
 }
