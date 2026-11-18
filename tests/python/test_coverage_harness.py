@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import importlib.util
+import math
 from pathlib import Path
+
+import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location(
@@ -61,3 +64,37 @@ def test_coverage_record_stores_the_cpu_and_versions():
     assert payload["versions"]["eon_project"] == harness.EON_PROJECT_VERSION
     assert payload["cpu_model"]
     assert not str(payload["cpu_model"]).startswith("/")
+
+
+def _cluster(numbers):
+    return {
+        "fixed": np.zeros(len(numbers), dtype=np.uint8),
+        "periodic": False,
+        "numbers": list(numbers),
+        "cell": np.eye(3) * 40.0,
+    }
+
+
+def test_rotated_copy_scores_about_zero():
+    reference = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.1, 0.0, 0.2],
+            [0.4, 0.9, 0.1],
+            [0.5, 0.3, 1.0],
+            [0.6, 0.4, 1.6],
+        ],
+        dtype=np.float64,
+    )
+    angle = 1.15
+    cosine, sine = math.cos(angle), math.sin(angle)
+    rotation = np.array(
+        [[cosine, -sine, 0.0], [sine, cosine, 0.0], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+    trial = reference @ rotation.T + np.array([2.5, -1.2, 0.7])
+    system = _cluster([29, 29, 29, 29, 1])
+    assert harness.rmsd(system, reference, trial) < 1e-8
+    swapped = trial.copy()
+    swapped[[0, 2]] = swapped[[2, 0]]
+    assert harness.rmsd(system, reference, swapped) < 1e-8

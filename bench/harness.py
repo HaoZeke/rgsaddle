@@ -39,8 +39,9 @@ Angstrom of that point. The barrier is the saddle energy minus the
 reactant energy and is compared at the same 0.01 eV.
 
 RMSD uses free atoms only. A periodic pair is the Euclidean
-minimum-image displacement from minimage. A free cluster has its
-center of mass removed and is not rotated.
+minimum-image displacement from minimage. A free cluster is centered
+and Kabsch-aligned. Identical species are matched by enumerating
+permutations when that count is at most 5040.
 
 One potential evaluation is one call of the rgpot evaluate method.
 A final probe of the returned geometry is not part of the search
@@ -93,6 +94,10 @@ PROTOCOL = {
     "displacement_sigma_angstrom": 0.1,
     "displacement_generator": "PCG64",
     "displacement_seed_base": 20261118,
+    "cluster_rmsd": (
+        "center, Kabsch rotation, and enumeration of identical species "
+        "when the permutation count is at most 5040"
+    ),
     "n_seeds": 12,
     "reference_images": 15,
     "reference_fmax_ev_per_angstrom": 1.0e-4,
@@ -225,6 +230,7 @@ def pin(args):
 
 
 EON_PROJECT_VERSION = "3.6.0"
+PERMUTATION_CAP = 5040
 RGSADDLE_BUILD = "release, C API"
 RGPOT_BUILD = "scalar kernels, fast neighbour list on, Fortran pots on"
 
@@ -955,6 +961,60 @@ def mic_vectors(origin, dest, cell):
     return out
 
 
+def _kabsch_rmsd(reference, moving):
+    import numpy as np
+
+    reference = np.asarray(reference, dtype=np.float64)
+    moving = np.asarray(moving, dtype=np.float64)
+    if reference.shape != moving.shape or reference.ndim != 2 or reference.shape[1] != 3:
+        raise RuntimeError("rmsd coordinates do not match")
+    if reference.shape[0] < 2:
+        delta = moving - reference
+        if reference.shape[0] == 0:
+            return 0.0
+        return float(np.sqrt(np.mean(np.sum(delta * delta, axis=1))))
+    left = reference - reference.mean(axis=0)
+    right = moving - moving.mean(axis=0)
+    covariance = left.T @ right
+    left_basis, _singular, right_basis = np.linalg.svd(covariance)
+    correction = np.eye(3)
+    correction[-1, -1] = np.sign(np.linalg.det(right_basis.T @ left_basis.T))
+    if correction[-1, -1] == 0.0:
+        correction[-1, -1] = 1.0
+    rotation = right_basis.T @ correction @ left_basis.T
+    aligned = right @ rotation
+    delta = left - aligned
+    return float(np.sqrt(np.mean(np.sum(delta * delta, axis=1))))
+
+
+def _species_rmsd(reference, trial, numbers):
+    from itertools import permutations, product
+
+    labels = [int(number) for number in numbers]
+    groups = {}
+    for index, label in enumerate(labels):
+        groups.setdefault(label, []).append(index)
+    blocks = [indexes for indexes in groups.values() if len(indexes) > 1]
+    total = 1
+    for indexes in blocks:
+        total *= math.factorial(len(indexes))
+        if total > PERMUTATION_CAP:
+            return _kabsch_rmsd(reference, trial)
+    if not blocks:
+        return _kabsch_rmsd(reference, trial)
+    best = None
+    choices = [list(permutations(indexes)) for indexes in blocks]
+    for combo in product(*choices):
+        order = list(range(len(labels)))
+        for indexes, perm in zip(blocks, combo):
+            for src, dst in zip(indexes, perm):
+                order[src] = dst
+        value = _kabsch_rmsd(reference, trial[order])
+        if best is None or value < best:
+            best = value
+    return best
+
+
 def rmsd(system, reference, trial):
     import numpy as np
 
@@ -965,11 +1025,11 @@ def rmsd(system, reference, trial):
     right = np.asarray(trial, dtype=np.float64)[free]
     if system["periodic"]:
         delta = mic_vectors(left, right, np.asarray(system["cell"], dtype=np.float64))
-    else:
-        left = left - left.mean(axis=0)
-        right = right - right.mean(axis=0)
-        delta = right - left
-    return float(np.sqrt(np.mean(np.sum(delta * delta, axis=1))))
+        return float(np.sqrt(np.mean(np.sum(delta * delta, axis=1))))
+    numbers = system.get("numbers")
+    if numbers is None:
+        return _kabsch_rmsd(left, right)
+    return _species_rmsd(left, right, np.asarray(numbers)[free])
 
 
 def displace(system, seed):
@@ -1508,7 +1568,8 @@ def write_table(path, payload):
         "Stop when the maximum per-atom force norm is under 0.01 eV/Angstrom.",
         "Spring 5.0 eV/Angstrom^2, linear path, 7 and 11 images, 1000 iterations.",
         "Success: code converged, reference index is 1, energy within 0.01 eV,",
-        "free-atom RMSD within 0.05 Angstrom. Medians and IQRs use n=12.",
+        "free-atom RMSD within 0.05 Angstrom. A free cluster is centered and",
+        "Kabsch-aligned, and identical species are matched. Medians and IQRs use n=12.",
         "A/A is a Mann-Whitney test of even rounds against odd rounds.",
         "Method p-values are Mann-Whitney, and success p-values are Fisher exact.",
         "ASE ships no Lanczos min-mode search.",
@@ -1743,15 +1804,14 @@ def pack_system(name, potential_name, periodic, numbers, cell, pbc, fixed, react
 
 
 def distinct(system):
-    distance = rmsd(
-        {
-            "fixed": system["fixed"],
-            "periodic": system["periodic"],
-            "cell": system["cell"],
-        },
-        system["reactant"],
-        system["product"],
-    )
+    probe = {
+        "fixed": system["fixed"],
+        "periodic": system["periodic"],
+        "cell": system["cell"],
+    }
+    if "numbers" in system:
+        probe["numbers"] = system["numbers"]
+    distance = rmsd(probe, system["reactant"], system["product"])
     if distance < 0.2:
         raise RuntimeError(f"{system['name']} endpoints are {distance} Angstrom apart")
     return distance
