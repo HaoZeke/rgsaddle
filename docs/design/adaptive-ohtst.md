@@ -62,11 +62,10 @@ addition per record, two absolute values, one maximum, and the product with
 
 ## Sampling and uncertainty
 
-The first sample has 14 records. It uses seven two-record block means; the
-ordinary stationarity test is not meaningful with so short a pilot. Instead,
-the split-half diagnostic compares equal even-length ends, leaving the central
-pair out so stationary period-two integration signals are phase balanced. It
-uses a familywise false-rejection probability
+The first sample has 14 records. The ordinary stationarity test is not
+meaningful with so short a pilot. Instead, the split-half diagnostic compares
+equal even-length ends, leaving the central pair out so stationary period-two
+integration signals are phase balanced. It uses a familywise false-rejection probability
 \(0.03/N\) for the \(N\) initial planes and Chebyshev's
 \(1/\sqrt{\alpha}\) threshold. Each half's standard error is inflated by that
 half's integrated autocorrelation time. A six-point half still includes lag 1;
@@ -88,18 +87,23 @@ stride that let the pilot pass is not copied onto them, so a chain that
 needed thinning can still spend its production budget at the original
 spacing and finish at the record cap. A failed
 pilot returns `NotEquilibrated` or `InsufficientEffectiveSamples`; it never
-enters a profile. Production samples use automated transient discard.
-Block width is at least \(\lceil 2\tau\rceil\), the batch-means length set by
-the integrated autocorrelation time. A longer block would drop the tail of
-the series and move the mean, so the length is not extended past that.
-On a 14-record pilot the nominal block count is 7, so the naive width is
-2 and \(\lceil 2\tau\rceil\) is the width whenever \(\tau>1\). The tail
-shorter than one block is dropped. The width is applied inside the shared
-plane sampler, so every OH-TST caller, not only this string, inherits
-\(\lceil 2\tau\rceil\). The requested
-block count scales as
-\(\lfloor n^{1/3}\rfloor\), so both block width and the number of variance
-degrees of freedom grow.
+enters a profile. Production samples use automated transient discard. For a
+retained tail of length \(r\), requested count \(b\), and correlation width
+\(w=\lceil2\tau\rceil\), the batch width is
+\(\max(\lceil r/b\rceil,w)\), and the actual block count is the floor of
+\(r\) divided by that width. The effective-sample gate uses that actual count,
+not the requested count: a 14-record iid production redraw is therefore not
+required to supply seven effective observations merely because its pilot
+requested seven blocks. At least two correlation-width blocks remain
+mandatory. A tail shorter than one block is dropped.
+
+This width is applied inside the shared engine-backed plane sampler, so every
+engine hyperplane sample, not only the adaptive string, inherits the
+correlation-width batching. Its reported standard errors can therefore differ
+from estimates made with the caller's requested fixed block count. The
+adaptive method requests seven blocks at 14 records and
+\(\lfloor n^{1/3}\rfloor\) blocks above that, so both block width and the
+number of variance degrees of freedom grow.
 
 The required record count is
 
@@ -195,13 +199,16 @@ twisted path of Bligaard and Jónsson, *Comput. Phys. Commun.* **169**, 284
 (2005), a straight finite-temperature string, hard-reflected sampling of a
 two-channel symmetric surface, and independent noisy samplers at noise
 standard deviations 0.25 and 0.5. The noisy ensemble checks return rate and
-profile-standard-error coverage. For seven blocks, \(\nu=6\) and
-\(\mathrm{E}[s]/\sigma=\sqrt{1/3}\cdot(15/16)\sqrt{\pi}\). At a fixed
-record count the sampled standard error meets that factor: the library
-check on iid series sits within about one percent of it. The combined
-error is what coverage uses, because geometry and quadrature sit on top
-of the sampled term. The 0.83 ratio quoted above is the optional-stopping
-bias at noise 0.25, not a property of the fixed-count estimator.
+profile-standard-error coverage. Fixed-count iid validation uses three
+pre-registered, disjoint 200-seed blocks and a two-sided two-standard-error
+interval. Each block must cover the exact barrier in 90% through 99% of all
+attempts, with a typed sampling rejection counted as a miss. At nominal 95%
+coverage the binomial standard error for 200 trials is 1.54 percentage points,
+so the band extends 3.2 standard errors below nominal and 2.6 above it. The
+combined error is what the adaptive coverage checks use, because geometry and
+quadrature sit on top of the sampled term. The 0.83 ratio quoted above is the
+optional-stopping bias at noise 0.25, not a property of the fixed-count
+estimator.
 Cu production sampling remains an engine-backed benchmark, not part of
 this generic method.
 
