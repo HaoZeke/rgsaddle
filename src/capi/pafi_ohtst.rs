@@ -6,8 +6,8 @@ use ndarray::{Array1, ArrayView1};
 use crate::SaddleError;
 use crate::minmode::PointSurface;
 use crate::ohtst::{
-    Counting, Hyperplane, LangevinConfig, PlaneIntegrator, TransmissionCoefficient,
-    TransmissionConfig, sample_plane, transmission_coefficient,
+    AnalyticSurfaceDynamics, Counting, Hyperplane, LangevinConfig, PlaneIntegrator,
+    TransmissionCoefficient, TransmissionConfig, sample_plane, transmission_coefficient,
 };
 use crate::pafi::{ArcPath, FreeEnergyProfile, HyperplaneAverage, PafiConfig, pafi_profile};
 
@@ -656,8 +656,9 @@ pub unsafe extern "C" fn rgsaddle_ohtst_run(
         Ok(sample) => sample,
         Err(err) => return status_of(&err),
     };
+    let mut dynamics = AnalyticSurfaceDynamics::new(&c_surface);
     match transmission_coefficient(
-        &c_surface,
+        &mut dynamics,
         &session.plane,
         &sample.retained,
         &session.shooting,
