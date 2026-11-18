@@ -28,7 +28,7 @@ extern "C" {
 #endif
 
 #define RGSADDLE_ABI_MAJOR 1u
-#define RGSADDLE_ABI_MINOR 42u
+#define RGSADDLE_ABI_MINOR 43u
 
 /**
  * Band config flags bit 0. When set, each evaluation calls the surface
@@ -1855,6 +1855,61 @@ rgsaddle_ohtst_transmission(const rgsaddle_ohtst_transmission_config_t *config, 
  */
 rgsaddle_status_t rgsaddle_ohtst_rate(const rgsaddle_ohtst_rate_in_t *input,
                                       rgsaddle_ohtst_rate_out_t *out);
+
+/**
+ * Basin density from an external hyperplane sampler, ABI minor 43.
+ * The engine writes samples records. constraint_force has one entry per
+ * record. positions and projected_force are row-major, samples by n.
+ * start is NULL when the plane has no warm start. spread is the harmonic
+ * width; the engine is not asked for Hessian actions.
+ */
+typedef struct rgsaddle_ohtst_basin_config {
+  rgsaddle_version_t version;
+  uint32_t flags;
+  double thermal;
+  double spread;
+  uint64_t burn_in;
+  uint64_t stride;
+  uint64_t records;
+  uint64_t blocks;
+  uint64_t seed;
+  uint64_t refinements;
+  double cap;
+  double width;
+  double tolerance;
+  double hvp_step;
+  double refine;
+} rgsaddle_ohtst_basin_config_t;
+
+typedef int (*rgsaddle_ohtst_engine_fn)(const double *point, const double *normal, int64_t n,
+                                        double thermal, uint64_t seed, uint64_t thermalize,
+                                        uint64_t stride, uint64_t samples, const double *start,
+                                        double *constraint_force, double *positions,
+                                        double *projected_force, void *user);
+
+/** positive_end and negative_end: 0 cap, 1 turn, 2 width. */
+typedef struct rgsaddle_ohtst_basin_report {
+  rgsaddle_version_t version;
+  uint32_t flags;
+  double density;
+  double density_error;
+  /** Leave-one-out estimate of the interpolation error of ln(density). */
+  double quadrature_error;
+  /** Fraction of the reciprocal density in the extrapolated tails. */
+  double tail;
+  double log_density;
+  double log_density_error;
+  double spread;
+  double harmonic_density;
+  uint64_t evaluations;
+  uint32_t positive_end;
+  uint32_t negative_end;
+} rgsaddle_ohtst_basin_report_t;
+
+rgsaddle_status_t rgsaddle_ohtst_basin_density(const rgsaddle_ohtst_basin_config_t *config,
+                                               int64_t n, const double *minimum,
+                                               const double *normal, rgsaddle_ohtst_engine_fn engine,
+                                               void *user, rgsaddle_ohtst_basin_report_t *report);
 
 #ifdef __cplusplus
 }

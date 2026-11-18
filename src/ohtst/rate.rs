@@ -175,8 +175,9 @@ impl PlaneDensity for ReactantDensity {
 /// Combine the reactant density on a reference plane with the work from
 /// that plane to the optimal one. Both must come from the same `kT`, and
 /// the work path must start at the density's plane. The density is either
-/// [`BasinDensity`](crate::ohtst::BasinDensity), from parallel planes, or
-/// [`ReactantDensity`], from one sampled basin.
+/// [`BasinDensity`](crate::ohtst::BasinDensity), from parallel planes on a
+/// point surface or on any hyperplane sampler, or [`ReactantDensity`], from
+/// one sampled basin.
 pub fn ohtst_rate<D: PlaneDensity + ?Sized>(
     density: &D,
     work: &ReversibleWork,

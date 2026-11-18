@@ -39,6 +39,14 @@
 //! each crossing there is weighted by `1/|ξ̇|`, and under the flux-weighted
 //! velocity distribution the second moment of that weight diverges
 //! logarithmically at slow crossings.
+//!
+//! [`basin_density`] evaluates the planes on a [`PointSurface`].
+//! [`basin_density_with_sampler`] uses the same windows, spline, leave-one-out
+//! refinement and delta-method error on any [`HyperplaneSampler`]. A sampler
+//! that can form Hessian actions supplies the harmonic spacing and the Stein
+//! control variates; otherwise the caller sets [`BasinConfig::spread`] and
+//! turns control off. Walls on [`LangevinConfig::walls`] are part of the
+//! sample when the engine is the analytic surface sampler.
 
 use std::f64::consts::TAU;
 
@@ -48,7 +56,10 @@ use super::anharmonic::hessian_action;
 use super::control::{HarmonicReference, conjugate_gradients};
 use super::plane::Hyperplane;
 use super::rate::PlaneDensity;
-use super::sample::{Controlled, LangevinConfig, held_directions, sample_plane_controlled};
+use super::sample::{
+    Controlled, HyperplaneSampler, LangevinConfig, held_directions, sample_plane_controlled,
+    sample_plane_requested,
+};
 use super::spline::{Spline, simpson_rule};
 use crate::{PointSurface, SaddleError};
 
@@ -88,6 +99,9 @@ pub struct BasinConfig {
     /// Relative residual of the solves for `H_R⁻¹ n` and the control
     /// coefficients.
     pub tolerance: f64,
+    /// Harmonic standard deviation of `ξ`. `None` computes it from Hessian
+    /// actions at the minimum.
+    pub spread: Option<f64>,
 }
 
 impl Default for BasinConfig {
@@ -103,6 +117,7 @@ impl Default for BasinConfig {
             control: true,
             hvp_step: 1.0e-4,
             tolerance: 1.0e-10,
+            spread: None,
         }
     }
 }
@@ -178,6 +193,13 @@ impl BasinConfig {
         self
     }
 
+    /// Set [`Self::spread`]. `None` computes it from Hessian actions.
+    #[must_use]
+    pub fn with_spread(mut self, spread: Option<f64>) -> Self {
+        self.spread = spread;
+        self
+    }
+
     fn check(&self) -> Result<(), SaddleError> {
         self.sampler.check()?;
         if !(self.spacing.is_finite() && self.spacing > 0.0) {
@@ -208,6 +230,13 @@ impl BasinConfig {
         if !(self.tolerance > 0.0 && self.tolerance < 1.0) {
             return Err(SaddleError::Invalid(
                 "the basin solve tolerance must lie in (0, 1)".into(),
+            ));
+        }
+        if let Some(spread) = self.spread
+            && !(spread.is_finite() && spread > 0.0)
+        {
+            return Err(SaddleError::Invalid(
+                "the basin spread must be finite and positive".into(),
             ));
         }
         Ok(())
@@ -298,40 +327,26 @@ pub fn basin_density<S: PointSurface>(
     config: &BasinConfig,
 ) -> Result<BasinDensity, SaddleError> {
     config.check()?;
-    let n = minimum.len();
-    if normal.len() != n {
+    if normal.len() != minimum.len() {
         return Err(SaddleError::Shape(
             "the basin normal differs in length from the minimum".into(),
         ));
     }
     let excluded = held_directions(surface, minimum, None, config.sampler.hold_excluded)?;
-    let mut direction = normal.to_owned();
-    for t in &excluded {
-        let c = t.dot(&direction);
-        direction.scaled_add(-c, t);
-    }
-    let length = direction.dot(&direction).sqrt();
-    if length.is_nan() || length <= 1.0e-12 {
-        return Err(SaddleError::Invalid(
-            "the basin normal lies in the excluded modes".into(),
-        ));
-    }
-    direction /= length;
+    let direction = orient_normal(normal, &excluded)?;
     let mut evaluations = 0;
-    let solved = conjugate_gradients(
-        |v| hessian_action(surface, minimum, v, config.hvp_step, &mut evaluations),
-        &direction,
-        &excluded,
-        config.tolerance,
-    )?;
-    let compliance = solved.map_or(f64::NAN, |y| y.dot(&direction));
-    if !(compliance.is_finite() && compliance > 0.0) {
-        return Err(SaddleError::Invalid(
-            "the Hessian at the minimum is not positive along the basin normal".into(),
-        ));
-    }
     let kt = config.sampler.thermal;
-    let spread = (kt * compliance).sqrt();
+    let spread = if let Some(spread) = config.spread {
+        spread
+    } else {
+        let compliance = compliance_along(
+            |v| hessian_action(surface, minimum, v, config.hvp_step, &mut evaluations),
+            &direction,
+            &excluded,
+            config.tolerance,
+        )?;
+        (kt * compliance).sqrt()
+    };
     let sampler = if config.control && config.sampler.control.is_none() {
         config.sampler.clone().with_control(
             HarmonicReference::new(minimum.to_owned())
@@ -349,8 +364,286 @@ pub fn basin_density<S: PointSurface>(
         sampled: 0,
         evaluations,
     };
+    let window = collect_knots(
+        |offset, start| planes.sample(offset, start),
+        spread,
+        config,
+        kt,
+    )?;
+    assemble(minimum, &direction, kt, spread, window, planes.evaluations)
+}
 
-    let centre = planes.sample(0.0, None)?;
+/// The same integral as [`basin_density`], with each plane's mean force
+/// taken from `sampler`.
+///
+/// The windows, not-a-knot spline, leave-one-out refinement and delta-method
+/// error are the point-surface estimator. Hessian actions, when the sampler
+/// provides them, set the harmonic spacing and the normal-force control
+/// variates. Otherwise set [`BasinConfig::spread`] and
+/// [`BasinConfig::with_control`]`(false)`. [`LangevinConfig::walls`] are
+/// forwarded to the analytic surface sampler, so a hard wall is part of
+/// the sample. The returned density is a [`PlaneDensity`] and feeds
+/// [`ohtst_rate`].
+///
+/// Each plane starts from the previous plane's last configuration on that
+/// side, passed as [`HyperplaneSampleBudget::start`]. An engine that ignores
+/// the warm start still returns an unbiased mean after its burn-in.
+///
+/// [`ohtst_rate`]: crate::ohtst::ohtst_rate
+/// [`PlaneDensity`]: crate::ohtst::PlaneDensity
+/// [`HyperplaneSampleBudget::start`]: crate::HyperplaneSampleBudget::start
+pub fn basin_density_with_sampler<E: HyperplaneSampler>(
+    sampler: &mut E,
+    minimum: ArrayView1<f64>,
+    normal: ArrayView1<f64>,
+    config: &BasinConfig,
+) -> Result<BasinDensity, SaddleError> {
+    config.check()?;
+    if normal.len() != minimum.len() {
+        return Err(SaddleError::Shape(
+            "the basin normal differs in length from the minimum".into(),
+        ));
+    }
+    let anchor = Hyperplane::new(minimum.to_owned(), normal.to_owned())?;
+    let excluded = sampler.constrained_directions(&anchor)?;
+    let direction = orient_normal(normal, &excluded)?;
+    let kt = config.sampler.thermal;
+    let mut hessian = false;
+    let spread = if let Some(spread) = config.spread {
+        spread
+    } else if hessian_available(sampler, minimum, direction.view(), config.hvp_step)? {
+        hessian = true;
+        let compliance = compliance_along(
+            |v| hessian_from_sampler(sampler, minimum, v, config.hvp_step),
+            &direction,
+            &excluded,
+            config.tolerance,
+        )?;
+        (kt * compliance).sqrt()
+    } else {
+        return Err(SaddleError::Invalid(
+            "the sampler does not provide Hessian actions for the basin width; set BasinConfig::spread"
+                .into(),
+        ));
+    };
+    if config.control
+        && !hessian
+        && !hessian_available(sampler, minimum, direction.view(), config.hvp_step)?
+    {
+        return Err(SaddleError::Invalid(
+            "the sampler does not provide Hessian actions for basin control variates; set BasinConfig::control to false"
+                .into(),
+        ));
+    }
+    let base = LangevinConfig {
+        control: None,
+        ..config.sampler.clone()
+    };
+    let mut sampled = 0u64;
+    let mut evaluations = 0usize;
+    let window = collect_knots(
+        |offset, start| {
+            let mut point = minimum.to_owned();
+            point.scaled_add(offset, &direction);
+            let plane = Hyperplane::new(point, direction.clone())?;
+            let coefficient = if config.control {
+                let held = sampler.constrained_directions(&plane)?;
+                control_coefficient(
+                    |v| hessian_from_sampler(sampler, minimum, v, config.hvp_step),
+                    &direction,
+                    &held,
+                    config.tolerance,
+                )?
+            } else {
+                None
+            };
+            let sampling = base.clone().with_seed(base.seed.wrapping_add(sampled));
+            sampled += 1;
+            let sample =
+                sample_plane_requested(sampler, &plane, &sampling, start, coefficient.as_ref())?;
+            evaluations += sample.evaluations;
+            knot_from_force(
+                offset,
+                sample.normal_force,
+                sample.normal_force_error,
+                sample.uncontrolled_error,
+                sample.last,
+            )
+        },
+        spread,
+        config,
+        kt,
+    )?;
+    assemble(minimum, &direction, kt, spread, window, evaluations)
+}
+
+/// One sampled plane.
+struct Knot {
+    offset: f64,
+    slope: f64,
+    error: f64,
+    uncontrolled: Option<f64>,
+    last: Array1<f64>,
+}
+
+struct Planes<'a, S> {
+    surface: &'a S,
+    minimum: ArrayView1<'a, f64>,
+    direction: &'a Array1<f64>,
+    sampler: &'a LangevinConfig,
+    sampled: u64,
+    evaluations: usize,
+}
+
+impl<S: PointSurface> Planes<'_, S> {
+    fn sample(&mut self, offset: f64, start: Option<ArrayView1<f64>>) -> Result<Knot, SaddleError> {
+        let mut point = self.minimum.to_owned();
+        point.scaled_add(offset, self.direction);
+        let plane = Hyperplane::new(point, self.direction.clone())?;
+        let sampler = self
+            .sampler
+            .clone()
+            .with_seed(self.sampler.seed.wrapping_add(self.sampled));
+        self.sampled += 1;
+        let sample = sample_plane_controlled(
+            self.surface,
+            &plane,
+            start,
+            &sampler,
+            Controlled::NormalForce,
+        )?;
+        self.evaluations += sample.evaluations;
+        knot_from_force(
+            offset,
+            sample.normal_force,
+            sample.normal_force_error,
+            sample.uncontrolled.map(|raw| raw.normal_force_error),
+            sample.last,
+        )
+    }
+}
+
+fn orient_normal(
+    normal: ArrayView1<f64>,
+    excluded: &[Array1<f64>],
+) -> Result<Array1<f64>, SaddleError> {
+    let mut direction = normal.to_owned();
+    for mode in excluded {
+        let along = mode.dot(&direction);
+        direction.scaled_add(-along, mode);
+    }
+    let length = direction.dot(&direction).sqrt();
+    if length.is_nan() || length <= 1.0e-12 {
+        return Err(SaddleError::Invalid(
+            "the basin normal lies in the excluded modes".into(),
+        ));
+    }
+    direction /= length;
+    Ok(direction)
+}
+
+fn compliance_along<F>(
+    action: F,
+    direction: &Array1<f64>,
+    excluded: &[Array1<f64>],
+    tolerance: f64,
+) -> Result<f64, SaddleError>
+where
+    F: FnMut(&Array1<f64>) -> Result<Array1<f64>, SaddleError>,
+{
+    let solved = conjugate_gradients(action, direction, excluded, tolerance)?;
+    let compliance = match solved {
+        Some(response) => response.dot(direction),
+        None => f64::NAN,
+    };
+    if !(compliance.is_finite() && compliance > 0.0) {
+        return Err(SaddleError::Invalid(
+            "the Hessian at the minimum is not positive along the basin normal".into(),
+        ));
+    }
+    Ok(compliance)
+}
+
+/// `a = H_∥⁻¹ P H₀ ν` on the complement of the normal and `held`.
+///
+/// `None` when the in-plane curvature is not positive. That plane is then
+/// estimated without a control variate, as the point-surface sampler does.
+fn control_coefficient<F>(
+    mut action: F,
+    direction: &Array1<f64>,
+    held: &[Array1<f64>],
+    tolerance: f64,
+) -> Result<Option<Array1<f64>>, SaddleError>
+where
+    F: FnMut(&Array1<f64>) -> Result<Array1<f64>, SaddleError>,
+{
+    let mut modes = Vec::with_capacity(held.len() + 1);
+    modes.push(direction.clone());
+    modes.extend(held.iter().cloned());
+    let mut coupling = action(direction)?;
+    for mode in &modes {
+        let along = mode.dot(&coupling);
+        coupling.scaled_add(-along, mode);
+    }
+    conjugate_gradients(action, &coupling, &modes, tolerance)
+}
+
+fn hessian_available<E: HyperplaneSampler>(
+    sampler: &mut E,
+    point: ArrayView1<f64>,
+    direction: ArrayView1<f64>,
+    step: f64,
+) -> Result<bool, SaddleError> {
+    Ok(sampler.hessian_action(point, direction, step)?.is_some())
+}
+
+fn hessian_from_sampler<E: HyperplaneSampler>(
+    sampler: &mut E,
+    point: ArrayView1<f64>,
+    direction: &Array1<f64>,
+    step: f64,
+) -> Result<Array1<f64>, SaddleError> {
+    sampler
+        .hessian_action(point, direction.view(), step)?
+        .ok_or_else(|| SaddleError::Invalid("the sampler does not provide Hessian actions".into()))
+}
+
+fn knot_from_force(
+    offset: f64,
+    normal_force: f64,
+    normal_force_error: f64,
+    uncontrolled: Option<f64>,
+    last: Array1<f64>,
+) -> Result<Knot, SaddleError> {
+    let slope = -normal_force;
+    if !(slope.is_finite() && normal_force_error.is_finite() && normal_force_error >= 0.0) {
+        return Err(SaddleError::NonFinite("basin mean force"));
+    }
+    Ok(Knot {
+        offset,
+        slope,
+        error: normal_force_error,
+        uncontrolled,
+        last,
+    })
+}
+
+struct Window {
+    knots: Vec<Knot>,
+    ends: [BasinEnd; 2],
+    integral: Integral,
+}
+
+fn collect_knots<F>(
+    mut sample: F,
+    spread: f64,
+    config: &BasinConfig,
+    kt: f64,
+) -> Result<Window, SaddleError>
+where
+    F: FnMut(f64, Option<ArrayView1<f64>>) -> Result<Knot, SaddleError>,
+{
+    let centre = sample(0.0, None)?;
     let mut knots = Vec::new();
     let mut ends = [BasinEnd::Width; 2];
     for (side, sign) in [(0, -1.0), (1, 1.0)] {
@@ -363,7 +656,7 @@ pub fn basin_density<S: PointSurface>(
                 break;
             }
             let next = sign * reach * spread;
-            let knot = planes.sample(next, Some(start.view()))?;
+            let knot = sample(next, Some(start.view()))?;
             rise += 0.5 * (slope + knot.slope) * (next - offset) / kt;
             (offset, slope) = (next, knot.slope);
             let outward = sign * knot.slope;
@@ -405,13 +698,32 @@ pub fn basin_density<S: PointSurface>(
                 right
             };
             let start = inner.last.clone();
-            let knot = planes.sample(middle, Some(start.view()))?;
+            let knot = sample(middle, Some(start.view()))?;
             knots.insert(j + 1, knot);
             added += 1;
         }
         result = integrate(&knots, ends, kt)?;
     }
+    Ok(Window {
+        knots,
+        ends,
+        integral: result,
+    })
+}
 
+fn assemble(
+    minimum: ArrayView1<f64>,
+    direction: &Array1<f64>,
+    kt: f64,
+    spread: f64,
+    window: Window,
+    evaluations: usize,
+) -> Result<BasinDensity, SaddleError> {
+    let Window {
+        knots,
+        ends,
+        integral: result,
+    } = window;
     let density = (-result.log_integral).exp();
     if !(density.is_finite() && density > 0.0) {
         return Err(SaddleError::NonFinite("basin integral"));
@@ -436,58 +748,8 @@ pub fn basin_density<S: PointSurface>(
         ends,
         tail: result.tail,
         quadrature_error: result.quadrature_error,
-        evaluations: planes.evaluations,
+        evaluations,
     })
-}
-
-/// One sampled plane.
-struct Knot {
-    offset: f64,
-    slope: f64,
-    error: f64,
-    uncontrolled: Option<f64>,
-    last: Array1<f64>,
-}
-
-struct Planes<'a, S> {
-    surface: &'a S,
-    minimum: ArrayView1<'a, f64>,
-    direction: &'a Array1<f64>,
-    sampler: &'a LangevinConfig,
-    sampled: u64,
-    evaluations: usize,
-}
-
-impl<S: PointSurface> Planes<'_, S> {
-    fn sample(&mut self, offset: f64, start: Option<ArrayView1<f64>>) -> Result<Knot, SaddleError> {
-        let mut point = self.minimum.to_owned();
-        point.scaled_add(offset, self.direction);
-        let plane = Hyperplane::new(point, self.direction.clone())?;
-        let sampler = self
-            .sampler
-            .clone()
-            .with_seed(self.sampler.seed.wrapping_add(self.sampled));
-        self.sampled += 1;
-        let sample = sample_plane_controlled(
-            self.surface,
-            &plane,
-            start,
-            &sampler,
-            Controlled::NormalForce,
-        )?;
-        self.evaluations += sample.evaluations;
-        let (slope, error) = (-sample.normal_force, sample.normal_force_error);
-        if !(slope.is_finite() && error.is_finite() && error >= 0.0) {
-            return Err(SaddleError::NonFinite("basin mean force"));
-        }
-        Ok(Knot {
-            offset,
-            slope,
-            error,
-            uncontrolled: sample.uncontrolled.map(|raw| raw.normal_force_error),
-            last: sample.last,
-        })
-    }
 }
 
 /// `ln(Z_R / Z_H(0))` from the spline, with its statistical error and the
@@ -769,6 +1031,101 @@ mod tests {
             "{}",
             result.quadrature_error
         );
+    }
+
+    /// The sampler route uses the same windows and the same control
+    /// coefficient, so on a quadratic basin it is exact as well.
+    #[test]
+    fn sampler_matches_the_point_surface_on_a_harmonic_basin() {
+        let surface = Bowl {
+            k: array![[2.0, 0.6, 0.0], [0.6, 1.0, 0.0], [0.0, 0.0, 5.0]],
+        };
+        let kt = 0.3;
+        let config = BasinConfig::default().with_sampler(
+            LangevinConfig::default()
+                .with_thermal(kt)
+                .with_time_step(0.2)
+                .with_burn_in(20)
+                .with_stride(1)
+                .with_records(200)
+                .with_blocks(4)
+                .with_seed(3),
+        );
+        let normal = array![1.0, 1.0, 0.7];
+        let minimum = array![0.0, 0.0, 0.4];
+        let point = basin_density(&surface, minimum.view(), normal.view(), &config).unwrap();
+        let mut engine =
+            crate::ohtst::sample::AnalyticSurfaceSampler::new(&surface, config.sampler.clone());
+        let sampled =
+            basin_density_with_sampler(&mut engine, minimum.view(), normal.view(), &config)
+                .unwrap();
+        let exact = point.harmonic_density;
+        for result in [&point, &sampled] {
+            let gap = (result.density - exact).abs();
+            let allowance =
+                4.0 * result.density_error + (result.quadrature_error + result.tail) * exact;
+            assert!(
+                gap <= allowance,
+                "{} ± {} against {exact}",
+                result.density,
+                result.density_error
+            );
+        }
+        let gap = (point.density - sampled.density).abs();
+        let allowance = 4.0 * point.density_error.hypot(sampled.density_error)
+            + (point.quadrature_error + sampled.quadrature_error) * exact;
+        assert!(
+            gap <= allowance,
+            "point {} ± {} against sampler {} ± {}",
+            point.density,
+            point.density_error,
+            sampled.density,
+            sampled.density_error
+        );
+        assert_eq!(point.spread, sampled.spread);
+    }
+
+    struct Silent;
+
+    impl HyperplaneSampler for Silent {
+        fn sample_hyperplane(
+            &mut self,
+            _plane: &Hyperplane,
+            _budget: &crate::HyperplaneSampleBudget,
+        ) -> Result<crate::HyperplaneEnsemble, SaddleError> {
+            Err(SaddleError::Invalid("not sampled".into()))
+        }
+    }
+
+    #[test]
+    fn a_sampler_without_hessian_actions_asks_for_a_spread() {
+        let mut engine = Silent;
+        let minimum = array![0.0, 0.0];
+        let normal = array![1.0, 0.0];
+        let missing = basin_density_with_sampler(
+            &mut engine,
+            minimum.view(),
+            normal.view(),
+            &BasinConfig::default(),
+        )
+        .unwrap_err();
+        match missing {
+            SaddleError::Invalid(text) => assert!(text.contains("BasinConfig::spread"), "{text}"),
+            other => panic!("{other}"),
+        }
+        let refused = basin_density_with_sampler(
+            &mut engine,
+            minimum.view(),
+            normal.view(),
+            &BasinConfig::default()
+                .with_spread(Some(0.2))
+                .with_control(true),
+        )
+        .unwrap_err();
+        match refused {
+            SaddleError::Invalid(text) => assert!(text.contains("BasinConfig::control"), "{text}"),
+            other => panic!("{other}"),
+        }
     }
 
     fn wall_profile(xi: f64) -> f64 {

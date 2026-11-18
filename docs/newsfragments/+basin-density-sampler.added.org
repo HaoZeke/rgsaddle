@@ -1,0 +1,5 @@
+~basin_density_with_sampler~ estimates ~Z_H/Z_R~ from any ~HyperplaneSampler~ with the same parallel-plane spline as ~basin_density~.
+~AnalyticSurfaceSampler~ samples a ~PointSurface~, and walls on ~LangevinConfig~ are the planes both paths reflect.
+The density is a ~PlaneDensity~, so ~ohtst_rate~ takes it.
+~rgsaddle_ohtst_basin_density~ and Python's ~ohtst_basin_density~ expose the engine route.
+The C ABI minor is 43; OH-TST configs stamped 42 still call the earlier entry points.

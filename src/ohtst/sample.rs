@@ -81,6 +81,9 @@ pub struct LangevinConfig {
     /// Hold the surface's excluded modes, such as rigid translations, at
     /// their starting values.
     pub hold_excluded: bool,
+    /// Planes the drift may not cross. Positive [`Hyperplane::distance`]
+    /// is outside.
+    pub walls: Vec<Hyperplane>,
 }
 
 impl Default for LangevinConfig {
@@ -98,6 +101,7 @@ impl Default for LangevinConfig {
             seed: 1,
             retain: 16,
             hold_excluded: true,
+            walls: Vec::new(),
         }
     }
 }
@@ -184,6 +188,13 @@ impl LangevinConfig {
     #[must_use]
     pub fn with_hold_excluded(mut self, hold_excluded: bool) -> Self {
         self.hold_excluded = hold_excluded;
+        self
+    }
+
+    /// Add a wall the drift may not cross.
+    #[must_use]
+    pub fn with_wall(mut self, wall: Hyperplane) -> Self {
+        self.walls.push(wall);
         self
     }
 
@@ -787,8 +798,12 @@ pub(crate) fn sample_plane_controlled<S: PointSurface>(
         None => None,
     };
     let columns = 2 * n + 2 + if control.is_some() { 2 * n } else { 0 };
-    let walls: [Hyperplane; 0] = [];
-    let mut dynamics = Dynamics::new(surface, start, held, &walls, config, rng)?;
+    if config.walls.iter().any(|wall| wall.dim() != n) {
+        return Err(SaddleError::Shape(
+            "a sampler wall differs in length from the plane".into(),
+        ));
+    }
+    let mut dynamics = Dynamics::new(surface, start, held, &config.walls, config, rng)?;
     for _ in 0..config.burn_in {
         dynamics.step()?;
     }
@@ -999,6 +1014,423 @@ pub(crate) fn sample_plane_controlled<S: PointSurface>(
         last: dynamics.q.clone(),
         retained,
         uncontrolled,
+    })
+}
+
+/// One constrained ensemble requested from an external engine.
+#[non_exhaustive]
+#[derive(Clone, Debug)]
+pub struct HyperplaneSampleBudget {
+    /// `kT` in the energy unit of the surface.
+    pub thermal: f64,
+    /// Seed of this plane.
+    pub seed: u64,
+    /// Steps the engine should discard before the first record.
+    pub thermalize: usize,
+    /// Steps between records.
+    pub stride: usize,
+    /// Records.
+    pub samples: usize,
+    /// Configuration to project onto the plane before the first step.
+    ///
+    /// An engine that always restarts from stored geometry may ignore it.
+    /// [`AnalyticSurfaceSampler`] projects it onto the plane.
+    pub start: Option<Array1<f64>>,
+}
+
+impl Default for HyperplaneSampleBudget {
+    fn default() -> Self {
+        let sampling = LangevinConfig::default();
+        Self {
+            thermal: sampling.thermal,
+            seed: sampling.seed,
+            thermalize: sampling.burn_in,
+            stride: sampling.stride,
+            samples: sampling.records,
+            start: None,
+        }
+    }
+}
+
+impl HyperplaneSampleBudget {
+    /// Set [`Self::thermal`].
+    #[must_use]
+    pub fn with_thermal(mut self, thermal: f64) -> Self {
+        self.thermal = thermal;
+        self
+    }
+
+    /// Set [`Self::seed`].
+    #[must_use]
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = seed;
+        self
+    }
+
+    /// Set [`Self::thermalize`].
+    #[must_use]
+    pub fn with_thermalize(mut self, thermalize: usize) -> Self {
+        self.thermalize = thermalize;
+        self
+    }
+
+    /// Set [`Self::stride`].
+    #[must_use]
+    pub fn with_stride(mut self, stride: usize) -> Self {
+        self.stride = stride;
+        self
+    }
+
+    /// Set [`Self::samples`].
+    #[must_use]
+    pub fn with_samples(mut self, samples: usize) -> Self {
+        self.samples = samples;
+        self
+    }
+
+    /// Set [`Self::start`].
+    #[must_use]
+    pub fn with_start(mut self, start: Array1<f64>) -> Self {
+        self.start = Some(start);
+        self
+    }
+}
+
+/// One engine record on a constrained hyperplane.
+#[non_exhaustive]
+#[derive(Clone, Debug, Default)]
+pub struct HyperplaneObservation {
+    /// Constraint force along the positive unit normal, `⟨-ν · ∇V⟩` for one record.
+    pub constraint_force: f64,
+    /// Configuration, when the caller asked for positions.
+    pub position: Option<Array1<f64>>,
+    /// Force with the normal component removed, `−P∇V`.
+    pub projected_force: Option<Array1<f64>>,
+}
+
+impl HyperplaneObservation {
+    /// Set [`Self::constraint_force`].
+    #[must_use]
+    pub fn with_constraint_force(mut self, constraint_force: f64) -> Self {
+        self.constraint_force = constraint_force;
+        self
+    }
+
+    /// Set [`Self::position`].
+    #[must_use]
+    pub fn with_position(mut self, position: Array1<f64>) -> Self {
+        self.position = Some(position);
+        self
+    }
+
+    /// Set [`Self::projected_force`].
+    #[must_use]
+    pub fn with_projected_force(mut self, projected_force: Array1<f64>) -> Self {
+        self.projected_force = Some(projected_force);
+        self
+    }
+}
+
+/// Records from one call of [`HyperplaneSampler::sample_hyperplane`].
+#[non_exhaustive]
+#[derive(Clone, Debug)]
+pub struct HyperplaneEnsemble {
+    /// Records, in order.
+    pub observations: Vec<HyperplaneObservation>,
+    /// Surface evaluations the engine spent, when it counts them.
+    pub evaluations: usize,
+    /// Accepted fraction of the proposals. One when the engine has no Metropolis test.
+    pub acceptance: f64,
+}
+
+impl Default for HyperplaneEnsemble {
+    fn default() -> Self {
+        Self {
+            observations: Vec::new(),
+            evaluations: 0,
+            acceptance: 1.0,
+        }
+    }
+}
+
+/// An engine that samples a constrained hyperplane.
+///
+/// [`basin_density_with_sampler`] asks for the mean constraint force on
+/// planes parallel to a reactant normal. Hessian actions, when the engine
+/// can form them, set the harmonic spacing and the normal-force control
+/// variates. [`constrained_directions`] are held in addition to the plane
+/// normal and are documented orthonormal.
+///
+/// [`basin_density_with_sampler`]: crate::ohtst::basin_density_with_sampler
+/// [`constrained_directions`]: HyperplaneSampler::constrained_directions
+pub trait HyperplaneSampler {
+    /// Draw one constrained ensemble on `plane`.
+    fn sample_hyperplane(
+        &mut self,
+        plane: &Hyperplane,
+        budget: &HyperplaneSampleBudget,
+    ) -> Result<HyperplaneEnsemble, SaddleError>;
+
+    /// Modes held fixed besides the plane normal.
+    fn constrained_directions(
+        &mut self,
+        _plane: &Hyperplane,
+    ) -> Result<Vec<Array1<f64>>, SaddleError> {
+        Ok(Vec::new())
+    }
+
+    /// Hessian action `H(point) direction`, or `None` when the engine has none.
+    ///
+    /// `step` is the gradient-difference length for an engine that builds
+    /// the action from energies and forces.
+    fn hessian_action(
+        &mut self,
+        _point: ArrayView1<f64>,
+        _direction: ArrayView1<f64>,
+        _step: f64,
+    ) -> Result<Option<Array1<f64>>, SaddleError> {
+        Ok(None)
+    }
+}
+
+/// Langevin sampling of a [`PointSurface`], as a [`HyperplaneSampler`].
+///
+/// Walls on the stored [`LangevinConfig`] are the same planes
+/// [`sample_plane`] reflects. Hessian actions use the surface's analytic
+/// product when it has one.
+pub struct AnalyticSurfaceSampler<'a, S> {
+    surface: &'a S,
+    config: LangevinConfig,
+    start: Option<Array1<f64>>,
+    extra_evaluations: usize,
+}
+
+impl<'a, S> AnalyticSurfaceSampler<'a, S> {
+    /// Sample `surface` with `config`, including its walls and time step.
+    pub fn new(surface: &'a S, config: LangevinConfig) -> Self {
+        Self {
+            surface,
+            config,
+            start: None,
+            extra_evaluations: 0,
+        }
+    }
+}
+
+impl<S: PointSurface> HyperplaneSampler for AnalyticSurfaceSampler<'_, S> {
+    fn sample_hyperplane(
+        &mut self,
+        plane: &Hyperplane,
+        budget: &HyperplaneSampleBudget,
+    ) -> Result<HyperplaneEnsemble, SaddleError> {
+        let mut config = self.config.clone();
+        config.thermal = budget.thermal;
+        config.seed = budget.seed;
+        config.burn_in = budget.thermalize;
+        config.stride = budget.stride;
+        config.records = budget.samples;
+        config.control = None;
+        config.check()?;
+        if config.walls.iter().any(|wall| wall.dim() != plane.dim()) {
+            return Err(SaddleError::Shape(
+                "a sampler wall differs in length from the plane".into(),
+            ));
+        }
+        let start = if let Some(position) = &budget.start {
+            if position.len() != plane.dim() {
+                return Err(SaddleError::Shape(
+                    "sampler start differs in length from the plane".into(),
+                ));
+            }
+            plane.project(position.view())
+        } else if let Some(position) = self.start.take() {
+            plane.project(position.view())
+        } else {
+            plane.point().to_owned()
+        };
+        let held = held_directions(
+            self.surface,
+            start.view(),
+            Some(plane.normal()),
+            config.hold_excluded,
+        )?;
+        let rng = Rng::new(budget.seed);
+        let mut dynamics = Dynamics::new(self.surface, start, held, &config.walls, &config, rng)?;
+        for _ in 0..config.burn_in {
+            dynamics.step()?;
+        }
+        let mut observations = Vec::with_capacity(config.records);
+        for _ in 0..config.records {
+            for _ in 0..config.stride {
+                dynamics.step()?;
+            }
+            observations.push(
+                HyperplaneObservation::default()
+                    .with_constraint_force(-plane.normal().dot(&dynamics.gradient))
+                    .with_position(dynamics.q.clone())
+                    .with_projected_force(dynamics.force.clone()),
+            );
+        }
+        let evaluations = dynamics.evaluations + self.extra_evaluations;
+        self.extra_evaluations = 0;
+        let acceptance = dynamics.acceptance();
+        self.start = Some(dynamics.q.clone());
+        Ok(HyperplaneEnsemble {
+            observations,
+            evaluations,
+            acceptance,
+        })
+    }
+
+    fn constrained_directions(
+        &mut self,
+        plane: &Hyperplane,
+    ) -> Result<Vec<Array1<f64>>, SaddleError> {
+        held_directions(self.surface, plane.point(), None, self.config.hold_excluded)
+    }
+
+    fn hessian_action(
+        &mut self,
+        point: ArrayView1<f64>,
+        direction: ArrayView1<f64>,
+        step: f64,
+    ) -> Result<Option<Array1<f64>>, SaddleError> {
+        let mut evaluations = 0;
+        let action = super::anharmonic::hessian_action(
+            self.surface,
+            point,
+            &direction.to_owned(),
+            step,
+            &mut evaluations,
+        )?;
+        self.extra_evaluations += evaluations;
+        Ok(Some(action))
+    }
+}
+
+/// Mean constraint force of one engine ensemble.
+pub(crate) struct RequestedPlane {
+    pub(crate) normal_force: f64,
+    pub(crate) normal_force_error: f64,
+    pub(crate) uncontrolled_error: Option<f64>,
+    pub(crate) last: Array1<f64>,
+    pub(crate) evaluations: usize,
+}
+
+/// Estimate the normal force from an external constrained engine.
+///
+/// `normal_control` is `a = H_∥⁻¹ P H ν` already solved. `None` leaves the
+/// mean uncontrolled. Analytic control variates on `config` are refused:
+/// the coefficient is the caller's.
+pub(crate) fn sample_plane_requested<E: HyperplaneSampler>(
+    sampler: &mut E,
+    plane: &Hyperplane,
+    config: &LangevinConfig,
+    start: Option<ArrayView1<f64>>,
+    normal_control: Option<&Array1<f64>>,
+) -> Result<RequestedPlane, SaddleError> {
+    config.check()?;
+    if config.control.is_some() {
+        return Err(SaddleError::Invalid(
+            "external hyperplane samples do not use analytic control variates".into(),
+        ));
+    }
+    if let Some(coefficient) = normal_control
+        && coefficient.len() != plane.dim()
+    {
+        return Err(SaddleError::Shape(
+            "the basin control coefficient differs in length from the plane".into(),
+        ));
+    }
+    let mut budget = HyperplaneSampleBudget::default()
+        .with_thermal(config.thermal)
+        .with_seed(config.seed)
+        .with_thermalize(config.burn_in)
+        .with_stride(config.stride)
+        .with_samples(config.records);
+    if let Some(start) = start {
+        if start.len() != plane.dim() {
+            return Err(SaddleError::Shape(
+                "sampler start differs in length from the plane".into(),
+            ));
+        }
+        budget = budget.with_start(start.to_owned());
+    }
+    let ensemble = sampler.sample_hyperplane(plane, &budget)?;
+    reduce_engine_force(plane, config, &ensemble, normal_control)
+}
+
+fn reduce_engine_force(
+    plane: &Hyperplane,
+    config: &LangevinConfig,
+    ensemble: &HyperplaneEnsemble,
+    normal_control: Option<&Array1<f64>>,
+) -> Result<RequestedPlane, SaddleError> {
+    if ensemble.observations.len() != config.records {
+        return Err(SaddleError::Invalid(
+            "OH-TST engine did not return the requested records".into(),
+        ));
+    }
+    let n = plane.dim();
+    let records = ensemble.observations.len() / config.blocks * config.blocks;
+    let width = records / config.blocks;
+    if width == 0 {
+        return Err(SaddleError::Invalid(
+            "OH-TST engine returned fewer records than blocks".into(),
+        ));
+    }
+    let mut normal_forces = Vec::with_capacity(config.blocks);
+    let mut raw_errors = Vec::with_capacity(config.blocks);
+    for block in 0..config.blocks {
+        let mut force_sum = 0.0;
+        let mut correction = 0.0;
+        for observation in &ensemble.observations[block * width..(block + 1) * width] {
+            if !observation.constraint_force.is_finite() {
+                return Err(SaddleError::NonFinite("basin mean force"));
+            }
+            let position = observation
+                .position
+                .as_ref()
+                .ok_or_else(|| SaddleError::Invalid("OH-TST sampler omitted positions".into()))?;
+            if position.len() != n {
+                return Err(SaddleError::Shape(
+                    "OH-TST engine vectors differ from the plane".into(),
+                ));
+            }
+            force_sum += observation.constraint_force;
+            if let Some(coefficient) = normal_control {
+                let force = observation.projected_force.as_ref().ok_or_else(|| {
+                    SaddleError::Invalid("OH-TST sampler omitted projected forces".into())
+                })?;
+                if force.len() != n {
+                    return Err(SaddleError::Shape(
+                        "OH-TST engine vectors differ from the plane".into(),
+                    ));
+                }
+                correction += coefficient.dot(force);
+            }
+        }
+        let scale = 1.0 / width as f64;
+        force_sum *= scale;
+        correction *= scale;
+        raw_errors.push(force_sum);
+        // `⟨-ν·∇V⟩ - a·⟨P F⟩` with `F = -P∇V` is `⟨-ν·∇V⟩ + a·⟨P∇V⟩`.
+        force_sum -= correction;
+        normal_forces.push(force_sum);
+    }
+    let (normal_force, normal_force_error) = mean_and_error(&normal_forces);
+    let uncontrolled_error = normal_control.map(|_| mean_and_error(&raw_errors).1);
+    let last = ensemble
+        .observations
+        .last()
+        .and_then(|observation| observation.position.clone())
+        .ok_or_else(|| SaddleError::Invalid("OH-TST sampler omitted positions".into()))?;
+    Ok(RequestedPlane {
+        normal_force,
+        normal_force_error,
+        uncontrolled_error,
+        last,
+        evaluations: ensemble.evaluations,
     })
 }
 

@@ -23,6 +23,9 @@
 //! A rate takes five calls. [`Hyperplane::from_min_mode`] seeds the plane
 //! from a converged dimer. [`PlaneOptimizer`] climbs `A`. [`basin_density`]
 //! gives `Z_H / Z_R` on a plane through the minimum from parallel planes.
+//! [`basin_density_with_sampler`] is that integral on any
+//! [`HyperplaneSampler`], walls included, and the density it returns is
+//! what [`ohtst_rate`] takes.
 //! [`reversible_work`] gives `ΔA` from that plane to the optimum, by
 //! thermodynamic integration and by BAR. [`ohtst_rate`] returns
 //! `k = sqrt(kT / 2π) (Z_H / Z_R) exp(-ΔA / kT)`, with unit mass in these
@@ -109,7 +112,7 @@ mod transport;
 mod work;
 
 pub use anharmonic::{AnharmonicConfig, AnharmonicCorrection, anharmonic_correction};
-pub use basin::{BasinConfig, BasinDensity, BasinEnd, basin_density};
+pub use basin::{BasinConfig, BasinDensity, BasinEnd, basin_density, basin_density_with_sampler};
 pub use control::HarmonicReference;
 pub use mbar::{MbarConfig, MbarFreeEnergy, mbar_free_energies};
 pub use optimize::{PlaneMetric, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum, PlaneTrace};
@@ -120,7 +123,10 @@ pub use rate::{
     plane_transmission, rate_from_parts,
 };
 pub use reactant::{ReactantDensity, reactant_density};
-pub use sample::{LangevinConfig, PlaneIntegrator, PlaneSample, Uncontrolled, sample_plane};
+pub use sample::{
+    AnalyticSurfaceSampler, HyperplaneEnsemble, HyperplaneObservation, HyperplaneSampleBudget,
+    HyperplaneSampler, LangevinConfig, PlaneIntegrator, PlaneSample, Uncontrolled, sample_plane,
+};
 pub use transmission::{
     Basins, Counting, EndState, Endpoint, PermutationDistance, QuenchConfig, StateDistance,
     TransmissionCoefficient, TransmissionConfig, TransmissionEstimate, transmission_coefficient,

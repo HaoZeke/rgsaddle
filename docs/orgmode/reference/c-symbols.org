@@ -170,3 +170,4 @@ The narrative for a session is the C and C++ how-to, not this list.
 - =rgsaddle_ohtst_work=. Purpose: Reversible work through n_planes planes stored row-major. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_ohtst_transmission=. Purpose: Transmission coefficient of the plane, from n_starts configurations stored row-major. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_ohtst_rate=. Purpose: OH-TST rate from a reactant density and the reversible work off its plane. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_ohtst_basin_density=. Purpose: Declared in include/rgsaddle.h. Parameters: the declaration. Units: the caller's.

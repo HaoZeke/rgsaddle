@@ -136,16 +136,18 @@ pub use ocineb::{
     walk_helped,
 };
 pub use ohtst::{
-    AnharmonicConfig, AnharmonicCorrection, BasinConfig, BasinDensity, BasinEnd, Basins, Counting,
-    EndState, Endpoint, FixedCell, GaussianTransport, HarmonicReference, Hyperplane,
-    LangevinConfig, MassWeighted, MbarConfig, MbarFreeEnergy, OhTstRate, OhTstRateConfig,
-    PermutationDistance, PlaneDensity, PlaneIntegrator, PlaneMetric, PlaneOptimizer,
-    PlaneOptimizerConfig, PlaneOptimum, PlanePath, PlaneSample, PlaneTrace, QuenchConfig,
-    ReactantDensity, ReversibleWork, ReversibleWorkConfig, StateDistance, TransmissionCoefficient,
-    TransmissionConfig, TransmissionEstimate, Transport, Uncontrolled, WorkEstimate, WorkNode,
-    anharmonic_correction, basin_density, flux_mass, mbar_free_energies, ohtst_rate,
-    ohtst_rate_with_config, plane_transmission, rate_from_parts, reactant_density, reversible_work,
-    reversible_work_along, sample_plane, transmission_coefficient,
+    AnalyticSurfaceSampler, AnharmonicConfig, AnharmonicCorrection, BasinConfig, BasinDensity,
+    BasinEnd, Basins, Counting, EndState, Endpoint, FixedCell, GaussianTransport,
+    HarmonicReference, Hyperplane, HyperplaneEnsemble, HyperplaneObservation,
+    HyperplaneSampleBudget, HyperplaneSampler, LangevinConfig, MassWeighted, MbarConfig,
+    MbarFreeEnergy, OhTstRate, OhTstRateConfig, PermutationDistance, PlaneDensity, PlaneIntegrator,
+    PlaneMetric, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum, PlanePath, PlaneSample,
+    PlaneTrace, QuenchConfig, ReactantDensity, ReversibleWork, ReversibleWorkConfig, StateDistance,
+    TransmissionCoefficient, TransmissionConfig, TransmissionEstimate, Transport, Uncontrolled,
+    WorkEstimate, WorkNode, anharmonic_correction, basin_density, basin_density_with_sampler,
+    flux_mass, mbar_free_energies, ohtst_rate, ohtst_rate_with_config, plane_transmission,
+    rate_from_parts, reactant_density, reversible_work, reversible_work_along, sample_plane,
+    transmission_coefficient,
 };
 pub use pafi::{
     ArcPath, FreeEnergyProfile, HyperplaneAverage, PafiConfig, PathFrame, PathGeometry,

@@ -270,6 +270,53 @@ class SellaSaddle:
     def position(self) -> NDArray[numpy.float64]:
         """Copy of the current Cartesian position."""
 
+class OhtstBasin:
+    """Basin density from an external hyperplane sampler."""
+
+    @property
+    def density(self) -> float:
+        """Z_H / Z_R on the plane through the minimum."""
+
+    @property
+    def density_error(self) -> float:
+        """Block standard error of the density."""
+
+    @property
+    def quadrature_error(self) -> float:
+        """Leave-one-out estimate of the interpolation error of ln(density)."""
+
+    @property
+    def tail(self) -> float:
+        """Fraction of the reciprocal density in the extrapolated tails."""
+
+    @property
+    def log_density(self) -> float:
+        """Natural log of the density."""
+
+    @property
+    def log_density_error(self) -> float:
+        """Standard error of the log density."""
+
+    @property
+    def spread(self) -> float:
+        """Harmonic width used for the plane spacing."""
+
+    @property
+    def harmonic_density(self) -> float:
+        """Harmonic density 1 / sqrt(2 pi sigma^2)."""
+
+    @property
+    def evaluations(self) -> int:
+        """Records the engine returned, summed over planes."""
+
+    @property
+    def positive_end(self) -> int:
+        """How the positive side ended: 0 cap, 1 turn, 2 width."""
+
+    @property
+    def negative_end(self) -> int:
+        """How the negative side ended: 0 cap, 1 turn, 2 width."""
+
 class OhtstSample:
     """Langevin sample of one hyperplane: centroid, normal force, virial."""
 
@@ -443,6 +490,11 @@ class OhtstRate:
     @property
     def flux(self) -> float:
         """One-way flux factor, square root of kT over 2 pi."""
+
+def ohtst_basin_density(engine: Callable[..., tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]], minimum: numpy.typing.NDArray[numpy.float64], normal: numpy.typing.NDArray[numpy.float64], thermal: float, spread: float, burn_in: int, stride: int, records: int, blocks: int, seed: int, refinements: int = 8) -> OhtstBasin:
+    """
+    Basin density from an engine. engine(point, normal, thermal, seed, thermalize, stride, samples, start) returns (constraint_force, positions, projected_force). spread is the harmonic width.
+    """
 
 def ohtst_sample(surface: Callable[..., tuple[float, numpy.typing.NDArray[numpy.float64]]], point: numpy.typing.NDArray[numpy.float64], normal: numpy.typing.NDArray[numpy.float64], thermal: float, time_step: float, friction: float, burn_in: int, stride: int, records: int, blocks: int, seed: int) -> OhtstSample:
     """

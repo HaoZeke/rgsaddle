@@ -1,4 +1,5 @@
-//! OH-TST entry points, ABI minor 42.
+//! OH-TST entry points. Sampling through the rate stays ABI minor 42.
+//! Basin density from an external sampler is ABI minor 43.
 //!
 //! A point surface is one configuration of length `n`, not an image of
 //! `3 N` atoms. Sampling, plane optimisation, reversible work (with MBAR),
@@ -14,21 +15,26 @@ use ndarray::{Array1, Array2, ArrayView1};
 use crate::error::SaddleError;
 use crate::minmode::PointSurface;
 use crate::ohtst::{
-    Hyperplane, LangevinConfig, MbarConfig, PlaneOptimizer, PlaneOptimizerConfig,
-    ReversibleWorkConfig, TransmissionConfig, WorkEstimate, mbar_free_energies, rate_from_parts,
-    reversible_work, sample_plane, transmission_coefficient,
+    BasinConfig, BasinEnd, Hyperplane, HyperplaneEnsemble, HyperplaneObservation,
+    HyperplaneSampleBudget, HyperplaneSampler, LangevinConfig, MbarConfig, PlaneOptimizer,
+    PlaneOptimizerConfig, ReversibleWorkConfig, TransmissionConfig, WorkEstimate,
+    basin_density_with_sampler, mbar_free_energies, rate_from_parts, reversible_work, sample_plane,
+    transmission_coefficient,
 };
 
 use super::{
-    RGSADDLE_ABI_MAJOR, RGSADDLE_ABI_MISMATCH, RGSADDLE_INVALID_PARAMETER, RGSADDLE_NON_FINITE,
-    RGSADDLE_NULL_SURFACE, RGSADDLE_OK, RGSADDLE_SHAPE, RGSADDLE_SOLVER, RgsaddleVersion,
-    status_of,
+    RGSADDLE_ABI_MAJOR, RGSADDLE_ABI_MINOR, RGSADDLE_ABI_MISMATCH, RGSADDLE_INVALID_PARAMETER,
+    RGSADDLE_NON_FINITE, RGSADDLE_NULL_SURFACE, RGSADDLE_OK, RGSADDLE_SHAPE, RGSADDLE_SOLVER,
+    RgsaddleVersion, status_of,
     stencil::{clear_last_error, set_last_error},
 };
 
 /// Minor at which these entry points appeared. A config stamped earlier
 /// is refused.
 const OHTST_MINOR: u32 = 42;
+
+/// Minor of [`rgsaddle_ohtst_basin_density`]. Older OH-TST configs stay valid.
+const BASIN_MINOR: u32 = 43;
 
 /// Thermodynamic integration.
 const ESTIMATE_INTEGRATION: i32 = 0;
@@ -1108,4 +1114,291 @@ unsafe fn rate_call(input: *const RgsaddleOhtstRateIn, out: *mut RgsaddleOhtstRa
         };
     }
     RGSADDLE_OK
+}
+
+/// Engine that fills constraint forces, positions and projected forces.
+pub type RgsaddleOhtstEngineFn = extern "C" fn(
+    *const f64,
+    *const f64,
+    i64,
+    f64,
+    u64,
+    u64,
+    u64,
+    u64,
+    *const f64,
+    *mut f64,
+    *mut f64,
+    *mut f64,
+    *mut c_void,
+) -> i32;
+
+#[repr(C)]
+/// Parallel-plane basin density from an external sampler.
+pub struct RgsaddleOhtstBasinConfig {
+    /// ABI version this value was built against. Minor 43 or newer.
+    pub version: RgsaddleVersion,
+    /// Bit flags. None are defined, and any nonzero value is rejected.
+    pub flags: u64,
+    /// `kT` in the energy unit of the surface.
+    pub thermal: f64,
+    /// Harmonic width of the basin along the normal. Must be positive.
+    pub spread: f64,
+    /// Steps the engine should discard before the first record.
+    pub burn_in: u64,
+    /// Steps between records.
+    pub stride: u64,
+    /// Records. At least two per block.
+    pub records: u64,
+    /// Blocks for the standard error. At least two.
+    pub blocks: u64,
+    /// Seed of the first plane. Later planes add one.
+    pub seed: u64,
+    /// Leave-one-out refinements.
+    pub refinements: u64,
+    /// Rise of `A_R`, in units of `kT`, that ends a side.
+    pub cap: f64,
+    /// Farthest plane, in harmonic standard deviations.
+    pub width: f64,
+    /// Conjugate-gradient residual, relative.
+    pub tolerance: f64,
+    /// Gradient-difference length passed to the engine. The C engine is not asked.
+    pub hvp_step: f64,
+    /// Stop when the leave-one-out estimate is below this many statistical errors.
+    pub refine: f64,
+}
+
+#[repr(C)]
+/// `Z_H / Z_R` from [`rgsaddle_ohtst_basin_density`].
+pub struct RgsaddleOhtstBasinReport {
+    /// ABI version written by the library.
+    pub version: RgsaddleVersion,
+    /// Bit flags. None are defined.
+    pub flags: u64,
+    /// `Z_H / Z_R` on the plane through the minimum.
+    pub density: f64,
+    /// Block standard error of [`Self::density`].
+    pub density_error: f64,
+    /// Leave-one-out estimate of the interpolation error of `ln ρ`.
+    pub quadrature_error: f64,
+    /// Integrand past the last plane, as a density.
+    pub tail: f64,
+    /// Natural log of [`Self::density`].
+    pub log_density: f64,
+    /// Standard error of [`Self::log_density`].
+    pub log_density_error: f64,
+    /// Harmonic width used for the plane spacing.
+    pub spread: f64,
+    /// Harmonic density `1 / sqrt(2 π σ²)`.
+    pub harmonic_density: f64,
+    /// Records the engine returned, summed over planes.
+    pub evaluations: u64,
+    /// How the positive side ended: 0 cap, 1 turn, 2 width.
+    pub positive_end: u32,
+    /// How the negative side ended: 0 cap, 1 turn, 2 width.
+    pub negative_end: u32,
+}
+
+struct EngineSampler {
+    sample: RgsaddleOhtstEngineFn,
+    user: *mut c_void,
+    dimension: usize,
+}
+
+impl HyperplaneSampler for EngineSampler {
+    fn sample_hyperplane(
+        &mut self,
+        plane: &Hyperplane,
+        budget: &HyperplaneSampleBudget,
+    ) -> Result<HyperplaneEnsemble, SaddleError> {
+        let n = self.dimension;
+        let samples = budget.samples;
+        let mut forces = vec![0.0; samples];
+        let mut positions = vec![0.0; samples * n];
+        let mut projected = vec![0.0; samples * n];
+        let point = plane.point();
+        let normal = plane.normal();
+        let start_buf;
+        let start = if let Some(position) = &budget.start {
+            start_buf = position.clone();
+            start_buf.as_ptr()
+        } else {
+            std::ptr::null()
+        };
+        let status = (self.sample)(
+            point.as_ptr(),
+            normal.as_ptr(),
+            i64::try_from(n)
+                .map_err(|_| SaddleError::Invalid("OH-TST dimension overflows".into()))?,
+            budget.thermal,
+            budget.seed,
+            u64::try_from(budget.thermalize)
+                .map_err(|_| SaddleError::Invalid("OH-TST thermalize overflows".into()))?,
+            u64::try_from(budget.stride)
+                .map_err(|_| SaddleError::Invalid("OH-TST stride overflows".into()))?,
+            u64::try_from(samples)
+                .map_err(|_| SaddleError::Invalid("OH-TST samples overflow".into()))?,
+            start,
+            forces.as_mut_ptr(),
+            positions.as_mut_ptr(),
+            projected.as_mut_ptr(),
+            self.user,
+        );
+        if status != 0 {
+            return Err(SaddleError::Invalid(
+                "OH-TST engine rejected the plane".into(),
+            ));
+        }
+        let mut observations = Vec::with_capacity(samples);
+        for record in 0..samples {
+            observations.push(
+                HyperplaneObservation::default()
+                    .with_constraint_force(forces[record])
+                    .with_position(Array1::from_vec(
+                        positions[record * n..(record + 1) * n].to_vec(),
+                    ))
+                    .with_projected_force(Array1::from_vec(
+                        projected[record * n..(record + 1) * n].to_vec(),
+                    )),
+            );
+        }
+        Ok(HyperplaneEnsemble {
+            observations,
+            evaluations: samples,
+            acceptance: 1.0,
+        })
+    }
+}
+
+fn basin_end(end: BasinEnd) -> u32 {
+    match end {
+        BasinEnd::Cap => 0,
+        BasinEnd::Turn => 1,
+        BasinEnd::Width => 2,
+    }
+}
+
+/// `Z_H / Z_R` from an external sampler. Control variates are off: the
+/// engine does not provide Hessian actions, and `config.spread` sets the
+/// plane spacing.
+///
+/// # Safety
+/// `minimum` and `normal` each hold `n` doubles. `engine` writes
+/// `samples` constraint forces and `samples * n` positions and projected
+/// forces, and is not called concurrently. `config` and `report` are
+/// valid for the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_ohtst_basin_density(
+    config: *const RgsaddleOhtstBasinConfig,
+    n: i64,
+    minimum: *const f64,
+    normal: *const f64,
+    engine: RgsaddleOhtstEngineFn,
+    user: *mut c_void,
+    report: *mut RgsaddleOhtstBasinReport,
+) -> i32 {
+    guard(|| {
+        if config.is_null() || minimum.is_null() || normal.is_null() || report.is_null() {
+            return RGSADDLE_INVALID_PARAMETER;
+        }
+        let config = unsafe { &*config };
+        if config.version.major != RGSADDLE_ABI_MAJOR || config.version.minor < BASIN_MINOR {
+            return RGSADDLE_ABI_MISMATCH;
+        }
+        let flags = known_flags(config.flags);
+        if flags != RGSADDLE_OK {
+            return flags;
+        }
+        let dimension = match usize::try_from(n) {
+            Ok(dimension) if dimension > 0 => dimension,
+            _ => return RGSADDLE_INVALID_PARAMETER,
+        };
+        let minimum = match finite_slice(minimum, dimension) {
+            Ok(minimum) => minimum,
+            Err(code) => return code,
+        };
+        let normal = match finite_slice(normal, dimension) {
+            Ok(normal) => normal,
+            Err(code) => return code,
+        };
+        let records = match as_usize(config.records) {
+            Ok(records) => records,
+            Err(code) => return code,
+        };
+        let blocks = match as_usize(config.blocks) {
+            Ok(blocks) => blocks,
+            Err(code) => return code,
+        };
+        let burn_in = match as_usize(config.burn_in) {
+            Ok(burn_in) => burn_in,
+            Err(code) => return code,
+        };
+        let stride = match as_usize(config.stride) {
+            Ok(stride) => stride,
+            Err(code) => return code,
+        };
+        let refinements = match as_usize(config.refinements) {
+            Ok(refinements) => refinements,
+            Err(code) => return code,
+        };
+        let sampling = LangevinConfig::default()
+            .with_thermal(config.thermal)
+            .with_burn_in(burn_in)
+            .with_stride(stride)
+            .with_records(records)
+            .with_blocks(blocks)
+            .with_seed(config.seed);
+        let basin = BasinConfig::default()
+            .with_sampler(sampling)
+            .with_spread(Some(config.spread))
+            .with_control(false)
+            .with_refinements(refinements)
+            .with_cap(config.cap)
+            .with_width(config.width)
+            .with_tolerance(config.tolerance)
+            .with_hvp_step(config.hvp_step)
+            .with_refine(config.refine);
+        let mut sampler = EngineSampler {
+            sample: engine,
+            user,
+            dimension,
+        };
+        let density = match basin_density_with_sampler(
+            &mut sampler,
+            ArrayView1::from(minimum.as_slice()),
+            ArrayView1::from(normal.as_slice()),
+            &basin,
+        ) {
+            Ok(density) => density,
+            Err(err) => return fail(&err),
+        };
+        let evaluations = match u64::try_from(density.evaluations) {
+            Ok(evaluations) => evaluations,
+            Err(_) => return RGSADDLE_INVALID_PARAMETER,
+        };
+        if !(density.density.is_finite() && density.density > 0.0) {
+            return RGSADDLE_NON_FINITE;
+        }
+        unsafe {
+            *report = RgsaddleOhtstBasinReport {
+                version: RgsaddleVersion {
+                    major: RGSADDLE_ABI_MAJOR,
+                    minor: RGSADDLE_ABI_MINOR,
+                },
+                flags: 0,
+                density: density.density,
+                density_error: density.density_error,
+                quadrature_error: density.quadrature_error,
+                tail: density.tail,
+                log_density: density.density.ln(),
+                log_density_error: density.density_error / density.density,
+                spread: density.spread,
+                harmonic_density: density.harmonic_density,
+                evaluations,
+                positive_end: basin_end(density.ends[1]),
+                negative_end: basin_end(density.ends[0]),
+            };
+        }
+        RGSADDLE_OK
+    })
 }

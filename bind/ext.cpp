@@ -1656,6 +1656,139 @@ OhtstRate ohtst_rate(double thermal, double density, double density_error, doubl
   return OhtstRate{out.rate, out.error, out.log_rate, out.log_rate_error, out.flux};
 }
 
+struct OhtstBasin {
+  double density = 0.0;
+  double density_error = 0.0;
+  double quadrature_error = 0.0;
+  double tail = 0.0;
+  double log_density = 0.0;
+  double log_density_error = 0.0;
+  double spread = 0.0;
+  double harmonic_density = 0.0;
+  std::uint64_t evaluations = 0;
+  std::uint32_t positive_end = 0;
+  std::uint32_t negative_end = 0;
+};
+
+struct EngineCallback {
+  nb::callable *fn;
+  rgbind::CallContext *ctx;
+};
+
+extern "C" int ohtst_python_engine(const double *point, const double *normal, int64_t n, double thermal,
+                                  std::uint64_t seed, std::uint64_t thermalize, std::uint64_t stride,
+                                  std::uint64_t samples, const double *start, double *constraint_force,
+                                  double *positions, double *projected_force, void *user) {
+  auto *state = static_cast<EngineCallback *>(user);
+  if (state == nullptr || state->fn == nullptr || n <= 0 || samples == 0 || point == nullptr ||
+      normal == nullptr || constraint_force == nullptr || positions == nullptr ||
+      projected_force == nullptr) {
+    return -1;
+  }
+  if (state->ctx == nullptr || state->ctx->stop.load(std::memory_order_acquire)) {
+    return -1;
+  }
+  try {
+    nb::gil_scoped_acquire gil;
+    if (!gil.is_valid()) {
+      return -1;
+    }
+    const std::size_t len = static_cast<std::size_t>(n);
+    const std::size_t count = static_cast<std::size_t>(samples);
+    auto view = [](const double *data, std::size_t length) {
+      auto *raw = new double[length];
+      std::memcpy(raw, data, length * sizeof(double));
+      nb::capsule owner(raw, [](void *ptr) noexcept { delete[] static_cast<double *>(ptr); });
+      const std::size_t shape[1] = {length};
+      return nb::ndarray<nb::numpy, double>(raw, 1, shape, owner);
+    };
+    nb::object start_obj = nb::none();
+    if (start != nullptr) {
+      start_obj = nb::cast(view(start, len));
+    }
+    nb::object result = (*state->fn)(view(point, len), view(normal, len), thermal, seed, thermalize, stride,
+                                     samples, start_obj);
+    if (!nb::isinstance<nb::tuple>(result)) {
+      rgsaddle_py_set_last_error("engine must return (constraint_force, positions, projected_force)");
+      return -1;
+    }
+    nb::tuple triple = nb::cast<nb::tuple>(result);
+    if (triple.size() != 3) {
+      rgsaddle_py_set_last_error("engine must return (constraint_force, positions, projected_force)");
+      return -1;
+    }
+    auto forces = nb::cast<nb::ndarray<const double, nb::ndim<1>, nb::c_contig>>(triple[0]);
+    auto placed = nb::cast<nb::ndarray<const double, nb::ndim<2>, nb::c_contig>>(triple[1]);
+    auto projected = nb::cast<nb::ndarray<const double, nb::ndim<2>, nb::c_contig>>(triple[2]);
+    if (static_cast<std::size_t>(forces.shape(0)) != count ||
+        static_cast<std::size_t>(placed.shape(0)) != count ||
+        static_cast<std::size_t>(placed.shape(1)) != len ||
+        static_cast<std::size_t>(projected.shape(0)) != count ||
+        static_cast<std::size_t>(projected.shape(1)) != len) {
+      rgsaddle_py_set_last_error("engine records do not match the requested shape");
+      return -1;
+    }
+    std::memcpy(constraint_force, forces.data(), count * sizeof(double));
+    std::memcpy(positions, placed.data(), count * len * sizeof(double));
+    std::memcpy(projected_force, projected.data(), count * len * sizeof(double));
+    if (PyErr_CheckSignals() < 0) {
+      nb::python_error err;
+      state->ctx->capture(err);
+      return -1;
+    }
+    return 0;
+  } catch (nb::python_error &err) {
+    state->ctx->capture(err);
+    return -1;
+  } catch (const std::exception &err) {
+    rgsaddle_py_set_last_error(err.what());
+    return -1;
+  }
+}
+
+OhtstBasin ohtst_basin_density(nb::callable fn, Vector minimum, Vector normal, double thermal, double spread,
+                              std::uint64_t burn_in, std::uint64_t stride, std::uint64_t records,
+                              std::uint64_t blocks, std::uint64_t seed, std::uint64_t refinements) {
+  if (minimum.shape(0) <= 0 || minimum.shape(0) != normal.shape(0)) {
+    throw nb::value_error("minimum and normal must share one positive length");
+  }
+  rgsaddle_ohtst_basin_config_t config{};
+  config.version.major = RGSADDLE_ABI_MAJOR;
+  config.version.minor = RGSADDLE_ABI_MINOR;
+  config.thermal = thermal;
+  config.spread = spread;
+  config.burn_in = burn_in;
+  config.stride = stride;
+  config.records = records;
+  config.blocks = blocks;
+  config.seed = seed;
+  config.refinements = refinements;
+  config.cap = 10.0;
+  config.width = 8.0;
+  config.tolerance = 1.0e-10;
+  config.hvp_step = 1.0e-4;
+  config.refine = 0.5;
+  rgsaddle_ohtst_basin_report_t report{};
+  rgbind::CallContext ctx;
+  EngineCallback state{&fn, &ctx};
+  rgsaddle_status_t status = RGSADDLE_OK;
+  {
+    nb::gil_scoped_release release;
+    status = rgsaddle_ohtst_basin_density(&config, minimum.shape(0), minimum.data(), normal.data(),
+                                          ohtst_python_engine, &state, &report);
+  }
+  if (ctx.has_error()) {
+    ctx.rethrow_if_set();
+  }
+  if (status != RGSADDLE_OK) {
+    throw_ohtst(status);
+  }
+  return OhtstBasin{report.density,        report.density_error, report.quadrature_error,
+                    report.tail,           report.log_density,   report.log_density_error,
+                    report.spread,         report.harmonic_density, report.evaluations,
+                    report.positive_end,   report.negative_end};
+}
+
 } // namespace
 
 NB_MODULE(_core, m) {
@@ -2080,6 +2213,20 @@ NB_MODULE(_core, m) {
       .def_ro("log_rate_error", &OhtstRate::log_rate_error, "Standard error of the log rate.")
       .def_ro("flux", &OhtstRate::flux, "One-way flux factor, square root of kT over 2 pi.");
 
+  nb::class_<OhtstBasin>(m, "OhtstBasin", "Basin density from an external hyperplane sampler.")
+      .def_ro("density", &OhtstBasin::density, "Z_H / Z_R on the plane through the minimum.")
+      .def_ro("density_error", &OhtstBasin::density_error, "Block standard error of the density.")
+      .def_ro("quadrature_error", &OhtstBasin::quadrature_error,
+              "Leave-one-out estimate of the interpolation error of ln(density).")
+      .def_ro("tail", &OhtstBasin::tail, "Fraction of the reciprocal density in the extrapolated tails.")
+      .def_ro("log_density", &OhtstBasin::log_density, "Natural log of the density.")
+      .def_ro("log_density_error", &OhtstBasin::log_density_error, "Standard error of the log density.")
+      .def_ro("spread", &OhtstBasin::spread, "Harmonic width used for the plane spacing.")
+      .def_ro("harmonic_density", &OhtstBasin::harmonic_density, "Harmonic density 1 / sqrt(2 pi sigma^2).")
+      .def_ro("evaluations", &OhtstBasin::evaluations, "Records the engine returned, summed over planes.")
+      .def_ro("positive_end", &OhtstBasin::positive_end, "How the positive side ended: 0 cap, 1 turn, 2 width.")
+      .def_ro("negative_end", &OhtstBasin::negative_end, "How the negative side ended: 0 cap, 1 turn, 2 width.");
+
   m.def(
       "ohtst_sample", &ohtst_sample, nb::arg("surface"), nb::arg("point").noconvert(),
       nb::arg("normal").noconvert(), nb::arg("thermal"), nb::arg("time_step"), nb::arg("friction"),
@@ -2141,6 +2288,18 @@ NB_MODULE(_core, m) {
       nb::sig("def ohtst_rate(thermal: float, density: float, density_error: float, work: float, "
               "work_error: float) -> OhtstRate"),
       "k = sqrt(kT / 2 pi) * density * exp(-work / kT). density is the reactant density on the first plane.");
+  m.def(
+      "ohtst_basin_density", &ohtst_basin_density, nb::arg("engine"), nb::arg("minimum").noconvert(),
+      nb::arg("normal").noconvert(), nb::arg("thermal"), nb::arg("spread"), nb::arg("burn_in"),
+      nb::arg("stride"), nb::arg("records"), nb::arg("blocks"), nb::arg("seed"),
+      nb::arg("refinements") = static_cast<std::uint64_t>(8),
+      nb::sig("def ohtst_basin_density(engine: collections.abc.Callable[..., tuple["
+              "numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], "
+              "numpy.typing.NDArray[numpy.float64]]], minimum: numpy.typing.NDArray[numpy.float64], "
+              "normal: numpy.typing.NDArray[numpy.float64], thermal: float, spread: float, burn_in: int, "
+              "stride: int, records: int, blocks: int, seed: int, refinements: int = 8) -> OhtstBasin"),
+      "Basin density from an engine. engine(point, normal, thermal, seed, thermalize, stride, samples, start) "
+      "returns (constraint_force, positions, projected_force). spread is the harmonic width.");
 
   m.def("raise_status", &raise_status, nb::arg("code"),
         "Map an rgsaddle_status_t value. The message is the stored text, or the "

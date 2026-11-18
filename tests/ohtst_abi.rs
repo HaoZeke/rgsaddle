@@ -5,12 +5,14 @@ use std::os::raw::c_void;
 use std::ptr;
 
 use rgsaddle::capi::{
-    RGSADDLE_ABI_MAJOR, RGSADDLE_ABI_MINOR, RGSADDLE_INVALID_PARAMETER, RGSADDLE_OK,
-    RGSADDLE_SHAPE, RgsaddleOhtstOptimizeConfig, RgsaddleOhtstOptimizeReport, RgsaddleOhtstRateIn,
+    RGSADDLE_ABI_MAJOR, RGSADDLE_ABI_MINOR, RGSADDLE_ABI_MISMATCH, RGSADDLE_INVALID_PARAMETER,
+    RGSADDLE_OK, RGSADDLE_SHAPE, RgsaddleOhtstBasinConfig, RgsaddleOhtstBasinReport,
+    RgsaddleOhtstOptimizeConfig, RgsaddleOhtstOptimizeReport, RgsaddleOhtstRateIn,
     RgsaddleOhtstRateOut, RgsaddleOhtstSampleConfig, RgsaddleOhtstSampleReport,
     RgsaddleOhtstTransmissionConfig, RgsaddleOhtstTransmissionReport, RgsaddleOhtstWorkConfig,
-    RgsaddleOhtstWorkReport, RgsaddleVersion, rgsaddle_ohtst_mbar, rgsaddle_ohtst_optimize,
-    rgsaddle_ohtst_rate, rgsaddle_ohtst_sample, rgsaddle_ohtst_transmission, rgsaddle_ohtst_work,
+    RgsaddleOhtstWorkReport, RgsaddleVersion, rgsaddle_ohtst_basin_density, rgsaddle_ohtst_mbar,
+    rgsaddle_ohtst_optimize, rgsaddle_ohtst_rate, rgsaddle_ohtst_sample,
+    rgsaddle_ohtst_transmission, rgsaddle_ohtst_work,
 };
 
 extern "C" fn well(
@@ -563,4 +565,123 @@ fn dimension_above_usize_is_rejected() {
         )
     };
     assert_eq!(status, RGSADDLE_INVALID_PARAMETER);
+}
+
+extern "C" fn harmonic_engine(
+    point: *const f64,
+    normal: *const f64,
+    n: i64,
+    _thermal: f64,
+    _seed: u64,
+    _thermalize: u64,
+    _stride: u64,
+    samples: u64,
+    _start: *const f64,
+    constraint_force: *mut f64,
+    positions: *mut f64,
+    projected_force: *mut f64,
+    _user: *mut c_void,
+) -> i32 {
+    if n != 1
+        || samples == 0
+        || point.is_null()
+        || normal.is_null()
+        || constraint_force.is_null()
+        || positions.is_null()
+        || projected_force.is_null()
+    {
+        return -1;
+    }
+    let point = unsafe { std::slice::from_raw_parts(point, 1) };
+    let normal = unsafe { std::slice::from_raw_parts(normal, 1) };
+    let curvature = 2.0;
+    let force = -curvature * normal[0] * point[0];
+    let count = samples as usize;
+    unsafe {
+        for index in 0..count {
+            *constraint_force.add(index) = force;
+            *positions.add(index) = point[0];
+            *projected_force.add(index) = 0.0;
+        }
+    }
+    0
+}
+
+#[test]
+fn basin_density_matches_the_harmonic_line() {
+    let thermal = 0.25;
+    let spread = (thermal / 2.0_f64).sqrt();
+    let config = RgsaddleOhtstBasinConfig {
+        version: version(),
+        flags: 0,
+        thermal,
+        spread,
+        burn_in: 0,
+        stride: 1,
+        records: 80,
+        blocks: 4,
+        seed: 1,
+        refinements: 0,
+        cap: 10.0,
+        width: 8.0,
+        tolerance: 1.0e-10,
+        hvp_step: 1.0e-4,
+        refine: 0.5,
+    };
+    let mut report = RgsaddleOhtstBasinReport {
+        version: version(),
+        flags: 0,
+        density: 0.0,
+        density_error: 0.0,
+        quadrature_error: 0.0,
+        tail: 0.0,
+        log_density: 0.0,
+        log_density_error: 0.0,
+        spread: 0.0,
+        harmonic_density: 0.0,
+        evaluations: 0,
+        positive_end: 0,
+        negative_end: 0,
+    };
+    let minimum = [0.0];
+    let normal = [1.0];
+    let status = unsafe {
+        rgsaddle_ohtst_basin_density(
+            &config,
+            1,
+            minimum.as_ptr(),
+            normal.as_ptr(),
+            harmonic_engine,
+            ptr::null_mut(),
+            &mut report,
+        )
+    };
+    assert_eq!(status, RGSADDLE_OK);
+    assert_eq!(report.version.minor, 43);
+    let gap = (report.density - report.harmonic_density).abs();
+    let allowance = 4.0 * report.density_error
+        + report.quadrature_error * report.harmonic_density
+        + report.tail * report.harmonic_density;
+    assert!(
+        gap <= allowance,
+        "{} ± {} against {}",
+        report.density,
+        report.density_error,
+        report.harmonic_density
+    );
+
+    let mut stale = config;
+    stale.version.minor = 42;
+    let refused = unsafe {
+        rgsaddle_ohtst_basin_density(
+            &stale,
+            1,
+            minimum.as_ptr(),
+            normal.as_ptr(),
+            harmonic_engine,
+            ptr::null_mut(),
+            &mut report,
+        )
+    };
+    assert_eq!(refused, RGSADDLE_ABI_MISMATCH);
 }
