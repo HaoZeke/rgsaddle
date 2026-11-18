@@ -1,0 +1,49 @@
+#+title: Check convergence of a PAFI or OH-TST run
+#+options: toc:nil num:nil author:nil
+
+Neither method runs to completion: a sampler reports whether its own records behaved like independent draws, not whether the answer is physically right. This how-to reads the diagnostics each result carries and compares a short run that has not settled against a longer one that has, on PAFI's side, and a quadrature that does not have enough nodes against one that does, on OH-TST's.
+
+* PAFI: tau and n_eff
+=HyperplaneAverage::tau= is the integrated autocorrelation time, in records; =HyperplaneAverage::n_eff= is =samples / (2 tau)=, the number of effectively independent draws the recorded samples carry. A block standard error computed from a chain with =n_eff= in the single digits is not trustworthy, whatever number it prints:
+
+#+INCLUDE: "../../../examples/howto_convergence.rs" src rust :lines "48-72"
+
+#+begin_src console
+$ cargo run --release --example howto_convergence
+#+end_src
+
+#+begin_example
+PAFI under-sampled: barrier 0.94448 +/- 0.00164, worst tau 9.47, worst n_eff 3.2
+PAFI settled: barrier 0.98109 +/- 0.00397, worst tau 112.41, worst n_eff 26.7
+#+end_example
+
+The under-sampled run's error bar, 0.00164, is smaller than the settled run's, 0.00397, despite being the less reliable of the two: its worst plane's =n_eff= is 3.2, barely more than three independent draws behind a block error computed from 60 samples in 10 blocks, so the block-to-block spread badly underestimates the true uncertainty. The settled run's worst =n_eff=, 26.7, is comfortably in double digits, and its larger, more honest error bar is the price of that: a small error bar next to a low =n_eff= is a sign to run longer, not a sign of a precise answer. (Neither barrier here is the fully converged one from =tutorials/pafi=, 1.04478 at the same =kT=: this how-to uses 9 planes and far fewer samples than that tutorial's 49 and 30000, to keep two comparable runs fast, not to give the tutorial's own number.)
+
+* OH-TST: the virial check and quadrature overlap
+=PlaneSample::virial= is the mean force the plane's own normal direction feels; at equilibrium on an unconstrained plane it should sit within error of =free_dimensions * kT=, the equipartition virial, and a run that misses it by several standard errors has a time step too large or a chain that has not equilibrated:
+
+#+INCLUDE: "../../../examples/howto_convergence.rs" src rust :lines "74-90"
+
+#+begin_example
+OH-TST virial: 0.10537 ± 0.00952 against free_dimensions * kT = 0.10000 (tau 6.08, effective samples 222.4)
+deviation from equipartition: 0.56 standard errors
+#+end_example
+
+0.56 standard errors from the expected virial is an unremarkable sampling fluctuation; a run reporting several standard errors off this check, instead, points at the time step or burn-in before the sampled free energy itself is trusted.
+
+=ReversibleWorkConfig::min_overlap= and =ReversibleWork::warnings= are the other convergence signal: when neighbouring nodes along a =PlanePath= share too little configuration-space overlap, BAR and MBAR run out of the shared support their estimators need, and a node pair below the threshold is named in =warnings=. A separate, equally common failure needs no overlap warning at all: too few nodes to resolve the curve between them. =V = (x^2 - 1)^2= has zero slope at both the reactant, \(x=-1\), and the saddle, \(x=0\), so a two-node trapezoid, which only sees the slope at the two endpoints, badly underestimates everything the curve does between them:
+
+#+INCLUDE: "../../../examples/howto_convergence.rs" src rust :lines "97-115"
+
+#+begin_example
+reactant -> saddle, 2 node(s): integrated 0.04477 ± 0.00639, worst neighbour overlap 0.473, warnings: []
+reactant -> saddle, 3 node(s): integrated 1.04027 ± 0.00407, worst neighbour overlap 0.490, warnings: []
+reactant -> saddle, 9 node(s): integrated 1.04571 ± 0.00291, worst neighbour overlap 0.499, warnings: []
+#+end_example
+
+Two nodes gives 0.04477, wildly short of the true barrier; three nodes, enough for Simpson's rule to see the curve bend once in the middle, already recovers 1.04027; nine nodes gets to 1.04571, close to the 1.04581 closed form =tutorials/oh-tst= checks its own reversible work against. None of the three runs prints an overlap warning: every neighbour pair shares enough configuration space regardless of node count, since the plane is normal to a single, smooth direction here. A low node count is a quadrature error, not an overlap failure, and =warnings= being empty does not mean the integral converged; only comparing node counts against each other, the way this how-to does, or against a closed form when one exists, shows that.
+
+* Next
+#+begin_export rst
+:doc:`pafi-ohtst-restarting` extends a chain that this page's diagnostics say needs more samples, instead of discarding it and starting over. :doc:`../tutorials/pafi` and :doc:`../tutorials/oh-tst` use sample counts and node counts chosen to already be in the regime this how-to calls settled, without walking through why.
+#+end_export
