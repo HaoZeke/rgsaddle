@@ -1066,6 +1066,16 @@ impl GrowingStringSession {
         &orig_lf + &(&chord * alpha)
     }
 
+    /// Euclidean distance between the left and right frontier nodes.
+    fn frontier_gap(&self) -> f64 {
+        let mut gap = &self.right_pos.row(0) - &self.left_pos.row(self.left_pos.nrows() - 1);
+        if let Some(cell) = &self.config.band.cell {
+            cell.minimum_image(&mut gap);
+        }
+        zero_fixed(&self.config.band.fixed_atoms, &mut gap);
+        gap.dot(&gap).sqrt()
+    }
+
     /// Hand off the joined fragments to [`StringSession`].
     fn hand_off_to_string(&mut self) -> Result<(), SaddleError> {
         let dof = self.left_pos.ncols();
@@ -1317,21 +1327,14 @@ impl GrowingStringSession {
             && (right_frontier_force <= self.config.frontier_tol
                 || self.right_fragment.steps_at_size >= max_steps_per_node);
 
-        let mut gap_vec = &self.right_pos.row(0) - &self.left_pos.row(self.left_pos.nrows() - 1);
-        if let Some(cell) = &self.config.band.cell {
-            cell.minimum_image(&mut gap_vec);
-        }
-        zero_fixed(&self.config.band.fixed_atoms, &mut gap_vec);
-        let gap_dist = gap_vec.dot(&gap_vec).sqrt();
-
         let mut nodes_added = 0;
         let evolved_chain = self.positions();
         let m_l_now = self.left_pos.nrows();
         let m_r_now = self.right_pos.nrows();
-        let n_rem = (self.config.n_images + 1).saturating_sub(m_l_now + m_r_now);
+        let n_rem = self.config.n_images + 1 - m_l_now - m_r_now;
 
         if left_ready && self.left_pos.nrows() + self.right_pos.nrows() < self.config.n_images {
-            let alpha = 1.0 / (n_rem.max(2) as f64);
+            let alpha = 1.0 / (n_rem as f64);
             let new_left = self.sample_gap(&evolved_chain, m_l_now, alpha);
             let old_l = self.left_pos.nrows();
             let mut grown = Array2::zeros((old_l + 1, dof));
@@ -1347,7 +1350,7 @@ impl GrowingStringSession {
         }
 
         if right_ready && self.left_pos.nrows() + self.right_pos.nrows() < self.config.n_images {
-            let alpha = 1.0 - 1.0 / (n_rem.max(2) as f64);
+            let alpha = 1.0 - 1.0 / (n_rem as f64);
             let new_right = self.sample_gap(&evolved_chain, m_l_now, alpha);
             let old_r = self.right_pos.nrows();
             let mut grown = Array2::zeros((old_r + 1, dof));
@@ -1367,7 +1370,10 @@ impl GrowingStringSession {
 
         let count_reached = self.left_pos.nrows() + self.right_pos.nrows() >= self.config.n_images
             && (nodes_added > 0 || (left_ready && right_ready));
-        let distance_reached = self.config.join_tol.is_some_and(|tol| gap_dist <= tol);
+        let distance_reached = self
+            .config
+            .join_tol
+            .is_some_and(|tol| self.frontier_gap() <= tol);
 
         let mut joined_this_step = false;
         if count_reached || distance_reached {
