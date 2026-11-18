@@ -1535,6 +1535,180 @@ nb::tuple band_evaluation_py(const PyBand &self) {
                         copy_matrix(projected, interior, dof));
 }
 
+struct PyGrowingString {
+  RgsaddleGrowingString *handle = nullptr;
+  std::int64_t n_images = 0;
+  std::int64_t n_atoms = 0;
+
+  PyGrowingString() = default;
+  PyGrowingString(const PyGrowingString &) = delete;
+  PyGrowingString &operator=(const PyGrowingString &) = delete;
+  PyGrowingString(PyGrowingString &&other) noexcept
+      : handle(other.handle), n_images(other.n_images), n_atoms(other.n_atoms) {
+    other.handle = nullptr;
+  }
+  PyGrowingString &operator=(PyGrowingString &&other) noexcept {
+    if (this != &other) {
+      if (handle != nullptr) {
+        rgsaddle_growing_string_free(handle);
+      }
+      handle = other.handle;
+      n_images = other.n_images;
+      n_atoms = other.n_atoms;
+      other.handle = nullptr;
+    }
+    return *this;
+  }
+  ~PyGrowingString() {
+    if (handle != nullptr) {
+      rgsaddle_growing_string_free(handle);
+    }
+  }
+};
+
+SaddleIndexPy growing_string_saddle_index(const PyGrowingString &self) {
+  rgsaddle_saddle_index_t raw{};
+  auto status = rgsaddle_growing_string_saddle_index(self.handle, &raw, nullptr, 0);
+  if (status != RGSADDLE_OK) {
+    status_error(status);
+  }
+  std::vector<double> curvatures(static_cast<std::size_t>(std::max(raw.n_curvatures, 0)));
+  if (!curvatures.empty()) {
+    status = rgsaddle_growing_string_saddle_index(self.handle, &raw, curvatures.data(),
+                                                  static_cast<std::int64_t>(curvatures.size()));
+    if (status != RGSADDLE_OK) {
+      status_error(status);
+    }
+  }
+  return saddle_index_from(raw, std::move(curvatures));
+}
+
+SessionReport with_growing_string_saddle_index(SessionReport report, const PyGrowingString &self) {
+  rgsaddle_saddle_index_t raw{};
+  if (rgsaddle_growing_string_saddle_index(self.handle, &raw, nullptr, 0) == RGSADDLE_OK &&
+      raw.certified) {
+    report.saddle_index = raw.index;
+  }
+  return report;
+}
+
+PyGrowingString make_growing_string_session(Vector reactant, Vector product, std::int64_t n_images,
+                                            double frontier_tol, std::int64_t min_steps_per_node,
+                                            std::int64_t max_steps_per_node, double join_tol,
+                                            bool climb, double ci_after, double ci_after_rel,
+                                            const std::string &method, std::int64_t memory,
+                                            double force_tol, double max_move,
+                                            bool remove_translation, bool min_mode,
+                                            const std::string &reparametrization, nb::handle cell,
+                                            nb::handle fixed) {
+  if (reactant.shape(0) <= 0 || reactant.shape(0) % 3 != 0 ||
+      reactant.shape(0) != product.shape(0)) {
+    throw nb::value_error("reactant and product must share a positive multiple of three");
+  }
+  if (n_images < 4) {
+    throw nb::value_error("n_images must be at least 4");
+  }
+  const auto scheme = reparam_code(reparametrization);
+  const auto mcode = band_method_code(method);
+  std::vector<double> box;
+  if (!cell.is_none()) {
+    auto view = nb::cast<Matrix>(cell);
+    if (view.shape(0) != 3 || view.shape(1) != 3) {
+      throw nb::value_error("cell must be 3x3");
+    }
+    box.assign(view.data(), view.data() + 9);
+  }
+  const auto n_atoms = static_cast<std::int64_t>(reactant.shape(0) / 3);
+  std::vector<std::uint8_t> mask;
+  if (!fixed.is_none()) {
+    auto view =
+        nb::cast<nb::ndarray<const std::uint8_t, nb::ndim<1>, nb::c_contig, nb::device::cpu>>(fixed);
+    if (static_cast<std::int64_t>(view.shape(0)) != n_atoms) {
+      throw nb::value_error("fixed must hold one entry per atom");
+    }
+    mask.assign(view.data(), view.data() + view.shape(0));
+  }
+
+  rgsaddle_growing_string_config_t config{};
+  if (rgsaddle_growing_string_config_default(&config) != RGSADDLE_OK) {
+    throw nb::value_error("growing string default configuration failed");
+  }
+  config.band.flags = RGSADDLE_BAND_STRING;
+  if (!remove_translation) {
+    config.band.flags |= RGSADDLE_BAND_KEEP_TRANSLATION;
+  }
+  if (!min_mode) {
+    config.band.flags |= RGSADDLE_BAND_NO_MIN_MODE;
+  }
+  if (climb) {
+    config.band.flags |= RGSADDLE_BAND_CI_AFTER;
+    config.band.ci_trigger_factor = ci_after_rel;
+    config.band.ci_trigger_force = ci_after;
+  } else {
+    config.band.ci_trigger_factor = 0.0;
+    config.band.ci_trigger_force = 0.0;
+  }
+  if (scheme == RGSADDLE_REPARAM_NOT_A_KNOT) {
+    config.band.flags |= RGSADDLE_BAND_SPLINE_REPARAM;
+  }
+  config.band.method = mcode;
+  config.band.cell = box.empty() ? nullptr : box.data();
+  config.band.force_tol = force_tol;
+  config.band.max_move = max_move;
+  config.band.memory = memory;
+  config.n_images = n_images;
+  config.frontier_tol = frontier_tol;
+  config.min_steps_per_node = min_steps_per_node;
+  config.max_steps_per_node = max_steps_per_node;
+  config.join_tol = join_tol;
+  config.reparametrization = scheme;
+
+  PyGrowingString out;
+  out.n_images = n_images;
+  out.n_atoms = n_atoms;
+  out.handle = rgsaddle_growing_string_create(&config, n_atoms, reactant.data(), product.data());
+  if (out.handle == nullptr) {
+    throw nb::value_error("growing string configuration was refused");
+  }
+  if (!mask.empty()) {
+    const auto st = rgsaddle_growing_string_set_fixed_atoms(out.handle, mask.data(), n_atoms);
+    if (st != RGSADDLE_OK) {
+      status_error(st);
+    }
+  }
+  return out;
+}
+
+SessionReport growing_string_run_py(PyGrowingString &self, nb::callable fn,
+                                    std::int64_t max_steps) {
+  if (max_steps < 1) {
+    throw nb::value_error("max_steps must be positive");
+  }
+  SessionReport last;
+  for (std::int64_t step = 0; step < max_steps; ++step) {
+    last = with_growing_string_saddle_index(
+        run_surface(fn, [&](rgsaddle_surface_fn surface, void *user, rgsaddle_report_t *out) {
+          return rgsaddle_growing_string_step(self.handle, surface, user, out);
+        }),
+        self);
+    if (last.status == RGSADDLE_STATUS_CONVERGED) {
+      break;
+    }
+  }
+  return last;
+}
+
+nb::ndarray<nb::numpy, std::uint64_t> copy_u64_vector(const std::vector<std::uint64_t> &values) {
+  const std::size_t n = values.empty() ? 1 : values.size();
+  auto *raw = new std::uint64_t[n];
+  if (!values.empty()) {
+    std::memcpy(raw, values.data(), values.size() * sizeof(std::uint64_t));
+  }
+  nb::capsule owner(raw, [](void *ptr) noexcept { delete[] static_cast<std::uint64_t *>(ptr); });
+  const std::size_t shape[1] = {values.size()};
+  return nb::ndarray<nb::numpy, std::uint64_t>(raw, 1, shape, owner);
+}
+
 } // namespace
 
 NB_MODULE(_core, m) {
@@ -1972,6 +2146,103 @@ NB_MODULE(_core, m) {
             }
           },
           "Drop optimizer history and climbing state, keeping cached surface values.");
+
+  nb::class_<PyGrowingString>(m, "GrowingString")
+      .def(
+          "__init__",
+          [](PyGrowingString *self, Vector reactant, Vector product, std::int64_t n_images,
+             double frontier_tol, std::int64_t min_steps_per_node,
+             std::int64_t max_steps_per_node, double join_tol, bool climb, double ci_after,
+             double ci_after_rel, const std::string &method, std::int64_t memory,
+             double force_tol, double max_move, bool remove_translation, bool min_mode,
+             const std::string &reparametrization, nb::handle cell, nb::handle fixed) {
+            new (self) PyGrowingString(make_growing_string_session(
+                reactant, product, n_images, frontier_tol, min_steps_per_node,
+                max_steps_per_node, join_tol, climb, ci_after, ci_after_rel, method, memory,
+                force_tol, max_move, remove_translation, min_mode, reparametrization, cell, fixed));
+          },
+          nb::arg("reactant").noconvert(), nb::arg("product").noconvert(),
+          nb::arg("n_images") = 11, nb::arg("frontier_tol") = 0.2,
+          nb::arg("min_steps_per_node") = 1, nb::arg("max_steps_per_node") = 0,
+          nb::arg("join_tol") = 0.0, nb::arg("climb") = true, nb::arg("ci_after") = 0.5,
+          nb::arg("ci_after_rel") = 0.0, nb::arg("method") = "fire", nb::arg("memory") = 20,
+          nb::arg("force_tol") = 0.001, nb::arg("max_move") = 0.2,
+          nb::arg("remove_translation") = true, nb::arg("min_mode") = false,
+          nb::arg("reparametrization") = "not-a-knot", nb::arg("cell") = nb::none(),
+          nb::arg("fixed") = nb::none(),
+          "Growing string session (Peters, Heyden, Bell and Chakraborty 2004, ABI minor 43).")
+      .def(
+          "step",
+          [](PyGrowingString &self, nb::callable fn) {
+            return with_growing_string_saddle_index(
+                run_surface(fn, [&](rgsaddle_surface_fn surface, void *user, rgsaddle_report_t *out) {
+                  return rgsaddle_growing_string_step(self.handle, surface, user, out);
+                }),
+                self);
+          },
+          nb::arg("surface"),
+          nb::sig("def step(self, surface: collections.abc.Callable[..., "
+                  "tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]]) "
+                  "-> SessionReport"),
+          "One growing-string or joined simplified-string step.")
+      .def(
+          "run", &growing_string_run_py, nb::arg("surface"), nb::arg("max_steps") = 1000,
+          nb::sig("def run(self, surface: collections.abc.Callable[..., "
+                  "tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]], "
+                  "max_steps: int = 1000) -> SessionReport"),
+          "Loop step until the fragments join and converge, or until max_steps.")
+      .def(
+          "n_images",
+          [](const PyGrowingString &self) {
+            return rgsaddle_growing_string_n_images(self.handle);
+          },
+          "Active image count (left_nodes + right_nodes while growing, n_images once joined).")
+      .def(
+          "joined",
+          [](const PyGrowingString &self) {
+            return rgsaddle_growing_string_phase(self.handle) == RGSADDLE_GROWING_STRING_JOINED;
+          },
+          "True once the reactant and product fragments have joined into a StringSession.")
+      .def(
+          "positions",
+          [](const PyGrowingString &self) {
+            const auto rows = static_cast<std::size_t>(rgsaddle_growing_string_n_images(self.handle));
+            const auto dof = static_cast<std::size_t>(self.n_atoms * 3);
+            std::vector<double> out(rows * dof, 0.0);
+            const auto status = rgsaddle_growing_string_positions(self.handle, out.data());
+            if (status != RGSADDLE_OK) {
+              status_error(status);
+            }
+            return copy_matrix(out, rows, dof);
+          },
+          "Copy of the active positions, shaped (active_images, 3N).")
+      .def(
+          "ids",
+          [](const PyGrowingString &self) {
+            const auto rows = static_cast<std::size_t>(rgsaddle_growing_string_n_images(self.handle));
+            std::vector<std::uint64_t> out(rows, 0);
+            const auto status = rgsaddle_growing_string_ids(self.handle, out.data());
+            if (status != RGSADDLE_OK) {
+              status_error(status);
+            }
+            return copy_u64_vector(out);
+          },
+          "Stable uint64 image IDs of the active rows.")
+      .def(
+          "set_fixed_atoms",
+          [](PyGrowingString &self, FlagArray fixed) {
+            if (static_cast<std::int64_t>(fixed.shape(0)) != self.n_atoms) {
+              throw nb::value_error("fixed must hold one entry per atom");
+            }
+            const auto status =
+                rgsaddle_growing_string_set_fixed_atoms(self.handle, fixed.data(), self.n_atoms);
+            if (status != RGSADDLE_OK) {
+              status_error(status);
+            }
+          },
+          nb::arg("fixed").noconvert(), "Replace the per-atom fixed mask (1 fixed, 0 free).")
+      .def("saddle_index", &growing_string_saddle_index,
+           "Certificate of the climbing image once joined and converged (ABI minor 43).");
 
   nb::class_<PySella>(m, "SellaSaddle")
       .def(

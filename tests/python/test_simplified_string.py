@@ -240,3 +240,40 @@ def test_ase_simplified_string_driver_and_fixed_atoms() -> None:
         assert np.array_equal(img.positions[1], ref)
     cert = string.saddle_index()
     assert cert.index == 1
+
+
+def test_python_growing_string_matches_cineb_and_preserves_ids() -> None:
+    min_a = np.array([-0.558223634633, 1.441725841805, 0.0], dtype=np.float64)
+    min_b = np.array([0.623499404931, 0.028037758529, 0.0], dtype=np.float64)
+
+    gsm = rgsaddle.GrowingString(
+        min_a,
+        min_b,
+        n_images=11,
+        frontier_tol=15.0,
+        max_steps_per_node=10,
+        climb=True,
+        ci_after=0.0,
+        ci_after_rel=0.5,
+        method="lbfgs",
+        max_move=0.05,
+        force_tol=0.001,
+    )
+    assert not gsm.joined()
+    assert gsm.n_images() == 4
+    assert list(gsm.ids()) == [0, 2, 3, 1]
+
+    rep = gsm.run(_muller_brown_surface, max_steps=800)
+    assert rep.status == 1
+    assert gsm.joined()
+    assert gsm.n_images() == 11
+    ids = list(gsm.ids())
+    assert len(ids) == 11
+    assert ids[0] == 0 and ids[-1] == 1
+    assert sorted(ids) == list(range(11))
+    saddle = gsm.positions()[rep.ci_index]
+    assert abs(float(saddle[0]) - (-0.822001558733)) < 0.002
+    assert abs(float(saddle[1]) - 0.624312802815) < 0.002
+    cert = gsm.saddle_index()
+    assert cert.certified and cert.index == 1
+
