@@ -114,9 +114,15 @@ impl<S: PointSurface> PointSurface for HarmonicExpansion<'_, S> {
 
     fn hessian_vector(
         &self,
-        _q: ArrayView1<f64>,
+        q: ArrayView1<f64>,
         vector: ArrayView1<f64>,
     ) -> Result<Option<Array1<f64>>, SaddleError> {
+        self.reference.check()?;
+        if q.len() != self.reference.point.len() || vector.len() != self.reference.point.len() {
+            return Err(SaddleError::Shape(
+                "the harmonic expansion Hessian action differs in length from the reference".into(),
+            ));
+        }
         let mut evaluations = 0;
         hessian_action(
             self.surface,
@@ -742,6 +748,7 @@ mod tests {
     use ndarray::array;
 
     use super::*;
+    use crate::minmode::PointSurface;
     use crate::ohtst::{ExactGaussianPlaneSampler, QuadraticModel};
     use crate::projector::HyperplaneObservation;
 
@@ -932,6 +939,24 @@ mod tests {
             "{} ± {} against {expected}",
             estimate.free_energy,
             estimate.error
+        );
+    }
+
+    #[test]
+    fn hessian_vector_rejects_the_wrong_length() {
+        let surface = Harmonic;
+        let expansion = HarmonicExpansion::new(&surface, HarmonicReference::new(array![0.0, 0.0]));
+        let short_vector =
+            PointSurface::hessian_vector(&expansion, array![0.0, 0.0].view(), array![1.0].view());
+        assert!(
+            matches!(short_vector, Err(SaddleError::Shape(_))),
+            "{short_vector:?}"
+        );
+        let short_point =
+            PointSurface::hessian_vector(&expansion, array![0.0].view(), array![1.0, 0.0].view());
+        assert!(
+            matches!(short_point, Err(SaddleError::Shape(_))),
+            "{short_point:?}"
         );
     }
 }
