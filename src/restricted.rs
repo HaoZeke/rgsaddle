@@ -15,6 +15,16 @@
 //! That clip runs on the internals increment *before* a Euclidean
 //! trust radius. Distinct from RAS (per-atom Cartesian). Algebra is
 //! [`rgmin::vecops`] so `par` applies.
+//!
+//! Units and shapes: a Cartesian step `s` is a flat `3N` vector in
+//! Angstrom, atom-major. A radius `delta` is in Angstrom. The Hessian
+//! spectrum (`evals` in eV/Angstrom^2, `evecs` the `n x n` eigenvectors as
+//! columns) and the gradient `g` (eV/Angstrom) have the length of the
+//! step. An internals step mixes Angstrom (bonds, translations) and radian
+//! (angles, dihedrals), which is why [`MaxInternalStep`] carries weights.
+//! `order` is the number of uphill modes (1 for a first-order saddle).
+//! Constructors return [`SaddleError::Shape`] for a bad radius; the clips
+//! never fail.
 
 use ndarray::{Array1, Array2};
 use rgmin::Manifold;
@@ -42,7 +52,9 @@ pub enum RestrictedKind {
 }
 
 impl RestrictedKind {
-    /// Fn.
+    /// C / Python ordinal: 0 for [`RestrictedKind::TrustRegion`], 1 for
+    /// [`RestrictedKind::MaxInternalStep`] and 2 for
+    /// [`RestrictedKind::RestrictedAtomicStep`].
     pub const fn to_abi(self) -> i32 {
         match self {
             Self::TrustRegion => 0,
@@ -51,7 +63,8 @@ impl RestrictedKind {
         }
     }
 
-    /// Fn.
+    /// Inverse of [`Self::to_abi`]. Any ordinal other than 0, 1 or 2, negative
+    /// ones included, is `None`.
     pub const fn try_from_abi(v: i32) -> Option<Self> {
         match v {
             0 => Some(Self::TrustRegion),
@@ -62,6 +75,10 @@ impl RestrictedKind {
     }
 
     /// Sella `get_restricted_step` names that this crate dests.
+    ///
+    /// `name` is trimmed and lowercased first. Accepted names are the
+    /// [`TRUST_SYNONYMS`], the [`RAS_SYNONYMS`] and `"mis"` or
+    /// `"max internal step"`; any other name is `None`.
     pub fn from_name(name: &str) -> Option<Self> {
         let n = name.trim().to_ascii_lowercase();
         if TrustRegion::match_name(&n) {
@@ -76,6 +93,11 @@ impl RestrictedKind {
     }
 
     /// Sella `RestrictedAtomicStep` refuses an internals chart.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] for [`RestrictedKind::RestrictedAtomicStep`], as
+    /// Sella refuses it on a PES with internals. The other kinds return `Ok(())`.
     pub fn refuse_internal(self) -> Result<(), SaddleError> {
         match self {
             Self::RestrictedAtomicStep => Err(RestrictedAtomicStep::incompatible_internal()),
@@ -84,6 +106,14 @@ impl RestrictedKind {
     }
 
     /// Cartesian clip: RAS is per-atom, otherwise Euclidean `||s||`.
+    ///
+    /// `s` is a flat `3N` step in Angstrom and `delta` the radius in Angstrom.
+    /// The result has the length of `s` and satisfies the kind's constraint.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] when `delta` is negative or, for the Euclidean
+    /// kinds, not finite (see [`TrustRegion::new`] and [`RestrictedAtomicStep::new`]).
     pub fn clip_cartesian(&self, s: &Array1<f64>, delta: f64) -> Result<Array1<f64>, SaddleError> {
         match self {
             Self::RestrictedAtomicStep => Ok(RestrictedAtomicStep::new(delta)?.clip(s)),
@@ -96,6 +126,10 @@ impl RestrictedKind {
     /// RAS is unrestricted [`qn_get_s`] so [`Self::clip_cartesian`]
     /// can bind `max_i ||s_i||`. `qn_restricted` first would leave
     /// `||s|| <= delta`, and ras_clip would be a no-op.
+    ///
+    /// `evals`, `evecs`, `g` and `order` are as in [`crate::qn::QuasiNewton::new`]
+    /// and `delta` is the radius in Angstrom. The result is a length-`n` step in
+    /// Angstrom.
     pub fn qn_step(
         self,
         evals: &Array1<f64>,
@@ -112,7 +146,8 @@ impl RestrictedKind {
         }
     }
 
-    /// RAS binds the per-atom clip on an unrestricted ambient step.
+    /// Whether the ambient step must be left unrestricted before the clip:
+    /// true for [`RestrictedKind::RestrictedAtomicStep`] only.
     pub const fn wants_unrestricted_ambient(self) -> bool {
         matches!(self, Self::RestrictedAtomicStep)
     }
@@ -123,6 +158,8 @@ impl RestrictedKind {
     /// schedule as `smag`. A RAS clip that binds has `cons = delta`
     /// while `||s||` can be larger (`~sqrt(N) delta`); using the
     /// Euclidean length can grow the radius on a rejected step.
+    ///
+    /// `s` is a flat `3N` step in Angstrom; the result is in Angstrom.
     pub fn step_magnitude(self, s: &Array1<f64>) -> f64 {
         match self {
             Self::RestrictedAtomicStep => ras_cons(s),
@@ -131,7 +168,9 @@ impl RestrictedKind {
     }
 }
 
-/// Sella `TrustRegion` synonyms.
+/// Sella `TrustRegion` synonyms, matched exactly and in lower case:
+/// `"tr"`, `"trust region"`, `"trust-region"`, `"trust radius"` and
+/// `"trust-radius"`.
 pub const TRUST_SYNONYMS: &[&str] = &[
     "tr",
     "trust region",
@@ -140,7 +179,8 @@ pub const TRUST_SYNONYMS: &[&str] = &[
     "trust-radius",
 ];
 
-/// Sella `RestrictedAtomicStep` synonyms.
+/// Sella `RestrictedAtomicStep` synonyms, matched exactly and in lower case:
+/// `"ras"` and `"restricted atomic step"`.
 pub const RAS_SYNONYMS: &[&str] = &["ras", "restricted atomic step"];
 
 /// Sella `TrustRegion`: `cons(s) = ||s||`, target `delta`.
@@ -154,6 +194,22 @@ pub struct TrustRegion {
 
 impl TrustRegion {
     /// Euclidean trust radius `delta`.
+    ///
+    /// `delta` is in Angstrom.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] when `delta` is negative or not finite. Zero is
+    /// allowed and clips every step to zero.
+    ///
+    /// `delta` is the clip radius, the largest allowed `|s_i w_i|`, in the units of
+    /// the weighted internals. `counts` is the number of coordinates of each kind
+    /// and `weights` their weights; see [`pack_weights`].
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] when `delta` is negative or `counts` describes no
+    /// internals. A NaN `delta` is not rejected by this check.
     pub fn new(delta: f64) -> Result<Self, SaddleError> {
         if !delta.is_finite() || delta < 0.0 {
             return Err(SaddleError::Shape(
@@ -163,18 +219,22 @@ impl TrustRegion {
         Ok(Self { delta })
     }
 
-    /// Trust radius.
+    /// Trust radius in Angstrom.
     pub fn delta(&self) -> f64 {
         self.delta
     }
 
     /// Exact Sella `TrustRegion.match`.
+    ///
+    /// `name` is compared exactly; pass it in lower case.
     pub fn match_name(name: &str) -> bool {
         let n = name.trim().to_ascii_lowercase();
         TRUST_SYNONYMS.iter().any(|s| *s == n)
     }
 
     /// Sella `TrustRegion.cons`: `||s||` through vecops.
+    ///
+    /// `s` is a flat step in Angstrom and the result is `||s||` in Angstrom.
     pub fn cons(&self, s: &Array1<f64>) -> f64 {
         nrm2(s.view())
     }
@@ -185,6 +245,14 @@ impl TrustRegion {
     /// Scaling by the largest component keeps the nonzero-step formula
     /// meaningful when the squared Euclidean norm would underflow.
     /// Scaling the derivative also bounds the dot-product accumulation.
+    ///
+    /// `s` is the step in Angstrom and `dsda` its derivative with respect to the
+    /// level shift `alpha`, in Angstrom^3/eV; the result has the same unit as
+    /// `dsda`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `s` and `dsda` differ in length.
     pub fn cons_dalpha(&self, s: &Array1<f64>, dsda: &Array1<f64>) -> f64 {
         assert_eq!(s.len(), dsda.len(), "step derivative dimensions must match");
         let scale = nrminf(s.view());
@@ -205,6 +273,25 @@ impl TrustRegion {
     }
 
     /// Scale `s` so `||s|| <= delta`.
+    ///
+    /// `s` is a flat step in Angstrom. The result points the same way and has norm
+    /// at most `delta`; a step that already fits is returned unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::array;
+    /// use rgsaddle::restricted::TrustRegion;
+    ///
+    /// let region = TrustRegion::new(0.5)?;
+    /// // A 1.0 Angstrom step along (3, 4, 0)/5 is cut back to 0.5 Angstrom.
+    /// let step = array![0.6, 0.8, 0.0];
+    /// let clipped = region.clip(&step);
+    /// assert!((clipped[0] - 0.3).abs() < 0.001);
+    /// assert!((clipped[1] - 0.4).abs() < 0.001);
+    /// assert!(TrustRegion::new(-1.0).is_err());
+    /// # Ok::<(), rgsaddle::SaddleError>(())
+    /// ```
     pub fn clip(&self, s: &Array1<f64>) -> Array1<f64> {
         let n = nrm2(s.view());
         let squared_normal_floor = f64::MIN_POSITIVE.sqrt();
@@ -239,6 +326,14 @@ impl TrustRegion {
     }
 
     /// Sella `TrustRegion` + `QuasiNewton.get_s`: [`qn_restricted`].
+    ///
+    /// `evals`, `evecs` and `g` are the spectrum and gradient (see the module docs)
+    /// and `order` the number of uphill modes. The result is a step in Angstrom with
+    /// norm at most `delta`.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] when `evals`, `evecs` or `g` disagree in length.
     pub fn restrict_qn(
         &self,
         evals: &Array1<f64>,
@@ -256,6 +351,13 @@ impl TrustRegion {
     }
 
     /// Riemannian QN + trust: rgrad, `qn_restricted`, project, clip, retract.
+    ///
+    /// `x` is the current point in Angstrom and `egrad` the ambient gradient in
+    /// eV/Angstrom. Returns the new point on `man` in Angstrom.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Self::restrict_qn`].
     pub fn restrict_qn_on<M: Manifold>(
         &self,
         man: &M,
@@ -271,6 +373,9 @@ impl TrustRegion {
     }
 
     /// Riemannian clip: project, clip, retract.
+    ///
+    /// `s` is an ambient step in Angstrom and `x` the current point in Angstrom.
+    /// Returns the new point on `man` in Angstrom.
     pub fn step_on<M: Manifold>(&self, man: &M, x: &Array1<f64>, s: &Array1<f64>) -> Array1<f64> {
         let v = man.project(x, s);
         let c = self.clip(&v);
@@ -278,6 +383,9 @@ impl TrustRegion {
     }
 
     /// Vector transport of the clipped projected increment.
+    ///
+    /// `s` is an ambient step in Angstrom, transported along `man` from `x` to
+    /// `x_to` after the clip. The result keeps the unit of `s`.
     pub fn transport_step<M: Manifold>(
         &self,
         man: &M,
@@ -303,6 +411,13 @@ pub struct RestrictedAtomicStep {
 
 impl RestrictedAtomicStep {
     /// Per-atom Cartesian radius `delta`.
+    ///
+    /// `delta` is the per-atom radius in Angstrom.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] when `delta` is negative. A NaN `delta` is not
+    /// rejected by this check. Zero is allowed.
     pub fn new(delta: f64) -> Result<Self, SaddleError> {
         if delta < 0.0 {
             return Err(SaddleError::Shape(
@@ -312,12 +427,15 @@ impl RestrictedAtomicStep {
         Ok(Self { delta })
     }
 
-    /// Trust radius.
+    /// Per-atom radius in Angstrom.
     pub fn delta(&self) -> f64 {
         self.delta
     }
 
     /// Sella error when the PES carries internals.
+    ///
+    /// The error [`RestrictedKind::refuse_internal`] returns, always a
+    /// [`SaddleError::Shape`].
     pub fn incompatible_internal() -> SaddleError {
         SaddleError::Shape(
             "Internal coordinates are not compatible with RestrictedAtomicStep".into(),
@@ -325,6 +443,8 @@ impl RestrictedAtomicStep {
     }
 
     /// Exact Sella `RestrictedAtomicStep.match`.
+    ///
+    /// `name` is compared exactly; pass it in lower case.
     pub fn match_name(name: &str) -> bool {
         let n = name.trim().to_ascii_lowercase();
         RAS_SYNONYMS.iter().any(|s| *s == n)
@@ -333,16 +453,46 @@ impl RestrictedAtomicStep {
     /// Sella `RestrictedAtomicStep.cons`: largest per-atom `||s_i||`.
     ///
     /// Per-atom 3-norms go through vecops so `par` applies.
+    ///
+    /// `s` is a flat `3N` step in Angstrom; the result is in Angstrom.
     pub fn cons(&self, s: &Array1<f64>) -> f64 {
         ras_cons(s)
     }
 
     /// Scale `s` so `max_i ||s_i|| <= delta`. Dest of [`ras_clip`].
+    ///
+    /// `s` is a flat `3N` step in Angstrom. Every atom's displacement ends up with
+    /// length at most `delta`; the step is scaled as a whole, so its direction is
+    /// kept.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::array;
+    /// use rgsaddle::restricted::RestrictedAtomicStep;
+    ///
+    /// let ras = RestrictedAtomicStep::new(0.5)?;
+    /// // Atom 0 moves 1.0 Angstrom, atom 1 moves 0.5 Angstrom.
+    /// let step = array![1.0, 0.0, 0.0, 0.0, 0.5, 0.0];
+    /// let clipped = ras.clip(&step);
+    /// // The longest atom displacement is cut to 0.5 and the step is scaled as a whole.
+    /// assert!((clipped[0] - 0.5).abs() < 0.001);
+    /// assert!((clipped[4] - 0.25).abs() < 0.001);
+    /// # Ok::<(), rgsaddle::SaddleError>(())
+    /// ```
     pub fn clip(&self, s: &Array1<f64>) -> Array1<f64> {
         ras_clip(s, self.delta)
     }
 
     /// Unrestricted QN step, then the per-atom clip.
+    ///
+    /// `evals`, `evecs` and `g` are the spectrum and gradient (see the module docs).
+    /// The result is a step in Angstrom with every per-atom length at most `delta`
+    /// (so `||s||` can reach about `sqrt(N) * delta`).
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] when `evals`, `evecs` or `g` disagree in length.
     pub fn restrict_qn(
         &self,
         evals: &Array1<f64>,
@@ -361,6 +511,13 @@ impl RestrictedAtomicStep {
     }
 
     /// Riemannian QN + RAS: rgrad, QN, project, clip, retract.
+    ///
+    /// `x` is the current point in Angstrom and `egrad` the ambient gradient in
+    /// eV/Angstrom. Returns the new point on `man` in Angstrom.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Self::restrict_qn`].
     pub fn restrict_qn_on<M: Manifold>(
         &self,
         man: &M,
@@ -376,6 +533,9 @@ impl RestrictedAtomicStep {
     }
 
     /// Riemannian clip: project, clip, retract.
+    ///
+    /// `s` is an ambient step in Angstrom and `x` the current point in Angstrom.
+    /// Returns the new point on `man` in Angstrom.
     pub fn step_on<M: Manifold>(&self, man: &M, x: &Array1<f64>, s: &Array1<f64>) -> Array1<f64> {
         let v = man.project(x, s);
         let c = self.clip(&v);
@@ -383,6 +543,9 @@ impl RestrictedAtomicStep {
     }
 
     /// Vector transport of the clipped projected increment.
+    ///
+    /// `s` is an ambient step in Angstrom, transported along `man` from `x` to
+    /// `x_to` after the clip. The result keeps the unit of `s`.
     pub fn transport_step<M: Manifold>(
         &self,
         man: &M,
@@ -400,6 +563,8 @@ impl RestrictedAtomicStep {
 ///
 /// Lengths below 3 use [`nrm2`]. Leftover components after
 /// `3 * (len / 3)` are not a packed atom (same as [`ras_clip`]).
+///
+/// `s` is a flat `3N` step in Angstrom; the result is in Angstrom.
 pub fn ras_cons(s: &Array1<f64>) -> f64 {
     let atoms = s.len() / 3;
     if atoms == 0 {
@@ -425,15 +590,15 @@ pub fn ras_cons(s: &Array1<f64>) -> f64 {
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct InternalWeights {
-    /// The translation.
+    /// Weight of translation and rotation slots (`wx`), dimensionless; default 1.
     pub translation: f64,
-    /// The bond.
+    /// Weight of bond slots (`wb`), dimensionless; default 1.
     pub bond: f64,
-    /// The angle.
+    /// Weight of angle slots (`wa`), dimensionless; default 1.
     pub angle: f64,
-    /// The dihedral.
+    /// Weight of dihedral slots (`wd`), dimensionless; default 1.
     pub dihedral: f64,
-    /// The other.
+    /// Weight of the remaining slots (`wo`), dimensionless; default 1.
     pub other: f64,
 }
 
@@ -458,6 +623,10 @@ impl Default for InternalWeights {
 }
 
 /// Sella `MaxInternalStep`.
+///
+///
+/// Built by [`MaxInternalStep::new`]. Every method that takes a step expects
+/// it in the packed internal order of [`pack_weights`].
 #[derive(Clone, Debug)]
 pub struct MaxInternalStep {
     delta: f64,
@@ -485,17 +654,24 @@ impl MaxInternalStep {
         Ok(Self { delta, weights: w })
     }
 
-    /// Trust radius.
+    /// Clip radius, as passed to [`MaxInternalStep::new`].
     pub fn delta(&self) -> f64 {
         self.delta
     }
 
-    /// Packed per-coordinate weights, Sella order.
+    /// Packed per-coordinate weights in Sella order (see [`pack_weights`]), one per
+    /// internal coordinate.
     pub fn weights(&self) -> &Array1<f64> {
         &self.weights
     }
 
     /// Sella `MaxInternalStep.cons`: `max |s_i w_i|`.
+    ///
+    /// `s` is the internals step, one entry per packed weight.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] when `s` and the packed weights differ in length.
     pub fn cons(&self, s: &Array1<f64>) -> Result<f64, SaddleError> {
         if s.len() != self.weights.len() {
             return Err(SaddleError::Shape(
@@ -506,6 +682,30 @@ impl MaxInternalStep {
     }
 
     /// Scale `s` so `cons(s) <= delta`. The Sella per-coordinate clip.
+    ///
+    /// The step is scaled as a whole, so its direction is kept.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] when `s` and the packed weights differ in length.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::array;
+    /// use rgsaddle::constraints::InternalCounts;
+    /// use rgsaddle::restricted::{InternalWeights, MaxInternalStep};
+    ///
+    /// // One bond (Angstrom, weight 2) and one angle (radian, weight 1).
+    /// let counts = InternalCounts { nbonds: 1, nangles: 1, ..Default::default() };
+    /// let weights = InternalWeights::default().with_bond(2.0);
+    /// let mis = MaxInternalStep::new(0.5, counts, weights)?;
+    /// // The weighted entries are (0.6, 0.2); the largest, 0.6, is cut to 0.5.
+    /// let clipped = mis.clip(&array![0.3, 0.2])?;
+    /// assert!((clipped[0] - 0.25).abs() < 0.001);
+    /// assert!(mis.clip(&array![0.3]).is_err());
+    /// # Ok::<(), rgsaddle::SaddleError>(())
+    /// ```
     pub fn clip(&self, s: &Array1<f64>) -> Result<Array1<f64>, SaddleError> {
         if s.len() != self.weights.len() {
             return Err(SaddleError::Shape(
@@ -520,6 +720,14 @@ impl MaxInternalStep {
     /// The clip sits in front of a Euclidean trust radius: a host
     /// that still wants `||s|| <= delta_tr` applies `qn_restricted`
     /// to the clipped increment.
+    ///
+    /// `evals`, `evecs` and `g` have one entry (row) per packed internal; `order` is
+    /// the number of uphill modes. The step is taken at level shift 0.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] when `g`, `evals` or `evecs` do not match the packed
+    /// weights.
     pub fn restrict_qn(
         &self,
         evals: &Array1<f64>,
@@ -538,6 +746,12 @@ impl MaxInternalStep {
     }
 
     /// Riemannian clip: project, clip in the chart, retract.
+    ///
+    /// `s` is an ambient step. Returns the new point on `man`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Self::clip`].
     pub fn step_on<M: Manifold>(
         &self,
         man: &M,
@@ -550,6 +764,13 @@ impl MaxInternalStep {
     }
 
     /// Vector transport of the clipped projected increment.
+    ///
+    /// `s` is an ambient step, transported along `man` from `x` to `x_to` after the
+    /// clip.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Self::clip`].
     pub fn transport_step<M: Manifold>(
         &self,
         man: &M,
@@ -563,6 +784,13 @@ impl MaxInternalStep {
     }
 
     /// Riemannian QN + clip: rgrad, unrestricted QN, project, clip, retract.
+    ///
+    /// `x` is the current point and `egrad` the ambient gradient in eV per unit of
+    /// the chart. Returns the new point on `man`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Self::restrict_qn`] and [`Self::clip`].
     pub fn restrict_qn_on<M: Manifold>(
         &self,
         man: &M,
@@ -578,8 +806,10 @@ impl MaxInternalStep {
     }
 }
 
-/// Sella packing: `wx` trans, `wb` bonds, `wa` angles, `wd`
-/// dihedrals, `wo` other, `wx` rotations.
+/// Sella packing of the weights: `counts.ntrans` entries of `wx`, then bonds
+/// (`wb`), angles (`wa`), dihedrals (`wd`), the other coordinates (`wo`), and
+/// finally `counts.nrotations` entries of `wx` again. The result has
+/// `counts.nint()` entries.
 pub fn pack_weights(counts: InternalCounts, w: InternalWeights) -> Array1<f64> {
     let n = counts.nint();
     let mut out = Array1::zeros(n);
@@ -612,11 +842,17 @@ pub fn pack_weights(counts: InternalCounts, w: InternalWeights) -> Array1<f64> {
 }
 
 /// Per-equality weights in chart order (not Sella count packing).
+///
+/// The result has one entry per equality of `chart`, with the default weights
+/// (all 1).
 pub fn weights_for_equalities(chart: &Constraints) -> Array1<f64> {
     weights_for_equalities_with(chart, InternalWeights::default())
 }
 
 /// [`weights_for_equalities`] with host weights.
+///
+/// Translations and rotations get `w.translation`, bonds `w.bond`, angles
+/// `w.angle`, dihedrals `w.dihedral` and displacements `w.other`.
 pub fn weights_for_equalities_with(chart: &Constraints, w: InternalWeights) -> Array1<f64> {
     let eqs = chart.equalities();
     let mut out = Array1::zeros(eqs.len());
@@ -633,6 +869,9 @@ pub fn weights_for_equalities_with(chart: &Constraints, w: InternalWeights) -> A
 }
 
 /// `max_i |s_i w_i|` through vecops `nrminf` so `par` applies.
+///
+/// If `s` and `w` differ in length the longer one is truncated to the shorter,
+/// and an empty product gives 0.
 pub fn cons_max(s: &Array1<f64>, w: &Array1<f64>) -> f64 {
     if s.len() == w.len() {
         return nrminf((s * w).view());
@@ -645,6 +884,9 @@ pub fn cons_max(s: &Array1<f64>, w: &Array1<f64>) -> f64 {
 }
 
 /// Scale `s` so `max |s_i w_i| <= delta`.
+///
+/// `s` and `w` have equal length and `delta` is the radius. A step with
+/// `max |s_i w_i|` of at most `delta` (or at most `1e-16`) is returned unchanged.
 pub fn mis_clip(s: &Array1<f64>, w: &Array1<f64>, delta: f64) -> Array1<f64> {
     let val = cons_max(s, w);
     if val <= delta || val <= 1e-16 {
