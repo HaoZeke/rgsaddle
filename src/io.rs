@@ -114,6 +114,12 @@ pub struct ConImage<'a> {
 /// Positions are one copy of the frame's float64 slice. Column 5 is the
 /// host order when those ids are a permutation of `0..N`. Otherwise the
 /// buffer stays in file order.
+///
+/// # Errors
+///
+/// [`SaddleError::Surface`] when readcon-core cannot read or parse the file;
+/// [`SaddleError::Shape`] or [`SaddleError::Invalid`] when the frame is not `N x 3`
+/// float64 data or its cell is not valid.
 pub fn frame_from_con(path: impl AsRef<Path>) -> Result<MolecularFrame, SaddleError> {
     let frame = read_first_frame(path.as_ref()).map_err(io_error)?;
     molecular_frame(frame)
@@ -122,6 +128,14 @@ pub fn frame_from_con(path: impl AsRef<Path>) -> Result<MolecularFrame, SaddleEr
 /// Load frame `index` of a CON file.
 ///
 /// `index == 0` is [`frame_from_con`]. This does not parse the other frames.
+///
+/// `index` counts frames from zero.
+///
+/// # Errors
+///
+/// [`SaddleError::Surface`] when readcon-core cannot read or parse the file;
+/// [`SaddleError::Shape`] or [`SaddleError::Invalid`] when the frame is not `N x 3`
+/// float64 data or its cell is not valid.
 pub fn frame_from_con_nth(
     path: impl AsRef<Path>,
     index: usize,
@@ -131,6 +145,14 @@ pub fn frame_from_con_nth(
 }
 
 /// Every frame of a band file, in file order.
+///
+/// The units of each frame are its own; see [`MolecularFrame`].
+///
+/// # Errors
+///
+/// [`SaddleError::Surface`] when readcon-core cannot read or parse the file;
+/// [`SaddleError::Shape`] or [`SaddleError::Invalid`] when the frame is not `N x 3`
+/// float64 data or its cell is not valid.
 pub fn frames_from_con(path: impl AsRef<Path>) -> Result<Vec<MolecularFrame>, SaddleError> {
     let frames = read_all_frames(path.as_ref()).map_err(io_error)?;
     frames.into_iter().map(molecular_frame).collect()
@@ -139,6 +161,40 @@ pub fn frames_from_con(path: impl AsRef<Path>) -> Result<Vec<MolecularFrame>, Sa
 /// Write one geometry with [`ConFrameWriter::new`].
 ///
 /// RoundTrip, canonical off. Forces are written only when the image has them.
+///
+/// `species` holds the symbols, masses and cell shared by the frame and `image` the
+/// positions (angstrom), energy (eV) and forces (eV/angstrom).
+///
+/// # Errors
+///
+/// [`SaddleError::Shape`] when the positions, forces, symbols or masses disagree in
+/// length; [`SaddleError::NonFinite`] for a non-finite value;
+/// [`SaddleError::Invalid`] for an empty symbol, atoms of one symbol with different
+/// masses, or a singular cell; [`SaddleError::Surface`] when the file cannot be
+/// written.
+///
+/// # Examples
+///
+/// ```
+/// # #[cfg(feature = "readcon")]
+/// # {
+/// use rgsaddle::io::{ConImage, ConSpecies, frame_from_con, write_restart};
+///
+/// let species = ConSpecies { symbols: &["H", "H"], masses: &[1.008, 1.008], cell: None };
+/// let image = ConImage {
+///     positions: &[0.0, 0.0, 0.0, 0.74, 0.0, 0.0],
+///     energy: Some(-4.5),
+///     forces: None,
+///     neb_bead: None,
+/// };
+/// let path = std::env::temp_dir().join(format!("rgsaddle-doc-{}.con", std::process::id()));
+/// write_restart(&path, &species, &image).unwrap();
+/// let frame = frame_from_con(&path).unwrap();
+/// assert_eq!(frame.positions.len(), 6);
+/// assert!((frame.positions[3] - 0.74).abs() < 0.001);
+/// std::fs::remove_file(&path).unwrap();
+/// # }
+/// ```
 pub fn write_restart(
     path: impl AsRef<Path>,
     species: &ConSpecies<'_>,
@@ -153,6 +209,14 @@ pub fn write_restart(
 /// Symbols stay in coordinate order on every image. `neb_bead` falls
 /// back to the file index. A frame carries forces only when that image
 /// has a gradient.
+///
+/// `images` holds one entry per band image, all sharing `species`; positions in
+/// angstrom, energies in eV.
+///
+/// # Errors
+///
+/// The errors of [`write_restart`] for any image, and [`SaddleError::Invalid`]
+/// when `images` is empty.
 pub fn write_band(
     path: impl AsRef<Path>,
     species: &ConSpecies<'_>,
@@ -175,6 +239,14 @@ pub fn write_band(
 /// The numeric spelling is [`readcon_core::writer::FloatFormat::RoundTrip`].
 /// A band under 64 images is one append, which is the call that can group.
 /// This is not a release gate until a host calls it.
+///
+/// `traj_id` names the trajectory in `corpus`. Returns the count the corpus
+/// reports for the append.
+///
+/// # Errors
+///
+/// The errors of [`write_band`] for the frames, and [`SaddleError::Surface`] when
+/// the corpus rejects the append.
 #[cfg(feature = "readcon-db")]
 pub fn store_band(
     corpus: &readcon_db::ConCorpus,
