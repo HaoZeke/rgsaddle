@@ -5,7 +5,7 @@
 #include <stddef.h>
 
 _Static_assert(RGSADDLE_ABI_MAJOR == 1u, "main ABI major");
-_Static_assert(RGSADDLE_ABI_MINOR == 43u, "ABI minor");
+_Static_assert(RGSADDLE_ABI_MINOR == 44u, "ABI minor");
 _Static_assert(RGSADDLE_BAND_NO_MIN_MODE == (1ull << 3), "band flag bit 3");
 _Static_assert(RGSADDLE_BAND_SPLINE_REPARAM == (1ull << 4), "band flag bit 4");
 _Static_assert(RGSADDLE_BAND_STRING == (1ull << 5), "band flag bit 5");
@@ -498,5 +498,15 @@ typedef rgsaddle_status_t (*abi43_signature_rgsaddle_growing_string_step)(
     RgsaddleGrowingString *session, rgsaddle_surface_fn surface, void *user,
     rgsaddle_report_t *out);
 _Static_assert(_Generic(&rgsaddle_growing_string_step, abi43_signature_rgsaddle_growing_string_step: 1, default: 0), "rgsaddle_growing_string_step signature");
+
+typedef rgsaddle_status_t (*abi44_signature_rgsaddle_band_set_free_end)(
+    RgsaddleBand *band, int32_t enabled, int32_t side, int32_t has_target_energy,
+    double target_energy, int64_t max_cuts, double cut_force, double energy_tol, int64_t stability,
+    int64_t window_offset, int32_t cubic);
+_Static_assert(_Generic(&rgsaddle_band_set_free_end, abi44_signature_rgsaddle_band_set_free_end: 1, default: 0), "rgsaddle_band_set_free_end signature");
+
+typedef rgsaddle_status_t (*abi44_signature_rgsaddle_band_free_end_residual)(
+    const RgsaddleBand *band, double *out);
+_Static_assert(_Generic(&rgsaddle_band_free_end_residual, abi44_signature_rgsaddle_band_free_end_residual: 1, default: 0), "rgsaddle_band_free_end_residual signature");
 
 #endif

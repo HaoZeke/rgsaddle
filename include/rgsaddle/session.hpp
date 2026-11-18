@@ -254,6 +254,28 @@ public:
         check(rgsaddle_band_set_string(handle_, enabled ? 1 : 0, scheme));
     }
 
+    // Free-end adaptive NEB (FEA-NEB), ABI minor 44.
+    void set_free_end(bool enabled, std::int32_t side = RGSADDLE_FREE_END_LAST,
+                      bool has_target_energy = false, double target_energy = 0.0,
+                      std::int64_t max_cuts = 2, double cut_force = 0.0,
+                      double energy_tol = 0.001, std::int64_t stability = 2,
+                      std::int64_t window_offset = 1, bool cubic = true) {
+        check(rgsaddle_band_set_free_end(
+            handle_, enabled ? 1 : 0, side, has_target_energy ? 1 : 0,
+            target_energy, max_cuts, cut_force, energy_tol, stability,
+            window_offset, cubic ? 1 : 0));
+    }
+
+    [[nodiscard]] double free_end_residual() const {
+        double out = 0.0;
+        check(rgsaddle_band_free_end_residual(handle_, &out));
+        return out;
+    }
+
+    [[nodiscard]] std::int64_t free_end_cuts() const noexcept {
+        return rgsaddle_band_free_end_cuts(handle_);
+    }
+
     [[nodiscard]] SaddleIndex saddle_index(std::size_t capacity = 8) const {
         rgsaddle_saddle_index_t out{};
         std::vector<double> curvatures(capacity);
