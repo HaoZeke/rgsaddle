@@ -3,9 +3,11 @@
 //! The estimator is Swinburne and Marinica, Phys. Rev. Lett. 120, 135503
 //! (2018), doi:10.1103/PhysRevLett.120.135503: `dF/ds = ⟨(∇E · n)(1-ψ)⟩`.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use ndarray::{Array1, ArrayView1};
 use rgsaddle::{
-    ArcPath, PafiConfig, PathFrame, PointSurface, SaddleError, average_hyperplane,
+    ArcPath, PafiConfig, PathFrame, PointSurface, RelaxConfig, SaddleError, average_hyperplane,
     integrate_profile, pafi_profile, zero_temperature_barrier,
 };
 
@@ -378,4 +380,254 @@ impl PointSurface for Corner {
         gradient[1] = 8.0 * y;
         Ok((energy, gradient))
     }
+}
+
+/// `V = h (y² - 1)² - b y + c x y` with `h = 0.4`, `c = 0.5` and the tilt
+/// `b`: on the plane `x = 0`, a well near `y = -1` and a deeper one near
+/// `y = 1`, told apart by `∂V/∂x = c y`.
+struct TwoWells {
+    tilt: f64,
+}
+
+const WELL_HEIGHT: f64 = 0.4;
+const WELL_COUPLING: f64 = 0.5;
+
+impl TwoWells {
+    fn energy(&self, x: f64, y: f64) -> f64 {
+        WELL_HEIGHT * (y * y - 1.0).powi(2) - self.tilt * y + WELL_COUPLING * x * y
+    }
+
+    fn slope(&self, x: f64, y: f64) -> f64 {
+        4.0 * WELL_HEIGHT * y * (y * y - 1.0) - self.tilt + WELL_COUPLING * x
+    }
+
+    /// The line `y = -1` from `x = -1` to `x = 1`, and its plane at `x = 0`.
+    fn plane() -> rgsaddle::PathGeometry {
+        let path = ArcPath::from_positions(&[
+            Array1::from_vec(vec![-1.0, -1.0]),
+            Array1::from_vec(vec![1.0, -1.0]),
+        ])
+        .expect("path");
+        path.geometry(1.0).expect("plane")
+    }
+}
+
+impl PointSurface for TwoWells {
+    fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+        let (along, across) = (x[0], x[1]);
+        let gradient = vec![WELL_COUPLING * across, self.slope(along, across)];
+        Ok((self.energy(along, across), Array1::from_vec(gradient)))
+    }
+}
+
+/// The path sits in the upper well of [`TwoWells`] at `kT = 0.1`, `2 kT`
+/// above the other behind a ridge `3 kT` high. With the basin test the
+/// gradient is `c ⟨y⟩` over the basin of the path, `y` below the ridge, by
+/// quadrature. Without it the walk crosses into the lower well and stays.
+#[test]
+fn basin_test_keeps_the_plane_in_the_basin_of_the_path() {
+    let thermal = 0.1;
+    let surface = TwoWells { tilt: 0.1 };
+    let (mut below, mut above) = (-0.5, 0.5);
+    for _ in 0..100 {
+        let middle = 0.5 * (below + above);
+        if surface.slope(0.0, middle) > 0.0 {
+            below = middle;
+        } else {
+            above = middle;
+        }
+    }
+    let ridge = 0.5 * (below + above);
+    let points = 40_001;
+    let step = (ridge + 3.0) / (points - 1) as f64;
+    let (mut weight, mut moment) = (0.0, 0.0);
+    for k in 0..points {
+        let y = -3.0 + step * k as f64;
+        let ends = if k == 0 || k == points - 1 { 0.5 } else { 1.0 };
+        let w = ends * (-surface.energy(0.0, y) / thermal).exp();
+        weight += w;
+        moment += w * y;
+    }
+    let truth = WELL_COUPLING * moment / weight;
+    let geometry = TwoWells::plane();
+    let config = PafiConfig::default()
+        .with_thermal(thermal)
+        .with_mobility(1.0)
+        .with_time_step(0.01)
+        .with_thermalize(200)
+        .with_stride(10)
+        .with_samples(10_000)
+        .with_blocks(500)
+        .with_seed(5)
+        .with_fix_com(false)
+        .with_retain(0);
+    let held = average_hyperplane(&surface, &geometry, &config).expect("held");
+    assert!(
+        (held.gradient - truth).abs() < 4.0 * held.error + 5.0e-3 && held.error < 0.01,
+        "dF/ds {} quadrature {truth} error {}",
+        held.gradient,
+        held.error
+    );
+    assert!(held.rejected > 0, "the walk never left the basin");
+    let free = average_hyperplane(&surface, &geometry, &config.with_max_jump(None)).expect("free");
+    assert_eq!(free.rejected, 0);
+    assert!(
+        free.gradient > truth + 0.25,
+        "dF/ds {} without the test, {truth} in the basin",
+        free.gradient
+    );
+}
+
+/// Tilted until the upper well of [`TwoWells`] holds the walk for no
+/// longer than a stretch, the plane is refused rather than averaged over
+/// the lower well.
+#[test]
+fn basin_test_refuses_a_plane_that_cannot_hold_the_basin() {
+    let config = PafiConfig::default()
+        .with_thermal(0.1)
+        .with_mobility(1.0)
+        .with_time_step(0.01)
+        .with_thermalize(200)
+        .with_stride(10)
+        .with_samples(80)
+        .with_blocks(4)
+        .with_seed(5)
+        .with_fix_com(false);
+    match average_hyperplane(&TwoWells { tilt: 0.55 }, &TwoWells::plane(), &config) {
+        Err(SaddleError::Solver(message)) => {
+            assert!(message.contains("left the basin"), "{message}");
+        }
+        other => panic!("expected the plane to be refused, got {other:?}"),
+    }
+}
+
+/// [`Widening`] with one fault, to see what the quench of the basin test
+/// does with it.
+enum Fault {
+    /// Every evaluation is an error.
+    Fails,
+    /// Every gradient is one entry short.
+    ShortGradient,
+    /// The gradient reverses on every call, so every step goes against the
+    /// force that follows it and FIRE never gains speed.
+    Reversing,
+    /// An error on the call after the first.
+    FailsLater,
+}
+
+struct Faulty {
+    fault: Fault,
+    calls: AtomicUsize,
+}
+
+impl Faulty {
+    fn new(fault: Fault) -> Self {
+        Self {
+            fault,
+            calls: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl PointSurface for Faulty {
+    fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+        let call = self.calls.fetch_add(1, Ordering::Relaxed);
+        let (energy, gx, gy) = widening(x[0], x[1]);
+        match self.fault {
+            Fault::Fails => Err(SaddleError::Invalid("surface failed in the quench".into())),
+            Fault::ShortGradient => Ok((energy, Array1::from_vec(vec![gx]))),
+            Fault::Reversing => {
+                let sign = if call & 1 == 0 { 1.0 } else { -1.0 };
+                Ok((energy, Array1::from_vec(vec![sign * (gx + 1.0), sign * gy])))
+            }
+            Fault::FailsLater if call >= 1 => {
+                Err(SaddleError::Invalid("surface failed in the quench".into()))
+            }
+            Fault::FailsLater => Ok((energy, Array1::from_vec(vec![gx, gy]))),
+        }
+    }
+}
+
+fn quench_config() -> PafiConfig {
+    PafiConfig::default()
+        .with_thermal(0.02)
+        .with_mobility(1.0)
+        .with_time_step(0.01)
+        .with_thermalize(20)
+        .with_stride(1)
+        .with_samples(8)
+        .with_blocks(2)
+        .with_fix_com(false)
+        .with_retain(0)
+}
+
+fn widening_plane() -> rgsaddle::PathGeometry {
+    let frames: Vec<Array1<f64>> = (0..9)
+        .map(|i| Array1::from_vec(vec![-1.0 + i as f64 * 0.25, 0.0]))
+        .collect();
+    ArcPath::from_positions(&frames)
+        .expect("path")
+        .geometry(0.5)
+        .expect("mid")
+}
+
+#[test]
+fn a_surface_error_in_the_quench_is_the_error_returned() {
+    let geometry = widening_plane();
+    for fault in [Fault::Fails, Fault::FailsLater] {
+        let surface = Faulty::new(fault);
+        match average_hyperplane(&surface, &geometry, &quench_config()) {
+            Err(SaddleError::Invalid(message)) => {
+                assert_eq!(message, "surface failed in the quench");
+            }
+            other => panic!("the surface error was hidden: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn a_gradient_of_the_wrong_length_in_the_quench_is_a_shape_error() {
+    let geometry = widening_plane();
+    let surface = Faulty::new(Fault::ShortGradient);
+    match average_hyperplane(&surface, &geometry, &quench_config()) {
+        Err(SaddleError::Shape(message)) => {
+            assert!(message.contains("quench gradient"), "{message}");
+        }
+        other => panic!("the shape error was hidden: {other:?}"),
+    }
+}
+
+#[test]
+fn a_quench_that_stalls_or_spends_its_cap_is_counted_and_a_converged_one_is_not() {
+    let geometry = widening_plane();
+    let converged =
+        average_hyperplane(&Widening, &geometry, &quench_config()).expect("a consistent surface");
+    assert_eq!(converged.unconverged_quenches, 0);
+    let untested = average_hyperplane(&Widening, &geometry, &quench_config().with_max_jump(None))
+        .expect("a consistent surface");
+    assert_eq!(untested.unconverged_quenches, 0);
+    let stalled = average_hyperplane(
+        &Faulty::new(Fault::Reversing),
+        &geometry,
+        &quench_config()
+            .with_max_jump(Some(1.0e6))
+            .with_quench(RelaxConfig::default()),
+    )
+    .expect("a stalled quench ends where it is");
+    assert!(
+        stalled.unconverged_quenches > 0,
+        "the quench of a reversing force was not reported"
+    );
+}
+
+#[test]
+fn a_quench_that_spends_its_step_cap_is_counted() {
+    let geometry = widening_plane();
+    let capped = quench_config().with_max_jump(Some(1.0e6)).with_quench(
+        RelaxConfig::default()
+            .with_force_tol(1.0e-12)
+            .with_max_steps(2),
+    );
+    let average = average_hyperplane(&Widening, &geometry, &capped).expect("a capped quench ends");
+    assert!(average.unconverged_quenches > 0);
 }
