@@ -8,10 +8,23 @@ on:
       - "feat/**"
       - "fix/**"
       - "ci/**"
-    # The org pages #+INCLUDE files under examples/.
-    paths: ["docs/**", "examples/**", ".github/workflows/docs.yml"]
+    # The DOI check reads public docs from every documented interface.
+    # The org pages also #+INCLUDE files under examples/.
+    paths:
+      - "README.md"
+      - "docs/**"
+      - "examples/**"
+      - "include/**"
+      - "src/**"
+      - ".github/workflows/docs.yml"
   pull_request:
-    paths: ["docs/**", "examples/**", ".github/workflows/docs.yml"]
+    paths:
+      - "README.md"
+      - "docs/**"
+      - "examples/**"
+      - "include/**"
+      - "src/**"
+      - ".github/workflows/docs.yml"
   workflow_dispatch:
 
 permissions:
