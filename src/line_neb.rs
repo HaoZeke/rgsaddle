@@ -133,6 +133,9 @@ pub enum LineNebStatus {
 #[derive(Clone, Debug)]
 pub struct LineNebReport {
     pub status: LineNebStatus,
+    /// Largest Euclidean norm of the complete optimized force over the
+    /// interior images (transverse action plus tangential spring).
+    pub max_interior_optimized: f64,
     /// Largest Euclidean norm of the transverse action force over the
     /// interior images.
     pub max_interior_perpendicular: f64,
@@ -152,6 +155,7 @@ pub struct LineNebReport {
 struct Evaluation {
     action: f64,
     optimization_force: Array2<f64>,
+    max_interior_optimized: f64,
     max_interior_perpendicular: f64,
     sum_interior_perpendicular: f64,
     max_endpoint_optimized: f64,
@@ -214,12 +218,19 @@ fn action_weights(
     reduced_planck: f64,
 ) -> Result<Array1<f64>, SaddleError> {
     // Zhang et al. (2025), Appendix A, Eq. (22), reproducing the 2018
-    // LI-NEB derivation: xi_i = sqrt(2(V_i-E))/hbar. The constrained
-    // turning-point images have xi_0 = xi_n = 0.
+    // LI-NEB derivation: xi_i = sqrt(2(V_i-E))/hbar at every image.
     let mut xi = Array1::zeros(energies.len());
-    for i in 1..energies.len() - 1 {
+    for i in 0..energies.len() {
         let excess = energies[i] - energy;
-        if excess.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
+        if excess.partial_cmp(&0.0) == Some(std::cmp::Ordering::Less) {
+            return Err(SaddleError::Invalid(format!(
+                "LI-NEB image {i} must not lie below the fixed energy"
+            )));
+        }
+        if i > 0
+            && i + 1 < energies.len()
+            && excess.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater)
+        {
             return Err(SaddleError::Invalid(format!(
                 "LI-NEB interior image {i} must lie above the fixed energy"
             )));
@@ -250,7 +261,7 @@ fn segments(q: ArrayView2<'_, f64>) -> Result<(Vec<Array1<f64>>, Array1<f64>), S
 ///
 /// `positions` are physical coordinates and `masses` has one entry per
 /// coordinate. Endpoint energies may equal `energy`; every interior
-/// energy must be strictly larger.
+/// energy must be strictly larger; endpoints must not lie below it.
 pub fn fixed_energy_action(
     positions: ArrayView2<'_, f64>,
     energies: ArrayView1<'_, f64>,
@@ -403,6 +414,7 @@ fn evaluate(
     )?;
     let (_, lengths) = segments(q)?;
     let mut optimization_force = Array2::zeros(q.raw_dim());
+    let mut max_interior_optimized = 0.0_f64;
     let mut max_interior_perpendicular = 0.0_f64;
     let mut sum_interior_perpendicular = 0.0_f64;
 
@@ -423,9 +435,9 @@ fn evaluate(
         let spring = config.spring_k * (lengths[j] - lengths[j - 1]) * tangent;
         // LI-NEB transverse action force plus the parallel spring,
         // Zhang et al. (2025), Appendix A, Eqs. (24)-(25).
-        optimization_force
-            .row_mut(j)
-            .assign(&(perpendicular + spring));
+        let optimized = perpendicular + spring;
+        max_interior_optimized = max_interior_optimized.max(optimized.dot(&optimized).sqrt());
+        optimization_force.row_mut(j).assign(&optimized);
     }
 
     for (endpoint, neighbour) in [(0, 1), (q.nrows() - 1, q.nrows() - 2)] {
@@ -459,6 +471,7 @@ fn evaluate(
     Ok(Evaluation {
         action,
         optimization_force,
+        max_interior_optimized,
         max_interior_perpendicular,
         sum_interior_perpendicular,
         max_endpoint_optimized,
@@ -605,59 +618,123 @@ fn one_surface(
     Ok((energies[0], gradients.row(0).to_owned()))
 }
 
-fn energy_slice(
+fn descent_direction(
     surface: &impl BandSurface,
     q: ArrayView1<'_, f64>,
     sqrt_masses: ArrayView1<'_, f64>,
-    target: f64,
 ) -> Result<Array1<f64>, SaddleError> {
     let position = &q / &sqrt_masses;
-    let (energy, gradient) = one_surface(surface, position.view())?;
-    if energy <= target {
-        return Ok(q.to_owned());
-    }
+    let (_, gradient) = one_surface(surface, position.view())?;
     let force_q = -gradient / sqrt_masses;
     let force_norm = force_q.dot(&force_q).sqrt();
     if force_norm.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
         return Err(SaddleError::Invalid(
-            "MEP energy slice reached a stationary point above its target".into(),
+            "MEP descent reached a stationary point above its target".into(),
         ));
     }
-    let direction = force_q / force_norm;
-    let mut lower = 0.0;
-    let scale = q.iter().map(|value| value.abs()).fold(1.0_f64, f64::max);
-    let mut upper = scale * f64::EPSILON.sqrt();
-    if !(upper > 0.0 && upper.is_finite()) {
-        return Err(SaddleError::NonFinite("MEP energy-slice step"));
-    }
+    Ok(force_q / force_norm)
+}
+
+fn rk4_descent(
+    surface: &impl BandSurface,
+    q: ArrayView1<'_, f64>,
+    sqrt_masses: ArrayView1<'_, f64>,
+    step: f64,
+) -> Result<Array1<f64>, SaddleError> {
+    let half = 0.5 * step;
+    let k1 = descent_direction(surface, q, sqrt_masses)?;
+    let k2_q = q.to_owned() + half * &k1;
+    let k2 = descent_direction(surface, k2_q.view(), sqrt_masses)?;
+    let k3_q = q.to_owned() + half * &k2;
+    let k3 = descent_direction(surface, k3_q.view(), sqrt_masses)?;
+    let k4_q = q.to_owned() + step * &k3;
+    let k4 = descent_direction(surface, k4_q.view(), sqrt_masses)?;
+    Ok(q.to_owned() + step * (&k1 + 2.0 * &k2 + 2.0 * &k3 + &k4) / 6.0)
+}
+
+fn crossing_on_segment(
+    surface: &impl BandSurface,
+    mut above: Array1<f64>,
+    mut below: Array1<f64>,
+    sqrt_masses: ArrayView1<'_, f64>,
+    target: f64,
+) -> Result<Array1<f64>, SaddleError> {
     loop {
-        let trial_q = q.to_owned() + upper * &direction;
-        let trial = &trial_q / &sqrt_masses;
-        if one_surface(surface, trial.view())?.0 <= target {
-            break;
+        let middle = 0.5 * (&above + &below);
+        if middle == above || middle == below {
+            return Ok(below);
         }
-        lower = upper;
-        upper += upper;
-        if !upper.is_finite() {
-            return Err(SaddleError::Invalid(
-                "MEP energy slice did not cross its target energy".into(),
-            ));
-        }
-    }
-    loop {
-        let middle = lower + 0.5 * (upper - lower);
-        if middle == lower || middle == upper {
-            break;
-        }
-        let trial_q = q.to_owned() + middle * &direction;
-        let trial = &trial_q / &sqrt_masses;
-        if one_surface(surface, trial.view())?.0 > target {
-            lower = middle;
+        let position = &middle / &sqrt_masses;
+        if one_surface(surface, position.view())?.0 > target {
+            above = middle;
         } else {
-            upper = middle;
+            below = middle;
         }
     }
-    Ok(q.to_owned() + upper * direction)
+}
+
+fn energy_slice(
+    surface: &impl BandSurface,
+    start: ArrayView1<'_, f64>,
+    sqrt_masses: ArrayView1<'_, f64>,
+    target: f64,
+    step: &mut f64,
+    path: &mut Vec<Array1<f64>>,
+) -> Result<Array1<f64>, SaddleError> {
+    let mut q = start.to_owned();
+    let position = &q / &sqrt_masses;
+    let mut energy = one_surface(surface, position.view())?.0;
+    if energy <= target {
+        return Ok(q);
+    }
+    loop {
+        let full = rk4_descent(surface, q.view(), sqrt_masses, *step)?;
+        let half_step = 0.5 * *step;
+        let first_half = rk4_descent(surface, q.view(), sqrt_masses, half_step)?;
+        let second_half = rk4_descent(surface, first_half.view(), sqrt_masses, half_step)?;
+        let difference = &second_half - &full;
+        let error = difference.dot(&difference).sqrt();
+        let coordinate_scale = q
+            .iter()
+            .chain(second_half.iter())
+            .map(|value| value.abs())
+            .fold(1.0_f64, f64::max);
+        let tolerance = f64::EPSILON.sqrt() * coordinate_scale;
+        if error > tolerance {
+            *step = half_step;
+            if !(*step > 0.0 && step.is_finite()) || q == second_half {
+                return Err(SaddleError::Stalled(
+                    "adaptive MEP descent could not resolve a step".into(),
+                ));
+            }
+            continue;
+        }
+        let trial_position = &second_half / &sqrt_masses;
+        let trial_energy = one_surface(surface, trial_position.view())?.0;
+        if trial_energy >= energy {
+            *step = half_step;
+            if q == second_half {
+                return Err(SaddleError::Stalled(
+                    "adaptive MEP descent made no downhill progress".into(),
+                ));
+            }
+            continue;
+        }
+        if trial_energy <= target {
+            let crossing = crossing_on_segment(surface, q, second_half, sqrt_masses, target)?;
+            path.push(crossing.clone());
+            return Ok(crossing);
+        }
+        q = second_half;
+        energy = trial_energy;
+        path.push(q.clone());
+        if error < tolerance / 16.0 {
+            *step += *step;
+            if !step.is_finite() {
+                return Err(SaddleError::NonFinite("adaptive MEP descent step"));
+            }
+        }
+    }
 }
 
 /// Energy-sliced steepest-descent seed from an index-one saddle.
@@ -701,17 +778,25 @@ pub fn fixed_energy_mep_seed(
         .iter()
         .map(|value| value.abs())
         .fold(1.0_f64, f64::max);
-    let displacement = scale * f64::EPSILON.sqrt();
+    let displacement = scale * f64::EPSILON.cbrt();
     let mut branches = Vec::with_capacity(2);
     for sign in [-1.0, 1.0] {
-        let mut branch = Vec::with_capacity(images);
+        let mut branch = Vec::new();
         branch.push(saddle_q.clone());
         let mut q = &saddle_q + sign * displacement * &direction;
+        branch.push(q.clone());
+        let mut step = displacement;
         for slice in 1..images {
             let fraction = slice as f64 / (images - 1) as f64;
             let level = saddle_energy + fraction * (target_energy - saddle_energy);
-            q = energy_slice(surface, q.view(), sqrt_masses.view(), level)?;
-            branch.push(q.clone());
+            q = energy_slice(
+                surface,
+                q.view(),
+                sqrt_masses.view(),
+                level,
+                &mut step,
+                &mut branch,
+            )?;
         }
         branches.push(branch);
     }
@@ -852,6 +937,7 @@ impl LineNebSession {
                 }
             }
         });
+        let previous_q = self.q.clone();
         let mut flat = Array1::from_iter(self.q.iter().copied());
         let stepped = self.solver.step(&oracle, &mut flat);
         drop(oracle);
@@ -874,7 +960,7 @@ impl LineNebSession {
             .ok_or_else(|| SaddleError::Solver("LI-NEB step produced no evaluation".into()))?;
         // All three residuals printed by Zhang et al. (2025), Appendix A,
         // Eq. (27), reproducing the 2018 LI-NEB convergence test.
-        let status = if evaluation.max_interior_perpendicular <= self.config.force_tol
+        let status = if evaluation.max_interior_optimized <= self.config.force_tol
             && evaluation.max_endpoint_optimized <= self.config.endpoint_force_tol
             && evaluation.sum_interior_perpendicular <= self.config.sum_force_tol
         {
@@ -882,8 +968,14 @@ impl LineNebSession {
         } else {
             LineNebStatus::Running
         };
+        if status == LineNebStatus::Running && self.q == previous_q {
+            return Err(SaddleError::Stalled(
+                "LI-NEB optimizer made no progress above its convergence tolerances".into(),
+            ));
+        }
         Ok(LineNebReport {
             status,
+            max_interior_optimized: evaluation.max_interior_optimized,
             max_interior_perpendicular: evaluation.max_interior_perpendicular,
             sum_interior_perpendicular: evaluation.sum_interior_perpendicular,
             max_endpoint_optimized: evaluation.max_endpoint_optimized,

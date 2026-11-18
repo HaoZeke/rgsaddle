@@ -301,6 +301,7 @@ typedef struct {
   uint64_t flags;
   int32_t status;      /**< rgsaddle_run_status_t */
   int32_t evaluations; /**< Image rows evaluated in this step. */
+  double max_interior_optimized;
   double max_interior_perpendicular;
   double sum_interior_perpendicular;
   double max_endpoint_optimized;

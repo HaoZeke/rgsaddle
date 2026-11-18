@@ -38,12 +38,12 @@ def test_action_force_and_cubic_match_analytic_values() -> None:
     )
     action = fixed_energy_action(positions, energies, masses, 0.3, 1.7)
     force = fixed_energy_action_force(positions, energies, gradients, masses, 0.3, 1.7)
-    assert abs(action - 2.689_136_149_698_181_4) < 2.0e-15
+    assert abs(action - 4.451_267_924_111_834) < 2.0e-15
     expected = np.array(
         [
             [0.0, 0.0, 0.0],
-            [1.095_210_982_127_138_3, -1.666_250_779_155_905_6, 0.0],
-            [-1.360_661_380_911_351_5, -1.015_102_671_714_826_4, 0.0],
+            [0.406_560_449_872_918_34, -2.593_280_341_805_817_5, 0.0],
+            [-0.851_336_823_737_935_1, -2.151_288_222_332_447, 0.0],
             [0.0, 0.0, 0.0],
         ]
     )
@@ -93,6 +93,7 @@ def test_seed_and_session_recover_the_analytic_mep_and_saddle() -> None:
     )
     report = line.run(double_well, 80_000)
     assert report.converged()
+    assert report.max_interior_optimized <= 2.0e-6
     converged = line.positions()
     assert np.max(np.abs(converged[:, 1:])) < 2.0e-5
     assert abs(converged[4, 0]) < 2.0e-5

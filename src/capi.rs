@@ -206,6 +206,7 @@ pub struct RgsaddleLineNebReport {
     pub flags: u64,
     pub status: i32,
     pub evaluations: i32,
+    pub max_interior_optimized: f64,
     pub max_interior_perpendicular: f64,
     pub sum_interior_perpendicular: f64,
     pub max_endpoint_optimized: f64,
@@ -619,6 +620,7 @@ pub unsafe extern "C" fn rgsaddle_line_neb_step(
                 LineNebStatus::Converged => 1,
             };
             out.evaluations = report.surface_rows.min(i32::MAX as usize) as i32;
+            out.max_interior_optimized = report.max_interior_optimized;
             out.max_interior_perpendicular = report.max_interior_perpendicular;
             out.sum_interior_perpendicular = report.sum_interior_perpendicular;
             out.max_endpoint_optimized = report.max_endpoint_optimized;

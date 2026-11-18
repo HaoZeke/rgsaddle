@@ -761,6 +761,7 @@ bool raise_status(int code);
 struct LineNebReportPy {
   int status;
   int evaluations;
+  double max_interior_optimized;
   double max_interior_perpendicular;
   double sum_interior_perpendicular;
   double max_endpoint_optimized;
@@ -827,6 +828,7 @@ public:
     return LineNebReportPy{
         report.status,
         report.evaluations,
+        report.max_interior_optimized,
         report.max_interior_perpendicular,
         report.sum_interior_perpendicular,
         report.max_endpoint_optimized,
@@ -1610,6 +1612,10 @@ NB_MODULE(_core, m) {
       .def_prop_ro("evaluations", [](const LineNebReportPy &report) {
         return report.evaluations;
       })
+      .def_prop_ro("max_interior_optimized",
+                   [](const LineNebReportPy &report) {
+                     return report.max_interior_optimized;
+                   })
       .def_prop_ro("max_interior_perpendicular",
                    [](const LineNebReportPy &report) {
                      return report.max_interior_perpendicular;
