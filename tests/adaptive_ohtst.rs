@@ -1992,6 +1992,71 @@ fn an_odd_dividing_index_keeps_the_trapezoid_inside_its_bound() {
     );
 }
 
+#[test]
+fn fixed_count_sampled_error_matches_the_barrier_deviation() {
+    assert_fourteen_record_floor_is_seven();
+    assert_fifteen_records_keep_seven_blocks();
+    let thermal = 0.2;
+    let chain: Vec<_> = (0..=16)
+        .map(|index| {
+            let x = index as f64 / 16.0 - 1.0;
+            Hyperplane::new(array![x, 0.0], array![1.0, 0.0]).unwrap()
+        })
+        .collect();
+    // One two-hundredth of kT. Kept runs stop at 14 records, so the sample
+    // is not selected for a low error. The chain is fine enough that the
+    // plane cap is not what holds the grid.
+    let sigma = thermal / 200.0;
+    let mut rows = Vec::new();
+    for seed in 1..=40 {
+        let mut sampler = NoisySampler { sigma, thermal };
+        let adaptive = config(thermal).with_max_planes(chain.len()).with_sampler(
+            LangevinConfig::default()
+                .with_thermal(thermal)
+                .with_seed(seed * 7_919),
+        );
+        let Ok(estimate) = adaptive_ohtst_string_rate(
+            &mut sampler,
+            &chain,
+            &Density {
+                plane: chain[0].clone(),
+                thermal,
+                error: 0.0,
+            },
+            &adaptive,
+        ) else {
+            continue;
+        };
+        if estimate.iterations != 0
+            || estimate.profile.samples_per_plane[0] != ADAPTIVE_OHTST_PILOT_SAMPLES
+        {
+            continue;
+        }
+        rows.push((
+            estimate.profile.barrier,
+            estimate.profile.sampled_barrier_error,
+        ));
+    }
+    assert!(
+        rows.len() >= 8,
+        "only {} stationary fixed-count runs",
+        rows.len()
+    );
+    let mean = rows.iter().map(|item| item.0).sum::<f64>() / rows.len() as f64;
+    let empirical = (rows.iter().map(|item| (item.0 - mean).powi(2)).sum::<f64>()
+        / (rows.len() - 1) as f64)
+        .sqrt();
+    let reported = rows.iter().map(|item| item.1).sum::<f64>() / rows.len() as f64;
+    // Seven blocks leave ν = 6. E[s]/σ = sqrt(2/ν) Γ((ν+1)/2) / Γ(ν/2)
+    // = sqrt(1/3) * (15/16) * sqrt(π).
+    let ratio = (1.0_f64 / 3.0).sqrt() * (15.0 / 16.0) * std::f64::consts::PI.sqrt();
+    assert!(
+        reported >= ratio * empirical,
+        "sampled {reported}, empirical {empirical}, ratio {ratio}"
+    );
+    assert!(reported / thermal <= ADAPTIVE_OHTST_TARGET_LOG_ERROR);
+}
+
 fn fixed_count_iid_run(seed: u64) -> Result<(f64, f64, usize), SaddleError> {
     let thermal = 0.2;
     let chain: Vec<_> = (0..=16)
