@@ -5,6 +5,10 @@
 //! ordinary distances, angles and dihedrals together with three
 //! translations and three rotations.  Eigenvectors of the primitive
 //! Wilson metric form a nonredundant coordinate system.
+//!
+//! The segmented interpolation follows the algorithmic ideas in the
+//! BSD licensed geomeTRIC reference implementation.  No geomeTRIC
+//! source is included here.
 
 use std::cmp::Ordering;
 

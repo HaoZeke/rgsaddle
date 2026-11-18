@@ -1,0 +1,92 @@
+#+TITLE: Translation rotation internal coordinates with splicing
+#+OPTIONS: toc:nil num:nil
+
+TRICS constructs a molecular path in internal coordinates while changing
+coordinate systems before an angle or dihedral becomes singular.  The method
+is due to Park, Song, and Wang.  The implementation follows the algorithmic
+ideas in the BSD licensed geomeTRIC reference implementation without
+including its source.
+
+#+begin_export rst
+:cite:`parkTrics2026,wangGeometryOptimization2016,geometricSoftware`
+#+end_export
+
+* Translation rotation internal coordinates
+For a fragment, the primitive vector \(p(x)\) contains bond distances,
+angles, dihedrals, three mean translations, and three rotations relative to
+the reference geometry.  Its Wilson matrix and metric are
+
+\[
+B_p = \frac{\partial p}{\partial x}, \qquad G_p = B_p B_p^{\mathsf T}.
+\]
+
+Let \(U\) contain the eigenvectors of \(G_p\) whose eigenvalues pass the
+configured relative rank threshold.  The nonredundant TRIC coordinates and
+their Wilson matrix are
+
+\[
+q = U^{\mathsf T}p, \qquad B_q = U^{\mathsf T}B_p.
+\]
+
+The translation and rotation coordinates keep disconnected fragments in the
+same coordinate construction.  Linear bends use two directions perpendicular
+to the bond axis in place of an ordinary angle.
+
+* Stability diagnostic
+A separate TRIC system \(Q_i\) is built at each initial image \(x_i\).  The
+diagnostic matrix evaluates each system on every image,
+
+\[
+D_{ij} = \max_{\alpha \in Q_i} d_\alpha(x_j).
+\]
+
+Here \(d_\alpha\) is zero for a regular primitive, one for a warning, two for
+an unstable angular primitive, and three for imminent failure.  Distances,
+translations, and rotations are regular unless their geometry is invalid.
+Angles and the adjacent angles of a dihedral supply the angular diagnostic.
+Contiguous entries at or below =diagnostic_threshold= are stable intervals.
+The car through the maze selection advances through the longest reachable
+interval while retaining overlap with the previous interval.
+
+* Segment interpolation and inversion
+Inside one stable interval, the internal displacement is divided uniformly,
+
+\[
+q(t_k) = q(0) + t_k\Delta q,\qquad
+t_k = \frac{k}{n-1}.
+\]
+
+Each image is recovered iteratively.  With internal residual \(r\), one
+Cartesian update is
+
+\[
+\Delta x = B_q^{\mathsf T}
+           (B_q B_q^{\mathsf T})^{-1}r.
+\]
+
+The largest atom move is bounded by =TricInversionConfig::max_atom_move=.
+The implementation tries the reverse direction when forward inversion does
+not converge.
+
+* Splicing and concatenation
+Write \(\chi_s(x_a,x_b,t_a,t_b;t)\) for interpolation at \(t\) in segment
+system \(s\).  For two overlapping segments, their endpoint iteration is
+
+\[
+x_a \leftarrow \chi_1(x_b,x_1,t_b,1;t_a), \qquad
+x_b \leftarrow \chi_0(x_0,x_a,0,t_a;t_b).
+\]
+
+All neighboring pairs are updated from the preceding iteration.  Iteration
+stops when the maximum Cartesian displacement of any atom between overlapping
+segment endpoints is at most =TricsConfig::splice_tolerance=.  Its default is
+=TRICS_SPLICE_TOLERANCE_ANGSTROM=, \(1.8\times10^{-3}\) Angstrom.
+
+The final path takes images from the left segment up to the midpoint of each
+overlap and from the right segment after it.  If one system is stable across
+the whole path, TRICS interpolates once and skips the splice iteration.
+
+The coordinate construction is kept in =rgsaddle::trics= behind an
+engine-independent Cartesian boundary.  It can therefore serve future
+geometry optimizers without coupling =rgsaddle= to a potential engine or
+changing =rgmin=.
