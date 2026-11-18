@@ -21,6 +21,8 @@ const JACOBI_SWEEPS_PER_DIMENSION: usize = 24;
 const ANGLE_WARNING_COSINE: f64 = 0.906_307_787_036_649_9;
 const ANGLE_UNSTABLE_COSINE: f64 = 0.965_925_826_289_068_3;
 const ANGLE_FAILURE_COSINE: f64 = 0.996_194_698_091_745_5;
+const DEFAULT_INVERSION_TOLERANCE: f64 = 0.000_000_01;
+const DEFAULT_INVERSION_MOVE: f64 = 0.1;
 
 /// Controls for constructing a nonredundant TRIC system.
 ///
@@ -49,6 +51,34 @@ impl Default for TricConfig {
             bond_factor: DEFAULT_BOND_FACTOR,
             rank_tolerance: DEFAULT_RANK_TOLERANCE,
             bonds: None,
+        }
+    }
+}
+
+/// Controls for iterative internal to Cartesian inversion.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct TricInversionConfig {
+    /// Maximum Newton iterations for one Cartesian image.
+    pub max_iterations: usize,
+    /// Largest internal coordinate residual accepted.
+    pub tolerance: f64,
+    /// Largest displacement of one atom in one iteration.
+    pub max_atom_move: f64,
+}
+
+with_setters!(TricInversionConfig {
+    with_max_iterations => max_iterations: val usize,
+    with_tolerance => tolerance: val f64,
+    with_max_atom_move => max_atom_move: val f64,
+});
+
+impl Default for TricInversionConfig {
+    fn default() -> Self {
+        Self {
+            max_iterations: 50,
+            tolerance: DEFAULT_INVERSION_TOLERANCE,
+            max_atom_move: DEFAULT_INVERSION_MOVE,
         }
     }
 }
@@ -233,8 +263,75 @@ impl TricSystem {
             .iter()
             .map(|primitive| primitive.diagnostic(positions))
             .max()
-            .unwrap_or_default()
+            .map_or(0, |value| value)
     }
+
+    /// Iteratively invert an internal displacement from `start`.
+    pub fn back_transform(
+        &self,
+        start: ArrayView1<'_, f64>,
+        displacement: ArrayView1<'_, f64>,
+        config: &TricInversionConfig,
+    ) -> Result<Array1<f64>, SaddleError> {
+        check_positions(start)?;
+        check_inversion_config(config)?;
+        if start.len() != self.reference.len() || displacement.len() != self.dimension() {
+            return Err(SaddleError::Shape(
+                "TRIC inversion dimensions do not match the coordinate system".into(),
+            ));
+        }
+        let mut positions = start.to_owned();
+        for _ in 0..config.max_iterations {
+            let actual = self.difference(positions.view(), start)?;
+            let residual = &displacement - &actual;
+            let residual_norm = residual.dot(&residual).sqrt();
+            if residual_norm <= config.tolerance {
+                return Ok(positions);
+            }
+            let b = self.wilson_b(positions.view())?;
+            let gram = b.dot(&b.t());
+            let multipliers = solve_linear(&gram, &residual)?;
+            let step = cap_atom_step(b.t().dot(&multipliers), config.max_atom_move);
+            positions += &step;
+            if positions.iter().any(|value| !value.is_finite()) {
+                return Err(SaddleError::NonFinite("TRIC back transformation"));
+            }
+        }
+        Err(SaddleError::Solver(
+            "TRIC back transformation did not converge".into(),
+        ))
+    }
+}
+
+/// Interpolate one segment in a fixed TRIC metric.
+///
+/// The endpoints are copied exactly. Each interior image advances by
+/// the same internal displacement and is recovered by iterative
+/// internal to Cartesian inversion.
+pub fn interpolate_tric_segment(
+    system: &TricSystem,
+    left: ArrayView1<'_, f64>,
+    right: ArrayView1<'_, f64>,
+    n_images: usize,
+    config: &TricInversionConfig,
+) -> Result<Array2<f64>, SaddleError> {
+    check_same_positions(left, right)?;
+    if n_images < 2 {
+        return Err(SaddleError::Shape(
+            "TRIC interpolation needs at least two images".into(),
+        ));
+    }
+    let total = system.difference(right, left)?;
+    let increment = total / (n_images - 1) as f64;
+    let mut path = Array2::zeros((n_images, left.len()));
+    path.row_mut(0).assign(&left);
+    let mut current = left.to_owned();
+    for image in 1..n_images - 1 {
+        current = system.back_transform(current.view(), increment.view(), config)?;
+        path.row_mut(image).assign(&current);
+    }
+    path.row_mut(n_images - 1).assign(&right);
+    Ok(path)
 }
 
 /// Build one TRIC system per image of an initial path.
@@ -292,6 +389,18 @@ fn check_config(config: &TricConfig) -> Result<(), SaddleError> {
     {
         return Err(SaddleError::Invalid(
             "TRIC rank tolerance must lie between zero and one".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn check_inversion_config(config: &TricInversionConfig) -> Result<(), SaddleError> {
+    if config.max_iterations == 0
+        || !(config.tolerance.is_finite() && config.tolerance > 0.0)
+        || !(config.max_atom_move.is_finite() && config.max_atom_move > 0.0)
+    {
+        return Err(SaddleError::Invalid(
+            "TRIC inversion needs positive finite controls".into(),
         ));
     }
     Ok(())
@@ -589,6 +698,66 @@ fn primitive_wilson_b(
     Ok(matrix)
 }
 
+fn solve_linear(matrix: &Array2<f64>, right: &Array1<f64>) -> Result<Array1<f64>, SaddleError> {
+    let n = matrix.nrows();
+    if matrix.ncols() != n || right.len() != n {
+        return Err(SaddleError::Shape(
+            "TRIC linear solve dimensions differ".into(),
+        ));
+    }
+    let mut a = matrix.clone();
+    let mut b = right.clone();
+    for column in 0..n {
+        let mut pivot = column;
+        for row in column + 1..n {
+            if a[(row, column)].abs() > a[(pivot, column)].abs() {
+                pivot = row;
+            }
+        }
+        if a[(pivot, column)].abs() <= VECTOR_TOLERANCE {
+            return Err(SaddleError::Solver("TRIC Wilson metric is singular".into()));
+        }
+        if pivot != column {
+            for slot in column..n {
+                a.swap((column, slot), (pivot, slot));
+            }
+            b.swap(column, pivot);
+        }
+        let diagonal = a[(column, column)];
+        for slot in column..n {
+            a[(column, slot)] /= diagonal;
+        }
+        b[column] /= diagonal;
+        for row in 0..n {
+            if row == column {
+                continue;
+            }
+            let factor = a[(row, column)];
+            for slot in column..n {
+                a[(row, slot)] -= factor * a[(column, slot)];
+            }
+            b[row] -= factor * b[column];
+        }
+    }
+    Ok(b)
+}
+
+fn cap_atom_step(mut step: Array1<f64>, max_move: f64) -> Array1<f64> {
+    let largest = step
+        .as_slice()
+        .map(|values| {
+            values
+                .chunks(3)
+                .map(|atom| atom.iter().map(|value| value * value).sum::<f64>().sqrt())
+                .fold(0.0_f64, f64::max)
+        })
+        .map_or(0.0, |value| value);
+    if largest > max_move {
+        step *= max_move / largest;
+    }
+    step
+}
+
 fn validate_bonds(
     bonds: &[(usize, usize)],
     n_atoms: usize,
@@ -629,7 +798,10 @@ fn infer_bonds(
         }
     }
     let mut scale = nearest.clone();
-    scale.sort_by(|left, right| left.partial_cmp(right).unwrap_or(Ordering::Equal));
+    scale.sort_by(|left, right| match left.partial_cmp(right) {
+        Some(ordering) => ordering,
+        None => Ordering::Equal,
+    });
     let median = scale[scale.len() / 2];
     let global_limit = factor * median;
     let mut bonds = Vec::new();
@@ -757,11 +929,12 @@ fn nonredundant_basis(metric: &Array2<f64>, tolerance: f64) -> Array2<f64> {
     let mut indices: Vec<usize> = (0..values.len())
         .filter(|&index| values[index] > largest * tolerance)
         .collect();
-    indices.sort_by(|&left, &right| {
-        values[right]
-            .partial_cmp(&values[left])
-            .unwrap_or(Ordering::Equal)
-    });
+    indices.sort_by(
+        |&left, &right| match values[right].partial_cmp(&values[left]) {
+            Some(ordering) => ordering,
+            None => Ordering::Equal,
+        },
+    );
     Array2::from_shape_fn((metric.nrows(), indices.len()), |(row, column)| {
         vectors[(row, indices[column])]
     })
@@ -877,5 +1050,42 @@ mod tests {
         let diagnostic = diagnostic_matrix(&systems, path.view()).unwrap();
         assert_eq!(diagnostic[(0, 0)], 0);
         assert_eq!(diagnostic[(0, 1)], 3);
+    }
+
+    #[test]
+    fn back_transformation_round_trips_an_internal_step() {
+        let start = array![0.0, 0.0, 0.0, 0.96, 0.0, 0.0, -0.24, 0.93, 0.0];
+        let target = array![0.1, -0.05, 0.02, 1.02, 0.08, -0.03, -0.18, 0.98, 0.06];
+        let config = TricConfig::default().with_bonds(Some(vec![(0, 1), (0, 2)]));
+        let system = TricSystem::new(start.view(), &config).unwrap();
+        let displacement = system.difference(target.view(), start.view()).unwrap();
+        let recovered = system
+            .back_transform(
+                start.view(),
+                displacement.view(),
+                &TricInversionConfig::default(),
+            )
+            .unwrap();
+        let error = &recovered - &target;
+        assert!(error.dot(&error).sqrt() < TEST_TOLERANCE);
+    }
+
+    #[test]
+    fn segment_interpolation_keeps_exact_endpoints() {
+        let left = array![0.0, 0.0, 0.0, 0.96, 0.0, 0.0, -0.24, 0.93, 0.0];
+        let right = array![0.2, 0.0, 0.0, 1.18, 0.1, 0.0, -0.1, 1.0, 0.1];
+        let config = TricConfig::default().with_bonds(Some(vec![(0, 1), (0, 2)]));
+        let system = TricSystem::new(left.view(), &config).unwrap();
+        let path = interpolate_tric_segment(
+            &system,
+            left.view(),
+            right.view(),
+            5,
+            &TricInversionConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(path.row(0), left);
+        assert_eq!(path.row(4), right);
+        assert!(path.iter().all(|value| value.is_finite()));
     }
 }
