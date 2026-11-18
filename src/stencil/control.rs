@@ -72,7 +72,6 @@ pub trait Controller {
 
 /// Keep stepping until the report says the gate is met.
 ///
-///
 /// [`Controller::decide`] returns [`Action::Stop`] with `Converged` once the last
 /// report says converged, and [`Action::Step`] otherwise.
 #[derive(Clone, Copy, Debug, Default)]
@@ -89,7 +88,6 @@ impl Controller for Fixed {
 }
 
 /// Ascend along the seed until the curvature drops under the threshold.
-///
 ///
 /// Pushes up to `push_steps` times while the curvature is not below `threshold`
 /// (a non-finite curvature counts as not below), then climbs for good; a stop
