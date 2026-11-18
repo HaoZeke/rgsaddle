@@ -65,9 +65,9 @@ import math
 import os
 import subprocess
 import sys
-import zlib
 import threading
 import time
+import zlib
 
 
 PROTOCOL = {
@@ -231,6 +231,7 @@ def pin(args):
     ):
         os.environ[key] = str(args.threads)
     ctypes.CDLL(os.path.join(args.libdir, "librgpot.so"), mode=ctypes.RTLD_GLOBAL)
+    preload_eonclib(args.pythonpath, args.libdir)
     for entry in reversed(args.pythonpath):
         if entry not in sys.path:
             sys.path.insert(0, entry)
@@ -248,11 +249,79 @@ BUILD_PINS = (
     ("readcon-core", "0.20.0"),
 )
 
+EONCLIB_MISSING = (
+    "pyeonclient needs libeonclib loaded before the extension imports. "
+    "The harness looks for libeonclib next to the pyeonclient package on "
+    "--pythonpath and in --libdir. Put that library in one of those places, "
+    "or set LD_LIBRARY_PATH to the directory that contains it."
+)
+
 BUILD_NOTES = (
     "eOn was built with native architecture off and fast math off. "
     "Its bundled vector library is not on the timed potential path. "
     "The eOn rgpot engine calls capnp directly, so that client was linked with capnp-rpc.",
 )
+
+
+def eon_package_dirs(pythonpath):
+    found = []
+    for entry in pythonpath:
+        package = os.path.join(entry, "pyeonclient")
+        if os.path.isdir(package):
+            found.append(package)
+        if os.path.basename(os.path.normpath(entry)) == "pyeonclient" and os.path.isdir(entry):
+            found.append(entry)
+    return found
+
+
+def _eonclib_name(name):
+    return (
+        name == "libeonclib.so"
+        or name.startswith("libeonclib.so.")
+        or name in ("libeonclib.dylib", "eonclib.dll")
+    )
+
+
+def locate_eonclib(pythonpath, libdir):
+    roots = []
+    if libdir:
+        roots.append(libdir)
+    for package in eon_package_dirs(pythonpath):
+        roots.append(package)
+        parent = os.path.dirname(package)
+        roots.append(parent)
+        roots.append(os.path.join(parent, "lib"))
+    for directory in os.environ.get("LD_LIBRARY_PATH", "").split(os.pathsep):
+        if directory:
+            roots.append(directory)
+    seen = set()
+    for root in roots:
+        key = os.path.normpath(root)
+        if key in seen or not os.path.isdir(root):
+            continue
+        seen.add(key)
+        try:
+            names = os.listdir(root)
+        except OSError:
+            continue
+        for name in sorted(names):
+            if _eonclib_name(name):
+                path = os.path.join(root, name)
+                if os.path.isfile(path):
+                    return path
+    return None
+
+
+def preload_eonclib(pythonpath, libdir):
+    path = locate_eonclib(pythonpath, libdir)
+    if path is None:
+        raise SystemExit(EONCLIB_MISSING)
+    directory = os.path.dirname(os.path.abspath(path))
+    current = [item for item in os.environ.get("LD_LIBRARY_PATH", "").split(os.pathsep) if item]
+    if directory not in current:
+        os.environ["LD_LIBRARY_PATH"] = os.pathsep.join([directory, *current])
+    ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
+    return path
 
 
 def host_cpu_model():

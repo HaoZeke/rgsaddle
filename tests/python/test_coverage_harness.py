@@ -7,6 +7,7 @@ import math
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location(
@@ -127,3 +128,22 @@ def test_dimer_and_lanczos_are_different_kinds():
     assert dimer.kind == 0
     assert lanczos.kind == 1
     assert dimer.kind != lanczos.kind
+
+
+def test_locate_eonclib_beside_the_package(tmp_path):
+    package = tmp_path / "pyeonclient"
+    package.mkdir()
+    library = package / "libeonclib.so"
+    library.write_bytes(b"\x7fELF")
+    found = harness.locate_eonclib([str(tmp_path)], str(tmp_path / "absent"))
+    assert found == str(library)
+
+
+def test_missing_eonclib_explains_the_preload(tmp_path, monkeypatch):
+    monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
+    with pytest.raises(SystemExit) as caught:
+        harness.preload_eonclib([str(tmp_path)], str(tmp_path))
+    message = str(caught.value)
+    assert "libeonclib" in message
+    assert "LD_LIBRARY_PATH" in message
+    assert "pyeonclient" in message
