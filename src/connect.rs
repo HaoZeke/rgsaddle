@@ -58,6 +58,7 @@ use rgmin::Method;
 
 use crate::error::SaddleError;
 use crate::force::ForceGate;
+use crate::idpp::{PathInitializer, initialize_path};
 use crate::minmode::{
     MinModeConfig, MinModeKind, MinModeSession, MinModeStatus, PointSurface, translated_gradient,
 };
@@ -113,6 +114,8 @@ pub struct ConnectConfig {
     pub quench_nodes: bool,
     /// Interior images on the IDPP band that seeds the min-mode climb.
     pub band_images: usize,
+    /// Initial path used by the band that seeds the min-mode climb.
+    pub path_initializer: PathInitializer,
     /// Relative change of the lowest Lanczos Ritz value that ends an
     /// estimate. 0.05 is the improved Lanczos tolerance (quit early
     /// when the curvature along the incoming mode has settled);
@@ -152,6 +155,7 @@ with_setters!(ConnectConfig {
     with_n_loops => n_loops: val usize,
     with_quench_nodes => quench_nodes: val bool,
     with_band_images => band_images: val usize,
+    with_path_initializer => path_initializer: val PathInitializer,
     with_lanczos_rel_tol => lanczos_rel_tol: val f64,
     with_lanczos_iterations => lanczos_iterations: val usize,
     with_minmode_max_move => minmode_max_move: val f64,
@@ -193,6 +197,7 @@ impl ConnectConfig {
             n_loops: cap,
             quench_nodes: true,
             band_images: 5,
+            path_initializer: PathInitializer::Idpp(crate::idpp::IdppConfig::default()),
             lanczos_rel_tol: 0.05,
             lanczos_iterations: 8,
             minmode_max_move: 0.1,
@@ -630,15 +635,29 @@ fn climb_idpp_band(
         return Ok(None);
     }
     let interiors = settings.band_images.clamp(1, 32);
-    let mut path = Vec::with_capacity(interiors + 2);
-    path.push(left.to_vec());
-    for image in 1..=interiors {
-        let fraction = image as f64 / (interiors as f64 + 1.0);
-        let linear = linear_mix(left, right, fraction);
-        let target = mix_distances(&upper_distances(left), &upper_distances(right), fraction);
-        path.push(relax_idpp(&linear, &target));
-    }
-    path.push(right.to_vec());
+    let path = match &settings.path_initializer {
+        PathInitializer::Idpp(_) => {
+            let mut path = Vec::with_capacity(interiors + 2);
+            path.push(left.to_vec());
+            for image in 1..=interiors {
+                let fraction = image as f64 / (interiors as f64 + 1.0);
+                let linear = linear_mix(left, right, fraction);
+                let target =
+                    mix_distances(&upper_distances(left), &upper_distances(right), fraction);
+                path.push(relax_idpp(&linear, &target));
+            }
+            path.push(right.to_vec());
+            path
+        }
+        initializer => {
+            let left = ArrayView1::from(left);
+            let right = ArrayView1::from(right);
+            initialize_path(left, right, interiors + 2, None, initializer)?
+                .outer_iter()
+                .map(|row| row.to_vec())
+                .collect()
+        }
+    };
 
     // The endpoints are already known. Only the interior images are
     // candidates, so their energies are the ones that pick the climb.

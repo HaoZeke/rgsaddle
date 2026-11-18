@@ -63,7 +63,7 @@ use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
 
 use crate::band::{BandConfig, BandSession, BandStatus, BandSurface, Cell, CiConfig};
 use crate::error::SaddleError;
-use crate::idpp::IdppConfig;
+use crate::idpp::{IdppConfig, PathInitializer, TricsStartConfig, initialize_path};
 use crate::spring::SpringKind;
 
 /// Where one new image is placed.
@@ -165,6 +165,62 @@ impl ImageInterpolation for IdppInterpolation {
     }
 }
 
+/// TRICS midpoint constructed from a three-image segment.
+struct TricsInterpolation {
+    linear: LinearInterpolation,
+    config: TricsStartConfig,
+}
+
+const TRICS_INSERTION_IMAGES: usize = 7;
+
+impl TricsInterpolation {
+    fn new(cell: Option<Cell>, config: TricsStartConfig) -> Result<Self, SaddleError> {
+        if cell.is_some() {
+            return Err(SaddleError::Invalid(
+                "AutoNEB TRICS interpolation needs unwrapped free space coordinates".into(),
+            ));
+        }
+        Ok(Self {
+            linear: LinearInterpolation::new(cell),
+            config,
+        })
+    }
+}
+
+impl ImageInterpolation for TricsInterpolation {
+    fn insert(
+        &self,
+        chain: ArrayView2<f64>,
+        energies: &[Option<f64>],
+        after: usize,
+    ) -> Result<Array1<f64>, SaddleError> {
+        let _ = energies;
+        if after + 1 >= chain.nrows() {
+            return Err(SaddleError::Shape(format!(
+                "TRICS interpolation needs a segment after row {after}"
+            )));
+        }
+        let path = match initialize_path(
+            chain.row(after),
+            chain.row(after + 1),
+            TRICS_INSERTION_IMAGES,
+            None,
+            &PathInitializer::Trics(self.config.clone()),
+        ) {
+            Ok(path) => path,
+            Err(SaddleError::Solver(_)) => {
+                return self.linear.insert(chain, energies, after);
+            }
+            Err(error) => return Err(error),
+        };
+        let middle = path.row(TRICS_INSERTION_IMAGES / 2);
+        if middle == chain.row(after) || middle == chain.row(after + 1) {
+            return self.linear.insert(chain, energies, after);
+        }
+        Ok(middle.to_owned())
+    }
+}
+
 /// Placement of each new image, the initial fill included.
 #[derive(Clone, Debug, Default)]
 pub enum AutoNebInterpolant {
@@ -175,6 +231,8 @@ pub enum AutoNebInterpolant {
     /// with target pair distances the mean of the segment ends. ASE's
     /// AutoNEB default. A cell must be non-singular in every row.
     Idpp(IdppConfig),
+    /// TRICS interpolation of the cut segment.
+    Trics(TricsStartConfig),
 }
 
 /// Index of the segment where the next image goes.
@@ -906,6 +964,10 @@ impl AutoNeb {
             }
             AutoNebInterpolant::Idpp(idpp) => {
                 let interpolation = IdppInterpolation::new(config.cell, idpp)?;
+                Self::with_interpolation(config, initial, interpolation)
+            }
+            AutoNebInterpolant::Trics(trics) => {
+                let interpolation = TricsInterpolation::new(config.cell, trics)?;
                 Self::with_interpolation(config, initial, interpolation)
             }
         }
