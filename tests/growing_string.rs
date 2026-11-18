@@ -21,8 +21,8 @@ use rgmin::Method;
 use rgsaddle::stencil::{ImageId, Surface};
 use rgsaddle::{
     BandConfig, BandSession, BandStatus, BandSurface, Cell, CiConfig, DEFAULT_FORCE_TOL,
-    GrowingStringConfig, GrowingStringPhase, GrowingStringSession, Reparametrization, SaddleError,
-    linear_path,
+    ForceGate, GrowingStringConfig, GrowingStringPhase, GrowingStringSession, Reparametrization,
+    SaddleError, linear_path,
 };
 
 /// 2D curved parabolic valley `y = 1 - x^2` connecting reactant `(-1, 0)`
@@ -738,6 +738,37 @@ fn fragments_follow_the_reparametrized_string_after_an_early_join() {
         session.right_fragment(),
         positions.slice(ndarray::s![left_rows.., ..])
     );
+}
+
+#[test]
+fn l2_max_force_uses_the_largest_per_image_norm() {
+    struct UnitTransverseForce;
+    impl BandSurface for UnitTransverseForce {
+        fn eval(
+            &self,
+            positions: ArrayView2<f64>,
+            energies: &mut Array1<f64>,
+            gradients: &mut Array2<f64>,
+        ) -> Result<(), SaddleError> {
+            energies.fill(0.0);
+            gradients.fill(0.0);
+            for mut row in gradients.outer_iter_mut().take(positions.nrows()) {
+                row[2] = 1.0;
+            }
+            Ok(())
+        }
+    }
+
+    let config = flat_config(10)
+        .with_frontier_tol(2.0)
+        .with_force_gate(ForceGate::L2Norm);
+    let mut session = flat_session(config);
+    session.step(&UnitTransverseForce).expect("first step");
+    let report = session.step(&UnitTransverseForce).expect("second step");
+
+    assert!(report.max_force <= 1.0 + 32.0 * f64::EPSILON);
+    assert!(report.max_force >= report.left_frontier_force);
+    assert!(report.max_force >= report.right_frontier_force);
 }
 
 #[test]
