@@ -535,4 +535,8 @@ typedef rgsaddle_status_t (*abi43_signature_rgsaddle_growing_string_step)(
     rgsaddle_report_t *out);
 _Static_assert(_Generic(&rgsaddle_growing_string_step, abi43_signature_rgsaddle_growing_string_step: 1, default: 0), "rgsaddle_growing_string_step signature");
 
+typedef int64_t (*abi43_signature_rgsaddle_growing_string_nodes_added)(
+    const RgsaddleGrowingString *session);
+_Static_assert(_Generic(&rgsaddle_growing_string_nodes_added, abi43_signature_rgsaddle_growing_string_nodes_added: 1, default: 0), "rgsaddle_growing_string_nodes_added signature");
+
 #endif

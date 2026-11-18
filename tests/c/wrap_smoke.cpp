@@ -180,11 +180,22 @@ int main() {
         return 1;
     }
     rgsaddle::Report grep;
+    std::int64_t grown = 0;
     for (int i = 0; i < 500; ++i) {
         grep = gstr.step(surface, nullptr);
+        if (grep.rotations != 0) {
+            std::fprintf(stderr, "C++ growing string step reported rotations\n");
+            return 1;
+        }
+        grown += gstr.nodes_added();
         if (grep.converged()) {
             break;
         }
+    }
+    if (grown != 3) {
+        std::fprintf(stderr, "C++ growing string grew %lld nodes, expected 3\n",
+                     static_cast<long long>(grown));
+        return 1;
     }
     auto gpos = gstr.positions();
     auto gids = gstr.ids();
