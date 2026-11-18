@@ -1903,6 +1903,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "rgpot-pair"
+version = "3.6.0"
+source = "git+https://github.com/OmniPotentRPC/rgpot?rev=20c58fe5a2859cd0a79a3e06d64d567f96d0ccbe#20c58fe5a2859cd0a79a3e06d64d567f96d0ccbe"
+
+[[package]]
 name = "rgsaddle"
 version = "0.5.0"
 dependencies = [
@@ -1922,6 +1927,7 @@ dependencies = [
  "readcon-db",
  "rgmin",
  "rgpot-core",
+ "rgpot-pair",
  "rug",
  "sha2",
  "thiserror 2.0.21",
