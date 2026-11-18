@@ -101,6 +101,10 @@ required-features = ["ohtst"]
 name = "howto_restart"
 required-features = ["ohtst"]
 
+[[example]]
+name = "howto_parallel"
+required-features = ["ohtst"]
+
 [profile.dev.package.faer]
 opt-level = 3
 
