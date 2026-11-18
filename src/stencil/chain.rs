@@ -199,7 +199,7 @@ impl Chain {
         self.active.clone()
     }
 
-    /// Set role.
+    /// Set the [`Role`] of the image at row `index`.
     ///
     /// # Errors
     ///

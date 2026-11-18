@@ -5,7 +5,14 @@
 use super::*;
 
 /// Surface request of a solid-state band. The session stamps version
-/// and flags; the row rules are those of [`RgsaddleSurfaceRequest`].
+/// and flags; the row rules are those of [`RgsaddleSurfaceRequest`]: a batched
+/// call has `image = -1` and `n_images` rows, a single-image call sets `image`
+/// to the band image it fills.
+///
+/// Per row the host reads `3 * n_atoms` positions in Angstrom and a row-major
+/// lower-triangular 3x3 cell in Angstrom (row `i` is lattice vector `a_i`), and
+/// writes the energy in eV, the `3 * n_atoms` gradient in eV/Angstrom and the
+/// row-major 3x3 Cauchy stress in eV/Angstrom^3. One call answers all three.
 #[repr(C)]
 pub struct RgsaddleSolidSurfaceRequest {
     /// ABI version this value was built against.
@@ -16,22 +23,32 @@ pub struct RgsaddleSolidSurfaceRequest {
     pub n_images: i64,
     /// Number of atoms in one image.
     pub n_atoms: i64,
-    /// The f64.
+    /// Positions in Angstrom, `n_images` rows of `3 * n_atoms`, row-major,
+    /// atom-major within a row. A single-image call holds one row.
     pub positions: *const f64,
-    /// Row-major 3x3 cell per image, lower triangular.
+    /// Row-major 3x3 cell per row of `positions`, lower triangular, in
+    /// Angstrom: nine doubles per row.
     pub cells: *const f64,
-    /// The energies.
+    /// One energy per row of `positions`, in eV, written by the host.
     pub energies: *mut f64,
-    /// Energy gradients, one row per image, in the same order as the positions.
+    /// Energy gradients in eV/Angstrom, one row of `3 * n_atoms` per row of
+    /// `positions`, in the same order, written by the host.
     pub gradients: *mut f64,
-    /// Row-major Cauchy stress per image, `(1/V) dE/deps` for the right
-    /// strain `h <- h (I + eps)` at fixed fractional coordinates.
+    /// Row-major 3x3 Cauchy stress per row of `positions`, nine doubles each,
+    /// written by the host. It is `(1/V) dE/deps` for the right strain
+    /// `h <- h (I + eps)` at fixed fractional coordinates, in eV/Angstrom^3,
+    /// positive in tension.
     pub stresses: *mut f64,
-    /// -1 for a batch. Otherwise the band image this call fills.
+    /// -1 for a batch. Otherwise the index of the band image this call fills,
+    /// counted over all `n_images` images, endpoints included.
     pub image: i64,
 }
 
-/// The RgsaddleSolidSurfaceFn.
+/// Host callback of a solid-state band: `(user, request)` returns 0 on success.
+///
+/// It fills the energies, gradients and stresses of the request. Any other
+/// return value fails the step with `RGSADDLE_SURFACE_FAILED`. It must not
+/// unwind.
 pub type RgsaddleSolidSurfaceFn =
     extern "C" fn(*mut c_void, *mut RgsaddleSolidSurfaceRequest) -> i32;
 
@@ -152,6 +169,21 @@ impl BandSurface for CSolidSurface {
     }
 }
 
+/// One optimizer step of a band made by `rgsaddle_band_create_solid`.
+///
+/// Atoms and interior cells move together; the endpoint cells stay. `surface`
+/// is called with `user` and fills a [`RgsaddleSolidSurfaceRequest`]. On
+/// success `out` receives `status` 1 when the band has converged and 0
+/// otherwise, `evaluations` (the surface rows evaluated), the largest force
+/// component `max_force`, `ci_index`, `iteration`, and zero `curvature` and
+/// `rotations`.
+///
+/// Returns `RGSADDLE_NULL_BAND`, `RGSADDLE_NULL_REPORT` or
+/// `RGSADDLE_NULL_SURFACE` for a NULL `band`, `out` or `surface`,
+/// `RGSADDLE_INVALID_PARAMETER` for a band without cells (a fixed-cell band
+/// steps with `rgsaddle_band_step`, and a solid-state band refuses that call
+/// the same way), and otherwise the status of the core error.
+///
 /// # Safety
 /// `band` and `out` must be valid; `surface` is called with `user`.
 #[unsafe(no_mangle)]
@@ -198,6 +230,12 @@ pub unsafe extern "C" fn rgsaddle_band_step_solid(
     }
 }
 
+/// Copy the band's cells into `out`: `n_images * 9` doubles, row-major 3x3 per
+/// image (row `i` is lattice vector `a_i`), in Angstrom.
+///
+/// Returns `RGSADDLE_NULL_BAND` for a NULL `band` and
+/// `RGSADDLE_INVALID_PARAMETER` for a NULL `out` or a band without cells.
+///
 /// # Safety
 /// `out` must hold `n_images * 9` doubles.
 #[unsafe(no_mangle)]
@@ -221,6 +259,16 @@ pub unsafe extern "C" fn rgsaddle_band_cells(band: *const RgsaddleBand, out: *mu
     RGSADDLE_OK
 }
 
+/// Write the fixed Jacobian `J = (V/N)^(1/3) sqrt(N) weight` to `out`.
+///
+/// `V` is the mean endpoint volume in Angstrom^3, `N` the atom count and
+/// `weight` the value given to `rgsaddle_band_create_solid`. `J` is the length
+/// unit of the cell block of the band coordinates, in Angstrom for a
+/// dimensionless `weight`.
+///
+/// Returns `RGSADDLE_NULL_BAND` for a NULL `band` and
+/// `RGSADDLE_INVALID_PARAMETER` for a NULL `out` or a band without cells.
+///
 /// # Safety
 /// `band` and `out` must be valid.
 #[unsafe(no_mangle)]
