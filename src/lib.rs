@@ -38,7 +38,7 @@
 //! Cartesian axis.
 //!
 //! Each entry point opens with a runnable example on a small analytic
-//! surface: [`BandSession`], [`AutoNeb`], [`OcinebSession`],
+//! surface: [`ArtSession`], [`BandSession`], [`AutoNeb`], [`OcinebSession`],
 //! [`MinModeSession`], [`Index1Session`], [`SolidDimer`], [`SolidNeb`],
 #![cfg_attr(
     feature = "ohtst",
@@ -57,6 +57,7 @@
 #[macro_use]
 mod config;
 
+pub mod art;
 pub mod autoneb;
 pub mod band;
 pub mod bennett;
@@ -105,6 +106,11 @@ mod differential;
 
 mod sqnm;
 mod stats;
+pub use art::{
+    ArtBatch, ArtConfig, ArtDuplicate, ArtForceCall, ArtOutcome, ArtPhase, ArtReport,
+    ArtReversibility, ArtSeed, ArtSession, ArtStatus, atom_mask, connection_verdict, full_mask,
+    run_events, structure_distance,
+};
 pub use autoneb::{AutoNeb, AutoNebInterpolant, AutoNebReport, AutoNebTuning};
 pub use band::{
     BandConfig, BandEvaluation, BandReport, BandSession, BandStatus, BandSurface, Cell, CiConfig,

@@ -1,0 +1,23 @@
+#+TITLE: Leave a minimum with ART nouveau
+#+OPTIONS: toc:nil num:nil
+
+=ArtSession= is the activation-relaxation technique nouveau of Malek and Mousseau, Phys. Rev. E 62, 7723 (2000), doi:10.1103/PhysRevE.62.7723. The host supplies the reactant, a seed vector, and a displacement mask. The library does not draw either array. A mask entry of zero drops that coordinate, which is the localized push; a mask of ones keeps the whole seed.
+
+The phase is stored on the session. =step= runs one phase and leaves the next one in =ArtReport::phase=:
+
+1. =Push= displaces along the masked seed, and later along that same direction.
+2. =Perpendicular= minimizes the force in the hyperplane with =relax_to_tolerance=.
+3. =Lanczos= reads the lowest curvature from =MinModeSession::estimate_mode=.
+4. =Climb= takes one =MinModeSession::step=, then returns to the hyperplane relaxation.
+5. =Certify= calls =saddle_index=.
+6. =PushOver= steps both ways along the unstable mode.
+7. =Quench= minimizes both images with no constraint.
+8. =Report= decides reversibility.
+
+=run_events= repeats that for many seeds and records a later landing on the same saddle in =ArtBatch::duplicates=. =ArtSession::force_calls= lists every surface evaluation, with the phase that requested it.
+
+=ArtStatus::Connected= requires a converged index-1 certificate, both quench energies below the saddle, one quenched image on the reactant, and the other image a different minimum. Either sign of the push-over may be the return: the mode at the saddle is not required to point back along the path that arrived. =ArtStatus::Reverted= is the other case of one basin, and it is not a completed exit. The structural distance is Euclidean for one atom. For several atoms it is the Kabsch RMSD, or the RMSD of the sorted pair distances when =permute_identical= is set, which is the identical-atom comparison used for the LJ clusters in the paper.
+
+=ArtConfig::mode= is the Lanczos block. Its =artn= shortcut and its =saddle_check= are cleared: those steps are the phases above. =MinModeConfig::with_artn= remains the shorter opt-in inside one minimum-mode iteration. The point stencil's =Preset::Art= is still the push followed by a minimum-mode climb.
+
+The runnable example is the doctest on =ArtSession=: a one-dimensional double well in three coordinates, a host seed, and a connected index-1 exit. =tests/art_session.rs= repeats the paper's census on LJ7, starting from the pentagonal bipyramid.
