@@ -13,6 +13,18 @@
 //! wants a point on a set calls
 //! [`PartitionedRationalFunctionOptimization::step_on`]:
 //! `egrad2rgrad`, `project`, `retract`.
+//!
+//! The partition is Baker's, J. Comput. Chem. 7, 385 (1986),
+//! doi:10.1002/jcc.540070402, with the rational-function step of Banerjee,
+//! Adams, Simons, and Shepard, J. Phys. Chem. 89, 52 (1985),
+//! doi:10.1021/j100247a015.
+//!
+//! Units and shapes: `evals` are the `n` ascending Hessian eigenvalues in
+//! eV/Angstrom^2, `evecs` the `n x n` eigenvectors as columns, `g` the
+//! length-`n` gradient in eV/Angstrom, and every step a length-`n`
+//! displacement in Angstrom. `alpha` is dimensionless and `delta` is a trust
+//! radius in Angstrom. These methods return no errors: wrong dimensions give
+//! the zero displacement.
 
 use ndarray::{Array1, Array2};
 use rgmin::vecops::{axpy, dot, nrm2};
@@ -44,6 +56,10 @@ thread_local! {
 /// search on the full partitioned step. The returned displacement is clipped
 /// to the physical radius independently of the alpha-search tolerance.
 /// A nonfinite or negative radius returns a zero displacement.
+///
+/// `order` is the number of uphill modes (1 for a first-order saddle) and
+/// `delta` is the trust radius in Angstrom. The result has length `n` and
+/// norm at most `delta`.
 pub fn prfo_trust_region(
     evals: &Array1<f64>,
     evecs: &Array2<f64>,
@@ -101,6 +117,7 @@ pub const SYNONYMS: &[&str] = &[
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct PartitionedRationalFunctionOptimization {
     /// Sella `order`: number of uphill modes (1 for a first-order saddle).
+    /// The default is 0, which minimizes every mode.
     pub order: usize,
 }
 
@@ -116,17 +133,19 @@ impl PartitionedRationalFunctionOptimization {
     /// Sella `newton_safe`. P-RFO is not Newton-safe on \(\|s(\alpha)\|\).
     pub const NEWTON_SAFE: bool = RationalFunctionOptimization::NEWTON_SAFE;
 
-    /// Stepper at the given saddle order.
+    /// Stepper at the given saddle order: the number of modes to maximize.
     pub fn new(order: usize) -> Self {
         Self { order }
     }
 
-    /// Exact Sella `BaseStepper.match`.
+    /// Exact Sella `BaseStepper.match`: whether `name` is one of
+    /// [`SYNONYMS`], compared exactly (case and spacing matter).
     pub fn match_name(name: &str) -> bool {
         SYNONYMS.contains(&name)
     }
 
-    /// Factory: `Some` when `name` is a P-RFO synonym.
+    /// Factory: `Some` when `name` is a P-RFO synonym (see [`SYNONYMS`]),
+    /// else `None`.
     pub fn from_name(name: &str, order: usize) -> Option<Self> {
         Self::match_name(name).then_some(Self { order })
     }
@@ -139,6 +158,9 @@ impl PartitionedRationalFunctionOptimization {
     /// the Banerjee augmented matrix is an arrowhead. A block wider
     /// than the Jacobi width limit asks faer for that one eigenpair.
     /// A narrower block keeps [`rgmin::rfo_get_s`].
+    ///
+    /// `alpha` is in `[0, 1]`; `1` is the unrestricted step. The result is
+    /// the displacement in Angstrom, length `n`.
     pub fn get_s(
         &self,
         evals: &Array1<f64>,
@@ -182,6 +204,9 @@ impl PartitionedRationalFunctionOptimization {
     }
 
     /// Dest companion: per-block RFO then a Euclidean clip.
+    ///
+    /// `delta` is the trust radius in Angstrom; the result has norm at most
+    /// `delta`.
     pub fn restricted(
         &self,
         evals: &Array1<f64>,
@@ -193,6 +218,8 @@ impl PartitionedRationalFunctionOptimization {
     }
 
     /// Sella Optimizer `TrustRegion` + P-RFO (`rs=tr`).
+    ///
+    /// `delta` is the trust radius in Angstrom; see [`prfo_trust_region`].
     pub fn trust_region(
         &self,
         evals: &Array1<f64>,
@@ -204,6 +231,9 @@ impl PartitionedRationalFunctionOptimization {
     }
 
     /// Riemannian P-RFO step: Riemannian gradient, tangent projection, retract.
+    ///
+    /// `x` is the current point in Angstrom and the result the new point on
+    /// `man`, in Angstrom.
     pub fn step_on<M: Manifold>(
         &self,
         man: &M,
@@ -220,6 +250,9 @@ impl PartitionedRationalFunctionOptimization {
     }
 
     /// Vector transport of the P-RFO increment from `x` to `x_to`.
+    ///
+    /// The increment is the projected step of [`Self::step_on`], in Angstrom,
+    /// transported along `man` to `x_to`.
     #[expect(
         clippy::too_many_arguments,
         reason = "The public transport API names the two points and the spectral step inputs."
@@ -335,6 +368,9 @@ fn faer_arrowhead_rfo(
 ///
 /// The first `order` columns form the uphill block. Invalid dimensions
 /// return a zero displacement, as in the stepper interface.
+///
+/// `alpha` is in `[0, 1]`. The result is the displacement in Angstrom,
+/// length `n`.
 pub fn prfo_get_s(
     evals: &Array1<f64>,
     evecs: &Array2<f64>,
@@ -346,6 +382,9 @@ pub fn prfo_get_s(
 }
 
 /// Factory matching Sella `get_stepper` for the P-RFO synonyms only.
+///
+/// Returns `None` for any name outside [`SYNONYMS`], including the plain
+/// RFO names, which belong to [`crate::rfo::rfo_stepper`].
 pub fn prfo_stepper(name: &str, order: usize) -> Option<PartitionedRationalFunctionOptimization> {
     PartitionedRationalFunctionOptimization::from_name(name, order)
 }
