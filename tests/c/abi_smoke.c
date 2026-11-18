@@ -732,13 +732,30 @@ int main(void) {
     rgsaddle_report_t gr;
     memset(&gr, 0, sizeof gr);
     int gk = 0;
+    int64_t grown = 0;
+    if (rgsaddle_growing_string_nodes_added(gs) != 0 ||
+        rgsaddle_growing_string_nodes_added(NULL) != 0) {
+      return fail(RGSADDLE_SHAPE, "growing string nodes_added before a step");
+    }
     do {
+      gr.rotations = -1;
       st = rgsaddle_growing_string_step(gs, surface, &gseen, &gr);
       if (st != RGSADDLE_OK) {
         return fail(st, "growing string step");
       }
+      if (gr.rotations != 0) {
+        return fail(RGSADDLE_SHAPE, "growing string step reported rotations");
+      }
+      const int64_t added = rgsaddle_growing_string_nodes_added(gs);
+      if (added < 0 || added > 2) {
+        return fail(RGSADDLE_SHAPE, "growing string nodes_added out of range");
+      }
+      grown += added;
       ++gk;
     } while (gr.status == RGSADDLE_STATUS_RUNNING && gk < 500);
+    if (grown != 3 || rgsaddle_growing_string_nodes_added(gs) != 0) {
+      return fail(RGSADDLE_SHAPE, "growing string grew 3 nodes from 4 to 7 images");
+    }
     double gp[7 * 3];
     if (gr.status != RGSADDLE_STATUS_CONVERGED ||
         rgsaddle_growing_string_phase(gs) != RGSADDLE_GROWING_STRING_JOINED ||
@@ -748,6 +765,46 @@ int main(void) {
       return fail(RGSADDLE_SOLVER, "growing string did not converge to saddle");
     }
     rgsaddle_growing_string_free(gs);
+
+    {
+      rgsaddle_growing_string_config_t bad;
+      const double nan = NAN;
+      const double inf = INFINITY;
+      for (int which = 0; which < 9; ++which) {
+        if (rgsaddle_growing_string_config_default(&bad) != RGSADDLE_OK) {
+          return fail(RGSADDLE_INVALID_PARAMETER, "growing string default config");
+        }
+        bad.n_images = 7;
+        switch (which) {
+          case 0: bad.frontier_tol = 0.0; break;
+          case 1: bad.frontier_tol = -0.5; break;
+          case 2: bad.frontier_tol = nan; break;
+          case 3: bad.min_steps_per_node = 0; break;
+          case 4: bad.max_steps_per_node = -1; break;
+          case 5: bad.join_tol = -1.0; break;
+          case 6: bad.join_tol = nan; break;
+          case 7: bad.join_tol = inf; break;
+          default: bad.frontier_tol = inf; break;
+        }
+        RgsaddleGrowingString *refused =
+            rgsaddle_growing_string_create(&bad, n_atoms, greact, gprod);
+        if (refused) {
+          rgsaddle_growing_string_free(refused);
+          return fail(RGSADDLE_INVALID_PARAMETER, "growing string accepted an invalid config");
+        }
+      }
+      if (rgsaddle_growing_string_config_default(&bad) != RGSADDLE_OK) {
+        return fail(RGSADDLE_INVALID_PARAMETER, "growing string default config");
+      }
+      bad.n_images = 7;
+      bad.join_tol = 1.5;
+      bad.max_steps_per_node = 4;
+      RgsaddleGrowingString *kept = rgsaddle_growing_string_create(&bad, n_atoms, greact, gprod);
+      if (!kept) {
+        return fail(RGSADDLE_INVALID_PARAMETER, "growing string refused a valid config");
+      }
+      rgsaddle_growing_string_free(kept);
+    }
   }
 
   printf("RGSADDLE_C_ABI_OK steps=%d ci=%lld\n", steps, (long long)rep.ci_index);

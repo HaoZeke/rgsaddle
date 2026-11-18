@@ -708,6 +708,10 @@ public:
         return rgsaddle_growing_string_n_images(handle_);
     }
 
+    [[nodiscard]] std::int64_t nodes_added() const noexcept {
+        return rgsaddle_growing_string_nodes_added(handle_);
+    }
+
     [[nodiscard]] bool joined() const noexcept {
         return rgsaddle_growing_string_phase(handle_) == RGSADDLE_GROWING_STRING_JOINED;
     }
