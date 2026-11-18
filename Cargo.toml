@@ -105,6 +105,10 @@ required-features = ["ohtst"]
 name = "howto_parallel"
 required-features = ["ohtst"]
 
+[[example]]
+name = "howto_convergence"
+required-features = ["ohtst"]
+
 [profile.dev.package.faer]
 opt-level = 3
 
