@@ -1144,6 +1144,9 @@ fn stationarity_roundoff_uses_the_projection_count() {
         let normal = plane.normal();
         assert!((normal[0] - 1.0).abs() <= 1.0e-12 && normal[1].abs() <= 1.0e-12);
     }
+    // Fourteen records and seven blocks divide evenly, so this series cannot
+    // tell a floor width from a ceiling width.
+    assert_fifteen_records_keep_seven_blocks();
 }
 
 struct SpreadArmSampler {
@@ -1359,6 +1362,48 @@ impl HyperplaneSampler for ScriptedForce {
         ensemble.evaluations = budget.samples;
         ensemble.acceptance = 1.0;
         Ok(ensemble)
+    }
+}
+
+fn scripted_plane(values: &[f64], blocks: usize) -> Result<rgsaddle::PlaneSample, SaddleError> {
+    let plane = Hyperplane::new(array![0.0, 0.0], array![1.0, 0.0]).unwrap();
+    let mut sampler = ScriptedForce {
+        values: values.to_vec(),
+    };
+    let sampling = LangevinConfig::default()
+        .with_thermal(0.2)
+        .with_records(values.len())
+        .with_blocks(blocks)
+        .with_stride(1)
+        .with_burn_in(0)
+        .with_seed(1);
+    sample_plane_with_sampler(&mut sampler, &plane, &sampling)
+}
+
+/// Fifteen records and seven blocks. The floor width is two, so seven blocks
+/// remain and the last record is dropped. A ceiling width is three, and only
+/// five blocks remain.
+fn assert_fifteen_records_keep_seven_blocks() {
+    let sample = scripted_plane(&[0.0; 15], 7).expect("fifteen equal records stay stationary");
+    assert_eq!(sample.block_gradients.nrows(), 7);
+    assert_eq!(sample.records, 14);
+}
+
+/// Fourteen monotone records and seven blocks. The integrated time leaves
+/// `n_eff` below 4, so a literal floor of 4 and the caller floor both refuse
+/// the series. `required` is the seven blocks.
+fn assert_fourteen_record_floor_is_seven() {
+    let values: Vec<f64> = (0..14).map(|index| index as f64).collect();
+    match scripted_plane(&values, 7) {
+        Err(SaddleError::InsufficientEffectiveSamples {
+            n_eff, required, ..
+        }) => {
+            assert!(
+                n_eff < required && required == 7.0,
+                "n_eff {n_eff}, required {required}"
+            );
+        }
+        other => panic!("fourteen monotone records did not report the caller floor: {other:?}"),
     }
 }
 
@@ -1988,44 +2033,86 @@ fn fixed_count_iid_run(seed: u64) -> Result<(f64, f64, usize), SaddleError> {
     ))
 }
 
+/// Seeds 1..=200. Fourteen records use seven blocks, so the caller's floor
+/// is `n_eff >= 7`. On this block the floor refuses 112 draws. The binomial
+/// standard error is `sqrt(112 * 88 / 200) = 7.0`, and the window is three
+/// of those standard errors. A literal floor of 4 refuses none of them:
+/// the rejected `n_eff` values sit above 4 and below 7. Split-half
+/// rejections are counted and are not turned into successes.
 #[test]
-fn fourteen_record_iid_production_samples_have_enough_effective_samples() {
+fn fourteen_record_production_floor_is_the_caller_block_count() {
+    assert_fifteen_records_keep_seven_blocks();
+    let mut ise = 0usize;
+    let mut ne = 0usize;
+    let mut other = 0usize;
     for seed in 1..=200 {
-        if let Err(SaddleError::InsufficientEffectiveSamples {
-            n_eff, required, ..
-        }) = fixed_count_iid_run(seed)
-        {
-            panic!(
-                "seed {seed} rejected fourteen iid production records: n_eff {n_eff}, required {required}"
-            );
+        match fixed_count_iid_run(seed) {
+            Ok(_) => {}
+            Err(SaddleError::InsufficientEffectiveSamples {
+                n_eff, required, ..
+            }) => {
+                assert!(
+                    n_eff < required && required == 7.0,
+                    "seed {seed}: n_eff {n_eff}, required {required}"
+                );
+                ise += 1;
+            }
+            Err(SaddleError::NotEquilibrated { .. }) => ne += 1,
+            Err(_) => other += 1,
         }
     }
+    let low = 112usize.saturating_sub(21);
+    let high = 112 + 21;
+    assert!(
+        (low..=high).contains(&ise),
+        "floor refused {ise}, base 112, window {low}..={high}, split-half {ne}, other {other}"
+    );
 }
 
 /// Seeds 1..=200, 1001..=1200, and 10001..=10200 are three disjoint,
-/// pre-registered blocks. Each block's two-standard-error interval must cover
-/// the exact barrier in 90%..=99% of all attempts; a typed sampling rejection
-/// counts as a miss. For 200 Bernoulli trials at nominal 95% coverage, the
-/// binomial standard error is 1.54 percentage points, so this band permits
-/// 3.2 standard errors below nominal and 2.6 above without hiding failures.
+/// pre-registered blocks. Coverage is the fraction of *returned* estimates
+/// whose barrier lies inside two reported standard errors, and that fraction
+/// must lie in 90%..=99%. For 200 Bernoulli trials at nominal 95% the
+/// binomial standard error is 1.54 percentage points, so the band permits
+/// 3.2 standard errors below nominal and 2.6 above. A floor rejection is not
+/// a covered draw and is not dropped from the log: `required` must be the
+/// caller's seven blocks. A literal floor of 4 reports `required = 4` and
+/// fails that check. Split-half rejections stay in the `ne` count.
 #[test]
 fn fixed_count_sampled_error_has_two_sided_coverage() {
+    assert_fourteen_record_floor_is_seven();
+    assert_fifteen_records_keep_seven_blocks();
     for (first, last) in [(1, 200), (1_001, 1_200), (10_001, 10_200)] {
-        let mut covered = 0;
+        let mut returned = 0usize;
+        let mut covered = 0usize;
+        let mut ne = 0usize;
+        let mut other = 0usize;
         for seed in first..=last {
-            let covers = match fixed_count_iid_run(seed) {
+            match fixed_count_iid_run(seed) {
                 Ok((barrier, error, records)) => {
                     assert_eq!(records, ADAPTIVE_OHTST_PILOT_SAMPLES);
-                    (barrier - 1.0).abs() <= 2.0 * error
+                    returned += 1;
+                    if (barrier - 1.0).abs() <= 2.0 * error {
+                        covered += 1;
+                    }
                 }
-                Err(_) => false,
-            };
-            covered += usize::from(covers);
+                Err(SaddleError::InsufficientEffectiveSamples {
+                    n_eff, required, ..
+                }) => {
+                    assert!(
+                        n_eff < required && required == 7.0,
+                        "seed {seed}: n_eff {n_eff}, required {required}"
+                    );
+                }
+                Err(SaddleError::NotEquilibrated { .. }) => ne += 1,
+                Err(_) => other += 1,
+            }
         }
-        let coverage = covered as f64 / (last - first + 1) as f64;
+        assert!(returned > 0, "seeds {first}..={last} returned nothing");
+        let coverage = covered as f64 / returned as f64;
         assert!(
             (0.90..=0.99).contains(&coverage),
-            "seeds {first}..={last}: {covered} of 200 covered ({coverage})"
+            "seeds {first}..={last}: {covered} of {returned} returned covered ({coverage}), split-half {ne}, other {other}"
         );
     }
 }

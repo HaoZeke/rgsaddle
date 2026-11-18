@@ -89,14 +89,38 @@ spacing and finish at the record cap. A failed
 pilot returns `NotEquilibrated` or `InsufficientEffectiveSamples`; it never
 enters a profile. Production samples use automated transient discard. For a
 retained tail of length \(r\), requested count \(b\), and correlation width
-\(w=\lceil2\tau\rceil\), the batch width is
-\(\max(\lceil r/b\rceil,w)\), and the actual block count is the floor of
-\(r\) divided by that width. The effective-sample gate uses that actual count,
-not the requested count: a 14-record iid production redraw is therefore not
-required to supply seven effective observations merely because its pilot
-requested seven blocks. Four effective observations and at least two
-correlation-width blocks remain mandatory. A tail shorter than one block is
-dropped.
+\(w=\lceil 2\tau\rceil\), the batch width is
+\(\max(\lfloor r/b\rfloor, w, 1)\). The actual block count is the floor of
+\(r\) divided by that width, and the remainder is dropped. Every retained
+block has that same width. A width that leaves fewer than two blocks is an
+error, rather than an empty or short block. The rule is the same for every
+requested count. At \(b=2\) and \(r=15\), \(\lfloor r/b\rfloor=7\) gives two
+blocks and drops the last record. \(\lceil r/b\rceil=8\) leaves only one
+block, which is the failure this width avoids.
+
+The effective-sample floor is the block count the caller passed in,
+\(n_{\mathrm{eff}}\ge b\). It is not one literal for every caller. The plane
+sampler and thermodynamic integration pass 20. PAFI passes 5. The adaptive
+string passes 7 at 14 records and \(\lfloor n^{1/3}\rfloor\) above that, so
+record counts 15 through 26 pass 2. The pilot keeps a separate gate of four
+effective samples, two in each half, so that each half can estimate a mean
+and a variance.
+
+The production split-half comparison is an absolute four-standard-error
+screen on one plane. On a stationary Gaussian series the statistic is the
+two-sample \(t\) (equal half lengths make the Welch and pooled standard
+errors the same). With \(\nu=n_1+n_2-2\) degrees of freedom, \(n_i\) the
+number of block means in half \(i\), the two-sided false-rejection
+probability at four standard errors is the Student-\(t\) tail
+\(I_{\nu/(\nu+16)}(\nu/2,\,1/2)\). Two block means in each half, which is
+what \(b=2\) produces, give \(\nu=2\) and a tail of 5.72%. Seven in each
+half, a 14-record production sample, give \(\nu=12\) and a tail of 0.176%.
+Six and seven, the neighbouring odd tail, give \(\nu=11\) and a tail of
+0.209%, about 0.22% per plane. A run that tests several planes rejects when
+any plane rejects. Those rejections stay visible. Bonferroni or Holm would
+rescale this screen by the number of planes. The screen is not a family-wise
+level-\(\alpha\) test: the pilot already spends the family-wise budget
+\(0.03/N\). The production threshold stays at four standard errors.
 
 This width is applied inside the shared engine-backed plane sampler, so every
 engine hyperplane sample, not only the adaptive string, inherits the
@@ -202,14 +226,16 @@ two-channel symmetric surface, and independent noisy samplers at noise
 standard deviations 0.25 and 0.5. The noisy ensemble checks return rate and
 profile-standard-error coverage. Fixed-count iid validation uses three
 pre-registered, disjoint 200-seed blocks and a two-sided two-standard-error
-interval. Each block must cover the exact barrier in 90% through 99% of all
-attempts, with a typed sampling rejection counted as a miss. At nominal 95%
-coverage the binomial standard error for 200 trials is 1.54 percentage points,
-so the band extends 3.2 standard errors below nominal and 2.6 above it. The
-combined error is what the adaptive coverage checks use, because geometry and
-quadrature sit on top of the sampled term. The 0.83 ratio quoted above is the
-optional-stopping bias at noise 0.25, not a property of the fixed-count
-estimator.
+interval. Coverage is the fraction of returned estimates. A floor rejection
+is not a miss of that interval: fourteen records pass seven blocks, so
+`n_eff` must be at least 7, and a literal floor of 4 fails that check.
+Split-half rejections stay visible and are not counted as covered draws.
+At nominal 95% coverage the binomial standard error for 200 returned
+trials is 1.54 percentage points, so the band extends 3.2 standard errors
+below nominal and 2.6 above it. The combined error is what the adaptive
+coverage checks use, because geometry and quadrature sit on top of the
+sampled term. The 0.83 ratio quoted above is the optional-stopping bias at
+noise 0.25, not a property of the fixed-count estimator.
 Cu production sampling remains an engine-backed benchmark, not part of
 this generic method.
 
