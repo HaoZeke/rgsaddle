@@ -204,6 +204,17 @@ impl AnharmonicCorrection {
 /// beyond what locating the saddle needs. Coordinates are mass-weighted,
 /// as for the rest of OH-TST. The surface's excluded modes are left out
 /// of both subspaces, and the Hessian must be positive on what remains.
+///
+/// `minimum` is the reactant minimum in the coordinates of `surface`, the same
+/// length as the saddle plane.
+///
+/// # Errors
+///
+/// [`SaddleError::Invalid`] when `config` fails its checks (fewer than two probes,
+/// a non-positive or non-finite step, or a zero or non-positive Lanczos setting),
+/// when the plane normal is not an unstable direction of the saddle, or the
+/// Hessian is not positive on the free subspace; [`SaddleError::Shape`] when
+/// `minimum` differs in length from the saddle plane; and the errors of `surface`.
 pub fn anharmonic_correction<S: PointSurface>(
     surface: &S,
     minimum: ArrayView1<f64>,
