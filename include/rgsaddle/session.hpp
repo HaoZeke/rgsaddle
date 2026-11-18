@@ -657,4 +657,103 @@ private:
     std::int32_t k_ = 1;
 };
 
+inline rgsaddle_growing_string_config_t growing_string_config() {
+    rgsaddle_growing_string_config_t c{};
+    check(rgsaddle_growing_string_config_default(&c));
+    return c;
+}
+
+class GrowingString {
+public:
+    GrowingString(rgsaddle_growing_string_config_t const& config,
+                  std::int64_t n_atoms, double const* reactant,
+                  double const* product)
+        : n_atoms_(n_atoms) {
+        if (!abi_compatible()) {
+            throw std::runtime_error("rgsaddle ABI 1.15 or later is required");
+        }
+        handle_ = rgsaddle_growing_string_create(&config, n_atoms, reactant, product);
+        if (handle_ == nullptr) {
+            throw std::runtime_error("rgsaddle_growing_string_create failed");
+        }
+    }
+
+    GrowingString(GrowingString const&) = delete;
+    GrowingString& operator=(GrowingString const&) = delete;
+
+    GrowingString(GrowingString&& other) noexcept
+        : handle_(other.handle_), n_atoms_(other.n_atoms_) {
+        other.handle_ = nullptr;
+    }
+
+    GrowingString& operator=(GrowingString&& other) noexcept {
+        if (this != &other) {
+            reset_handle();
+            handle_ = other.handle_;
+            n_atoms_ = other.n_atoms_;
+            other.handle_ = nullptr;
+        }
+        return *this;
+    }
+
+    ~GrowingString() { reset_handle(); }
+
+    Report step(rgsaddle_surface_fn surface, void* user) {
+        rgsaddle_report_t out{};
+        check(rgsaddle_growing_string_step(handle_, surface, user, &out));
+        return Report::from_c(out);
+    }
+
+    [[nodiscard]] std::int64_t n_images() const noexcept {
+        return rgsaddle_growing_string_n_images(handle_);
+    }
+
+    [[nodiscard]] bool joined() const noexcept {
+        return rgsaddle_growing_string_phase(handle_) == RGSADDLE_GROWING_STRING_JOINED;
+    }
+
+    void positions(double* out) const {
+        check(rgsaddle_growing_string_positions(handle_, out));
+    }
+
+    [[nodiscard]] std::vector<double> positions() const {
+        const auto rows = n_images();
+        std::vector<double> out(static_cast<std::size_t>(rows * 3 * n_atoms_));
+        positions(out.data());
+        return out;
+    }
+
+    [[nodiscard]] std::vector<std::uint64_t> ids() const {
+        const auto rows = n_images();
+        std::vector<std::uint64_t> out(static_cast<std::size_t>(rows));
+        check(rgsaddle_growing_string_ids(handle_, out.data()));
+        return out;
+    }
+
+    void set_fixed_atoms(std::uint8_t const* mask) {
+        check(rgsaddle_growing_string_set_fixed_atoms(handle_, mask, n_atoms_));
+    }
+
+    [[nodiscard]] SaddleIndex saddle_index(std::size_t capacity = 8) const {
+        rgsaddle_saddle_index_t out{};
+        std::vector<double> curvatures(capacity);
+        check(rgsaddle_growing_string_saddle_index(
+            handle_, &out, curvatures.data(), static_cast<std::int64_t>(capacity)));
+        return SaddleIndex::from_c(out, std::move(curvatures));
+    }
+
+    [[nodiscard]] RgsaddleGrowingString* native() const noexcept { return handle_; }
+
+private:
+    void reset_handle() {
+        if (handle_ != nullptr) {
+            rgsaddle_growing_string_free(handle_);
+            handle_ = nullptr;
+        }
+    }
+
+    RgsaddleGrowingString* handle_ = nullptr;
+    std::int64_t n_atoms_ = 0;
+};
+
 }  // namespace rgsaddle
