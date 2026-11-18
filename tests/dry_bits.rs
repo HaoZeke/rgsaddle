@@ -173,10 +173,10 @@ fn pafi(dig: &mut Dig) {
         .with_thermal(0.02)
         .with_mobility(1.0)
         .with_time_step(0.01)
-        .with_thermalize(2)
-        .with_stride(1)
-        .with_samples(8)
-        .with_blocks(2)
+        .with_thermalize(20)
+        .with_stride(2)
+        .with_samples(64)
+        .with_blocks(4)
         .with_seed(11)
         .with_fix_com(false)
         .with_retain(2)
@@ -206,11 +206,14 @@ fn trajectory() -> (String, String) {
     (dig.finish(), dig.lines.join("\n"))
 }
 
-/// SHA-256 of the pre-refactor baseline dump at c862cf6.
+/// SHA-256 of the baseline dump at develop 0f30aad, before any refactor
+/// in this series.
 ///
-/// Measured with the same command under default, `readcon`, and
-/// `readcon,readcon-db`; all three feature sets produce this same digest.
-const EXPECTED: &str = "3eeab4198cc7626d11fc0970c8812de1844e78d238592d2354c7b9c4630cca92";
+/// Measured with the same command under default and
+/// `readcon,readcon-db`; both feature sets produce this same digest. The
+/// PAFI section of the dump depends on `pafi_profile`, so a change to the
+/// PAFI walk moves the digest and has to re-measure it.
+const EXPECTED: &str = "fe0397fcdbb03babcb230ff190dc36747aafd496f857853c5ef67358492695b7";
 
 #[test]
 fn trajectories_match_the_baseline_bits() {
