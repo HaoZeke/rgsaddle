@@ -3,10 +3,10 @@
 
 Neither method runs to completion: a sampler reports whether its own records behaved like independent draws, not whether the answer is physically right. This how-to reads the diagnostics each result carries and compares a short run that has not settled against a longer one that has, on PAFI's side, and a quadrature that does not have enough nodes against one that does, on OH-TST's.
 
-* PAFI: tau and n_eff
+* PAFI: =tau= and =n_eff=
 =HyperplaneAverage::tau= is the integrated autocorrelation time, in records; =HyperplaneAverage::n_eff= is =samples / (2 tau)=, the number of effectively independent draws the recorded samples carry. A block standard error computed from a chain with =n_eff= in the single digits is not trustworthy, whatever number it prints:
 
-#+INCLUDE: "../../../examples/howto_convergence.rs" src rust :lines "48-72"
+#+INCLUDE: "../../../examples/howto_convergence.rs" src rust :lines "48-73"
 
 #+begin_src console
 $ cargo run --release --example howto_convergence
@@ -20,9 +20,9 @@ PAFI settled: barrier 0.98109 +/- 0.00397, worst tau 112.41, worst n_eff 26.7
 The under-sampled run's error bar, 0.00164, is smaller than the settled run's, 0.00397, despite being the less reliable of the two: its worst plane's =n_eff= is 3.2, barely more than three independent draws behind a block error computed from 60 samples in 10 blocks, so the block-to-block spread badly underestimates the true uncertainty. The settled run's worst =n_eff=, 26.7, is comfortably in double digits, and its larger, more honest error bar is the price of that: a small error bar next to a low =n_eff= is a sign to run longer, not a sign of a precise answer. (Neither barrier here is the fully converged one from =tutorials/pafi=, 1.04478 at the same =kT=: this how-to uses 9 planes and far fewer samples than that tutorial's 49 and 30000, to keep two comparable runs fast, not to give the tutorial's own number.)
 
 * OH-TST: the virial check and quadrature overlap
-=PlaneSample::virial= is the mean force the plane's own normal direction feels; at equilibrium on an unconstrained plane it should sit within error of =free_dimensions * kT=, the equipartition virial, and a run that misses it by several standard errors has a time step too large or a chain that has not equilibrated:
+=PlaneSample::virial= is the in-plane virial \(\langle (P \nabla V) \cdot (q - p) \rangle\), where \(P\) projects onto the plane's free directions; at equilibrium on an unconstrained plane it should sit within error of =free_dimensions * kT= (equipartition), and a run that misses it by several standard errors has a time step too large or a chain that has not equilibrated:
 
-#+INCLUDE: "../../../examples/howto_convergence.rs" src rust :lines "74-90"
+#+INCLUDE: "../../../examples/howto_convergence.rs" src rust :lines "74-91"
 
 #+begin_example
 OH-TST virial: 0.10537 ± 0.00952 against free_dimensions * kT = 0.10000 (tau 6.08, effective samples 222.4)
@@ -33,7 +33,7 @@ deviation from equipartition: 0.56 standard errors
 
 =ReversibleWorkConfig::min_overlap= and =ReversibleWork::warnings= are the other convergence signal: when neighbouring nodes along a =PlanePath= share too little configuration-space overlap, BAR and MBAR run out of the shared support their estimators need, and a node pair below the threshold is named in =warnings=. A separate, equally common failure needs no overlap warning at all: too few nodes to resolve the curve between them. =V = (x^2 - 1)^2= has zero slope at both the reactant, \(x=-1\), and the saddle, \(x=0\), so a two-node trapezoid, which only sees the slope at the two endpoints, badly underestimates everything the curve does between them:
 
-#+INCLUDE: "../../../examples/howto_convergence.rs" src rust :lines "97-115"
+#+INCLUDE: "../../../examples/howto_convergence.rs" src rust :lines "97-116"
 
 #+begin_example
 reactant -> saddle, 2 node(s): integrated 0.04477 ± 0.00639, worst neighbour overlap 0.473, warnings: []

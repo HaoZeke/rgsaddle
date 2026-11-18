@@ -3,10 +3,10 @@
 
 PAFI and OH-TST restart differently. PAFI's sampling loop is inside the crate already: ask for a target error and it runs extra rounds on its own. OH-TST's =sample_plane= is a single pass with no loop of its own, so extending a chain is the host's job: carry the last configuration forward and skip the burn-in the second time.
 
-* PAFI: target_error and max_rounds
-=PafiConfig::with_target_error= sets a barrier error to stop at; =with_max_rounds= bounds how many rounds of extra sampling it is allowed to spend trying to reach it. Each round samples every plane again, at the same seed derived deterministically from the round number, and the profile's reported sample count is the running total across every round so far, not just the last one:
+* PAFI: =target_error= and =max_rounds=
+=PafiConfig::with_target_error= sets a barrier error to stop at; =with_max_rounds= bounds how many rounds of extra sampling it is allowed to spend trying to reach it. Each extra round samples every plane again from its path point, with a fresh seed derived deterministically from the base seed, plane index and round number, and inverse-variance combines its gradient with the earlier rounds; the profile's reported sample count is the running total across every round so far, not just the last one:
 
-#+INCLUDE: "../../../examples/howto_restart.rs" src rust :lines "44-79"
+#+INCLUDE: "../../../examples/howto_restart.rs" src rust :lines "45-81"
 
 One round alone, at =samples = 400=, has a block error loose enough that 0.004 is out of reach; =with_max_rounds(6)= lets it keep sampling past the first round until it gets there or runs out of rounds.
 
@@ -19,12 +19,12 @@ PAFI: barrier 0.97527 +/- 0.00398 from 13392 samples (9 planes x 400 in the firs
 ran past the first round: true (13392 total samples against 3600 for one round)
 #+end_example
 
-13392 recorded samples against 3600 for one round (9 planes times 400): an extra round ran on every plane at once, scaled up from the first round's samples by how far the barrier error still was from the target, and that was enough to bring the error down to 0.00398, under the 0.004 target, so the loop stopped there instead of spending the rest of its 6-round budget. A target the extra rounds cannot reach inside the round budget just runs every round and reports whatever error it ends at; nothing here distinguishes that case in the output from stopping early on success, so a caller checking convergence should compare =profile.barrier_error= against the target it asked for, not assume success from the run completing.
+13392 recorded samples against 3600 for one round (9 planes times 400): an extra round ran on every plane at once, scaled up from the first round's samples by how far the barrier error still was from the target, and that was enough to bring the error down to 0.00398, under the 0.004 target, so the loop stopped there instead of spending the rest of its 6-round budget. A target the extra rounds cannot reach inside the round budget runs every round and reports whatever error it ends at; nothing here distinguishes that case in the output from stopping early on success, so a caller checking convergence should compare =profile.barrier_error= against the target it asked for, not assume success from the run completing.
 
-* OH-TST: carry PlaneSample::last into the next start
+* OH-TST: carry =PlaneSample::last= into the next start
 =sample_plane= takes an optional =start= configuration on the plane; leaving it =None=, as every other how-to and tutorial on this page does, starts from the plane's own point. Passing =Some(previous.last.view())= instead continues the chain exactly where the last call's Langevin dynamics stopped, so a second call with =with_burn_in(0)= gets useful samples immediately instead of re-equilibrating:
 
-#+INCLUDE: "../../../examples/howto_restart.rs" src rust :lines "81-120"
+#+INCLUDE: "../../../examples/howto_restart.rs" src rust :lines "82-122"
 
 #+begin_example
 first leg: -0.03375 ± 0.00408 from 494 records, last point (0.0000, -0.0175)
