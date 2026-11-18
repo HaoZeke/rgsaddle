@@ -23,9 +23,13 @@
 //! reactant is the potential of mean force. Block averages of the
 //! equilibrated records supply the standard error.
 
-use ndarray::{Array1, Array2};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use ndarray::{Array1, Array2, ArrayView1};
 use rayon::prelude::*;
 use std::sync::Arc;
+
+use rgmin::{Control, Error, Method, Oracle, Solver, StopNorm};
 
 use crate::Region;
 use crate::error::SaddleError;
@@ -34,6 +38,7 @@ use crate::projector::{
     Hyperplane, HyperplaneEnsemble, HyperplaneObservation, HyperplaneSampleBudget,
     HyperplaneSampler, ProjectedConstraint, TangentProjector,
 };
+use crate::relax::RelaxConfig;
 use crate::reparam::Spline;
 use crate::stats::{EquilibrationReport, Rng, block_mean, equilibrate};
 
@@ -71,6 +76,17 @@ pub struct PafiConfig {
     pub max_rounds: usize,
     /// Hard symmetry-unique region and optional additional predicates.
     pub region: Option<Arc<dyn Region>>,
+    /// Largest displacement of one atom, in the length unit of the
+    /// surface, between the plane minimum quenched from a sampled
+    /// configuration and the one quenched from the path. Past it the
+    /// configuration has left the basin of the path. `None` skips the test.
+    pub max_jump: Option<f64>,
+    /// The in-plane quench of [`Self::max_jump`]: its method, force
+    /// tolerance, step cap and per-atom step, on the force with its part
+    /// along the normal (and its center-of-mass part when held) removed.
+    /// Reaching the step cap, or a stall of the method, ends the quench
+    /// where it is.
+    pub quench: RelaxConfig,
 }
 
 with_setters!(PafiConfig {
@@ -86,6 +102,8 @@ with_setters!(PafiConfig {
     with_retain => retain: val usize,
     with_target_error => target_error: opt f64,
     with_max_rounds => max_rounds: val usize,
+    with_max_jump => max_jump: opt f64,
+    with_quench => quench: val RelaxConfig,
 });
 
 impl PafiConfig {
@@ -100,7 +118,10 @@ impl PafiConfig {
 impl Default for PafiConfig {
     /// `kT` of 300 K in eV, unit mobility, time step 1e-3, 200
     /// thermalization steps, 200 samples 5 steps apart in 5 blocks, seed 1,
-    /// the center of mass held, 16 kept configurations, one pass.
+    /// the center of mass held, 16 kept configurations, one pass, and a
+    /// largest jump of 0.4 (Å), the `MaxJumpThresh` of Swinburne's
+    /// reference code, quenched along the steepest-descent flow
+    /// ([`Method::Ode12r`]) under the other [`RelaxConfig`] defaults.
     fn default() -> Self {
         Self {
             thermal: 0.02585,
@@ -116,6 +137,8 @@ impl Default for PafiConfig {
             target_error: None,
             max_rounds: 4,
             region: None,
+            max_jump: Some(0.4),
+            quench: RelaxConfig::default().with_method(Method::Ode12r),
         }
     }
 }
@@ -142,6 +165,14 @@ impl PafiConfig {
                 "PAFI needs a positive stride, at least two blocks, and two samples per block"
                     .into(),
             ));
+        }
+        if let Some(jump) = self.max_jump {
+            if !(jump.is_finite() && jump > 0.0) {
+                return Err(SaddleError::Invalid(
+                    "PAFI largest jump must be finite and positive".into(),
+                ));
+            }
+            self.quench.check()?;
         }
         Ok(())
     }
@@ -323,12 +354,17 @@ pub struct HyperplaneAverage {
     pub tau: f64,
     /// `samples / (2 τ)`.
     pub n_eff: f64,
-    /// Force evaluations spent on this plane, summed over rounds.
+    /// Force evaluations spent on this plane, the quenches of
+    /// [`PafiConfig::max_jump`] included, summed over rounds.
     pub evaluations: usize,
     /// Configurations kept from the production run, on the plane.
     pub retained: Vec<Array1<f64>>,
     /// Automated equilibration, correlation and split-half drift report.
     pub equilibration: EquilibrationReport,
+    /// Thermalizations and stretches of the production run sampled again
+    /// because they left the basin of the path ([`PafiConfig::max_jump`]),
+    /// summed over rounds.
+    pub rejected: usize,
 }
 
 /// Potential of mean force from the first plane.
@@ -355,6 +391,16 @@ pub struct FreeEnergyProfile {
 }
 
 /// Sample one hyperplane and return the PAFI gradient.
+///
+/// With [`PafiConfig::max_jump`] set, the production run is cut into
+/// [`PafiConfig::blocks`] stretches. The thermalized configuration and the
+/// end of every stretch are quenched in the plane and compared with the
+/// plane minimum quenched from the path; one atom farther than `max_jump`
+/// means the configuration has left the basin of the path. A stretch that
+/// left it is dropped and sampled again from the end of the last kept one,
+/// and a thermalization from the path. Swinburne's reference code drops
+/// such a trajectory the same way. More dropped stretches than there are
+/// blocks is an error: the plane does not hold the system in the basin.
 pub fn average_hyperplane<S: PointSurface>(
     surface: &S,
     geometry: &PathGeometry,
@@ -364,8 +410,11 @@ pub fn average_hyperplane<S: PointSurface>(
         surface,
         geometry,
         config,
+        rejected: 0,
     };
-    average_hyperplane_with_sampler(&mut sampler, geometry, config)
+    let mut average = average_hyperplane_with_sampler(&mut sampler, geometry, config)?;
+    average.rejected = sampler.rejected;
+    Ok(average)
 }
 
 /// Estimate the PAFI mean force from any constrained-ensemble engine.
@@ -490,6 +539,7 @@ fn estimate_pafi(
         evaluations: ensemble.evaluations,
         retained,
         equilibration,
+        rejected: 0,
     })
 }
 
@@ -497,6 +547,8 @@ struct PafiAnalyticSampler<'a, S> {
     surface: &'a S,
     geometry: &'a PathGeometry,
     config: &'a PafiConfig,
+    /// Thermalizations and stretches the last request sampled again.
+    rejected: usize,
 }
 
 impl<S: PointSurface> HyperplaneSampler for PafiAnalyticSampler<'_, S> {
@@ -507,79 +559,209 @@ impl<S: PointSurface> HyperplaneSampler for PafiAnalyticSampler<'_, S> {
     ) -> Result<HyperplaneEnsemble, SaddleError> {
         let geometry = self.geometry;
         let config = self.config;
-        let n = geometry.positions.len();
         let normal = plane_normal(geometry, config);
         let nn = normal.dot(&normal);
-        let mut x = geometry.positions.clone();
         let mut rng = Rng::new(budget.seed);
-        let sigma = (2.0 * config.mobility * budget.thermal * config.time_step).sqrt();
-        let drift_scale = config.mobility * config.time_step;
-        let total = budget.thermalize + budget.stride * budget.samples;
+        let walk = Walk {
+            surface: self.surface,
+            plane,
+            region: budget.region.as_ref(),
+            hold_com: holds_com(config, geometry.positions.len()),
+            drift_scale: config.mobility * config.time_step,
+            sigma: (2.0 * config.mobility * budget.thermal * config.time_step).sqrt(),
+        };
+        let mut evaluations = 0;
+        let basin = match config.max_jump {
+            Some(_) => {
+                let (minimum, spent) = walk.minimum(&geometry.positions, &config.quench)?;
+                evaluations += spent;
+                Some(minimum)
+            }
+            None => None,
+        };
+        let mut rejected = 0;
+        let mut left = |x: &Array1<f64>, evaluations: &mut usize| -> Result<bool, SaddleError> {
+            let (Some(basin), Some(limit)) = (&basin, config.max_jump) else {
+                return Ok(false);
+            };
+            let (minimum, spent) = walk.minimum(x, &config.quench)?;
+            *evaluations += spent;
+            if StopNorm::MaxAtom.of((&minimum - basin).view()) <= limit {
+                return Ok(false);
+            }
+            rejected += 1;
+            if rejected > config.blocks {
+                return Err(SaddleError::Solver(format!(
+                    "PAFI plane at s = {} left the basin of the path {rejected} times",
+                    geometry.arc
+                )));
+            }
+            Ok(true)
+        };
+        let mut x = loop {
+            let mut x = geometry.positions.clone();
+            for _ in 0..budget.thermalize {
+                let gradient = walk.gradient(&x)?;
+                walk.step(&mut x, gradient, &mut rng)?;
+            }
+            evaluations += budget.thermalize;
+            if !left(&x, &mut evaluations)? {
+                break x;
+            }
+        };
+        let stretch = budget.samples.div_ceil(config.blocks);
         let mut observations = Vec::with_capacity(budget.samples);
-        for step in 0..total {
-            let (_energy, gradient) = self.surface.eval(x.view())?;
-            if gradient.len() != n || !gradient.iter().all(|value| value.is_finite()) {
-                return Err(SaddleError::Shape(
-                    "PAFI gradient must match the path".into(),
-                ));
-            }
-            if step >= budget.thermalize && (step - budget.thermalize).is_multiple_of(budget.stride)
-            {
-                let (pafi_gradient, jacobian) =
-                    projected_gradient(&gradient, &x, geometry, &normal, nn);
-                observations.push(HyperplaneObservation {
-                    constraint_force: -gradient.dot(&plane.normal()),
-                    pafi_gradient: Some(pafi_gradient),
-                    jacobian,
-                    position: budget.positions.then(|| x.clone()),
-                    projected_force: None,
-                    projected_velocity: None,
-                    observables: Default::default(),
-                });
-            }
-            let mut drift = gradient;
-            plane.project_in_place(&mut drift);
-            let mut noise = Array1::zeros(n);
-            for value in noise.iter_mut() {
-                *value = rng.normal();
-            }
-            plane.project_in_place(&mut noise);
-            if holds_com(config, n) {
-                remove_com(&mut drift);
-                remove_com(&mut noise);
-                plane.project_in_place(&mut drift);
-                plane.project_in_place(&mut noise);
-            }
-            let mut proposal = &x - &(&drift * drift_scale) + &(&noise * sigma);
-            plane.restore_in_place(&mut proposal);
-            if let Some(region) = &budget.region
-                && let Some(violation) = region.violation(proposal.view())?
-            {
-                if let Some(penetration) = violation.penetration {
-                    let mut normal = TangentProjector::project(plane, violation.normal.view());
-                    let scale = normal.dot(&normal).sqrt();
-                    if !(scale.is_finite() && scale > 0.0) {
-                        return Err(SaddleError::Invalid(
-                            "region boundary has no PAFI in-plane normal".into(),
-                        ));
+        let mut kept = x.clone();
+        while observations.len() < budget.samples {
+            let count = stretch.min(budget.samples - observations.len());
+            let mut records = Vec::with_capacity(count);
+            for _ in 0..count {
+                for offset in 0..budget.stride {
+                    let gradient = walk.gradient(&x)?;
+                    if offset == 0 {
+                        let (pafi_gradient, jacobian) =
+                            projected_gradient(&gradient, &x, geometry, &normal, nn);
+                        records.push(HyperplaneObservation {
+                            constraint_force: -gradient.dot(&plane.normal()),
+                            pafi_gradient: Some(pafi_gradient),
+                            jacobian,
+                            position: budget.positions.then(|| x.clone()),
+                            projected_force: None,
+                            projected_velocity: None,
+                            observables: Default::default(),
+                        });
                     }
-                    normal /= scale;
-                    proposal.scaled_add(-2.0 * penetration / scale, &normal);
-                    plane.restore_in_place(&mut proposal);
-                    if !region.contains(proposal.view())? {
-                        proposal = x.clone();
-                    }
-                } else {
-                    proposal = x.clone();
+                    walk.step(&mut x, gradient, &mut rng)?;
                 }
             }
-            x = proposal;
+            evaluations += count * budget.stride;
+            if left(&x, &mut evaluations)? {
+                x = kept.clone();
+                continue;
+            }
+            observations.extend(records);
+            kept = x.clone();
         }
+        self.rejected = rejected;
         Ok(HyperplaneEnsemble {
             observations,
-            evaluations: total,
+            evaluations,
             acceptance: 1.0,
         })
+    }
+}
+
+/// Overdamped Langevin dynamics confined to a [`Hyperplane`].
+struct Walk<'a, S> {
+    surface: &'a S,
+    plane: &'a Hyperplane,
+    region: Option<&'a Arc<dyn Region>>,
+    hold_com: bool,
+    /// `μ dt`.
+    drift_scale: f64,
+    /// `sqrt(2 μ kT dt)`.
+    sigma: f64,
+}
+
+impl<S: PointSurface> Walk<'_, S> {
+    fn gradient(&self, x: &Array1<f64>) -> Result<Array1<f64>, SaddleError> {
+        let (_energy, gradient) = self.surface.eval(x.view())?;
+        if gradient.len() != x.len() || !gradient.iter().all(|value| value.is_finite()) {
+            return Err(SaddleError::Shape(
+                "PAFI gradient must match the path".into(),
+            ));
+        }
+        Ok(gradient)
+    }
+
+    /// Remove the part of `vector` along the normal, and its center-of-mass
+    /// part when held.
+    fn project(&self, vector: &mut Array1<f64>) {
+        self.plane.project_in_place(vector);
+        if self.hold_com {
+            remove_com(vector);
+            self.plane.project_in_place(vector);
+        }
+    }
+
+    /// One Euler-Maruyama step from `x`, where the gradient is `gradient`.
+    fn step(
+        &self,
+        x: &mut Array1<f64>,
+        gradient: Array1<f64>,
+        rng: &mut Rng,
+    ) -> Result<(), SaddleError> {
+        let plane = self.plane;
+        let mut drift = gradient;
+        let mut noise = Array1::zeros(x.len());
+        for value in noise.iter_mut() {
+            *value = rng.normal();
+        }
+        self.project(&mut drift);
+        self.project(&mut noise);
+        let mut proposal = &*x - &(&drift * self.drift_scale) + &(&noise * self.sigma);
+        plane.restore_in_place(&mut proposal);
+        if let Some(region) = self.region
+            && let Some(violation) = region.violation(proposal.view())?
+        {
+            if let Some(penetration) = violation.penetration {
+                let mut normal = TangentProjector::project(plane, violation.normal.view());
+                let scale = normal.dot(&normal).sqrt();
+                if !(scale.is_finite() && scale > 0.0) {
+                    return Err(SaddleError::Invalid(
+                        "region boundary has no PAFI in-plane normal".into(),
+                    ));
+                }
+                normal /= scale;
+                proposal.scaled_add(-2.0 * penetration / scale, &normal);
+                plane.restore_in_place(&mut proposal);
+                if !region.contains(proposal.view())? {
+                    proposal = x.clone();
+                }
+            } else {
+                proposal = x.clone();
+            }
+        }
+        *x = proposal;
+        Ok(())
+    }
+
+    /// The minimum in the plane that `quench` reaches from `start`, and the
+    /// force evaluations it took.
+    fn minimum(
+        &self,
+        start: &Array1<f64>,
+        quench: &RelaxConfig,
+    ) -> Result<(Array1<f64>, usize), SaddleError> {
+        let n = start.len();
+        let mut solver = Solver::new(
+            quench.method.clone(),
+            Control::default()
+                .with_maxiter(quench.max_steps)
+                .with_gtol(quench.force_tol)
+                .with_stop_norm(StopNorm::MaxAtom)
+                .with_istep(quench.initial_step),
+            n,
+        );
+        solver.set_atom_maxmove(quench.max_atom_move);
+        let evaluations = AtomicUsize::new(0);
+        let oracle = Oracle::unbounded(n, |x: ArrayView1<f64>| {
+            evaluations.fetch_add(1, Ordering::Relaxed);
+            match self.surface.eval(x) {
+                Ok((energy, mut gradient)) if gradient.len() == n => {
+                    self.project(&mut gradient);
+                    (energy, gradient)
+                }
+                _ => (f64::NAN, Array1::from_elem(n, f64::NAN)),
+            }
+        });
+        let mut x = start.clone();
+        match solver.run(&oracle, &mut x) {
+            Ok(_) | Err(Error::FireStalled { .. } | Error::AcceptStalled { .. }) => {}
+            Err(error) => return Err(SaddleError::Solver(format!("PAFI plane quench: {error}"))),
+        }
+        self.plane.restore_in_place(&mut x);
+        Ok((x, evaluations.into_inner()))
     }
 }
 
@@ -668,6 +850,7 @@ pub fn pafi_profile<S: PointSurface + Sync>(
             plane.evaluations += added.evaluations;
             plane.tau = plane.tau.max(added.tau);
             plane.n_eff += added.n_eff;
+            plane.rejected += added.rejected;
             if plane.retained.len() < config.retain {
                 plane.retained.extend(added.retained);
             }
