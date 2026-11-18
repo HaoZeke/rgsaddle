@@ -4,7 +4,7 @@
 //! (Jóhannesson and Jónsson, Eqs. 4, 18 and 19). [`reversible_work_along`]
 //! integrates it along a [`PlanePath`]: PAFI planes along a curve, straight
 //! legs between given planes, the optimizer's own iterates, or any chain of
-//! them. A node samples its plane with [`sample_plane`](crate::ohtst::sample_plane) and gives the
+//! them. A node samples its plane with [`crate::ohtst::sample_plane`] and gives the
 //! derivative of `A` along the path's `[dp/ds; dν/ds]` from the block
 //! means, so the nodes are independent and the error of the sum is
 //! `sqrt(Σ wᵢ² σᵢ²)` over the quadrature weights. Each node starts from
