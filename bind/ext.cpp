@@ -1594,7 +1594,7 @@ SessionReport with_growing_string_saddle_index(SessionReport report, const PyGro
 
 PyGrowingString make_growing_string_session(Vector reactant, Vector product, std::int64_t n_images,
                                             double frontier_tol, std::int64_t min_steps_per_node,
-                                            std::int64_t max_steps_per_node, double join_tol,
+                                            std::int64_t max_steps_per_node, nb::handle join_tol,
                                             bool climb, double ci_after, double ci_after_rel,
                                             const std::string &method, std::int64_t memory,
                                             double force_tol, double max_move,
@@ -1660,7 +1660,13 @@ PyGrowingString make_growing_string_session(Vector reactant, Vector product, std
   config.frontier_tol = frontier_tol;
   config.min_steps_per_node = min_steps_per_node;
   config.max_steps_per_node = max_steps_per_node;
-  config.join_tol = join_tol;
+  if (!join_tol.is_none()) {
+    const auto value = nb::cast<double>(join_tol);
+    if (!std::isfinite(value) || value < 0.0) {
+      throw nb::value_error("join_tol must be non-negative or None");
+    }
+    config.join_tol = value;
+  }
   config.reparametrization = scheme;
 
   PyGrowingString out;
@@ -2152,7 +2158,7 @@ NB_MODULE(_core, m) {
           "__init__",
           [](PyGrowingString *self, Vector reactant, Vector product, std::int64_t n_images,
              double frontier_tol, std::int64_t min_steps_per_node,
-             std::int64_t max_steps_per_node, double join_tol, bool climb, double ci_after,
+             std::int64_t max_steps_per_node, nb::handle join_tol, bool climb, double ci_after,
              double ci_after_rel, const std::string &method, std::int64_t memory,
              double force_tol, double max_move, bool remove_translation, bool min_mode,
              const std::string &reparametrization, nb::handle cell, nb::handle fixed) {
@@ -2164,13 +2170,13 @@ NB_MODULE(_core, m) {
           nb::arg("reactant").noconvert(), nb::arg("product").noconvert(),
           nb::arg("n_images") = 11, nb::arg("frontier_tol") = 0.2,
           nb::arg("min_steps_per_node") = 1, nb::arg("max_steps_per_node") = 0,
-          nb::arg("join_tol") = 0.0, nb::arg("climb") = true, nb::arg("ci_after") = 0.5,
+          nb::arg("join_tol") = nb::none(), nb::arg("climb") = true, nb::arg("ci_after") = 0.5,
           nb::arg("ci_after_rel") = 0.0, nb::arg("method") = "fire", nb::arg("memory") = 20,
           nb::arg("force_tol") = 0.001, nb::arg("max_move") = 0.2,
           nb::arg("remove_translation") = true, nb::arg("min_mode") = false,
           nb::arg("reparametrization") = "not-a-knot", nb::arg("cell") = nb::none(),
           nb::arg("fixed") = nb::none(),
-          "Growing string session (Peters, Heyden, Bell and Chakraborty 2004, ABI minor 43).")
+          "Growing string session (Peters, Heyden, Bell and Chakraborty 2004, ABI minor 44).")
       .def(
           "step",
           [](PyGrowingString &self, nb::callable fn) {
@@ -2248,7 +2254,7 @@ NB_MODULE(_core, m) {
           },
           nb::arg("fixed").noconvert(), "Replace the per-atom fixed mask (1 fixed, 0 free).")
       .def("saddle_index", &growing_string_saddle_index,
-           "Certificate of the climbing image once joined and converged (ABI minor 43).");
+           "Certificate of the climbing image once joined and converged (ABI minor 44).");
 
   nb::class_<PySella>(m, "SellaSaddle")
       .def(

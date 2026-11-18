@@ -521,22 +521,22 @@ typedef rgsaddle_status_t (*abi44_signature_rgsaddle_band_set_string)(
     RgsaddleBand *band, int32_t enabled, int32_t scheme);
 _Static_assert(_Generic(&rgsaddle_band_set_string, abi44_signature_rgsaddle_band_set_string: 1, default: 0), "rgsaddle_band_set_string signature");
 
-typedef rgsaddle_status_t (*abi43_signature_rgsaddle_growing_string_config_default)(
+typedef rgsaddle_status_t (*abi44_signature_rgsaddle_growing_string_config_default)(
     rgsaddle_growing_string_config_t *out);
-_Static_assert(_Generic(&rgsaddle_growing_string_config_default, abi43_signature_rgsaddle_growing_string_config_default: 1, default: 0), "rgsaddle_growing_string_config_default signature");
+_Static_assert(_Generic(&rgsaddle_growing_string_config_default, abi44_signature_rgsaddle_growing_string_config_default: 1, default: 0), "rgsaddle_growing_string_config_default signature");
 
-typedef RgsaddleGrowingString *(*abi43_signature_rgsaddle_growing_string_create)(
+typedef RgsaddleGrowingString *(*abi44_signature_rgsaddle_growing_string_create)(
     const rgsaddle_growing_string_config_t *config, int64_t n_atoms, const double *reactant,
     const double *product);
-_Static_assert(_Generic(&rgsaddle_growing_string_create, abi43_signature_rgsaddle_growing_string_create: 1, default: 0), "rgsaddle_growing_string_create signature");
+_Static_assert(_Generic(&rgsaddle_growing_string_create, abi44_signature_rgsaddle_growing_string_create: 1, default: 0), "rgsaddle_growing_string_create signature");
 
-typedef rgsaddle_status_t (*abi43_signature_rgsaddle_growing_string_step)(
+typedef rgsaddle_status_t (*abi44_signature_rgsaddle_growing_string_step)(
     RgsaddleGrowingString *session, rgsaddle_surface_fn surface, void *user,
     rgsaddle_report_t *out);
-_Static_assert(_Generic(&rgsaddle_growing_string_step, abi43_signature_rgsaddle_growing_string_step: 1, default: 0), "rgsaddle_growing_string_step signature");
+_Static_assert(_Generic(&rgsaddle_growing_string_step, abi44_signature_rgsaddle_growing_string_step: 1, default: 0), "rgsaddle_growing_string_step signature");
 
-typedef int64_t (*abi43_signature_rgsaddle_growing_string_nodes_added)(
+typedef int64_t (*abi44_signature_rgsaddle_growing_string_nodes_added)(
     const RgsaddleGrowingString *session);
-_Static_assert(_Generic(&rgsaddle_growing_string_nodes_added, abi43_signature_rgsaddle_growing_string_nodes_added: 1, default: 0), "rgsaddle_growing_string_nodes_added signature");
+_Static_assert(_Generic(&rgsaddle_growing_string_nodes_added, abi44_signature_rgsaddle_growing_string_nodes_added: 1, default: 0), "rgsaddle_growing_string_nodes_added signature");
 
 #endif

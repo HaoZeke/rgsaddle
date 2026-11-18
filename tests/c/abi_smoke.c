@@ -703,7 +703,7 @@ int main(void) {
     rgsaddle_band_free(sb);
   }
 
-  /* Growing string method (ABI minor 43): fragment growth, join hand-off,
+  /* Growing string method (ABI minor 44): fragment growth, join hand-off,
    * image IDs, and convergence to the double-well saddle. */
   {
     rgsaddle_growing_string_config_t gcfg;
@@ -770,7 +770,7 @@ int main(void) {
       rgsaddle_growing_string_config_t bad;
       const double nan = NAN;
       const double inf = INFINITY;
-      for (int which = 0; which < 9; ++which) {
+      for (int which = 0; which < 8; ++which) {
         if (rgsaddle_growing_string_config_default(&bad) != RGSADDLE_OK) {
           return fail(RGSADDLE_INVALID_PARAMETER, "growing string default config");
         }
@@ -781,9 +781,8 @@ int main(void) {
           case 2: bad.frontier_tol = nan; break;
           case 3: bad.min_steps_per_node = 0; break;
           case 4: bad.max_steps_per_node = -1; break;
-          case 5: bad.join_tol = -1.0; break;
-          case 6: bad.join_tol = nan; break;
-          case 7: bad.join_tol = inf; break;
+          case 5: bad.join_tol = nan; break;
+          case 6: bad.join_tol = inf; break;
           default: bad.frontier_tol = inf; break;
         }
         RgsaddleGrowingString *refused =
@@ -797,7 +796,10 @@ int main(void) {
         return fail(RGSADDLE_INVALID_PARAMETER, "growing string default config");
       }
       bad.n_images = 7;
-      bad.join_tol = 1.5;
+      if (bad.join_tol != -1.0) {
+        return fail(RGSADDLE_INVALID_PARAMETER, "growing string default join tolerance");
+      }
+      bad.join_tol = 0.0;
       bad.max_steps_per_node = 4;
       RgsaddleGrowingString *kept = rgsaddle_growing_string_create(&bad, n_atoms, greact, gprod);
       if (!kept) {

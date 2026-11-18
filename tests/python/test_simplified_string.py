@@ -299,6 +299,12 @@ def test_python_growing_string_reports_nodes_added_and_rejects_bad_config() -> N
     assert gsm.joined()
     assert grown == 3
 
+    for join_tol in (None, 0.0):
+        configured = rgsaddle.GrowingString(
+            min_a, min_b, n_images=7, join_tol=join_tol
+        )
+        assert not configured.joined()
+
     for options in (
         {"frontier_tol": 0.0},
         {"frontier_tol": float("nan")},
