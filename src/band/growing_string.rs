@@ -36,7 +36,7 @@ use rgmin::{FireKind, Method, Oracle, Solver};
 use super::string::{StringConfig, StringSession, check_string};
 use super::{
     BandConfig, BandStatus, BandSurface, Cell, CiConfig, MinModeRefine, SAME_ROW_TOL, build_solver,
-    check_fixed, check_force_driven, max_abs, pin_fixed_rows, remove_net_translation, zero_fixed,
+    check_fixed, check_force_driven, pin_fixed_rows, remove_net_translation, zero_fixed,
 };
 use crate::autoneb::ImageEvalPool;
 use crate::error::SaddleError;
@@ -831,11 +831,20 @@ impl GrowingStringSession {
         }
     }
 
-    fn force_norm(&self, force: &Array1<f64>) -> f64 {
+    fn force_norm(&self, force: ArrayView1<'_, f64>) -> f64 {
         match self.config.force_gate {
-            ForceGate::LinfNorm => max_abs(force),
-            gate => gate.value(force.view()),
+            ForceGate::LinfNorm => force.iter().fold(0.0_f64, |largest, value| {
+                largest.max(value.abs())
+            }),
+            gate => gate.value(force),
         }
+    }
+
+    fn max_image_force(&self, force: &Array1<f64>, dof: usize) -> f64 {
+        (0..force.len())
+            .step_by(dof)
+            .map(|start| self.force_norm(force.slice(s![start..start + dof])))
+            .fold(0.0_f64, f64::max)
     }
 
     fn pin_fragments(&mut self) {
@@ -1147,15 +1156,13 @@ impl GrowingStringSession {
             return Err(SaddleError::NonFinite("growing string force norm"));
         }
 
-        let lf_slice = f_left_perp
-            .slice(s![(n_left_mov - 1) * dof..n_left_mov * dof])
-            .to_owned();
-        let rf_slice = f_right_perp.slice(s![..dof]).to_owned();
-        let left_frontier_force = self.force_norm(&lf_slice);
-        let right_frontier_force = self.force_norm(&rf_slice);
+        let lf_slice = f_left_perp.slice(s![(n_left_mov - 1) * dof..n_left_mov * dof]);
+        let rf_slice = f_right_perp.slice(s![..dof]);
+        let left_frontier_force = self.force_norm(lf_slice);
+        let right_frontier_force = self.force_norm(rf_slice);
         let max_force = self
-            .force_norm(&f_left_perp)
-            .max(self.force_norm(&f_right_perp));
+            .max_image_force(&f_left_perp, dof)
+            .max(self.max_image_force(&f_right_perp, dof));
 
         let reparam = self.reparametrization();
         self.left_fragment
