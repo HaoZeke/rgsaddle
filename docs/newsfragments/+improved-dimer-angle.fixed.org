@@ -9,5 +9,3 @@ The positive curvature climb now limits the normalized global mode step
 before applying the per atom cap, matching eOn conjugate gradients.
 Minimum mode FIRE now opens at rgmin's reference step of 0.1 instead of
 1.0, which avoids immediate capped moves on stiff negative modes.
-Lanczos now uses eOn's relative Ritz value tolerance of 0.01 by default.
-~MinModeSession::set_lanczos_rel_tol~ can replace or disable that stop.

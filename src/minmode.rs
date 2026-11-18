@@ -268,9 +268,8 @@ pub struct MinModeConfig {
     /// loop.
     /// [`MinModeSession::set_torque_window`] turns the window on or off
     /// whatever this value is. Lanczos
-    /// uses the same number as the Ritz residual. Its default relative
-    /// Ritz value tolerance is 0.01, matching eOn. A host can replace
-    /// that value through [`MinModeSession::set_lanczos_rel_tol`].
+    /// uses the same number as the Ritz residual. With no host relative
+    /// tolerance it is also the relative change of the lowest Ritz value.
     pub rotation_tol: f64,
     /// Dimer rotation also stops when the optimal rotation angle of an
     /// iteration falls under this many radians. The default is eOn's
@@ -438,9 +437,6 @@ pub const DEFAULT_ROTATION_ANGLE_TOL: f64 = 5.0 * PI / 180.0;
 /// and Lanczos use eOn's classic torque window. A stricter residual
 /// keeps iterating.
 const STOCK_ROTATION_TOL: f64 = 1e-4;
-
-/// eOn's relative lowest Ritz value tolerance.
-const LANCZOS_REL_TOL: f64 = 0.01;
 
 /// eOn `dimer_torque_max`. After one rotation, a rotational force under
 /// this is finished (classic dimer, `torque_min` .. `torque_max`,
@@ -1797,7 +1793,7 @@ impl MinModeSession {
             curvature: f64::NAN,
             solver,
             iteration: 0,
-            lanczos_rel_tol: Some(LANCZOS_REL_TOL),
+            lanczos_rel_tol: None,
             torque_window: None,
             rotation_stop_length: 0.0,
             dimer_rotation: DimerRotationHistory::default(),
@@ -1910,11 +1906,12 @@ impl MinModeSession {
     }
 
     /// Stop a Lanczos estimate when the lowest Ritz value's relative
-    /// change falls under `tol`. The default is eOn's 0.01. A set
-    /// tolerance leaves the inferred torque window out; only
+    /// change falls under `tol`. The improved Lanczos search uses this
+    /// so a translation does not wait for a tight residual. A set
+    /// tolerance also leaves the inferred torque window out; only
     /// [`MinModeSession::set_torque_window`] with `Some(true)` adds it.
-    /// `None` restores the residual and relative Ritz change at
-    /// `rotation_tol`, together with the inferred window.
+    /// `None` restores the stock residual and the relative Ritz change,
+    /// both at `rotation_tol`, and the inferred window.
     pub fn set_lanczos_rel_tol(&mut self, tol: Option<f64>) -> Result<(), SaddleError> {
         if let Some(tol) = tol
             && !(tol.is_finite() && tol > 0.0)
@@ -3925,7 +3922,7 @@ mod tests {
     }
 
     #[test]
-    fn minimum_mode_uses_reference_step_and_lanczos_stop() {
+    fn minimum_mode_fire_opens_at_the_rgmin_reference_step() {
         let session = MinModeSession::new(
             MinModeConfig::default(),
             array![0.0, 0.0, 0.0],
@@ -3933,7 +3930,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(session.fire_dt, 0.1);
-        assert_eq!(session.lanczos_rel_tol, Some(0.01));
+        assert_eq!(session.lanczos_rel_tol, None);
     }
 
     fn dimer_rotations(rotation_tol: f64, window: Option<bool>) -> (usize, Array1<f64>) {
