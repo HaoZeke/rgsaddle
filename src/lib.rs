@@ -94,9 +94,9 @@ mod stats;
 pub use autoneb::{AutoNeb, AutoNebInterpolant, AutoNebReport, AutoNebTuning};
 pub use band::{
     BandConfig, BandEvaluation, BandReport, BandSession, BandStatus, BandSurface, Cell, CiConfig,
-    ExpBandPrecon, GrowingStringConfig, GrowingStringPhase, GrowingStringReport,
-    GrowingStringSession, MinModeRefine, SolidState, StringConfig, StringSession, ZoomConfig,
-    climbing_image,
+    ExpBandPrecon, FeaNebReport, FeaNebSession, FreeEndConfig, FreeEndReport, FreeEndSide,
+    GrowingStringConfig, GrowingStringPhase, GrowingStringReport, GrowingStringSession,
+    MinModeRefine, SolidState, StringConfig, StringSession, ZoomConfig, climbing_image,
 };
 pub use bennett::{ShootingConfig, Transmission, bennett_chandler};
 pub use connect::{ConnectConfig, ConnectProfile, ConnectReport, connect};
