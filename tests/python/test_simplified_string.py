@@ -277,3 +277,64 @@ def test_python_growing_string_matches_cineb_and_preserves_ids() -> None:
     cert = gsm.saddle_index()
     assert cert.certified and cert.index == 1
 
+
+def test_python_free_end_adaptive_neb_residual_and_cuts() -> None:
+    def tilted_surface(positions: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        x = positions[:, 0]
+        y = positions[:, 1]
+        z = positions[:, 2]
+        x2 = x * x
+        x4 = x2 * x2
+        g1 = np.exp(-1.5 * x2)
+        dx = x - 0.75
+        g2 = np.exp(-16.0 * dx * dx)
+        sw = x4 / (1.0 + x4)
+        dsw = 4.0 * x * x2 / ((1.0 + x4) ** 2)
+        tilt = 0.12 * (x - 6.0) ** 2 - 3.0
+        dtilt = 0.24 * (x - 6.0)
+        v_path = 2.0 * x2 * g1 + 1.6 * x2 * g2 + sw * tilt
+        dv_path = (
+            2.0 * x * g1 * (2.0 - 3.0 * x2)
+            + 1.6 * x * g2 * (2.0 - 32.0 * x * dx)
+            + dsw * tilt
+            + sw * dtilt
+        )
+        valley = y - 0.25 * x
+        energies = v_path + 4.0 * valley * valley + 2.0 * z * z
+        gradients = np.column_stack([dv_path - 2.0 * valley, 8.0 * valley, 4.0 * z])
+        return np.ascontiguousarray(energies, dtype=np.float64), np.ascontiguousarray(
+            gradients, dtype=np.float64
+        )
+
+    weights = np.linspace(0.0, 1.0, 7)[:, None]
+    start = np.array([0.0, 0.0, 0.0], dtype=np.float64)
+    end = np.array([1.75, 0.48, 0.0], dtype=np.float64)
+    initial = np.ascontiguousarray((1.0 - weights) * start + weights * end, dtype=np.float64)
+
+    band = rgsaddle.Band(
+        initial,
+        climb=True,
+        ci_after=0.0,
+        ci_after_rel=0.5,
+        max_move=0.08,
+        force_tol=0.001,
+    )
+    assert band.target_energy_residual() is None
+    band.set_free_end(
+        True,
+        side="last",
+        target_energy=-0.2,
+        max_cuts=2,
+        cut_force=0.5,
+        energy_tol=0.01,
+        stability=2,
+        window_offset=1,
+        cubic=True,
+    )
+    rep = band.run(tilted_surface, max_steps=600)
+    assert rep.status == 1
+    assert band.free_end_cuts() == 2
+    res = band.target_energy_residual()
+    assert res is not None and abs(res) < 1e-5
+
+
