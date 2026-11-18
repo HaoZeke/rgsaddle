@@ -11,7 +11,7 @@
 //! Run:
 //!
 //! ```console
-//! $ cargo run --release --example howto_parallel
+//! $ cargo run --release --features ohtst --example howto_parallel
 //! ```
 
 use std::time::Instant;

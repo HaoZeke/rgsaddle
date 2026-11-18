@@ -1,7 +1,7 @@
 #+title: PAFI: a free-energy profile and a rate
 #+options: toc:nil num:nil author:nil
 
-This tutorial takes a newcomer from a checkout to a PAFI free-energy profile and a rate, on an analytic surface, in Rust and in Python. Partial average force integration (PAFI) is Swinburne and Marinica, Phys. Rev. Lett. 120, 135503 (2018), doi:10.1103/PhysRevLett.120.135503: average the force projected onto a hyperplane normal to a reference path, at fixed arc length, and integrate that average along the path to the potential of mean force. =howto/oh-tst= covers the closely related optimal-hyperplane method, and =explanation/pafi-ohtst= compares the two and gives the equations this tutorial uses without deriving them.
+This tutorial takes a newcomer from a checkout to a PAFI free-energy profile and a rate, on an analytic surface, in Rust and in Python. Projected average force integration (PAFI) is Swinburne and Marinica, Phys. Rev. Lett. 120, 135503 (2018), doi:10.1103/PhysRevLett.120.135503: average the force projected onto a hyperplane normal to a reference path, at fixed arc length, and integrate that average along the path to the potential of mean force. =howto/oh-tst= covers the closely related optimal-hyperplane method, and =explanation/pafi-ohtst= compares the two and gives the equations this tutorial uses without deriving them.
 
 #+begin_export rst
 :cite:`swinburneUnsupervisedCalculation2018`
@@ -61,7 +61,7 @@ zero-temperature barrier along the path: 0.999998 (potential barrier is 1)
 let (profile, planes) = pafi_profile(&surface, &path, &arcs, &config.pafi)?;
 #+end_src
 
-It samples every plane in parallel on rayon's global pool; =howto/pafi-ohtst-parallel-sampling= times that. The planes are independent of each other: nothing here needs the center-of-mass projection (=with_fix_com(false)=, since there is only one moving coordinate to begin with) or extra sampling rounds (=with_retain(0)= keeps no configurations for a later restart; =howto/pafi-ohtst-restarting= covers both).
+It samples every plane in parallel on rayon's global pool; =howto/pafi-ohtst-parallel-sampling= times that. The planes are independent of each other: nothing here needs the center-of-mass projection (=with_fix_com(false)=, since the coordinates are a single 2D point, not 3D atoms), and =with_retain(0)= keeps no configurations (while =target_error= stays =None= by default so only one sampling pass runs; =howto/pafi-ohtst-restarting= covers automatic extra rounds and retaining configurations).
 
 * Run it
 #+begin_src console
@@ -84,7 +84,7 @@ A rate needs a prefactor on top of the barrier. =attempt_frequency= turns a curv
 
 #+INCLUDE: "../../../examples/pafi_tutorial.rs" src rust :lines "68-81"
 
-Arrhenius's law then gives the rate directly, with no unit conversion since both the barrier and \(kT\) are already in the surface's own energy unit (=crate::arrhenius= instead fixes eV and kelvin, and is the wrong call here):
+Arrhenius's law then gives the rate directly, with no unit conversion since both the barrier and \(kT\) are already in the surface's own energy unit (=rgsaddle::arrhenius= instead fixes eV and kelvin, and is the wrong call here):
 
 #+begin_src rust
 let rate = nu * (-profile.barrier / config.kt).exp();

@@ -15,7 +15,7 @@
 //! Run:
 //!
 //! ```console
-//! $ cargo run --release --example howto_restart
+//! $ cargo run --release --features ohtst --example howto_restart
 //! ```
 
 use ndarray::{Array1, ArrayView1, array};

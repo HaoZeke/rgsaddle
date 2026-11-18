@@ -21,7 +21,7 @@
 //! Run:
 //!
 //! ```console
-//! $ cargo run --release --example howto_convergence
+//! $ cargo run --release --features ohtst --example howto_convergence
 //! ```
 
 use ndarray::{Array1, ArrayView1, array};
