@@ -1365,9 +1365,9 @@ fn plain_rmsd(reference: &[[f64; 3]], moving: &[[f64; 3]]) -> f64 {
 fn kabsch_rotation(reference: &[[f64; 3]], moving: &[[f64; 3]]) -> Option<[[f64; 3]; 3]> {
     let mut covariance = [[0.0; 3]; 3];
     for (point, target) in moving.iter().zip(reference) {
-        for row in 0..3 {
-            for column in 0..3 {
-                covariance[row][column] += target[row] * point[column];
+        for (cov_row, &target_coord) in covariance.iter_mut().zip(target) {
+            for (entry, &point_coord) in cov_row.iter_mut().zip(point) {
+                *entry += target_coord * point_coord;
             }
         }
     }
@@ -1397,14 +1397,14 @@ fn kabsch_rotation(reference: &[[f64; 3]], moving: &[[f64; 3]]) -> Option<[[f64;
     }
     let mut left = [[0.0; 3]; 3];
     let floor = largest * f64::EPSILON * 32.0;
-    for column in 0..3 {
-        if sigma[column] > floor {
-            for row in 0..3 {
+    for (column, &sigma_col) in sigma.iter().enumerate() {
+        if sigma_col > floor {
+            for (left_row, cov_row) in left.iter_mut().zip(&covariance) {
                 let mut sum = 0.0;
-                for k in 0..3 {
-                    sum += covariance[row][k] * vectors[k][column];
+                for (&cov_entry, vec_row) in cov_row.iter().zip(&vectors) {
+                    sum += cov_entry * vec_row[column];
                 }
-                left[row][column] = sum / sigma[column];
+                left_row[column] = sum / sigma_col;
             }
         }
     }
@@ -1422,12 +1422,12 @@ fn kabsch_rotation(reference: &[[f64; 3]], moving: &[[f64; 3]]) -> Option<[[f64;
             vector_row[column] = -vector_row[column];
         }
         if sigma[column] > floor {
-            for row in 0..3 {
+            for (left_row, cov_row) in left.iter_mut().zip(&covariance) {
                 let mut sum = 0.0;
-                for k in 0..3 {
-                    sum += covariance[row][k] * vectors[k][column];
+                for (&cov_entry, vec_row) in cov_row.iter().zip(&vectors) {
+                    sum += cov_entry * vec_row[column];
                 }
-                left[row][column] = sum / sigma[column];
+                left_row[column] = sum / sigma[column];
             }
         }
         complete_left(&mut left, &sigma, floor);
