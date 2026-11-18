@@ -124,6 +124,7 @@ pub use rate::{
     OhTstRate, PlaneDensity, RateMultiplicity, flux_mass, ohtst_rate, plane_transmission,
 };
 pub use reactant::{ReactantDensity, reactant_density};
+pub(crate) use sample::sample_plane_pilot_with_sampler;
 pub use sample::{
     AnalyticSurfaceSampler, LangevinConfig, PlaneIntegrator, PlaneSample, Uncontrolled,
     sample_plane, sample_plane_with_sampler,

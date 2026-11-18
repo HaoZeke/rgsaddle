@@ -919,6 +919,29 @@ pub fn sample_plane_with_sampler<E: HyperplaneSampler>(
     plane: &Hyperplane,
     config: &LangevinConfig,
 ) -> Result<PlaneSample, SaddleError> {
+    sample_plane_with_sampler_policy(sampler, plane, config, None)
+}
+
+pub(crate) fn sample_plane_pilot_with_sampler<E: HyperplaneSampler>(
+    sampler: &mut E,
+    plane: &Hyperplane,
+    config: &LangevinConfig,
+    false_rejection: f64,
+) -> Result<PlaneSample, SaddleError> {
+    if !(false_rejection.is_finite() && false_rejection > 0.0 && false_rejection < 1.0) {
+        return Err(SaddleError::Invalid(
+            "pilot false-rejection probability must lie inside (0, 1)".into(),
+        ));
+    }
+    sample_plane_with_sampler_policy(sampler, plane, config, Some(false_rejection))
+}
+
+fn sample_plane_with_sampler_policy<E: HyperplaneSampler>(
+    sampler: &mut E,
+    plane: &Hyperplane,
+    config: &LangevinConfig,
+    pilot: Option<f64>,
+) -> Result<PlaneSample, SaddleError> {
     config.check()?;
     if config.control.is_some() {
         return Err(SaddleError::Invalid(
@@ -937,7 +960,7 @@ pub fn sample_plane_with_sampler<E: HyperplaneSampler>(
     }
     let constrained = sampler.constrained_directions(plane)?;
     let ensemble = sampler.sample_hyperplane(plane, &budget)?;
-    estimate_engine_plane(plane, config, &constrained, ensemble)
+    estimate_engine_plane(plane, config, &constrained, ensemble, pilot)
 }
 
 /// Directions held in the plane, with the normal component removed.
@@ -972,11 +995,74 @@ fn remove_directions(vector: &mut Array1<f64>, directions: &[Array1<f64>]) {
     }
 }
 
+fn pilot_report(
+    values: &[f64],
+    config: &LangevinConfig,
+    false_rejection: f64,
+) -> Result<EquilibrationReport, SaddleError> {
+    if values.len() < 8 {
+        return Err(SaddleError::Invalid(
+            "a pilot stationarity test needs four effective observations in each half".into(),
+        ));
+    }
+    let tau = autocorr_time(values);
+    let n_eff = values.len() as f64 / (2.0 * tau).max(1.0);
+    // Use equal even-length halves so a stationary period-two integrator
+    // signal has the same phase balance on both sides. For the prescribed
+    // 14-record pilot this omits only the central pair from the diagnostic.
+    let half = (values.len() / 4) * 2;
+    let first = &values[..half];
+    let second = &values[values.len() - half..];
+    let (mean_a, iid_error_a) = mean_and_error(first);
+    let (mean_b, iid_error_b) = mean_and_error(second);
+    let error_a = iid_error_a * (2.0 * autocorr_time(first)).max(1.0).sqrt();
+    let error_b = iid_error_b * (2.0 * autocorr_time(second)).max(1.0).sqrt();
+    let drift = (mean_a - mean_b).abs();
+    let error = error_a.hypot(error_b);
+    let sigma_multiple = (1.0 / false_rejection).sqrt();
+    // Each record enters one of the two half-means (one addition). The
+    // comparison then takes two absolute values, one maximum, and the
+    // product with γ. That is n + 4 floating-point operations.
+    let operations = values.len() + 4;
+    let gamma = operations as f64 * f64::EPSILON / (1.0 - operations as f64 * f64::EPSILON);
+    let roundoff = gamma * mean_a.abs().max(mean_b.abs()).max(1.0);
+    let report = EquilibrationReport {
+        discard: 0,
+        equilibration_steps: config.burn_in,
+        tau,
+        n_eff,
+        split_half_drift: drift,
+        split_half_error: error,
+        sigma_multiple,
+        drift_passed: drift <= (sigma_multiple * error).max(roundoff),
+    };
+    // Two effective observations in each half are the minimum needed to
+    // estimate both half means and their sampling variances.
+    let required = 4.0;
+    if n_eff < required {
+        return Err(SaddleError::InsufficientEffectiveSamples {
+            equilibration_steps: report.equilibration_steps,
+            n_eff,
+            required,
+        });
+    }
+    if !report.drift_passed {
+        return Err(SaddleError::NotEquilibrated {
+            equilibration_steps: report.equilibration_steps,
+            drift,
+            standard_error: error,
+            sigma_multiple,
+        });
+    }
+    Ok(report)
+}
+
 fn estimate_engine_plane(
     plane: &Hyperplane,
     config: &LangevinConfig,
     constrained: &[Array1<f64>],
     ensemble: HyperplaneEnsemble,
+    pilot: Option<f64>,
 ) -> Result<PlaneSample, SaddleError> {
     if ensemble.observations.len() != config.records {
         return Err(SaddleError::Invalid(
@@ -988,20 +1074,38 @@ fn estimate_engine_plane(
         .iter()
         .map(|observation| observation.constraint_force)
         .collect();
-    let equilibration = equilibrate(&force_series, config.burn_in, config.stride, config.blocks)?;
+    let equilibration = if let Some(false_rejection) = pilot {
+        pilot_report(&force_series, config, false_rejection)?
+    } else {
+        equilibrate(&force_series, config.burn_in, config.stride, config.blocks)?
+    };
     let observations = &ensemble.observations[equilibration.discard..];
     let n = plane.dim();
     let normal = plane.normal().to_owned();
     let point = plane.point().to_owned();
     let independent = independent_constraints(plane, constrained)?;
-    let records = observations.len() / config.blocks * config.blocks;
-    let width = records / config.blocks;
-    let mut block_gradients = Array2::zeros((config.blocks, 2 * n));
-    let mut block_centroids = Array2::zeros((config.blocks, n));
-    let mut normal_forces = Vec::with_capacity(config.blocks);
-    let mut virials = Vec::with_capacity(config.blocks);
+    // Batch means use blocks of at least ceil(2 tau). Widening past that drops
+    // tail records and moves the mean, so the length stays the autocorrelation time.
+    let correlation_width = ((2.0 * equilibration.tau).ceil() as usize).max(1);
+    let width = (observations.len() / config.blocks)
+        .max(correlation_width)
+        .max(1);
+    let blocks = observations.len() / width;
+    if blocks < 2 {
+        return Err(SaddleError::InsufficientEffectiveSamples {
+            equilibration_steps: equilibration.equilibration_steps,
+            n_eff: equilibration.n_eff,
+            required: 2.0 * correlation_width as f64,
+        });
+    }
+    let records = blocks * width;
+    let observations = &observations[..records];
+    let mut block_gradients = Array2::zeros((blocks, 2 * n));
+    let mut block_centroids = Array2::zeros((blocks, n));
+    let mut normal_forces = Vec::with_capacity(blocks);
+    let mut virials = Vec::with_capacity(blocks);
     let mut series = Vec::with_capacity(records);
-    for block in 0..config.blocks {
+    for block in 0..blocks {
         let mut force_sum = 0.0;
         let mut torque = Array1::zeros(n);
         let mut centroid = Array1::zeros(n);
@@ -1061,9 +1165,9 @@ fn estimate_engine_plane(
     let (normal_force, normal_force_error) = mean_and_error(&normal_forces);
     let (grad_point, _) = column_means(&block_gradients, 0);
     let (grad_normal, grad_normal_error) = column_means(&block_gradients, n);
-    let centroid = block_centroids
-        .mean_axis(ndarray::Axis(0))
-        .unwrap_or_else(|| Array1::zeros(n));
+    let centroid = block_centroids.mean_axis(ndarray::Axis(0)).ok_or_else(|| {
+        SaddleError::Invalid("OH-TST sampling produced no centroid blocks".into())
+    })?;
     let mut lever = &centroid - &point;
     remove_directions(&mut lever, &independent);
     let mut centroid_block_gradients = block_gradients.clone();
