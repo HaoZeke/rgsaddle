@@ -26,7 +26,8 @@ program test_pafi
   config%thermalize = 5_c_int64_t
   config%stride = 1_c_int64_t
   config%samples = 200_c_int64_t
-  config%blocks = 5_c_int64_t
+  ! A 1D path gives a deterministic series with 2.2 effective samples.
+  config%blocks = 2_c_int64_t
   config%seed = 3_c_int64_t
   config%fix_com = 0_c_int32_t
   config%retain = 1_c_int64_t
@@ -196,8 +197,10 @@ contains
     call cheap_config(cfg)
     cfg%thermal = 0.2_c_double
     cfg%time_step = 0.05_c_double
-    cfg%thermalize = 0_c_int64_t
-    cfg%samples = 4_c_int64_t
+    cfg%thermalize = 100_c_int64_t
+    cfg%stride = 10_c_int64_t
+    cfg%samples = 64_c_int64_t
+    cfg%blocks = 8_c_int64_t
     cfg%seed = uint64_bits(int(z'80000000', c_int64_t), 1_c_int64_t)
     st = tuned%create(cfg, int(n, c_int64_t), 2_c_int64_t, wide)
     call check_status("create high seed", st)
@@ -217,15 +220,14 @@ contains
       stop 9
     end if
 
-    call cheap_config(cfg)
-    cfg%samples = 4_c_int64_t
+    cfg%samples = 64_c_int64_t
     st = tuned%set_config(cfg)
     call check_status("set few samples", st)
     st = tuned%run(pcb, c_null_ptr)
     call check_status("run few samples", st)
     st = tuned%result(first)
     call check_status("result few samples", st)
-    cfg%samples = 40_c_int64_t
+    cfg%samples = 640_c_int64_t
     st = tuned%set_config(cfg)
     call check_status("set many samples", st)
     st = tuned%run(pcb, c_null_ptr)

@@ -731,7 +731,7 @@ contains
     config%thermalize = 5_c_int64_t
     config%stride = 1_c_int64_t
     config%samples = 60_c_int64_t
-    config%blocks = 5_c_int64_t
+    config%blocks = 2_c_int64_t
     config%seed = 7_c_int64_t
     config%fix_com = 0_c_int32_t
     config%retain = 1_c_int64_t
