@@ -159,7 +159,9 @@ pub(crate) fn autocorr_time(values: &[f64]) -> f64 {
     }
     let mut tau = 0.5;
     let mut lag = 1usize;
-    while lag < n / 4 {
+    // A 6-point half has `n / 4 == 1`, so `lag < n / 4` never runs. Keep lag 1
+    // there; longer series stay on the original cutoff.
+    while lag < n / 4 || (n / 4 == 1 && lag == 1) {
         let mut cov = 0.0;
         for i in 0..(n - lag) {
             cov += (values[i] - mean) * (values[i + lag] - mean);
