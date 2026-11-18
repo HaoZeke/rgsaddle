@@ -66,6 +66,8 @@ while report.status != BandStatus::Converged {
    tutorials/dimer
    tutorials/sella
    tutorials/quickstart
+   tutorials/pafi
+   tutorials/oh-tst
    howto/band
    howto/autoneb
    howto/minmode
@@ -76,6 +78,10 @@ while report.status != BandStatus::Converged {
    howto/defect-pair-rates
    howto/pafi
    howto/oh-tst
+   howto/rgpot
+   howto/pafi-ohtst-restarting
+   howto/pafi-ohtst-parallel-sampling
+   howto/pafi-ohtst-checking-convergence
    howto/sparse-hessian
    howto/sella
    howto/irc
@@ -89,9 +95,12 @@ while report.status != BandStatus::Converged {
    explanation/mep
    explanation/ohtst-pafi-exact
    explanation/one-stencil
+   explanation/pafi-ohtst
    reference/architecture
    reference/bibliography
    reference/c-symbols
+   reference/pafi
+   reference/ohtst
    contributing/index
    changelog
 #+end_export

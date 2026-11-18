@@ -7,6 +7,9 @@ The band and the minimum-mode search assemble a force and ask =rgmin::Solver= fo
 * Exact PAFI and OH-TST references
 @@rst::doc:`ohtst-pafi-exact <explanation/ohtst-pafi-exact>`@@ records how the tests compute deterministic quadrature and mean-first-passage references for PAFI and OH-TST validation.
 
+* PAFI, OH-TST and harmonic TST
+All three turn a saddle or a dividing surface into a rate; they differ in which dividing surface they use and whether they sample a transmission coefficient for it, not in the underlying transition-state-theory picture. @@rst::doc:`PAFI, OH-TST and harmonic TST <explanation/pafi-ohtst>`@@ has the equations, the assumptions behind each, and when to reach for one over another.
+
 * Index-1 Newton
 =Index1Session= searches an index-1 saddle on a Cartesian energy Hessian. The displacement is Baker's restricted-step partitioned RFO: a 2 by 2 rational-function problem maximizes the lowest mode, a second rational-function problem minimizes the complement, and the Besalu-Bofill scaling is solved so the Cartesian step lies inside the trust sphere. Powell or Bofill updates the Hessian from the gradient difference. The trust radius shrinks when that model predicts the energy change poorly and grows when a step on the sphere agrees with it.
 
