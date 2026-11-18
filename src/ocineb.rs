@@ -459,6 +459,12 @@ impl OcinebSession {
     }
 
     /// See [`BandSession::set_saddle_check`].
+    ///
+    /// `check` replaces the band's saddle-index check between steps; `None` turns it off.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`BandSession::set_saddle_check`]; the session is unchanged.
     pub fn set_saddle_check(&mut self, check: Option<SaddleIndexCheck>) -> Result<(), SaddleError> {
         self.band.set_saddle_check(check)
     }

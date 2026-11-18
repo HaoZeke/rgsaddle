@@ -135,7 +135,6 @@ impl Chain {
     /// One row per image. Ids start at 0 and increase with insertion.
     /// Endpoints are pinned. Interior rows are images.
     ///
-    ///
     /// # Errors
     ///
     /// [`SaddleError::Shape`] for no rows or no columns; [`SaddleError::NonFinite`] for a
@@ -202,7 +201,6 @@ impl Chain {
 
     /// Set role.
     ///
-    ///
     /// # Errors
     ///
     /// [`SaddleError::Shape`] when `index` is outside the chain.
@@ -221,7 +219,6 @@ impl Chain {
     /// Every block runs. The returned error is the lowest image index,
     /// on one thread or many, and the energy cache stays unread until
     /// every block succeeds.
-    ///
     ///
     /// `surface` is called once per image, in blocks of [`EVAL_BLOCK`] spread over `pool`.
     /// The energies (eV) and gradients (eV/Angstrom) replace the cache.

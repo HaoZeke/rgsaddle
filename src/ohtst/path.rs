@@ -47,6 +47,12 @@ enum Segment {
 
 impl PlanePath {
     /// Straight legs through `planes` in order.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Invalid`] for fewer than two planes or for two consecutive
+    /// planes with opposite normals; [`SaddleError::Shape`] for planes of different
+    /// dimension.
     pub fn legs(planes: &[Hyperplane]) -> Result<Self, SaddleError> {
         if planes.len() < 2 {
             return Err(SaddleError::Invalid(
@@ -64,6 +70,11 @@ impl PlanePath {
     /// [`PlaneOptimum::trace`](crate::ohtst::PlaneOptimum::trace).
     /// Entries that did not move the plane, such as a pivot recentred
     /// within it, are dropped.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Invalid`] when the trace never moved the plane (fewer than two
+    /// distinct planes), and the errors of [`PlanePath::legs`].
     pub fn trace(trace: &[PlaneTrace]) -> Result<Self, SaddleError> {
         let mut planes: Vec<Hyperplane> = Vec::with_capacity(trace.len());
         for record in trace {
@@ -87,6 +98,16 @@ impl PlanePath {
     /// with the unit tangent as normal. A given end normal clamps the
     /// tangent there; it must point along the path. A free end has zero
     /// curvature.
+    ///
+    /// `points` are the path points, in the coordinates of the sampled surface, and the
+    /// end normals are unit-length or normalized on input.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Invalid`] for fewer than two points, for repeated consecutive
+    /// points, or for an end normal that vanishes or does not point along the path;
+    /// [`SaddleError::Shape`] for points of different or zero length, non-finite
+    /// points, or an end normal of the wrong length.
     pub fn curve(
         points: &[Array1<f64>],
         start_normal: Option<ArrayView1<f64>>,
@@ -100,6 +121,11 @@ impl PlanePath {
 
     /// This path followed by `next`, which must start on the plane this
     /// one ends on.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] when the planes differ in dimension; [`SaddleError::Invalid`]
+    /// when `next` does not start on the plane this path ends on.
     pub fn then(mut self, next: PlanePath) -> Result<Self, SaddleError> {
         let (end, start) = (self.end()?, next.start()?);
         if end.dim() != start.dim() {
@@ -128,11 +154,19 @@ impl PlanePath {
     }
 
     /// The first plane.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`PlanePath::plane`].
     pub fn start(&self) -> Result<Hyperplane, SaddleError> {
         self.plane(0, 0.0)
     }
 
     /// The last plane.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`PlanePath::plane`].
     pub fn end(&self) -> Result<Hyperplane, SaddleError> {
         self.plane(self.segments.len() - 1, 1.0)
     }
@@ -146,6 +180,16 @@ impl PlanePath {
     }
 
     /// The plane at `s` on segment `k`.
+    ///
+    /// A leg returns its end plane for `s` outside `[0, 1]`.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Invalid`] when the plane normal vanishes along a curve segment.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `k >= self.len()`.
     pub fn plane(&self, k: usize, s: f64) -> Result<Hyperplane, SaddleError> {
         match &self.segments[k] {
             Segment::Leg(leg) => leg.plane(s),
@@ -154,6 +198,14 @@ impl PlanePath {
     }
 
     /// `[dp/ds; dν/ds]` at `s` on segment `k`.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Invalid`] when the curve has a vanishing tangent.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `k >= self.len()`.
     pub fn tangent(&self, k: usize, s: f64) -> Result<Array1<f64>, SaddleError> {
         match &self.segments[k] {
             Segment::Leg(leg) => Ok(leg.tangent(s)),

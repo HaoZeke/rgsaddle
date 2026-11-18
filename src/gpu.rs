@@ -100,16 +100,28 @@ impl GpuPolicy {
     }
 
     /// Symmetric eigendecomposition under this policy; see [`gpu_eigh`].
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`gpu_eigh`].
     pub fn eigh(mut self, a: ArrayView2<f64>) -> Result<(Array1<f64>, Array2<f64>), SaddleError> {
         gpu_eigh(a, &mut self)
     }
 
     /// Economy QR under this policy; see [`gpu_qr`].
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`gpu_qr`].
     pub fn qr(mut self, a: ArrayView2<f64>) -> Result<(Array2<f64>, Array2<f64>), SaddleError> {
         gpu_qr(a, &mut self)
     }
 
     /// Projection `U^T H U` under this policy; see [`gpu_project`].
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`gpu_project`].
     pub fn project(
         mut self,
         h: ArrayView2<f64>,
@@ -278,6 +290,10 @@ pub fn gpu_eigh_t(_uploaded: &Vector) -> Option<(Array1<f64>, Array2<f64>)> {
 
 /// Sella `gpu_eigh` with the process env policy and global `_oom_floor`. As
 /// [`gpu_eigh`] with [`GpuPolicy::from_env`].
+///
+/// # Errors
+///
+/// The errors of [`gpu_eigh`].
 pub fn gpu_eigh_env(a: ArrayView2<f64>) -> Result<(Array1<f64>, Array2<f64>), SaddleError> {
     gpu_eigh(a, &mut GpuPolicy::from_env())
 }
@@ -375,11 +391,19 @@ pub fn gpu_ok_env(n: usize) -> bool {
 }
 
 /// [`gpu_qr`] with the environment policy.
+///
+/// # Errors
+///
+/// The errors of [`gpu_qr`].
 pub fn gpu_qr_env(a: ArrayView2<f64>) -> Result<(Array2<f64>, Array2<f64>), SaddleError> {
     gpu_qr(a, &mut GpuPolicy::from_env())
 }
 
 /// [`gpu_project`] with the environment policy.
+///
+/// # Errors
+///
+/// The errors of [`gpu_project`].
 pub fn gpu_project_env(h: ArrayView2<f64>, u: ArrayView2<f64>) -> Result<Array2<f64>, SaddleError> {
     gpu_project(h, u, &mut GpuPolicy::from_env())
 }
@@ -390,6 +414,10 @@ pub fn to_gpu_view(data: ndarray::ArrayView1<f64>) -> Option<Vector> {
 }
 
 /// [`gpu_eigh`] with an explicit `policy`.
+///
+/// # Errors
+///
+/// The errors of [`gpu_eigh`].
 pub fn gpu_eigh_with(
     a: ArrayView2<f64>,
     policy: GpuPolicy,
@@ -397,6 +425,10 @@ pub fn gpu_eigh_with(
     policy.eigh(a)
 }
 /// [`gpu_qr`] with an explicit `policy`.
+///
+/// # Errors
+///
+/// The errors of [`gpu_qr`].
 pub fn gpu_qr_with(
     a: ArrayView2<f64>,
     policy: GpuPolicy,
@@ -404,6 +436,10 @@ pub fn gpu_qr_with(
     policy.qr(a)
 }
 /// [`gpu_project`] with an explicit `policy`.
+///
+/// # Errors
+///
+/// The errors of [`gpu_project`].
 pub fn gpu_project_with(
     h: ArrayView2<f64>,
     u: ArrayView2<f64>,
