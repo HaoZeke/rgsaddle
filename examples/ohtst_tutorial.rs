@@ -3,7 +3,7 @@
 //!
 //! `V(x, y) = (x² - 1)² + ½ k(x) y²` with `k(x) = 2.5 + 1.5 x`; see
 //! `examples/pafi_tutorial.rs` for the derivation. The valley floor is the
-//! straight line `y = 0`, so the potential is separable in `x` and `y`:
+//! straight line `y = 0`, and the potential is symmetric under `y -> -y`:
 //! the Hessian at the saddle has no `x`-`y` coupling, and the dividing
 //! plane the dimer finds (normal to the unstable mode) is already the
 //! optimal hyperplane. The plane optimiser runs and reports that there is
@@ -81,6 +81,10 @@ struct TutorialResult {
     bare_rate_error: f64,
     kappa: f64,
     kappa_error: f64,
+    shots: usize,
+    unassigned: usize,
+    reactive: usize,
+    recrossed: usize,
     final_rate: f64,
     final_error: f64,
 }
@@ -183,6 +187,10 @@ fn run() -> Result<TutorialResult, SaddleError> {
         bare_rate_error: rate.error,
         kappa: transmission.kappa,
         kappa_error: transmission.error,
+        shots: transmission.shots,
+        unassigned: transmission.unassigned,
+        reactive: transmission.reactive,
+        recrossed: transmission.recrossed,
         final_rate,
         final_error,
     })
@@ -211,7 +219,15 @@ fn print_report(result: &TutorialResult) {
         "k_OH (no transmission correction) = {:.6e} ± {:.1e}",
         result.bare_rate, result.bare_rate_error
     );
-    println!("kappa = {:.5} ± {:.5}", result.kappa, result.kappa_error);
+    println!(
+        "kappa = {:.5} ± {:.5} ({} reactive, {} recrossed of {} shots, {} unassigned)",
+        result.kappa,
+        result.kappa_error,
+        result.reactive,
+        result.recrossed,
+        result.shots,
+        result.unassigned
+    );
     println!(
         "k = kappa * k_OH = {:.6e} ± {:.1e}",
         result.final_rate, result.final_error

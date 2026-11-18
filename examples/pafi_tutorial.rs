@@ -81,7 +81,7 @@ fn reactant_attempt_frequency(path: &ArcPath) -> Result<f64, SaddleError> {
 }
 
 /// Barrier of the exact transverse-Gaussian free energy at `kt`, used only
-/// to check the sampled profile: with `u` integrated out analytically,
+/// to check the sampled profile: with `y` integrated out analytically,
 /// `F(x) = (x² - 1)² - ½ kt ln(2π kt / k(x))`, so
 /// `ΔF = F(0) - F(-1) = 1 + ½ kt ln(k(0) / k(-1))`.
 fn closed_form_barrier(kt: f64) -> f64 {

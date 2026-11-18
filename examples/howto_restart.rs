@@ -1,9 +1,10 @@
 //! How-to: restart a PAFI or OH-TST sampling run instead of starting over.
 //!
 //! PAFI: [`PafiConfig::target_error`] and [`PafiConfig::max_rounds`] run
-//! extra sampling rounds automatically, from where the last round left
-//! off, until the barrier error meets the target or the round budget
-//! runs out. No manual bookkeeping.
+//! extra sampling rounds automatically, sampling each plane from its path
+//! point with a round-derived seed and inverse-variance combining with
+//! earlier rounds, until the barrier error meets the target or the round
+//! budget runs out. No manual bookkeeping.
 //!
 //! OH-TST: [`sample_plane`]'s `start` argument and [`PlaneSample::last`]
 //! let the host do the same by hand: take the last configuration of one
