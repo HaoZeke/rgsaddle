@@ -28,7 +28,7 @@ extern "C" {
 #endif
 
 #define RGSADDLE_ABI_MAJOR 1u
-#define RGSADDLE_ABI_MINOR 43u
+#define RGSADDLE_ABI_MINOR 45u
 
 /**
  * Band config flags bit 0. When set, each evaluation calls the surface
@@ -1880,6 +1880,43 @@ rgsaddle_status_t rgsaddle_growing_string_saddle_index(
 
 /** Free a growing string session, ABI minor 43. */
 void rgsaddle_growing_string_free(RgsaddleGrowingString *session);
+
+/** Which terminal image moves on the target-energy level set, ABI minor 45. */
+typedef enum {
+  RGSADDLE_FREE_END_FIRST = 0,
+  RGSADDLE_FREE_END_LAST = 1
+} rgsaddle_free_end_side_t;
+
+/**
+ * Enable, replace, or clear the free-end adaptive NEB (FEA-NEB) of Zhang,
+ * Zhang, Ye, and Zheng, J. Chem. Phys. 145, 094104 (2016),
+ * doi:10.1063/1.4962019, on a live band, ABI minor 45. `enabled` 1
+ * constrains the terminal image selected by `side` (`RGSADDLE_FREE_END_FIRST`
+ * or `RGSADDLE_FREE_END_LAST`) to `E(x_end) = target_energy` (or the initial
+ * energy of that terminal image when `has_target_energy` is 0) using rgmin's
+ * generic solver level-set constraint, and cuts and remeshes around the
+ * detected saddle up to `max_cuts` times; `enabled` 0 restores fixed
+ * endpoints.
+ */
+rgsaddle_status_t rgsaddle_band_set_free_end(
+    RgsaddleBand *band, int32_t enabled, int32_t side,
+    int32_t has_target_energy, double target_energy, int64_t max_cuts,
+    double cut_force, double energy_tol, int64_t stability,
+    int64_t window_offset, int32_t cubic);
+
+/**
+ * Read the signed target-energy residual `E(x_end) - E_target` from the most
+ * recent free-end step into `out`, ABI minor 45. Returns
+ * RGSADDLE_NO_EVALUATION when free-end mode is off or before the first step.
+ */
+rgsaddle_status_t rgsaddle_band_free_end_residual(const RgsaddleBand *band,
+                                                  double *out);
+
+/**
+ * Number of adaptive cut-and-remesh refinements performed so far on a
+ * free-end band, or 0 for NULL, ABI minor 45.
+ */
+int64_t rgsaddle_band_free_end_cuts(const RgsaddleBand *band);
 
 #ifdef __cplusplus
 }

@@ -720,6 +720,57 @@ int main(void) {
     rgsaddle_growing_string_free(gs);
   }
 
+  /* Free-end adaptive NEB (ABI minor 45): setter validation, level-set
+   * residual reporting, and saddle convergence. */
+  {
+    if (rgsaddle_band_set_free_end(NULL, 1, RGSADDLE_FREE_END_LAST, 1, 0.25, 0,
+                                   0.0, 0.001, 2, 1, 1) != RGSADDLE_NULL_BAND) {
+      return fail(RGSADDLE_NULL_BAND, "free_end null band");
+    }
+    rgsaddle_band_config_t fc = cfg;
+    fc.flags = RGSADDLE_BAND_NO_MIN_MODE;
+    fc.ci_trigger_factor = 0.5;
+    double fpos[7 * 3];
+    for (int i = 0; i < 7; ++i) {
+      double t = (double)i / 6.0;
+      fpos[3 * i + 0] = -1.0 + 1.6 * t;
+      fpos[3 * i + 1] = 0.2 * sin(3.14159265358979 * t);
+      fpos[3 * i + 2] = 0.0;
+    }
+    RgsaddleBand *fb = rgsaddle_band_create(&fc, 7, n_atoms, fpos);
+    if (!fb) {
+      return fail(RGSADDLE_SHAPE, "free_end band create");
+    }
+    double fres = 0.0;
+    if (rgsaddle_band_free_end_residual(fb, &fres) != RGSADDLE_NO_EVALUATION ||
+        rgsaddle_band_set_free_end(fb, 2, RGSADDLE_FREE_END_LAST, 1, 0.25, 0,
+                                   0.0, 0.001, 2, 1, 1) !=
+            RGSADDLE_INVALID_PARAMETER ||
+        rgsaddle_band_set_free_end(fb, 1, 99, 1, 0.25, 0, 0.0, 0.001, 2, 1,
+                                   1) != RGSADDLE_INVALID_PARAMETER ||
+        rgsaddle_band_set_free_end(fb, 1, RGSADDLE_FREE_END_LAST, 1, 0.25, 0,
+                                   0.0, 0.001, 2, 1, 1) != RGSADDLE_OK) {
+      return fail(RGSADDLE_INVALID_PARAMETER, "free_end setter validation");
+    }
+    climbing_seen_t fseen = {1, 0, -1};
+    rgsaddle_report_t fr;
+    memset(&fr, 0, sizeof fr);
+    int fk = 0;
+    do {
+      st = rgsaddle_band_step(fb, surface, &fseen, &fr);
+      if (st != RGSADDLE_OK) {
+        return fail(st, "free_end step");
+      }
+      ++fk;
+    } while (fr.status == RGSADDLE_STATUS_RUNNING && fk < 500);
+    if (fr.status != RGSADDLE_STATUS_CONVERGED ||
+        rgsaddle_band_free_end_residual(fb, &fres) != RGSADDLE_OK ||
+        fabs(fres) > 1e-5) {
+      return fail(RGSADDLE_SOLVER, "free_end band residual or convergence");
+    }
+    rgsaddle_band_free(fb);
+  }
+
   printf("RGSADDLE_C_ABI_OK steps=%d ci=%lld\n", steps, (long long)rep.ci_index);
   return RGSADDLE_OK;
 }
