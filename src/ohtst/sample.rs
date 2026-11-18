@@ -935,13 +935,47 @@ pub fn sample_plane_with_sampler<E: HyperplaneSampler>(
     if let Some(region) = &config.region {
         budget = budget.with_region(Arc::clone(region));
     }
+    let constrained = sampler.constrained_directions(plane)?;
     let ensemble = sampler.sample_hyperplane(plane, &budget)?;
-    estimate_engine_plane(plane, config, ensemble)
+    estimate_engine_plane(plane, config, &constrained, ensemble)
+}
+
+/// Directions held in the plane, with the normal component removed.
+fn independent_constraints(
+    plane: &Hyperplane,
+    constrained: &[Array1<f64>],
+) -> Result<Vec<Array1<f64>>, SaddleError> {
+    let n = plane.dim();
+    let normal = plane.normal();
+    let mut rows = Array2::zeros((constrained.len(), n));
+    for (index, direction) in constrained.iter().enumerate() {
+        if direction.len() != n {
+            return Err(SaddleError::Shape(
+                "constrained directions differ in length from the plane".into(),
+            ));
+        }
+        if direction.iter().any(|value| !value.is_finite()) {
+            return Err(SaddleError::NonFinite("constrained direction"));
+        }
+        let mut row = direction.to_owned();
+        let along = normal.dot(&row);
+        row.scaled_add(-along, &normal);
+        rows.row_mut(index).assign(&row);
+    }
+    Ok(orthonormal_rows(rows.view(), n))
+}
+
+fn remove_directions(vector: &mut Array1<f64>, directions: &[Array1<f64>]) {
+    for direction in directions {
+        let along = direction.dot(vector);
+        vector.scaled_add(-along, direction);
+    }
 }
 
 fn estimate_engine_plane(
     plane: &Hyperplane,
     config: &LangevinConfig,
+    constrained: &[Array1<f64>],
     ensemble: HyperplaneEnsemble,
 ) -> Result<PlaneSample, SaddleError> {
     if ensemble.observations.len() != config.records {
@@ -959,6 +993,7 @@ fn estimate_engine_plane(
     let n = plane.dim();
     let normal = plane.normal().to_owned();
     let point = plane.point().to_owned();
+    let independent = independent_constraints(plane, constrained)?;
     let records = observations.len() / config.blocks * config.blocks;
     let width = records / config.blocks;
     let mut block_gradients = Array2::zeros((config.blocks, 2 * n));
@@ -989,7 +1024,13 @@ fn estimate_engine_plane(
             force_sum += observation.constraint_force;
             torque.scaled_add(-d, &arm);
             centroid += q;
-            virial -= force.dot(&arm);
+            if independent.is_empty() {
+                virial -= force.dot(&arm);
+            } else {
+                let mut tangent = force.clone();
+                remove_directions(&mut tangent, &independent);
+                virial -= tangent.dot(&arm);
+            }
             series.push(d);
         }
         let scale = 1.0 / width as f64;
@@ -999,6 +1040,7 @@ fn estimate_engine_plane(
         virial *= scale;
         let along = normal.dot(&torque);
         torque.scaled_add(-along, &normal);
+        remove_directions(&mut torque, &independent);
         let d = -force_sum;
         let mut row = block_gradients.row_mut(block);
         row.slice_mut(s![..n]).assign(&(&normal * d));
@@ -1022,10 +1064,12 @@ fn estimate_engine_plane(
     let centroid = block_centroids
         .mean_axis(ndarray::Axis(0))
         .unwrap_or_else(|| Array1::zeros(n));
-    let lever = &centroid - &point;
+    let mut lever = &centroid - &point;
+    remove_directions(&mut lever, &independent);
     let mut centroid_block_gradients = block_gradients.clone();
     for (block, mut row) in centroid_block_gradients.rows_mut().into_iter().enumerate() {
-        let shift = &block_centroids.row(block) - &centroid;
+        let mut shift = (&block_centroids.row(block) - &centroid).to_owned();
+        remove_directions(&mut shift, &independent);
         let mut torque = row.slice_mut(s![n..]);
         torque.scaled_add(-normal_forces[block], &lever);
         torque.scaled_add(-normal_force, &shift);
@@ -1074,7 +1118,7 @@ fn estimate_engine_plane(
         centroid_block_gradients,
         virial,
         virial_error,
-        free_dimensions: n.saturating_sub(1),
+        free_dimensions: n.saturating_sub(1 + independent.len()),
         thermal: config.thermal,
         effective_samples,
         tau,
@@ -1654,6 +1698,57 @@ mod tests {
                 .iter()
                 .chain(std::iter::once(&sample.last))
                 .all(|point| point[1] <= 0.1)
+        );
+    }
+
+    struct HoldsEz;
+
+    impl HyperplaneSampler for HoldsEz {
+        fn sample_hyperplane(
+            &mut self,
+            _plane: &Hyperplane,
+            budget: &HyperplaneSampleBudget,
+        ) -> Result<HyperplaneEnsemble, SaddleError> {
+            let observations = (0..budget.samples)
+                .map(|_| HyperplaneObservation {
+                    constraint_force: 1.0,
+                    pafi_gradient: None,
+                    jacobian: 0.0,
+                    position: Some(array![0.0, 0.2, 0.4]),
+                    projected_force: Some(array![0.0, 1.0, 2.0]),
+                    projected_velocity: None,
+                    observables: Default::default(),
+                })
+                .collect();
+            Ok(HyperplaneEnsemble {
+                observations,
+                evaluations: budget.samples,
+                acceptance: 1.0,
+            })
+        }
+
+        fn constrained_directions(
+            &mut self,
+            _plane: &Hyperplane,
+        ) -> Result<Vec<Array1<f64>>, SaddleError> {
+            Ok(vec![array![0.0, 0.0, 1.0]])
+        }
+    }
+
+    #[test]
+    fn engine_estimates_honour_constrained_directions() {
+        let plane = Hyperplane::new(array![0.0, 0.0, 0.0], array![1.0, 0.0, 0.0]).unwrap();
+        let config = LangevinConfig::default()
+            .with_records(40)
+            .with_blocks(4)
+            .with_burn_in(0)
+            .with_stride(1);
+        let sample = sample_plane_with_sampler(&mut HoldsEz, &plane, &config).unwrap();
+        assert_eq!(sample.free_dimensions, 1);
+        assert!(
+            sample.grad_normal[2].abs() < 1.0e-12,
+            "{:?}",
+            sample.grad_normal
         );
     }
 }

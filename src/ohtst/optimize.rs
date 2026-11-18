@@ -494,12 +494,8 @@ impl PlaneOptimizer {
             ));
         }
         let dim = self.plane.dim();
-        let subspace = Subspace::new(
-            dim,
-            Vec::new(),
-            config.rotation_basis.as_ref(),
-            config.rotate,
-        )?;
+        let held = constrained_basis(sampler, &self.plane)?;
+        let subspace = Subspace::new(dim, held, config.rotation_basis.as_ref(), config.rotate)?;
         let normal = subspace.start(self.plane.normal())?;
         let layout = Layout {
             dim,
@@ -597,6 +593,29 @@ pub fn optimize_plane<E: HyperplaneSampler>(
     config: &PlaneOptimizerConfig,
 ) -> Result<PlaneOptimum, SaddleError> {
     PlaneOptimizer::new(initial, config.clone())?.run_with_sampler(sampler)
+}
+
+/// Orthonormal held modes reported by the sampler, including any component
+/// along the plane normal so [`Subspace::start`] can reject that overlap.
+fn constrained_basis<E: HyperplaneSampler>(
+    sampler: &mut E,
+    plane: &Hyperplane,
+) -> Result<Vec<Array1<f64>>, SaddleError> {
+    let dim = plane.dim();
+    let directions = sampler.constrained_directions(plane)?;
+    let mut rows = Array2::zeros((directions.len(), dim));
+    for (index, direction) in directions.iter().enumerate() {
+        if direction.len() != dim {
+            return Err(SaddleError::Shape(
+                "constrained directions differ in length from the plane".into(),
+            ));
+        }
+        if direction.iter().any(|value| !value.is_finite()) {
+            return Err(SaddleError::NonFinite("constrained direction"));
+        }
+        rows.row_mut(index).assign(direction);
+    }
+    Ok(orthonormal_rows(rows.view(), dim))
 }
 
 /// The directions the normal may take.
@@ -1470,6 +1489,7 @@ fn spd_inverse(a: &Array2<f64>) -> Result<Array2<f64>, SaddleError> {
 mod tests {
     use super::*;
     use crate::ohtst::{ExactGaussianPlaneSampler, QuadraticModel};
+    use crate::projector::{HyperplaneEnsemble, HyperplaneSampleBudget, HyperplaneSampler};
     use ndarray::array;
 
     /// `V = -½ x² + y² + 1.5 z²`: the free energy of a plane is
@@ -1739,5 +1759,42 @@ mod tests {
         ] {
             assert!(PlaneOptimizer::new(&start, config).is_err());
         }
+    }
+
+    /// One held direction in two dimensions fills the sphere of normals.
+    struct HoldsTheOnlyTurn {
+        sampled: bool,
+    }
+
+    impl HyperplaneSampler for HoldsTheOnlyTurn {
+        fn sample_hyperplane(
+            &mut self,
+            _plane: &Hyperplane,
+            _budget: &HyperplaneSampleBudget,
+        ) -> Result<HyperplaneEnsemble, SaddleError> {
+            self.sampled = true;
+            Err(SaddleError::Invalid(
+                "the optimizer sampled despite a full constraint".into(),
+            ))
+        }
+
+        fn constrained_directions(
+            &mut self,
+            _plane: &Hyperplane,
+        ) -> Result<Vec<Array1<f64>>, SaddleError> {
+            Ok(vec![array![0.0, 1.0]])
+        }
+    }
+
+    #[test]
+    fn a_full_constraint_stops_the_optimizer_before_sampling() {
+        let plane = Hyperplane::new(array![0.0, 0.0], array![1.0, 0.0]).unwrap();
+        let optimizer = PlaneOptimizer::new(&plane, PlaneOptimizerConfig::default()).unwrap();
+        let mut sampler = HoldsTheOnlyTurn { sampled: false };
+        let error = optimizer
+            .run_with_sampler(&mut sampler)
+            .expect_err("the held direction fills the sphere");
+        assert!(error.to_string().contains("no room to turn"), "{error}");
+        assert!(!sampler.sampled);
     }
 }
