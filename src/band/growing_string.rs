@@ -696,16 +696,28 @@ impl GrowingStringSession {
     }
 
     /// Reactant (left) fragment positions, from fixed reactant row `0` to
-    /// the left frontier `left_nodes - 1`.
+    /// the left frontier `left_nodes - 1`. After joining, this is the
+    /// reactant-side partition of the current reparametrized string.
     #[must_use]
     pub fn left_fragment(&self) -> ArrayView2<'_, f64> {
+        if let Some(joined) = &self.joined {
+            return joined
+                .positions()
+                .slice_move(s![..self.left_pos.nrows(), ..]);
+        }
         self.left_pos.view()
     }
 
     /// Product (right) fragment positions, from the right frontier row `0`
-    /// to the fixed product `right_nodes - 1`.
+    /// to the fixed product `right_nodes - 1`. After joining, this is the
+    /// product-side partition of the current reparametrized string.
     #[must_use]
     pub fn right_fragment(&self) -> ArrayView2<'_, f64> {
+        if let Some(joined) = &self.joined {
+            return joined
+                .positions()
+                .slice_move(s![self.left_pos.nrows().., ..]);
+        }
         self.right_pos.view()
     }
 

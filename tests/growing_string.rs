@@ -713,6 +713,34 @@ fn join_tol_fills_the_string_to_n_images_after_an_early_join() {
 }
 
 #[test]
+fn fragments_follow_the_reparametrized_string_after_an_early_join() {
+    let config = GrowingStringConfig::default()
+        .with_n_images(8)
+        .with_join_tol(Some(10.0))
+        .with_remove_translation(false);
+    let mut session = GrowingStringSession::new(
+        config,
+        array![-1.0, 0.0, 0.0],
+        array![1.0, 0.0, 0.0],
+    )
+    .expect("session");
+
+    let report = session.step(&CurvedChannel2D::default()).expect("join step");
+    assert!(report.joined_this_step);
+
+    let positions = session.positions();
+    let left_rows = session.left_fragment().nrows();
+    assert_eq!(
+        session.left_fragment(),
+        positions.slice(ndarray::s![..left_rows, ..])
+    );
+    assert_eq!(
+        session.right_fragment(),
+        positions.slice(ndarray::s![left_rows.., ..])
+    );
+}
+
+#[test]
 fn join_tol_boundary_is_inclusive_and_a_smaller_tolerance_keeps_growing() {
     let mut probe = flat_session(flat_config(10));
     probe.step(&FlatSurface).expect("probe step");
