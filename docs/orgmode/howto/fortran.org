@@ -285,7 +285,8 @@ program pafi_ohtst_demo
   pcfg%thermalize = 5_c_int64_t
   pcfg%stride = 1_c_int64_t
   pcfg%samples = 200_c_int64_t
-  pcfg%blocks = 5_c_int64_t
+  ! A 1D path gives a deterministic series with 2.2 effective samples.
+  pcfg%blocks = 2_c_int64_t
   pcfg%seed = 3_c_int64_t
   pcfg%fix_com = 0_c_int32_t
   pcfg%retain = 1_c_int64_t
