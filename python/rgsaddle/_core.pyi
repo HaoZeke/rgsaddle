@@ -327,6 +327,11 @@ class GrowingString:
         Active image count (left_nodes + right_nodes while growing, n_images once joined).
         """
 
+    def nodes_added(self) -> int:
+        """
+        Nodes the last step grew on the reactant and product fragments (0, 1, or 2).
+        """
+
     def joined(self) -> bool:
         """
         True once the reactant and product fragments have joined into a StringSession.

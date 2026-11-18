@@ -2228,6 +2228,12 @@ NB_MODULE(_core, m) {
           },
           "Active image count (left_nodes + right_nodes while growing, n_images once joined).")
       .def(
+          "nodes_added",
+          [](const PyGrowingString &self) {
+            return rgsaddle_growing_string_nodes_added(self.handle);
+          },
+          "Nodes the last step grew on the reactant and product fragments (0, 1, or 2).")
+      .def(
           "joined",
           [](const PyGrowingString &self) {
             return rgsaddle_growing_string_phase(self.handle) == RGSADDLE_GROWING_STRING_JOINED;

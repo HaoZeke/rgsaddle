@@ -1788,7 +1788,9 @@ rgsaddle_status_t rgsaddle_growing_string_config_default(
 /**
  * Open a growing string session between reactant and product (3 * n_atoms
  * values each), ABI minor 43. Returns NULL when the config or shape is
- * invalid.
+ * invalid: n_images below 4, a frontier_tol that is not finite and positive,
+ * min_steps_per_node below 1, a negative max_steps_per_node (0 means no
+ * cap), or a negative or non-finite join_tol (0.0 means no early join).
  */
 RgsaddleGrowingString *rgsaddle_growing_string_create(
     const rgsaddle_growing_string_config_t *config, int64_t n_atoms,
@@ -1808,6 +1810,14 @@ rgsaddle_status_t rgsaddle_growing_string_step(RgsaddleGrowingString *session,
  * while growing, n_images once joined), or 0 for NULL, ABI minor 43.
  */
 int64_t rgsaddle_growing_string_n_images(const RgsaddleGrowingString *session);
+
+/**
+ * Nodes the last rgsaddle_growing_string_step grew on the reactant and
+ * product fragments (0, 1, or 2), or 0 for NULL and before the first step,
+ * ABI minor 43. The step report's rotations field is 0 for this session.
+ */
+int64_t rgsaddle_growing_string_nodes_added(
+    const RgsaddleGrowingString *session);
 
 /**
  * Phase of a growing string session (RGSADDLE_GROWING_STRING_GROWING or
