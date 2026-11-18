@@ -5,7 +5,7 @@
 The API documentation for every public item is on [[https://docs.rs/rgsaddle][docs.rs/rgsaddle]].
 =cargo doc --open= builds the same pages from a checkout.
 Runnable examples open =BandSession=, =AutoNeb=, =OcinebSession=, =MinModeSession=, =Index1Session=, =IndexKSession=, =SolidDimer=, =SolidNeb=, =Stencil= and the =ohtst= module, and, with =--features capi=, the C band, min-mode and stencil handles.
-=meson -Dfortran=enabled= adds the Fortran 2008 =rgsaddle= module on the same C ABI.
+~meson -Dfortran=enabled~ adds the Fortran 2008 =rgsaddle= module on the same C ABI.
 =cargo test --doc= runs them.
 Every public configuration struct is non-exhaustive.
 Start from =Default= or the type's named constructor and chain the =with_*= setters, as in =BandConfig::default().with_force_tol(1e-3)=.
@@ -142,6 +142,25 @@ Cells go in and Cauchy stresses come out through =rgsaddle_solid_surface_request
 The report's =evaluations= field took the place of =reserved= at minor 5.
 =cargo cinstall= installs =include/rgsaddle.h= as written.
 
+* Fortran module (meson ~-Dfortran=enabled~)
+=fortran/rgsaddle.f90= defines the Fortran 2008 module =rgsaddle= on top of =include/rgsaddle.h= at ABI major 1, minor 42 (~RGSADDLE_ABI_MAJOR = 1~, ~RGSADDLE_ABI_MINOR = 42~). Meson installs =librgsaddle_fortran.a=, =include/rgsaddle/fortran/rgsaddle.mod=, =rgsaddle-fortran.pc=, and the relocatable CMake package =rgsaddleFortran= (imported target =rgsaddle::fortran=). =librgsaddle= itself is built by cargo (=--features capi=). Narrative and runnable programs are in @@rst::doc:`howto/fortran <howto/fortran>`@@.
+
+| Item | Role |
+|------+------|
+| =band_handle= | Owning NEB session. =create(config, n_images, n_atoms, positions)=, =step(callback[, user, out])=, =step_c(surface[, user, out])=, =positions(positions)=, =move_from(src)=, =release()=, scope-exit finalizer. Empty handle returns =RGSADDLE_NULL_BAND= |
+| =minmode_handle= | Owning dimer or Lanczos session. =create(config, n_atoms, position, mode)=, =step(callback[, user, out])=, =step_c(surface[, user, out])=, =position(position)=, =mode(mode)=, =move_from(src)=, =release()=, scope-exit finalizer. Empty handle returns =RGSADDLE_NULL_SESSION= |
+| =pafi_handle= | Owning PAFI session. =create(config, n_frames, n_dof, frames[, arcs])=, =set_config(config)=, =run(callback[, user])=, =run_c(surface[, user])=, =result(out)=, =profile(arcs, gradients, gradient_errors, free_energy, free_energy_errors[, written])=, =move_from(src)=, =release()=, scope-exit finalizer |
+| =ohtst_handle= | Owning OH-TST session. =create(config, n_dof, point, normal)=, =set_config(config)=, =run(callback[, user])=, =run_c(surface[, user])=, =result(out)=, =curve(times, kappa_of_t[, written])=, =move_from(src)=, =release()=, scope-exit finalizer |
+| ~assignment(=)~ | Overloaded on all four handle types; executes =error stop RGSADDLE_HANDLE_NOT_ASSIGNABLE= (17) so raw C session pointers are never copied |
+| =init_band_config=, =init_minmode_config=, =init_pafi_config=, =init_ohtst_config= | Populate default settings and stamp =version= with =abi_stamp=. =init_minmode_config(config[, kind])= defaults to =RGSADDLE_MINMODE_DIMER= and sets the five-degree =rotation_angle_tol= |
+| =abi_stamp=, =status_name=, =uint64_bits= | Stamp an =rgsaddle_version_t=, map a status code to an allocatable ~character(len=:)~ (=UNKNOWN= when unmapped), and pack two 32-bit halves =(high, low)= into a signed =c_int64_t= bit pattern for C =uint64_t= seeds |
+| =surface_proc= | Abstract interface =(user, n_images, n_atoms, positions, energies, gradients, image) -> c_int=. =n_images= is the evaluated row count (=1= for =RGSADDLE_REQ_ONE_IMAGE=); =image= is the zero-based band index or =-1= for a batch |
+| =point_surface_proc= | Abstract interface =(user, n_dof, position, energy, gradient) -> c_int=. Invoked from worker threads during PAFI and OH-TST runs; implementations must be thread-safe and =recursive= |
+| =rgsaddle_version_t=, =rgsaddle_surface_request_t=, =rgsaddle_band_config_t=, =rgsaddle_minmode_config_t=, =rgsaddle_report_t=, =rgsaddle_pafi_config_t=, =rgsaddle_pafi_result_t=, =rgsaddle_ohtst_config_t=, =rgsaddle_ohtst_result_t= | =bind(C)= wire structs matching =include/rgsaddle.h= |
+| Status and mode constants | =RGSADDLE_OK= through =RGSADDLE_STALLED=, =RGSADDLE_STATUS_RUNNING=, =RGSADDLE_STATUS_CONVERGED=, =RGSADDLE_METHOD_FIRE=, =RGSADDLE_METHOD_LBFGS=, =RGSADDLE_MINMODE_DIMER=, =RGSADDLE_MINMODE_LANCZOS=, =RGSADDLE_OHTST_INTEGRATOR_BAOAB=, =RGSADDLE_OHTST_INTEGRATOR_GHMC=, =RGSADDLE_OHTST_COUNT_FINAL=, =RGSADDLE_OHTST_COUNT_FIRST_CROSSING=, =RGSADDLE_BAND_PER_IMAGE=, =RGSADDLE_REQ_ONE_IMAGE=, =RGSADDLE_HANDLE_NOT_ASSIGNABLE= |
+
+Fortran arrays map onto the row-major C buffers without transposing when coordinate dimensions precede the image or frame dimension: =(3, n_atoms, n_images)= for bands and =(n_dof, n_frames)= for PAFI. =rgsaddle_report_t%ci_index= and =rgsaddle_pafi_result_t%dividing= are zero-based C indices. =pafi_handle%profile= and =ohtst_handle%curve= pass the minimum slice length as capacity; when shorter than the stored series, they return =RGSADDLE_INVALID_PARAMETER= and write the required length to =written=. Trampolines store the callback and =user= pointer per call with no module state, allowing nested sessions and concurrent worker callbacks.
+
 * Python package
 The importable package is =rgsaddle=. =rgsaddle._core= is the nanobind extension. =import rgsaddle= does not import ASE.
 
@@ -189,6 +208,7 @@ The importable package is =rgsaddle=. =rgsaddle._core= is the nanobind extension
   A twelve-coordinate search and a search without iterative diagonalization step the same with the option on or off.
   The default takes the ceiling.
 - =tests/c_abi.rs= — header and symbols with =capi=
+- =tests/fortran/= and =ci/fortran_abi.sh= — Fortran 2008 module, relocatable pkg-config and CMake consumers, static archive link, handle move/release and non-assignability, NEB (batch and per-image), dimer, Lanczos, PAFI 1D and 2D widening barriers, OH-TST aligned and tilted planes under BAOAB and GHMC, optional and forwarded =user= pointers on =step=, =step_c=, =run=, and =run_c=, nested outer band, min-mode, PAFI, and OH-TST re-entrancy, and the documented runnable examples under ~-std=f2008 -Wall -Wextra -Werror -fcheck=all~
 - =tests/solid_bain_lj.rs= — =tests/c/solid_bain_lj.c= runs the solid-state band from bcc to fcc for switched LJ on the two-atom tetragonal cell through =rgsaddle_band_create_solid=; the climbing image matches the relaxed scan of =validation/bain_lj_reference.py= in c/a within 2.5e-4 and in barrier within 1.2e-6 eV/atom, and every image keeps a diagonal tetragonal cell and its fractional coordinates
 - =tests/solid_dimer_barrier.rs= — the variable-cell dimer and the solid-state band meet on the shear-coupled double well; a frozen cell reproduces the one-dimensional barrier
 - =tests/ssneb.rs= — a frozen =SolidNeb= matches the ordinary band and CI-NEB; the variable-cell double well barrier is 1
