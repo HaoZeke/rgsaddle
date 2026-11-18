@@ -630,6 +630,16 @@ int main(void) {
     if (rgsaddle_band_set_string(NULL, 1, RGSADDLE_REPARAM_NOT_A_KNOT) != RGSADDLE_NULL_BAND) {
       return fail(RGSADDLE_NULL_BAND, "string setter null band");
     }
+    rgsaddle_band_config_t rc = cfg;
+    rc.method = RGSADDLE_METHOD_RTR;
+    rc.flags = RGSADDLE_BAND_NO_MIN_MODE;
+    RgsaddleBand *rtr = rgsaddle_band_create(&rc, n_images, n_atoms, pos);
+    if (!rtr ||
+        rgsaddle_band_set_string(rtr, 1, RGSADDLE_REPARAM_NOT_A_KNOT) !=
+            RGSADDLE_INVALID_PARAMETER) {
+      return fail(RGSADDLE_INVALID_PARAMETER, "RTR accepted the string setter");
+    }
+    rgsaddle_band_free(rtr);
     rgsaddle_band_config_t sc = cfg;
     sc.flags = RGSADDLE_BAND_NO_MIN_MODE | RGSADDLE_BAND_STRING | RGSADDLE_BAND_SPLINE_REPARAM;
     sc.ci_trigger_factor = 0.5;
