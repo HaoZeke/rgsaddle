@@ -93,11 +93,12 @@ impl PointSurface for HostSurface {
         let Some(hessian) = self.hessian else {
             return Ok(None);
         };
-        let mut action = vec![0.0; vector.len()];
+        let flat = vector.to_vec();
+        let mut action = vec![0.0; flat.len()];
         let rc = hessian(
             self.user,
-            vector.len() as i64,
-            vector.as_ptr(),
+            flat.len() as i64,
+            flat.as_ptr(),
             action.as_mut_ptr(),
         );
         if rc != 0 {
