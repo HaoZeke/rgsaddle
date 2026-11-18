@@ -92,11 +92,14 @@ pub(crate) fn equilibrate(
         sigma_multiple: K,
         drift_passed: passed,
     };
-    if report.n_eff < blocks as f64 {
+    let correlation_width = ((2.0 * report.tau).ceil() as usize).max(1);
+    let block_width = tail.len().div_ceil(blocks).max(correlation_width);
+    let available_blocks = tail.len() / block_width;
+    if available_blocks < 2 {
         return Err(SaddleError::InsufficientEffectiveSamples {
             equilibration_steps: report.equilibration_steps,
             n_eff: report.n_eff,
-            required: blocks as f64,
+            required: 2.0 * correlation_width as f64,
         });
     }
     if !passed {

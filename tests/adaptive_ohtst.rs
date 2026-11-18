@@ -278,6 +278,30 @@ impl HyperplaneSampler for NoisySampler {
     }
 }
 
+struct ProductionNoisySampler {
+    noisy: NoisySampler,
+    pilot_planes: usize,
+}
+
+impl HyperplaneSampler for ProductionNoisySampler {
+    fn sample_hyperplane(
+        &mut self,
+        plane: &Hyperplane,
+        budget: &HyperplaneSampleBudget,
+    ) -> Result<HyperplaneEnsemble, SaddleError> {
+        if self.pilot_planes == 0 {
+            self.noisy.sample_hyperplane(plane, budget)
+        } else {
+            self.pilot_planes -= 1;
+            NoisySampler {
+                sigma: 0.0,
+                thermal: self.noisy.thermal,
+            }
+            .sample_hyperplane(plane, budget)
+        }
+    }
+}
+
 struct CorrelatedSampler {
     sigma: f64,
     thermal: f64,
@@ -1923,8 +1947,7 @@ fn an_odd_dividing_index_keeps_the_trapezoid_inside_its_bound() {
     );
 }
 
-#[test]
-fn fixed_count_sampled_error_matches_the_barrier_deviation() {
+fn fixed_count_iid_run(seed: u64) -> Result<(f64, f64, usize), SaddleError> {
     let thermal = 0.2;
     let chain: Vec<_> = (0..=16)
         .map(|index| {
@@ -1936,51 +1959,73 @@ fn fixed_count_sampled_error_matches_the_barrier_deviation() {
     // target, so every kept run stops at 14 records and is not selected
     // for a low error. The chain is fine enough that the plane cap is not
     // what holds the grid.
-    let sigma = thermal / 200.0;
-    let mut rows = Vec::new();
-    for seed in 1..=40 {
-        let mut sampler = NoisySampler { sigma, thermal };
-        let adaptive = config(thermal).with_max_planes(chain.len()).with_sampler(
-            LangevinConfig::default()
-                .with_thermal(thermal)
-                .with_seed(seed * 7_919),
-        );
-        let Ok(estimate) = adaptive_ohtst_string_rate(
-            &mut sampler,
-            &chain,
-            &Density {
-                plane: chain[0].clone(),
-                thermal,
-                error: 0.0,
-            },
-            &adaptive,
-        ) else {
-            continue;
-        };
-        if estimate.iterations != 0
-            || estimate.profile.samples_per_plane[0] != ADAPTIVE_OHTST_PILOT_SAMPLES
+    let mut sampler = ProductionNoisySampler {
+        noisy: NoisySampler {
+            sigma: thermal / 200.0,
+            thermal,
+        },
+        pilot_planes: chain.len(),
+    };
+    let adaptive = config(thermal).with_max_planes(chain.len()).with_sampler(
+        LangevinConfig::default()
+            .with_thermal(thermal)
+            .with_seed(seed * 7_919),
+    );
+    let estimate = adaptive_ohtst_string_rate(
+        &mut sampler,
+        &chain,
+        &Density {
+            plane: chain[0].clone(),
+            thermal,
+            error: 0.0,
+        },
+        &adaptive,
+    )?;
+    Ok((
+        estimate.profile.barrier,
+        estimate.profile.sampled_barrier_error,
+        estimate.profile.samples_per_plane[0],
+    ))
+}
+
+#[test]
+fn fourteen_record_iid_production_samples_have_enough_effective_samples() {
+    for seed in 1..=200 {
+        if let Err(SaddleError::InsufficientEffectiveSamples {
+            n_eff, required, ..
+        }) = fixed_count_iid_run(seed)
         {
-            continue;
+            panic!(
+                "seed {seed} rejected fourteen iid production records: n_eff {n_eff}, required {required}"
+            );
         }
-        rows.push((
-            estimate.profile.barrier,
-            estimate.profile.sampled_barrier_error,
-        ));
     }
-    assert!(
-        rows.len() >= 8,
-        "only {} stationary fixed-count runs",
-        rows.len()
-    );
-    let mean = rows.iter().map(|item| item.0).sum::<f64>() / rows.len() as f64;
-    let empirical = (rows.iter().map(|item| (item.0 - mean).powi(2)).sum::<f64>()
-        / (rows.len() - 1) as f64)
-        .sqrt();
-    let reported = rows.iter().map(|item| item.1).sum::<f64>() / rows.len() as f64;
-    let ratio = (1.0_f64 / 3.0).sqrt() * (15.0 / 16.0) * std::f64::consts::PI.sqrt();
-    assert!(
-        reported >= ratio * empirical,
-        "sampled {reported}, empirical {empirical}, ratio {ratio}"
-    );
-    assert!(reported / thermal <= ADAPTIVE_OHTST_TARGET_LOG_ERROR);
+}
+
+/// Seeds 1..=200, 1001..=1200, and 10001..=10200 are three disjoint,
+/// pre-registered blocks. Each block's two-standard-error interval must cover
+/// the exact barrier in 90%..=99% of all attempts; a typed sampling rejection
+/// counts as a miss. For 200 Bernoulli trials at nominal 95% coverage, the
+/// binomial standard error is 1.54 percentage points, so this band permits
+/// 3.2 standard errors below nominal and 2.6 above without hiding failures.
+#[test]
+fn fixed_count_sampled_error_has_two_sided_coverage() {
+    for (first, last) in [(1, 200), (1_001, 1_200), (10_001, 10_200)] {
+        let mut covered = 0;
+        for seed in first..=last {
+            let covers = match fixed_count_iid_run(seed) {
+                Ok((barrier, error, records)) => {
+                    assert_eq!(records, ADAPTIVE_OHTST_PILOT_SAMPLES);
+                    (barrier - 1.0).abs() <= 2.0 * error
+                }
+                Err(_) => false,
+            };
+            covered += usize::from(covers);
+        }
+        let coverage = covered as f64 / (last - first + 1) as f64;
+        assert!(
+            (0.90..=0.99).contains(&coverage),
+            "seeds {first}..={last}: {covered} of 200 covered ({coverage})"
+        );
+    }
 }

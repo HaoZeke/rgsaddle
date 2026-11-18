@@ -1052,9 +1052,10 @@ fn estimate_engine_plane(
     // Batch means use blocks of at least ceil(2 tau). Widening past that drops
     // tail records and moves the mean, so the length stays the autocorrelation time.
     let correlation_width = ((2.0 * equilibration.tau).ceil() as usize).max(1);
-    let width = (observations.len() / config.blocks)
-        .max(correlation_width)
-        .max(1);
+    let width = observations
+        .len()
+        .div_ceil(config.blocks)
+        .max(correlation_width);
     let blocks = observations.len() / width;
     if blocks < 2 {
         return Err(SaddleError::InsufficientEffectiveSamples {
