@@ -84,11 +84,13 @@ contained point before velocity reflection.
 
 The engine-neutral sampling budget carries the same region.  The analytic
 BAOAB/GHMC implementation consumes it through its existing drift or proposal
-step.  The LAMMPS adapter forwards planar faces through
-=lammpc_session_md_set_boundaries=.  The pinned lammpc ABI predates that
-entry point, so production use requires the corresponding generic-boundary
-patch in lammpc; rgsaddle reports that missing capability instead of adding a
-second local integrator.
+step.  LAMMPS hard-region sampling is pending a lammpc capability that applies
+a host boundary callback after every =lammpc_session_md_step=, restores a
+complete accepted state on rejection, and refreshes forces after reflection.
+The callback registration entry points already exist, but current lammpc main
+does not apply them to constrained MD steps.  Until lammpc advertises that
+behavior, the LAMMPS adapter fails closed when a sampling budget carries a
+region.
 
 * One constraint and its metric
 
@@ -444,7 +446,9 @@ estimate is silently emitted.
   velocity in the selected coordinate convention, thermostats tangent
   velocity, and restores the plane after each drift. It returns the scalar
   constraint force, removed velocity, position, projected force, and force
-  call count. No LAMMPS class or pointer appears in the Rust trait.
+  call count. Hard-region enforcement remains pending the constrained-step
+  callback capability described above. No LAMMPS class or pointer appears in
+  the Rust trait.
 - *OpenMM.*  The adapter may represent the signed plane coordinate with a
   =CustomCVForce= plus a constraint-force readback, or use a
   constraint-projection integrator.  It must expose the same scalar
