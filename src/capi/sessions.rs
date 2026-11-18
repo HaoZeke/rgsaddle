@@ -3395,13 +3395,17 @@ pub struct RgsaddleGrowingStringConfig {
     pub band: RgsaddleBandConfig,
     /// Target total image count (`>= 4`).
     pub n_images: i64,
-    /// Frontier perpendicular force tolerance for adding a node.
+    /// Frontier perpendicular force tolerance for adding a node (finite
+    /// and positive).
     pub frontier_tol: f64,
-    /// Minimum steps at the current fragment size before adding a node.
+    /// Minimum steps at the current fragment size before adding a node
+    /// (`>= 1`).
     pub min_steps_per_node: i64,
-    /// Optional cap on steps at the current fragment size (`<= 0` for none).
+    /// Optional cap on steps at the current fragment size (`0` for none,
+    /// negative is rejected).
     pub max_steps_per_node: i64,
-    /// Optional gap distance threshold for early join (`<= 0.0` for none).
+    /// Optional gap distance threshold for early join (`0.0` for none,
+    /// negative and non-finite values are rejected).
     pub join_tol: f64,
     /// Equal arc-length reparametrization (`rgsaddle_reparametrization_t`).
     pub reparametrization: i32,
@@ -3415,6 +3419,7 @@ pub struct RgsaddleGrowingString {
     n_atoms: i64,
     per_image: bool,
     climbing_request: bool,
+    nodes_added: i64,
 }
 
 /// Fill `out` with the default [`RgsaddleGrowingStringConfig`] (ABI minor 43).
@@ -3501,22 +3506,20 @@ pub unsafe extern "C" fn rgsaddle_growing_string_create(
     let Some(gate) = force_gate_of(cfg.force_gate) else {
         return std::ptr::null_mut();
     };
-    let defaults = crate::GrowingStringConfig::default();
-    let frontier_tol = positive_or(cfg.frontier_tol, defaults.frontier_tol);
-    let min_steps = if cfg.min_steps_per_node > 0 {
-        cfg.min_steps_per_node as usize
-    } else {
-        defaults.min_steps_per_node
+    if !(cfg.frontier_tol.is_finite() && cfg.frontier_tol > 0.0) || cfg.min_steps_per_node < 1 {
+        return std::ptr::null_mut();
+    }
+    let max_steps = match cfg.max_steps_per_node {
+        0 => None,
+        steps if steps > 0 => Some(steps as usize),
+        _ => return std::ptr::null_mut(),
     };
-    let max_steps = if cfg.max_steps_per_node > 0 {
-        Some(cfg.max_steps_per_node as usize)
-    } else {
+    let join_tol = if cfg.join_tol == 0.0 {
         None
-    };
-    let join_tol = if cfg.join_tol > 0.0 {
+    } else if cfg.join_tol.is_finite() && cfg.join_tol > 0.0 {
         Some(cfg.join_tol)
     } else {
-        None
+        return std::ptr::null_mut();
     };
     let band_cfg = parsed
         .config
@@ -3524,8 +3527,8 @@ pub unsafe extern "C" fn rgsaddle_growing_string_create(
     let gsm_cfg = crate::GrowingStringConfig::default()
         .with_band(band_cfg)
         .with_n_images(cfg.n_images as usize)
-        .with_frontier_tol(frontier_tol)
-        .with_min_steps_per_node(min_steps)
+        .with_frontier_tol(cfg.frontier_tol)
+        .with_min_steps_per_node(cfg.min_steps_per_node as usize)
         .with_max_steps_per_node(max_steps)
         .with_join_tol(join_tol)
         .with_force_gate(gate);
@@ -3540,6 +3543,7 @@ pub unsafe extern "C" fn rgsaddle_growing_string_create(
             n_atoms,
             per_image: parsed.per_image,
             climbing_request: cfg.band.version.minor >= 23,
+            nodes_added: 0,
         })),
         Err(_) => std::ptr::null_mut(),
     }
@@ -3576,15 +3580,19 @@ pub unsafe extern "C" fn rgsaddle_growing_string_step(
         climbing_request: session.climbing_request,
         rows: Default::default(),
     };
+    session.nodes_added = 0;
     match session.session.step(&cs) {
         Ok(report) => {
+            let Some(evaluations) = cs.evaluation_rows_checked() else {
+                return RGSADDLE_SHAPE;
+            };
             let out = unsafe { &mut *out };
             stamp_report(out);
             out.status = match report.status {
                 BandStatus::Running => 0,
                 BandStatus::Converged => 1,
             };
-            out.evaluations = cs.evaluation_rows();
+            out.evaluations = evaluations;
             out.max_force = report.max_force;
             out.ci_index = match report.ci_index {
                 Some(i) => i as i64,
@@ -3592,11 +3600,28 @@ pub unsafe extern "C" fn rgsaddle_growing_string_step(
             };
             out.iteration = report.iteration as i64;
             out.curvature = 0.0;
-            out.rotations = report.nodes_added as i64;
+            out.rotations = 0;
+            session.nodes_added = report.nodes_added as i64;
             RGSADDLE_OK
         }
         Err(e) => status_of(&e),
     }
+}
+
+/// Nodes the last [`rgsaddle_growing_string_step`] grew on the reactant
+/// and product fragments (`0`, `1`, or `2`), or 0 for NULL and before the
+/// first step (ABI minor 43).
+///
+/// # Safety
+/// `session` is a live session or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_growing_string_nodes_added(
+    session: *const RgsaddleGrowingString,
+) -> i64 {
+    if session.is_null() {
+        return 0;
+    }
+    unsafe { (*session).nodes_added }
 }
 
 /// Active image count of a [`RgsaddleGrowingString`] (ABI minor 43).

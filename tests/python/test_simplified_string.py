@@ -277,3 +277,35 @@ def test_python_growing_string_matches_cineb_and_preserves_ids() -> None:
     cert = gsm.saddle_index()
     assert cert.certified and cert.index == 1
 
+
+
+def test_python_growing_string_reports_nodes_added_and_rejects_bad_config() -> None:
+    min_a = np.array([-0.558223634633, 1.441725841805, 0.0], dtype=np.float64)
+    min_b = np.array([0.623499404931, 0.028037758529, 0.0], dtype=np.float64)
+
+    gsm = rgsaddle.GrowingString(
+        min_a, min_b, n_images=7, frontier_tol=15.0, max_steps_per_node=10, max_move=0.05
+    )
+    assert gsm.nodes_added() == 0
+    grown = 0
+    for _ in range(200):
+        rep = gsm.step(_muller_brown_surface)
+        assert rep.rotations == 0
+        added = gsm.nodes_added()
+        assert 0 <= added <= 2
+        grown += added
+        if gsm.joined():
+            break
+    assert gsm.joined()
+    assert grown == 3
+
+    for options in (
+        {"frontier_tol": 0.0},
+        {"frontier_tol": float("nan")},
+        {"min_steps_per_node": 0},
+        {"max_steps_per_node": -1},
+        {"join_tol": -1.0},
+        {"join_tol": float("inf")},
+    ):
+        with pytest.raises(ValueError):
+            rgsaddle.GrowingString(min_a, min_b, n_images=7, **options)

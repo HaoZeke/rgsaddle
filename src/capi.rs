@@ -274,6 +274,10 @@ unsafe impl Sync for CSurface {}
 unsafe impl Send for CSurface {}
 
 impl CSurface {
+    fn evaluation_rows_checked(&self) -> Option<i32> {
+        i32::try_from(self.rows.load(std::sync::atomic::Ordering::Relaxed)).ok()
+    }
+
     fn evaluation_rows(&self) -> i32 {
         i32::try_from(self.rows.load(std::sync::atomic::Ordering::Relaxed)).unwrap_or(i32::MAX)
     }
