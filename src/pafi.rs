@@ -124,6 +124,7 @@
 //! quadrature on a bent valley, on a harmonic plane, and on a plane of two
 //! wells, and `tests/pafi_reference.rs` against the reference code.
 
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ndarray::{Array1, Array2, ArrayView1};
@@ -135,7 +136,7 @@ use rgmin::{Control, Error, Method, Oracle, Solver, Status, StopNorm};
 use crate::Region;
 use crate::band::BandSurface;
 use crate::error::SaddleError;
-use crate::minmode::PointSurface;
+use crate::minmode::{CartesianLayout, PointSurface};
 use crate::projector::{
     Hyperplane, HyperplaneEnsemble, HyperplaneObservation, HyperplaneSampleBudget,
     HyperplaneSampler, ProjectedConstraint, TangentProjector,
@@ -213,11 +214,17 @@ pub struct PafiConfig {
     pub mean_force: PafiMeanForce,
     /// Seed of the noise.
     pub seed: u64,
-    /// Hold the center of mass: remove the mean Cartesian drift from the
-    /// normal, the force and the noise. It takes effect when the vector
-    /// holds at least two atoms, three entries each; otherwise it is
-    /// ignored.
+    /// Hold the center of geometry: remove the mean Cartesian drift from
+    /// the normal, the force and the noise.
+    ///
+    /// A surface must certify an ordinary Cartesian layout, or the real
+    /// atom count must be supplied through [`Self::com_atoms`].
     pub fix_com: bool,
+    /// Real Cartesian atom count for a surface with an uncertified layout.
+    ///
+    /// A surface that certifies Cartesian coordinates supplies this count;
+    /// when both are present, they must agree.
+    pub com_atoms: Option<NonZeroUsize>,
     /// How many recorded configurations to keep, evenly spaced.
     pub retain: usize,
     /// Stop early when [`FreeEnergyProfile::barrier_error`] is at or below
@@ -255,6 +262,7 @@ with_setters!(PafiConfig {
     with_mean_force => mean_force: val PafiMeanForce,
     with_seed => seed: val u64,
     with_fix_com => fix_com: val bool,
+    with_com_atoms => com_atoms: opt NonZeroUsize,
     with_retain => retain: val usize,
     with_target_error => target_error: opt f64,
     with_max_rounds => max_rounds: val usize,
@@ -294,6 +302,7 @@ impl Default for PafiConfig {
             mean_force: PafiMeanForce::ReferenceCode,
             seed: 1,
             fix_com: true,
+            com_atoms: None,
             retain: 16,
             target_error: None,
             max_rounds: 4,
@@ -316,10 +325,12 @@ impl PafiConfig {
                 "PAFI mobility must be finite and positive".into(),
             ));
         }
-        if !(self.time_step.is_finite() && self.time_step > 0.0) {
-            return Err(SaddleError::Invalid(
-                "PAFI time step must be finite and positive".into(),
-            ));
+        self.checked_time_step()?;
+        if self.blocks == 0 {
+            return Err(SaddleError::MissingBlocks { context: "PAFI" });
+        }
+        if self.samples == 0 {
+            return Err(SaddleError::MissingSamples { context: "PAFI" });
         }
         if self.stride == 0
             || self.blocks < 2
@@ -346,6 +357,16 @@ impl PafiConfig {
             self.quench.check()?;
         }
         Ok(())
+    }
+
+    pub(crate) fn checked_time_step(&self) -> Result<f64, SaddleError> {
+        if self.time_step.is_finite() && self.time_step > 0.0 {
+            Ok(self.time_step)
+        } else {
+            Err(SaddleError::Invalid(
+                "PAFI time step must be finite and positive".into(),
+            ))
+        }
     }
 }
 
@@ -1040,7 +1061,8 @@ fn average_trajectory<S: PointSurface>(
         rejected: 0,
         unconverged: 0,
     };
-    let mut average = average_hyperplane_with_sampler(&mut sampler, geometry, config)?;
+    let mut average =
+        average_hyperplane_with_layout(&mut sampler, geometry, config, surface.cartesian_layout())?;
     average.rejected = sampler.rejected;
     average.unconverged_quenches = sampler.unconverged;
     Ok(average)
@@ -1051,6 +1073,15 @@ pub fn average_hyperplane_with_sampler<E: HyperplaneSampler>(
     sampler: &mut E,
     geometry: &PathGeometry,
     config: &PafiConfig,
+) -> Result<HyperplaneAverage, SaddleError> {
+    average_hyperplane_with_layout(sampler, geometry, config, CartesianLayout::Unknown)
+}
+
+fn average_hyperplane_with_layout<E: HyperplaneSampler>(
+    sampler: &mut E,
+    geometry: &PathGeometry,
+    config: &PafiConfig,
+    layout: CartesianLayout,
 ) -> Result<HyperplaneAverage, SaddleError> {
     config.check()?;
     let n = geometry.positions.len();
@@ -1068,7 +1099,8 @@ pub fn average_hyperplane_with_sampler<E: HyperplaneSampler>(
     {
         return Err(SaddleError::NonFinite("PAFI path geometry"));
     }
-    let path_plane = PathPlane::new(geometry, holds_com(config, n))?;
+    let com_atoms = checked_com_atoms(config, n, layout)?;
+    let path_plane = PathPlane::new(geometry, com_atoms.is_some())?;
     let plane = Hyperplane::from_path(geometry.positions.view(), path_plane.normal.view())?;
     let mut budget = HyperplaneSampleBudget::default()
         .with_thermal(config.thermal)
@@ -1123,8 +1155,47 @@ impl<'a> PathPlane<'a> {
     }
 }
 
-fn holds_com(config: &PafiConfig, n: usize) -> bool {
-    config.fix_com && n >= 6 && n.is_multiple_of(3)
+fn checked_com_atoms(
+    config: &PafiConfig,
+    coordinates: usize,
+    layout: CartesianLayout,
+) -> Result<Option<NonZeroUsize>, SaddleError> {
+    if !config.fix_com {
+        return Ok(None);
+    }
+    let atoms = match layout {
+        CartesianLayout::Unknown => config
+            .com_atoms
+            .ok_or(SaddleError::MissingPafiComAtomCount)?,
+        CartesianLayout::Cartesian { atoms } => {
+            if let Some(configured) = config.com_atoms
+                && configured != atoms
+            {
+                return Err(SaddleError::PafiComAtomCountMismatch {
+                    configured: configured.get(),
+                    surface: atoms.get(),
+                });
+            }
+            atoms
+        }
+        layout @ (CartesianLayout::Wrapped | CartesianLayout::NonCartesian) => {
+            return Err(SaddleError::UnsupportedPafiComLayout { layout });
+        }
+    };
+    let expected = atoms
+        .get()
+        .checked_mul(3)
+        .ok_or(SaddleError::PafiComLayoutMismatch {
+            coordinates,
+            atoms: atoms.get(),
+        })?;
+    if coordinates != expected {
+        return Err(SaddleError::PafiComLayoutMismatch {
+            coordinates,
+            atoms: atoms.get(),
+        });
+    }
+    Ok(Some(atoms))
 }
 
 fn estimate_pafi(
@@ -1223,7 +1294,12 @@ impl<S: PointSurface> HyperplaneSampler for PafiAnalyticSampler<'_, S> {
     ) -> Result<HyperplaneEnsemble, SaddleError> {
         let geometry = self.geometry;
         let config = self.config;
-        let path_plane = PathPlane::new(geometry, holds_com(config, geometry.positions.len()))?;
+        let com_atoms = checked_com_atoms(
+            config,
+            geometry.positions.len(),
+            self.surface.cartesian_layout(),
+        )?;
+        let path_plane = PathPlane::new(geometry, com_atoms.is_some())?;
         let mut rng = Rng::new(budget.seed);
         let walk = Walk {
             surface: self.surface,
@@ -1880,7 +1956,8 @@ mod tests {
         let config = PafiConfig::default()
             .with_thermalize(0)
             .with_samples(40)
-            .with_blocks(4);
+            .with_blocks(4)
+            .with_fix_com(false);
         let mut sampler = RecordingSampler::default();
         average_hyperplane_with_sampler(&mut sampler, &geometry, &config).unwrap();
         assert_eq!(sampler.planes.len(), 1);
