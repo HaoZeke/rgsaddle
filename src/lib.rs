@@ -138,14 +138,14 @@ pub use ocineb::{
 pub use ohtst::{
     AnharmonicConfig, AnharmonicCorrection, BasinConfig, BasinDensity, BasinEnd, Basins, Counting,
     EndState, Endpoint, FixedCell, GaussianTransport, HarmonicReference, Hyperplane,
-    LangevinConfig, MassWeighted, MbarConfig, MbarFreeEnergy, OhTstRate, PermutationDistance,
-    PlaneDensity, PlaneIntegrator, PlaneMetric, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum,
-    PlanePath, PlaneSample, PlaneTrace, QuenchConfig, ReactantDensity, ReversibleWork,
-    ReversibleWorkConfig, StateDistance, TransmissionCoefficient, TransmissionConfig,
-    TransmissionEstimate, Transport, Uncontrolled, WorkEstimate, WorkNode, anharmonic_correction,
-    basin_density, flux_mass, mbar_free_energies, ohtst_rate, plane_transmission, rate_from_parts,
-    reactant_density, reversible_work, reversible_work_along, sample_plane,
-    transmission_coefficient,
+    LangevinConfig, MassWeighted, MbarConfig, MbarFreeEnergy, OhTstRate, OhTstRateConfig,
+    PermutationDistance, PlaneDensity, PlaneIntegrator, PlaneMetric, PlaneOptimizer,
+    PlaneOptimizerConfig, PlaneOptimum, PlanePath, PlaneSample, PlaneTrace, QuenchConfig,
+    ReactantDensity, ReversibleWork, ReversibleWorkConfig, StateDistance, TransmissionCoefficient,
+    TransmissionConfig, TransmissionEstimate, Transport, Uncontrolled, WorkEstimate, WorkNode,
+    anharmonic_correction, basin_density, flux_mass, mbar_free_energies, ohtst_rate,
+    ohtst_rate_with_config, plane_transmission, rate_from_parts, reactant_density, reversible_work,
+    reversible_work_along, sample_plane, transmission_coefficient,
 };
 pub use pafi::{
     ArcPath, FreeEnergyProfile, HyperplaneAverage, PafiConfig, PathFrame, PathGeometry,

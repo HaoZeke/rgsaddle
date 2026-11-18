@@ -116,7 +116,8 @@ pub use optimize::{PlaneMetric, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptim
 pub use path::PlanePath;
 pub use plane::{FixedCell, Hyperplane, MassWeighted};
 pub use rate::{
-    OhTstRate, PlaneDensity, flux_mass, ohtst_rate, plane_transmission, rate_from_parts,
+    OhTstRate, OhTstRateConfig, PlaneDensity, flux_mass, ohtst_rate, ohtst_rate_with_config,
+    plane_transmission, rate_from_parts,
 };
 pub use reactant::{ReactantDensity, reactant_density};
 pub use sample::{LangevinConfig, PlaneIntegrator, PlaneSample, Uncontrolled, sample_plane};
