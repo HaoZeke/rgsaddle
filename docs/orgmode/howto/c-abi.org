@@ -117,3 +117,10 @@ ABI minor 44 adds the growing string method of Peters, Heyden, Bell, and Chakrab
 ~rgsaddle_growing_string_create~ returns NULL for a ~frontier_tol~ that is not finite and positive, a ~min_steps_per_node~ below 1, a negative ~max_steps_per_node~ (0 means no cap), a negative ~join_tol~ other than -1.0, or a non-finite ~join_tol~ (-1.0 means no early join). The step report's ~rotations~ field is 0; ~rgsaddle_growing_string_nodes_added~ gives the nodes the last step grew.
 ~rgsaddle_growing_string_n_images~, ~rgsaddle_growing_string_nodes_added~, ~rgsaddle_growing_string_phase~, ~rgsaddle_growing_string_positions~, ~rgsaddle_growing_string_ids~, ~rgsaddle_growing_string_set_fixed_atoms~, ~rgsaddle_growing_string_saddle_index~, and ~rgsaddle_growing_string_free~ inspect and manage the session.
 ~include/rgsaddle/session.hpp~ wraps it as ~rgsaddle::GrowingString~, and Python exposes ~rgsaddle.GrowingString~ and ~rgsaddle.ase.GrowingString~.
+
+ABI minor 46 adds dynamic NEB.
+~rgsaddle_band_set_dynamic~ takes 0 to clear it or 1 to set ~fmax~ and ~scale_fmax~; any other flag returns ~RGSADDLE_INVALID_PARAMETER~ and leaves the band unchanged.
+A solid-state band and the trust-region stepper are refused.
+~rgsaddle_dyneb_mask~ applies the same mask to a projected band the host already holds.
+While the option is on, an interior image that a neighbour pulls back over its threshold is requested alone: ~RGSADDLE_REQ_ONE_IMAGE~ is set, ~image~ is that image's band index, ~n_images~ is the band length, and ~RGSADDLE_REQ_CLIMBING_IMAGE~ is not set.
+A host that loads the library at run time checks ~rgsaddle_abi_version()~ for at least minor 46 before resolving either symbol.
