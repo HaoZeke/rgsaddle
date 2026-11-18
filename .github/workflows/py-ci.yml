@@ -4,26 +4,59 @@ on:
   push:
     branches:
       - main
-      - "feat/**"
-      - "release/**"
+      - develop
+    tags:
+      - "*"
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
   pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
   workflow_dispatch:
 
 concurrency:
-  group: py-ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
   wheels:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'wheels')
     uses: OmniPotentRPC/rgpot/.github/workflows/py-wheels.yml@10a4dce7a9dc52dbbf043033ac7b9715c812e191
     with:
       package-dir: .
       import-names: rgsaddle._core
       test-path: tests/python
       extras: test
+
+  wheel-smoke:
+    name: Linux x86_64 wheel smoke
+    if: >-
+      github.event_name == 'pull_request' &&
+      !contains(github.event.pull_request.labels.*.name, 'wheels')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build and test one abi3 wheel
+        uses: pypa/cibuildwheel@056b871b4f3c060ea999c4bf9a7e41202d7d9f21 # v4.3.0
+        with:
+          output-dir: wheelhouse
+        env:
+          CIBW_ARCHS: x86_64
+          CIBW_BUILD: cp312-manylinux_x86_64
+      - name: Audit the stable ABI
+        run: |
+          set -euo pipefail
+          python -m pip install abi3audit
+          python -m abi3audit --strict wheelhouse/*abi3*.whl
 
   freethreading:
     uses: OmniPotentRPC/rgpot/.github/workflows/py-freethreading.yml@10a4dce7a9dc52dbbf043033ac7b9715c812e191
