@@ -592,6 +592,39 @@ fn basin_test_keeps_the_plane_in_the_basin_of_the_path() {
     );
 }
 
+#[test]
+fn basin_rejection_records_plane_trajectory_stretch_and_jump() {
+    let geometry = TwoWells::plane();
+    let config = PafiConfig::default()
+        .with_thermal(0.1)
+        .with_mobility(1.0)
+        .with_time_step(0.01)
+        .with_thermalize(200)
+        .with_stride(10)
+        .with_samples(10_000)
+        .with_blocks(500)
+        .with_trajectories(2)
+        .with_seed(5)
+        .with_fix_com(false)
+        .with_retain(0);
+    let average = average_hyperplane(&TwoWells { tilt: 0.1 }, &geometry, &config).expect("plane");
+    assert_eq!(average.rejected, average.rejections.len());
+    assert!(!average.rejections.is_empty(), "expected a basin rejection");
+    let mut seen = [false; 2];
+    let mut last_stretch = [None; 2];
+    for rejection in &average.rejections {
+        assert_eq!(rejection.plane, geometry.arc);
+        assert!(rejection.trajectory < seen.len());
+        assert!(rejection.max_jump > config.max_jump.expect("jump limit"));
+        seen[rejection.trajectory] = true;
+        if let Some(previous) = last_stretch[rejection.trajectory] {
+            assert!(previous < rejection.stretch);
+        }
+        last_stretch[rejection.trajectory] = Some(rejection.stretch);
+    }
+    assert!(seen.into_iter().all(|trajectory| trajectory));
+}
+
 /// Tilted until the upper well of [`TwoWells`] holds the walk for no
 /// longer than a stretch, the plane is refused rather than averaged over
 /// the lower well.

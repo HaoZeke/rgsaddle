@@ -15,6 +15,7 @@ trap cleanup EXIT
 
 JOBS=${BENCHBOT_JOBS:-$(getconf _NPROCESSORS_ONLN)}
 OUTPUT=${PAFI_REPRO_OUTPUT:-"${ROOT}/benchmarks/pafi-swinburne-repro/full-results.csv"}
+REJECTIONS_OUTPUT=${PAFI_REPRO_REJECTIONS_OUTPUT:-"${OUTPUT%.csv}-rejections.csv"}
 CC=${BENCHBOT_CC:-gcc}
 CXX=${BENCHBOT_CXX:-g++}
 
@@ -70,6 +71,7 @@ if RGSADDLE_PAFI_REFERENCE="${WORK}/pafi/examples/systems" \
   PAFI_THERMALIZE="${PAFI_THERMALIZE:-2000}" \
   PAFI_SAMPLES="${PAFI_SAMPLES:-5000}" \
   PAFI_REPRO_OUTPUT="${OUTPUT}" \
+  PAFI_REPRO_REJECTIONS_OUTPUT="${REJECTIONS_OUTPUT}" \
   cargo test --release --no-default-features --features pafi-repro --test pafi_swinburne_full \
     w_vacancy_matches_public_code_output -- --ignored --exact --nocapture
 then
@@ -79,6 +81,7 @@ else
 fi
 
 printf 'result: %s\n' "${OUTPUT}"
+printf 'rejections: %s\n' "${REJECTIONS_OUTPUT}"
 printf 'elapsed_seconds: %s\n' "$((SECONDS - START_SECONDS))"
 printf '%s\n' \
   'Question: do all three rows pass the predeclared combined-error criterion without protocol tuning?'

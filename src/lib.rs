@@ -147,8 +147,8 @@ pub use ohtst::{
     transmission_coefficient,
 };
 pub use pafi::{
-    ArcPath, FreeEnergyProfile, HyperplaneAverage, PafiConfig, PafiIntegrator, PafiMeanForce,
-    PathFrame, PathGeometry, average_hyperplane, integrate_profile, pafi_profile,
+    ArcPath, FreeEnergyProfile, HyperplaneAverage, PafiBasinRejection, PafiConfig, PafiIntegrator,
+    PafiMeanForce, PathFrame, PathGeometry, average_hyperplane, integrate_profile, pafi_profile,
     zero_temperature_barrier,
 };
 pub use pair_network::{

@@ -382,6 +382,7 @@ fn w_vacancy_matches_public_code_output() {
     let mut rows = String::from(
         "temperature_k,published_ev,published_error_ev,ours_ev,ours_error_ev,planes,trajectories,thermalize_steps,sample_steps,integrator,mean_force,neb_steps,neb_max_force_ev_per_a,rejected_stretches\n",
     );
+    let mut rejection_rows = String::from("temperature_k,plane,trajectory,stretch,max_jump\n");
     let (zero_barrier, zero_error) = remeshed_barrier(&zero);
     let mut observed = vec![(0.0, zero_barrier, zero_error, 0usize)];
     // Use the public input's numerical step. The mobility fixes this
@@ -407,6 +408,16 @@ fn w_vacancy_matches_public_code_output() {
         let (profile, averages) =
             pafi_profile(&system.surface, &system.path, &arcs, &config).expect("PAFI profile");
         let (barrier, error) = remeshed_barrier(&profile);
+        for average in &averages {
+            for rejection in &average.rejections {
+                writeln!(
+                    rejection_rows,
+                    "{temperature:.0},{:.17},{},{},{:.17}",
+                    rejection.plane, rejection.trajectory, rejection.stretch, rejection.max_jump
+                )
+                .expect("rejection CSV row");
+            }
+        }
         let rejected = averages.iter().map(|average| average.rejected).sum();
         observed.push((temperature, barrier, error, rejected));
     }
@@ -427,8 +438,12 @@ fn w_vacancy_matches_public_code_output() {
         .expect("CSV row");
     }
     print!("{rows}");
+    print!("{rejection_rows}");
     if let Some(path) = std::env::var_os("PAFI_REPRO_OUTPUT") {
         std::fs::write(path, &rows).expect("write PAFI_REPRO_OUTPUT");
+    }
+    if let Some(path) = std::env::var_os("PAFI_REPRO_REJECTIONS_OUTPUT") {
+        std::fs::write(path, &rejection_rows).expect("write PAFI_REPRO_REJECTIONS_OUTPUT");
     }
     for (published, (temperature, barrier, error, _)) in PUBLISHED.iter().zip(observed) {
         assert_eq!(temperature, published.temperature);

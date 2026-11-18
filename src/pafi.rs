@@ -381,6 +381,19 @@ impl ArcPath {
     }
 }
 
+/// One basin rejection during hyperplane sampling.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PafiBasinRejection {
+    /// Reaction-coordinate value of the sampled plane.
+    pub plane: f64,
+    /// Zero-based trajectory identifier on that plane.
+    pub trajectory: usize,
+    /// Zero-based identifier of the basin-tested stretch in that trajectory.
+    pub stretch: usize,
+    /// Largest per-atom displacement between the two quenched minima.
+    pub max_jump: f64,
+}
+
 /// Mean free-energy gradient on one hyperplane.
 #[derive(Clone, Debug)]
 pub struct HyperplaneAverage {
@@ -406,6 +419,8 @@ pub struct HyperplaneAverage {
     /// because they left the basin of the path ([`PafiConfig::max_jump`]),
     /// summed over rounds.
     pub rejected: usize,
+    /// Context and measured jump for each rejected stretch.
+    pub rejections: Vec<PafiBasinRejection>,
 }
 
 /// Potential of mean force from the first plane.
@@ -449,7 +464,7 @@ pub fn average_hyperplane<S: PointSurface>(
 ) -> Result<HyperplaneAverage, SaddleError> {
     config.check()?;
     if config.trajectories == 1 {
-        return average_trajectory(surface, geometry, config);
+        return average_trajectory(surface, geometry, config, 0);
     }
     let mut trajectories = Vec::with_capacity(config.trajectories);
     for index in 0..config.trajectories {
@@ -457,7 +472,7 @@ pub fn average_hyperplane<S: PointSurface>(
             .clone()
             .with_trajectories(1)
             .with_seed(config.seed.wrapping_add(index as u64));
-        trajectories.push(average_trajectory(surface, geometry, &local)?);
+        trajectories.push(average_trajectory(surface, geometry, &local, index)?);
     }
     let count = trajectories.len() as f64;
     let gradient = trajectories
@@ -488,6 +503,11 @@ pub fn average_hyperplane<S: PointSurface>(
         let remaining = config.retain.saturating_sub(retained.len());
         retained.extend(trajectory.retained.iter().take(remaining).cloned());
     }
+    let rejections: Vec<PafiBasinRejection> = trajectories
+        .iter()
+        .flat_map(|trajectory| trajectory.rejections.iter().cloned())
+        .collect();
+    let rejected = rejections.len();
     Ok(HyperplaneAverage {
         gradient,
         error,
@@ -503,10 +523,8 @@ pub fn average_hyperplane<S: PointSurface>(
             .map(|trajectory| trajectory.evaluations)
             .sum(),
         retained,
-        rejected: trajectories
-            .iter()
-            .map(|trajectory| trajectory.rejected)
-            .sum(),
+        rejected,
+        rejections,
     })
 }
 
@@ -514,6 +532,7 @@ fn average_trajectory<S: PointSurface>(
     surface: &S,
     geometry: &PathGeometry,
     config: &PafiConfig,
+    trajectory: usize,
 ) -> Result<HyperplaneAverage, SaddleError> {
     config.check()?;
     let n = geometry.positions.len();
@@ -549,25 +568,34 @@ fn average_trajectory<S: PointSurface>(
         }
         None => None,
     };
-    let mut rejected = 0;
-    let mut left = |x: &Array1<f64>, evaluations: &mut usize| -> Result<bool, SaddleError> {
-        let (Some(basin), Some(limit)) = (&basin, config.max_jump) else {
-            return Ok(false);
+    let mut rejections = Vec::new();
+    let mut left =
+        |x: &Array1<f64>, evaluations: &mut usize, stretch: usize| -> Result<bool, SaddleError> {
+            let (Some(basin), Some(limit)) = (&basin, config.max_jump) else {
+                return Ok(false);
+            };
+            let (minimum, spent) = plane.minimum(surface, x, &config.quench)?;
+            *evaluations += spent;
+            let max_jump = StopNorm::MaxAtom.of((&minimum - basin).view());
+            if max_jump <= limit {
+                return Ok(false);
+            }
+            rejections.push(PafiBasinRejection {
+                plane: geometry.arc,
+                trajectory,
+                stretch,
+                max_jump,
+            });
+            if rejections.len() > config.blocks {
+                return Err(SaddleError::Solver(format!(
+                    "PAFI plane at s = {} left the basin of the path {} times",
+                    geometry.arc,
+                    rejections.len()
+                )));
+            }
+            Ok(true)
         };
-        let (minimum, spent) = plane.minimum(surface, x, &config.quench)?;
-        *evaluations += spent;
-        if StopNorm::MaxAtom.of((&minimum - basin).view()) <= limit {
-            return Ok(false);
-        }
-        rejected += 1;
-        if rejected > config.blocks {
-            return Err(SaddleError::Solver(format!(
-                "PAFI plane at s = {} left the basin of the path {rejected} times",
-                geometry.arc
-            )));
-        }
-        Ok(true)
-    };
+    let mut stretch_id = 0;
     let (mut x, mut noise) = loop {
         let mut x = geometry.positions.clone();
         let mut noise = walk.draw(n, &mut rng);
@@ -576,7 +604,9 @@ fn average_trajectory<S: PointSurface>(
             walk.step(&mut x, gradient, &mut noise, &mut rng);
         }
         evaluations += config.thermalize;
-        if !left(&x, &mut evaluations)? {
+        let rejected = left(&x, &mut evaluations, stretch_id)?;
+        stretch_id += 1;
+        if !rejected {
             break (x, noise);
         }
     };
@@ -613,7 +643,9 @@ fn average_trajectory<S: PointSurface>(
             }
         }
         evaluations += count * config.stride;
-        if left(&x, &mut evaluations)? {
+        let rejected = left(&x, &mut evaluations, stretch_id)?;
+        stretch_id += 1;
+        if rejected {
             (x, noise) = kept.clone();
             continue;
         }
@@ -632,7 +664,8 @@ fn average_trajectory<S: PointSurface>(
         n_eff,
         evaluations,
         retained,
-        rejected,
+        rejected: rejections.len(),
+        rejections,
     })
 }
 
@@ -875,6 +908,7 @@ pub fn pafi_profile<S: PointSurface + Sync>(
             plane.tau = plane.tau.max(added.tau);
             plane.n_eff += added.n_eff;
             plane.rejected += added.rejected;
+            plane.rejections.extend(added.rejections);
             if plane.retained.len() < config.retain {
                 plane.retained.extend(added.retained);
             }
