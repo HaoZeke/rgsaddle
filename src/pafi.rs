@@ -102,6 +102,11 @@ pub struct PafiConfig {
     pub seed: u64,
     /// Remove the mean Cartesian drift when the system has at least two atoms.
     pub fix_com: bool,
+    /// Quench the path point in its hyperplane before thermalization.
+    ///
+    /// This is the `PreMin` option of Swinburne's reference driver. The
+    /// quench uses [`Self::quench`] and is independent of the basin test.
+    pub pre_quench: bool,
     /// How many recorded configurations to keep, evenly spaced.
     pub retain: usize,
     /// Stop early when the integrated barrier error is at or below this.
@@ -135,6 +140,7 @@ with_setters!(PafiConfig {
     with_mean_force => mean_force: val PafiMeanForce,
     with_seed => seed: val u64,
     with_fix_com => fix_com: val bool,
+    with_pre_quench => pre_quench: val bool,
     with_retain => retain: val usize,
     with_target_error => target_error: opt f64,
     with_max_rounds => max_rounds: val usize,
@@ -165,6 +171,7 @@ impl Default for PafiConfig {
             mean_force: PafiMeanForce::ReferenceCode,
             seed: 1,
             fix_com: true,
+            pre_quench: false,
             retain: 16,
             target_error: None,
             max_rounds: 4,
@@ -206,6 +213,8 @@ impl PafiConfig {
                     "PAFI largest jump must be finite and positive".into(),
                 ));
             }
+        }
+        if self.max_jump.is_some() || self.pre_quench {
             self.quench.check()?;
         }
         Ok(())
@@ -560,18 +569,26 @@ fn average_trajectory<S: PointSurface>(
         integrator: config.integrator,
     };
     let mut evaluations = 0;
-    let basin = match config.max_jump {
-        Some(_) => {
+    let path_minimum = match (config.max_jump, config.pre_quench) {
+        (Some(_), _) | (None, true) => {
             let (minimum, spent) = plane.minimum(surface, &geometry.positions, &config.quench)?;
             evaluations += spent;
             Some(minimum)
         }
+        (None, false) => None,
+    };
+    let basin = match config.max_jump {
+        Some(_) => path_minimum.as_ref(),
         None => None,
+    };
+    let start = match (config.pre_quench, path_minimum.as_ref()) {
+        (true, Some(minimum)) => minimum.clone(),
+        _ => geometry.positions.clone(),
     };
     let mut rejections = Vec::new();
     let mut left =
         |x: &Array1<f64>, evaluations: &mut usize, stretch: usize| -> Result<bool, SaddleError> {
-            let (Some(basin), Some(limit)) = (&basin, config.max_jump) else {
+            let (Some(basin), Some(limit)) = (basin, config.max_jump) else {
                 return Ok(false);
             };
             let (minimum, spent) = plane.minimum(surface, x, &config.quench)?;
@@ -597,7 +614,7 @@ fn average_trajectory<S: PointSurface>(
         };
     let mut stretch_id = 0;
     let (mut x, mut noise) = loop {
-        let mut x = geometry.positions.clone();
+        let mut x = start.clone();
         let mut noise = walk.draw(n, &mut rng);
         for _ in 0..config.thermalize {
             let gradient = walk.gradient(&x)?;

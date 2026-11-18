@@ -31,6 +31,18 @@ impl PointSurface for Widening {
     }
 }
 
+struct SlantedPlane;
+
+impl PointSurface for SlantedPlane {
+    fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+        let (along, across) = (x[0], x[1]);
+        Ok((
+            0.5 * across * across + along * across,
+            Array1::from_vec(vec![across, across + along]),
+        ))
+    }
+}
+
 fn widening(x: f64, y: f64) -> (f64, f64, f64) {
     let well = (1.0 - x * x).powi(2);
     let stiffness = 1.5 + 0.5 * x;
@@ -88,6 +100,33 @@ fn one_dimensional_barrier_is_the_potential() {
         profile.barrier
     );
     assert_eq!(profile.dividing, arcs.len() - 1);
+}
+
+#[test]
+fn pre_quench_starts_sampling_at_the_plane_minimum() {
+    let path = ArcPath::from_positions(&[
+        Array1::from_vec(vec![-1.0, 1.0]),
+        Array1::from_vec(vec![1.0, 1.0]),
+    ])
+    .expect("path");
+    let geometry = path.geometry(1.0).expect("middle");
+    let config = PafiConfig::default()
+        .with_thermal(1.0e-20)
+        .with_mobility(1.0)
+        .with_time_step(1.0e-12)
+        .with_thermalize(0)
+        .with_stride(1)
+        .with_samples(4)
+        .with_blocks(2)
+        .with_fix_com(false)
+        .with_retain(0)
+        .with_max_jump(None);
+    let path_start = average_hyperplane(&SlantedPlane, &geometry, &config).expect("path start");
+    let quenched = average_hyperplane(&SlantedPlane, &geometry, &config.with_pre_quench(true))
+        .expect("quenched start");
+    assert!(path_start.gradient > 0.99, "{}", path_start.gradient);
+    assert!(quenched.gradient.abs() < 1.0e-3, "{}", quenched.gradient);
+    assert!(quenched.evaluations > path_start.evaluations);
 }
 
 #[test]
