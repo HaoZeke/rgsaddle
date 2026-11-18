@@ -182,3 +182,6 @@ The narrative for a session is the C and C++ how-to, not this list.
 - =rgsaddle_growing_string_set_fixed_atoms=. Purpose: Replace the per-atom fixed mask (n_atoms bytes, 1 fixed and 0 free) on a growing string session, ABI minor 44. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_growing_string_saddle_index=. Purpose: Read the saddle-index certificate of a joined growing string session, ABI minor 44. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_growing_string_free=. Purpose: Free a growing string session, ABI minor 44. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_band_set_free_end=. Purpose: Enable, replace, or clear free-end adaptive NEB on a live band, ABI minor 45. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_band_free_end_residual=. Purpose: Read the signed target-energy residual `E(x_end) - E_target` from the most recent free-end step into `out`, ABI minor 45. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_band_free_end_cuts=. Purpose: Number of adaptive cut-and-remesh refinements performed so far on a free-end band, or 0 for NULL, ABI minor 45. Parameters: the declaration. Units: the caller's.
