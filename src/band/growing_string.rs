@@ -1067,14 +1067,15 @@ impl GrowingStringSession {
             let arc_lf = Self::frontier_arc(&s, &kept, &arcs, m_l - 1);
             let arc_rf = Self::frontier_arc(&s, &kept, &arcs, m_l);
             let target_arc = arc_lf + alpha * (arc_rf - arc_lf);
-            let t_param = spline.at_arc(&arcs, target_arc);
-            let pt = spline.eval(t_param);
-            let mut diff = &pt - &unwrapped.row(m_l - 1);
-            if let Some(cell) = &self.config.band.cell {
-                cell.minimum_image(&mut diff);
+            if let Some(t_param) = spline.at_arc(&arcs, target_arc) {
+                let pt = spline.eval(t_param);
+                let mut diff = &pt - &unwrapped.row(m_l - 1);
+                if let Some(cell) = &self.config.band.cell {
+                    cell.minimum_image(&mut diff);
+                }
+                zero_fixed(&self.config.band.fixed_atoms, &mut diff);
+                return &orig_lf + &diff;
             }
-            zero_fixed(&self.config.band.fixed_atoms, &mut diff);
-            return &orig_lf + &diff;
         }
         let mut chord = &chain.row(m_l) - &orig_lf;
         if let Some(cell) = &self.config.band.cell {

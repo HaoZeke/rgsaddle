@@ -9,23 +9,27 @@
 //!
 //! `dF/ds = ⟨ (∇E · t) (1 - ψ) ⟩`.
 //!
-//! The paper's `ψ`, its Eq. (5), is `1 - ψ` here, and this average is the
-//! first term of its Eq. (8). The second, Jacobian, term is left out, as
-//! LAMMPS `fix pafi` and Swinburne's reference driver leave it out. The
-//! integral of what remains is the free energy of the flat hyperplanes,
+//! The paper's `ψ`, its Eq. (5), is `1 - ψ` here. [`PafiMeanForce`] selects
+//! either the complete Eq. (8), including its analytic Jacobian derivative,
+//! or the force term alone, which is what LAMMPS `fix pafi` and Swinburne's
+//! public driver record. The force-only integral is the free energy of the
+//! flat hyperplanes,
 //! `-kT ln ∫ δ((x - X) · t / |t|) exp(-E/kT) dx`, which does not depend on
 //! how the path is parametrized. Production samples arrive through
 //! [`HyperplaneSampler`]. The built-in overdamped Langevin implementation,
 //! the paper's Eq. (9), is retained only as the deterministic
-//! analytic-surface reference. It steps as Leimkuhler and Matthews, Appl.
-//! Math. Res. Express 2013, 34 (2013), doi:10.1093/amrx/abs010, Eq. (3):
-//! the noise of a step is the sum of two consecutive draws, which makes
+//! analytic-surface reference. [`PafiIntegrator`] selects the direct
+//! Euler-Maruyama discretization or the step of Leimkuhler and Matthews,
+//! Appl. Math. Res. Express 2013, 34 (2013), doi:10.1093/amrx/abs010,
+//! Eq. (3). The latter sums two consecutive noise draws, which makes
 //! stationary averages second order in the step and exact on a harmonic
-//! plane. It projects drift and noise, then restores the plane after every
-//! step. Holding the center of mass is optional and is the `com yes`
+//! plane. The walk projects drift and noise, then restores the plane after
+//! every step. Holding the center of mass is optional and is the `com yes`
 //! choice of `fix pafi`. The integral of `dF/ds` from the reactant is the
-//! potential of mean force. Block averages of the equilibrated records
-//! supply the standard error.
+//! potential of mean force. One trajectory uses block averages of the
+//! equilibrated records for its standard error. An ensemble of
+//! trajectories uses the spread of independent trajectory means, as
+//! Swinburne's reference code does.
 //!
 //! # What goes in
 //!
@@ -139,6 +143,32 @@ use crate::relax::RelaxConfig;
 use crate::reparam::Spline;
 use crate::stats::{EquilibrationReport, Rng, block_mean, equilibrate};
 
+/// Time discretization of the projected overdamped Langevin equation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PafiIntegrator {
+    /// Euler-Maruyama applied directly to Eq. (9) of Swinburne and
+    /// Marinica (2018).
+    EulerMaruyama,
+    /// The correlated-noise step of Leimkuhler and Matthews (2013),
+    /// second order for stationary averages.
+    #[default]
+    LeimkuhlerMatthews,
+}
+
+/// Instantaneous mean-force estimator.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PafiMeanForce {
+    /// The modified force recorded by LAMMPS `fix pafi` and the public
+    /// PAFI driver: the first term of the paper's Eq. (8).
+    #[default]
+    ReferenceCode,
+    /// Both terms of Swinburne and Marinica (2018), Eq. (8), including
+    /// `kT d/ds ln(|ψ| / |X'|)`.
+    PublishedEquation8,
+}
+
 /// Overdamped hyperplane sampling.
 ///
 /// Non-exhaustive: start from [`PafiConfig::default`] and chain the
@@ -148,9 +178,9 @@ use crate::stats::{EquilibrationReport, Rng, block_mean, equilibrate};
 /// The setters of the optional fields, [`PafiConfig::target_error`] and
 /// [`PafiConfig::max_jump`], take a bare value or `None`. A run checks its
 /// configuration on entry: `kT`, the mobility and the step must be finite
-/// and positive, the stride positive, [`PafiConfig::blocks`] at least 2,
-/// [`PafiConfig::samples`] at least twice the blocks, and a given
-/// `max_jump` finite and positive.
+/// and positive, the stride and [`PafiConfig::trajectories`] positive,
+/// [`PafiConfig::blocks`] at least 2, [`PafiConfig::samples`] at least
+/// twice the blocks, and a given `max_jump` finite and positive.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct PafiConfig {
@@ -170,6 +200,15 @@ pub struct PafiConfig {
     pub samples: usize,
     /// Contiguous blocks used for the standard error. At least 2.
     pub blocks: usize,
+    /// Independent trajectories of equal length on each plane, sampled by
+    /// [`average_hyperplane`]. With more than one, the reported error is
+    /// the reference PAFI ensemble error
+    /// `sqrt(sum((mean_i - mean)^2)) / trajectories`.
+    pub trajectories: usize,
+    /// Time discretization of the projected overdamped Langevin equation.
+    pub integrator: PafiIntegrator,
+    /// Instantaneous estimator to average.
+    pub mean_force: PafiMeanForce,
     /// Seed of the noise.
     pub seed: u64,
     /// Hold the center of mass: remove the mean Cartesian drift from the
@@ -209,6 +248,9 @@ with_setters!(PafiConfig {
     with_stride => stride: val usize,
     with_samples => samples: val usize,
     with_blocks => blocks: val usize,
+    with_trajectories => trajectories: val usize,
+    with_integrator => integrator: val PafiIntegrator,
+    with_mean_force => mean_force: val PafiMeanForce,
     with_seed => seed: val u64,
     with_fix_com => fix_com: val bool,
     with_retain => retain: val usize,
@@ -229,11 +271,13 @@ impl PafiConfig {
 
 impl Default for PafiConfig {
     /// `kT` of 300 K in eV, unit mobility, time step 0.001, 200
-    /// thermalization steps, 200 samples 5 steps apart in 5 blocks, seed 1,
-    /// the center of mass held, 16 kept configurations, one pass, and a
-    /// largest jump of 0.4 (Å), the `MaxJumpThresh` of Swinburne's
-    /// reference code, quenched along the steepest-descent flow
-    /// ([`Method::Ode12r`]) under the other [`RelaxConfig`] defaults.
+    /// thermalization steps, one trajectory of 200 samples 5 steps apart
+    /// in 5 blocks, the Leimkuhler-Matthews integrator, the reference-code
+    /// mean-force estimator, seed 1, the center of mass held, 16 kept
+    /// configurations, one pass, and a largest jump of 0.4 (Å), the
+    /// `MaxJumpThresh` of Swinburne's reference code, quenched along the
+    /// steepest-descent flow ([`Method::Ode12r`]) under the other
+    /// [`RelaxConfig`] defaults.
     fn default() -> Self {
         Self {
             thermal: 0.02585,
@@ -243,6 +287,9 @@ impl Default for PafiConfig {
             stride: 5,
             samples: 200,
             blocks: 5,
+            trajectories: 1,
+            integrator: PafiIntegrator::LeimkuhlerMatthews,
+            mean_force: PafiMeanForce::ReferenceCode,
             seed: 1,
             fix_com: true,
             retain: 16,
@@ -272,10 +319,13 @@ impl PafiConfig {
                 "PAFI time step must be finite and positive".into(),
             ));
         }
-        if self.stride == 0 || self.blocks < 2 || self.samples < self.blocks * 2 {
+        if self.stride == 0
+            || self.blocks < 2
+            || self.samples < self.blocks * 2
+            || self.trajectories == 0
+        {
             return Err(SaddleError::Invalid(
-                "PAFI needs a positive stride, at least two blocks, and two samples per block"
-                    .into(),
+                "PAFI needs a positive stride and trajectory count, at least two blocks, and two samples per block".into(),
             ));
         }
         if let Some(jump) = self.max_jump {
@@ -321,7 +371,7 @@ pub struct ArcPath {
     spline: Spline,
 }
 
-/// Position and the first two parameter derivatives of a path, from
+/// Position and the first three parameter derivatives of a path, from
 /// [`ArcPath::geometry`]. [`average_hyperplane`] takes one of these as the
 /// plane it samples.
 #[derive(Clone, Debug)]
@@ -333,6 +383,10 @@ pub struct PathGeometry {
     pub tangent: Array1<f64>,
     /// `X'' = d²X/ds²`.
     pub curvature: Array1<f64>,
+    /// `d³X/ds³`, the third derivative of the cubic spline, constant on
+    /// each segment. At an interior knot it is the value of the segment
+    /// the spline selects there.
+    pub jerk: Array1<f64>,
     /// `s`.
     pub arc: f64,
 }
@@ -451,7 +505,7 @@ impl ArcPath {
     }
 
     /// Parameter of the first frame and of the last. [`ArcPath::geometry`]
-    /// clamps to this range.
+    /// accepts this range.
     pub fn bounds(&self) -> (f64, f64) {
         let knots = self.spline.knots();
         (knots[0], knots[knots.len() - 1])
@@ -463,20 +517,25 @@ impl ArcPath {
         self.spline.knots().to_vec()
     }
 
-    /// Spline geometry at `arc`, clamped to [`ArcPath::bounds`]. The
-    /// returned [`PathGeometry::arc`] is the clamped value. A `NaN` or
+    /// Spline geometry at `arc`, which must lie in [`ArcPath::bounds`]; a
+    /// parameter outside it is [`SaddleError::Invalid`], and a `NaN` or
     /// infinite `arc` is [`SaddleError::NonFinite`].
     pub fn geometry(&self, arc: f64) -> Result<PathGeometry, SaddleError> {
         if !arc.is_finite() {
             return Err(SaddleError::NonFinite("PAFI arc"));
         }
         let (first, last) = self.bounds();
-        let arc = arc.clamp(first, last);
-        let [positions, tangent, curvature] = self.spline.derivatives(arc);
+        if arc < first || arc > last {
+            return Err(SaddleError::Invalid(format!(
+                "PAFI coordinate {arc} is outside [{first}, {last}]"
+            )));
+        }
+        let [positions, tangent, curvature, jerk] = self.spline.derivatives(arc);
         Ok(PathGeometry {
             positions,
             tangent,
             curvature,
+            jerk,
             arc,
         })
     }
@@ -489,6 +548,9 @@ impl ArcPath {
 /// standard error from block means. With more than one pass
 /// ([`PafiConfig::target_error`]) the passes are combined by inverse
 /// variance, `samples` and `n_eff` are summed, and `tau` is the largest.
+/// With more than one trajectory ([`PafiConfig::trajectories`]) the
+/// gradient is the mean of the trajectories and `error` the spread of
+/// their means; `equilibration` is that of the first trajectory.
 #[derive(Clone, Debug)]
 pub struct HyperplaneAverage {
     /// `dF/ds` in energy per arc length.
@@ -565,7 +627,84 @@ pub struct FreeEnergyProfile {
 /// and a thermalization from the path. Swinburne's reference code drops
 /// such a trajectory the same way. More dropped stretches than there are
 /// blocks is an error: the plane does not hold the system in the basin.
+///
+/// With [`PafiConfig::trajectories`] above one, the plane is sampled by
+/// that many independent trajectories, seeded `seed + i`, and the error is
+/// the spread of their means.
 pub fn average_hyperplane<S: PointSurface>(
+    surface: &S,
+    geometry: &PathGeometry,
+    config: &PafiConfig,
+) -> Result<HyperplaneAverage, SaddleError> {
+    config.check()?;
+    if config.trajectories == 1 {
+        return average_trajectory(surface, geometry, config);
+    }
+    let mut trajectories = Vec::with_capacity(config.trajectories);
+    for index in 0..config.trajectories {
+        let local = config
+            .clone()
+            .with_trajectories(1)
+            .with_seed(config.seed.wrapping_add(index as u64));
+        trajectories.push(average_trajectory(surface, geometry, &local)?);
+    }
+    let count = trajectories.len() as f64;
+    let gradient = trajectories
+        .iter()
+        .map(|trajectory| trajectory.gradient)
+        .sum::<f64>()
+        / count;
+    let error = trajectories
+        .iter()
+        .map(|trajectory| {
+            let residual = trajectory.gradient - gradient;
+            residual * residual
+        })
+        .sum::<f64>()
+        .sqrt()
+        / count;
+    let samples = trajectories
+        .iter()
+        .map(|trajectory| trajectory.samples)
+        .sum();
+    let psi = trajectories
+        .iter()
+        .map(|trajectory| trajectory.psi * trajectory.samples as f64)
+        .sum::<f64>()
+        / samples as f64;
+    let mut retained = Vec::with_capacity(config.retain);
+    for trajectory in &trajectories {
+        let remaining = config.retain.saturating_sub(retained.len());
+        retained.extend(trajectory.retained.iter().take(remaining).cloned());
+    }
+    Ok(HyperplaneAverage {
+        gradient,
+        error,
+        psi,
+        samples,
+        tau: trajectories
+            .iter()
+            .map(|trajectory| trajectory.tau)
+            .fold(0.0, f64::max),
+        n_eff: trajectories.iter().map(|trajectory| trajectory.n_eff).sum(),
+        evaluations: trajectories
+            .iter()
+            .map(|trajectory| trajectory.evaluations)
+            .sum(),
+        retained,
+        equilibration: trajectories[0].equilibration.clone(),
+        rejected: trajectories
+            .iter()
+            .map(|trajectory| trajectory.rejected)
+            .sum(),
+        unconverged_quenches: trajectories
+            .iter()
+            .map(|trajectory| trajectory.unconverged_quenches)
+            .sum(),
+    })
+}
+
+fn average_trajectory<S: PointSurface>(
     surface: &S,
     geometry: &PathGeometry,
     config: &PafiConfig,
@@ -591,25 +730,22 @@ pub fn average_hyperplane_with_sampler<E: HyperplaneSampler>(
 ) -> Result<HyperplaneAverage, SaddleError> {
     config.check()?;
     let n = geometry.positions.len();
-    if geometry.tangent.len() != n || geometry.curvature.len() != n {
+    if geometry.tangent.len() != n || geometry.curvature.len() != n || geometry.jerk.len() != n {
         return Err(SaddleError::Shape(
-            "PAFI tangent and curvature must match the position".into(),
+            "PAFI path derivatives must match the position".into(),
         ));
     }
     if !geometry
         .tangent
         .iter()
         .chain(geometry.curvature.iter())
+        .chain(geometry.jerk.iter())
         .all(|v| v.is_finite())
     {
         return Err(SaddleError::NonFinite("PAFI path geometry"));
     }
-    let normal = plane_normal(geometry, config);
-    let tangent_norm = norm(&normal);
-    if !(tangent_norm.is_finite() && tangent_norm > 0.0) {
-        return Err(SaddleError::Invalid("PAFI tangent vanishes".into()));
-    }
-    let plane = Hyperplane::from_path(geometry.positions.view(), normal.view())?;
+    let path_plane = PathPlane::new(geometry, holds_com(config, n))?;
+    let plane = Hyperplane::from_path(geometry.positions.view(), path_plane.normal.view())?;
     let mut budget = HyperplaneSampleBudget::default()
         .with_thermal(config.thermal)
         .with_seed(config.seed)
@@ -621,17 +757,46 @@ pub fn average_hyperplane_with_sampler<E: HyperplaneSampler>(
         budget = budget.with_region(Arc::clone(region));
     }
     let ensemble = sampler.sample_hyperplane(&plane, &budget)?;
-    estimate_pafi(ensemble, geometry, &normal, config)
+    estimate_pafi(ensemble, &path_plane, config)
 }
 
-/// The hyperplane normal `t`: the path derivative less its center-of-mass
-/// part when the center of mass is held.
-fn plane_normal(geometry: &PathGeometry, config: &PafiConfig) -> Array1<f64> {
-    let mut normal = geometry.tangent.clone();
-    if holds_com(config, normal.len()) {
-        remove_com(&mut normal);
+/// The hyperplane `(x - X) · t = 0` through a point of the path.
+struct PathPlane<'a> {
+    geometry: &'a PathGeometry,
+    /// `t`, less its center-of-mass part when that is held.
+    normal: Array1<f64>,
+    /// `dt/ds`, in the same center-of-mass quotient as `normal`.
+    curvature: Array1<f64>,
+    /// `d²t/ds²`, in the same center-of-mass quotient as `normal`.
+    jerk: Array1<f64>,
+    /// `|t|²`.
+    nn: f64,
+    hold_com: bool,
+}
+
+impl<'a> PathPlane<'a> {
+    fn new(geometry: &'a PathGeometry, hold_com: bool) -> Result<Self, SaddleError> {
+        let mut normal = geometry.tangent.clone();
+        let mut curvature = geometry.curvature.clone();
+        let mut jerk = geometry.jerk.clone();
+        if hold_com {
+            remove_com(&mut normal);
+            remove_com(&mut curvature);
+            remove_com(&mut jerk);
+        }
+        let nn = normal.dot(&normal);
+        if !(nn.is_finite() && nn > 0.0) {
+            return Err(SaddleError::Invalid("PAFI tangent vanishes".into()));
+        }
+        Ok(Self {
+            geometry,
+            normal,
+            curvature,
+            jerk,
+            nn,
+            hold_com,
+        })
     }
-    normal
 }
 
 fn holds_com(config: &PafiConfig, n: usize) -> bool {
@@ -640,8 +805,7 @@ fn holds_com(config: &PafiConfig, n: usize) -> bool {
 
 fn estimate_pafi(
     ensemble: HyperplaneEnsemble,
-    geometry: &PathGeometry,
-    normal: &Array1<f64>,
+    plane: &PathPlane<'_>,
     config: &PafiConfig,
 ) -> Result<HyperplaneAverage, SaddleError> {
     if ensemble.observations.len() != config.samples {
@@ -649,24 +813,31 @@ fn estimate_pafi(
             "PAFI engine did not return the requested samples".into(),
         ));
     }
-    let nn = normal.dot(normal);
     let psi_of = |sample: &HyperplaneObservation| {
         sample
             .position
             .as_ref()
             .map_or(sample.jacobian, |position| {
-                (position - &geometry.positions).dot(&geometry.curvature) / nn
+                (position - &plane.geometry.positions).dot(&plane.curvature) / plane.nn
             })
     };
-    let observations: Vec<f64> = ensemble
+    let observations = ensemble
         .observations
         .iter()
-        .map(|sample| {
-            sample
-                .pafi_gradient
-                .unwrap_or_else(|| -sample.constraint_force * nn.sqrt() * (1.0 - psi_of(sample)))
+        .map(|sample| match (sample.pafi_gradient, &sample.position) {
+            (Some(value), _) => Ok(value),
+            (None, Some(position)) => {
+                let slope = -sample.constraint_force * plane.nn.sqrt();
+                mean_force(slope, position, plane, config).map(|(value, _)| value)
+            }
+            (None, None) if config.mean_force == PafiMeanForce::ReferenceCode => {
+                Ok(-sample.constraint_force * plane.nn.sqrt() * (1.0 - sample.jacobian))
+            }
+            (None, None) => Err(SaddleError::Invalid(
+                "the published PAFI estimator needs the sampled positions".into(),
+            )),
         })
-        .collect();
+        .collect::<Result<Vec<f64>, SaddleError>>()?;
     if observations.iter().any(|value| !value.is_finite()) {
         return Err(SaddleError::NonFinite("PAFI projected gradient"));
     }
@@ -728,16 +899,16 @@ impl<S: PointSurface> HyperplaneSampler for PafiAnalyticSampler<'_, S> {
     ) -> Result<HyperplaneEnsemble, SaddleError> {
         let geometry = self.geometry;
         let config = self.config;
-        let normal = plane_normal(geometry, config);
-        let nn = normal.dot(&normal);
+        let path_plane = PathPlane::new(geometry, holds_com(config, geometry.positions.len()))?;
         let mut rng = Rng::new(budget.seed);
         let walk = Walk {
             surface: self.surface,
             plane,
             region: budget.region.as_ref(),
-            hold_com: holds_com(config, geometry.positions.len()),
+            hold_com: path_plane.hold_com,
             drift_scale: config.mobility * config.time_step,
-            sigma: (0.5 * config.mobility * budget.thermal * config.time_step).sqrt(),
+            thermal_scale: config.mobility * budget.thermal * config.time_step,
+            integrator: config.integrator,
         };
         let mut evaluations = 0;
         let mut unconverged = 0;
@@ -793,7 +964,10 @@ impl<S: PointSurface> HyperplaneSampler for PafiAnalyticSampler<'_, S> {
                     let gradient = walk.gradient(&x)?;
                     if offset == 0 {
                         let (pafi_gradient, jacobian) =
-                            projected_gradient(&gradient, &x, geometry, &normal, nn);
+                            projected_gradient(&gradient, &x, &path_plane, config)?;
+                        if !pafi_gradient.is_finite() || !jacobian.is_finite() {
+                            return Err(SaddleError::NonFinite("PAFI projected gradient"));
+                        }
                         records.push(HyperplaneObservation {
                             constraint_force: -gradient.dot(&plane.normal()),
                             pafi_gradient: Some(pafi_gradient),
@@ -833,8 +1007,9 @@ struct Walk<'a, S> {
     hold_com: bool,
     /// `μ dt`.
     drift_scale: f64,
-    /// `sqrt(μ kT dt / 2)`, the weight of each of the two draws in a step.
-    sigma: f64,
+    /// `μ kT dt`.
+    thermal_scale: f64,
+    integrator: PafiIntegrator,
 }
 
 impl<S: PointSurface> Walk<'_, S> {
@@ -865,11 +1040,12 @@ impl<S: PointSurface> Walk<'_, S> {
         noise
     }
 
-    /// One step of Leimkuhler and Matthews, Appl. Math. Res. Express 2013,
-    /// 34 (2013), doi:10.1093/amrx/abs010, Eq. (3), from `x`, where the
-    /// gradient is `gradient`: the noise is the sum of the draw of the last
-    /// step, `noise`, and a new one, which replaces it. Stationary averages
-    /// are then second order in `dt`, and exact on a harmonic plane.
+    /// One step from `x`, where the gradient is `gradient`. With the
+    /// Leimkuhler-Matthews integrator, Appl. Math. Res. Express 2013, 34
+    /// (2013), doi:10.1093/amrx/abs010, Eq. (3), the noise is the sum of
+    /// the draw of the last step, `noise`, and a new one, which replaces
+    /// it; stationary averages are then second order in `dt`, and exact on
+    /// a harmonic plane. Euler-Maruyama uses the new draw alone.
     fn step(
         &self,
         x: &mut Array1<f64>,
@@ -881,7 +1057,13 @@ impl<S: PointSurface> Walk<'_, S> {
         let mut drift = gradient;
         self.project(&mut drift);
         let fresh = self.draw(x.len(), rng);
-        let mut proposal = &*x - &(&drift * self.drift_scale) + &((&*noise + &fresh) * self.sigma);
+        let random_step = match self.integrator {
+            PafiIntegrator::EulerMaruyama => &fresh * (2.0 * self.thermal_scale).sqrt(),
+            PafiIntegrator::LeimkuhlerMatthews => {
+                (&*noise + &fresh) * (0.5 * self.thermal_scale).sqrt()
+            }
+        };
+        let mut proposal = &*x - &(&drift * self.drift_scale) + &random_step;
         *noise = fresh;
         plane.restore_in_place(&mut proposal);
         if let Some(region) = self.region
@@ -1043,11 +1225,11 @@ pub fn integrate_profile(
 /// Sample every requested arc and integrate.
 ///
 /// `arcs` are values of the path parameter, at least two and strictly
-/// increasing, normally inside [`ArcPath::bounds`] (a value outside is
-/// clamped to it). The planes are sampled in parallel. Plane `k` takes the
-/// seed [`PafiConfig::seed`] `+ k + 1`, so a profile is reproducible and the
-/// planes do not share noise. The returned vector holds one
-/// [`HyperplaneAverage`] per arc, in order.
+/// increasing, inside [`ArcPath::bounds`] (a value outside is
+/// [`SaddleError::Invalid`]). The planes are sampled in parallel. Plane
+/// `k` takes the seed [`PafiConfig::seed`] `+ k + 1`, so a profile is
+/// reproducible and the planes do not share noise. The returned vector
+/// holds one [`HyperplaneAverage`] per arc, in order.
 ///
 /// An error from any plane ends the call: a failed [`PointSurface`]
 /// evaluation, a vanishing tangent, a gradient of the wrong length or not
@@ -1082,7 +1264,9 @@ pub fn pafi_profile<S: PointSurface + Sync>(
         if profile.barrier_error <= 0.0 {
             break;
         }
-        let factor = (profile.barrier_error / target).powi(2).clamp(2.0, 8.0);
+        let requested = (profile.barrier_error / target).powi(2);
+        let at_least_double = requested.max(2.0);
+        let factor = at_least_double.min(8.0);
         let samples = ((config.samples as f64) * factor).ceil() as usize;
         let extra = config
             .clone()
@@ -1257,17 +1441,50 @@ fn dividing_index(free: &[f64]) -> usize {
     best
 }
 
-/// `(∇E · t) (1 - ψ)` and `ψ = (x - X) · X'' / |t|²` for the plane normal
-/// `t`.
+/// The selected Eq. (8) estimator and
+/// `ψ = (x - X) · X'' / |t|²` for the plane normal `t`.
 fn projected_gradient(
     gradient: &Array1<f64>,
     x: &Array1<f64>,
-    geometry: &PathGeometry,
-    normal: &Array1<f64>,
-    nn: f64,
-) -> (f64, f64) {
-    let psi = (x - &geometry.positions).dot(&geometry.curvature) / nn;
-    (gradient.dot(normal) * (1.0 - psi), psi)
+    plane: &PathPlane<'_>,
+    config: &PafiConfig,
+) -> Result<(f64, f64), SaddleError> {
+    mean_force(gradient.dot(&plane.normal), x, plane, config)
+}
+
+/// [`projected_gradient`] from the slope `∇E · t`.
+fn mean_force(
+    slope: f64,
+    x: &Array1<f64>,
+    plane: &PathPlane<'_>,
+    config: &PafiConfig,
+) -> Result<(f64, f64), SaddleError> {
+    let deviation = x - &plane.geometry.positions;
+    let curvature_deviation = deviation.dot(&plane.curvature);
+    let psi = curvature_deviation / plane.nn;
+    let paper_psi = 1.0 - psi;
+    let force = slope * paper_psi;
+    match config.mean_force {
+        PafiMeanForce::ReferenceCode => Ok((force, psi)),
+        PafiMeanForce::PublishedEquation8 => {
+            if !(paper_psi.is_finite() && paper_psi > 0.0) {
+                return Err(SaddleError::Solver(format!(
+                    "PAFI locality condition failed at s = {}: psi = {paper_psi}",
+                    plane.geometry.arc
+                )));
+            }
+            // At fixed x, q = (x-X)·X'', n = X'·X':
+            // q' = (x-X)·X''' - X'·X'', n' = 2 X'·X''.
+            let tangent_curvature = plane.normal.dot(&plane.curvature);
+            let q_derivative = deviation.dot(&plane.jerk) - tangent_curvature;
+            let norm_derivative = 2.0 * tangent_curvature;
+            let paper_psi_derivative =
+                -q_derivative / plane.nn + curvature_deviation * norm_derivative / plane.nn.powi(2);
+            let jacobian =
+                config.thermal * (paper_psi_derivative / paper_psi - tangent_curvature / plane.nn);
+            Ok((force + jacobian, psi))
+        }
+    }
 }
 
 pub(crate) fn remove_com(vector: &mut Array1<f64>) {
@@ -1289,10 +1506,6 @@ pub(crate) fn remove_com(vector: &mut Array1<f64>) {
             vector[3 * atom + c] -= mean[c];
         }
     }
-}
-
-fn norm(vector: &Array1<f64>) -> f64 {
-    vector.dot(vector).sqrt()
 }
 
 #[cfg(test)]
@@ -1337,6 +1550,7 @@ mod tests {
             positions: array![0.3, -0.4],
             tangent: array![2.0, 0.0],
             curvature: Array1::zeros(2),
+            jerk: Array1::zeros(2),
             arc: 0.7,
         };
         let config = PafiConfig::default()
@@ -1348,5 +1562,62 @@ mod tests {
         assert_eq!(sampler.planes.len(), 1);
         assert_eq!(sampler.planes[0].point(), geometry.positions);
         assert_eq!(sampler.planes[0].normal(), array![1.0, 0.0]);
+    }
+}
+
+#[cfg(test)]
+mod estimator_tests {
+    use ndarray::Array1;
+
+    use super::{PafiConfig, PafiMeanForce, PathGeometry, PathPlane, projected_gradient};
+
+    #[test]
+    fn published_estimator_includes_the_analytic_jacobian() {
+        let geometry = PathGeometry {
+            positions: Array1::zeros(2),
+            tangent: Array1::from_vec(vec![1.0, 1.0]),
+            curvature: Array1::from_vec(vec![0.0, 1.0]),
+            jerk: Array1::zeros(2),
+            arc: 1.0,
+        };
+        let plane = PathPlane::new(&geometry, false).expect("plane");
+        let x = Array1::from_vec(vec![-0.2, 0.2]);
+        let gradient = Array1::zeros(2);
+        let reference = PafiConfig::default()
+            .with_thermal(0.3)
+            .with_mean_force(PafiMeanForce::ReferenceCode);
+        let published = reference
+            .clone()
+            .with_mean_force(PafiMeanForce::PublishedEquation8);
+        let (reference_force, reference_deviation) =
+            projected_gradient(&gradient, &x, &plane, &reference).expect("reference estimator");
+        let (published_force, published_deviation) =
+            projected_gradient(&gradient, &x, &plane, &published).expect("published estimator");
+        let roundoff = 128.0 * f64::EPSILON;
+        assert!(reference_force.abs() <= roundoff);
+        assert!((reference_deviation - 0.1).abs() <= roundoff);
+        assert!((published_deviation - reference_deviation).abs() <= roundoff);
+        assert!((published_force - 0.05).abs() <= roundoff);
+    }
+
+    #[test]
+    fn published_estimator_enforces_the_paper_locality_condition() {
+        let geometry = PathGeometry {
+            positions: Array1::zeros(2),
+            tangent: Array1::from_vec(vec![1.0, 1.0]),
+            curvature: Array1::from_vec(vec![0.0, 1.0]),
+            jerk: Array1::zeros(2),
+            arc: 1.0,
+        };
+        let plane = PathPlane::new(&geometry, false).expect("plane");
+        let config = PafiConfig::default().with_mean_force(PafiMeanForce::PublishedEquation8);
+        let error = projected_gradient(
+            &Array1::zeros(2),
+            &Array1::from_vec(vec![-2.0, 2.0]),
+            &plane,
+            &config,
+        )
+        .expect_err("zero paper psi violates locality");
+        assert!(error.to_string().contains("locality condition"));
     }
 }
