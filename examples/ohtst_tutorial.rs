@@ -14,14 +14,14 @@
 //! Run directly for the walkthrough in `tutorials/oh-tst`:
 //!
 //! ```console
-//! $ cargo run --release --example ohtst_tutorial
+//! $ cargo run --release --features ohtst --example ohtst_tutorial
 //! ```
 //!
 //! Run with an output path for the JSON mode
 //! `docs/orgmode/tutorials/oh-tst.org` uses from Python:
 //!
 //! ```console
-//! $ cargo run --release --example ohtst_tutorial -- result.json
+//! $ cargo run --release --features ohtst --example ohtst_tutorial -- result.json
 //! ```
 
 use std::env;

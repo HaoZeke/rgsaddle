@@ -12,7 +12,7 @@ Run from a checkout after building the example once:
 
 .. code-block:: console
 
-    $ cargo build --release --example ohtst_tutorial
+    $ cargo build --release --features ohtst --example ohtst_tutorial
     $ python3 examples/ohtst_tutorial.py
 """
 
@@ -30,7 +30,7 @@ def find_binary(repo_root: Path) -> Path:
     binary = repo_root / "target" / "release" / "examples" / "ohtst_tutorial"
     if not binary.is_file():
         subprocess.run(
-            ["cargo", "build", "--release", "--example", "ohtst_tutorial"],
+            ["cargo", "build", "--release", "--features", "ohtst", "--example", "ohtst_tutorial"],
             cwd=repo_root,
             check=True,
         )

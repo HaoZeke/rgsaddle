@@ -8,16 +8,16 @@ A =rayon::ThreadPoolBuilder= with a chosen =num_threads= and =pool.install= puts
 
 #+INCLUDE: "../../../examples/howto_parallel.rs" src rust :lines "41-74"
 
-* OH-TST across temperatures, with par_iter
+* OH-TST across temperatures, with =par_iter=
 =basin_density= at six different temperatures are six unrelated calls. A plain =.iter().map(...)= runs them one after another; swapping it for =.par_iter().map(...)= runs them concurrently, with no other change to the body of the closure:
 
 #+INCLUDE: "../../../examples/howto_parallel.rs" src rust :lines "76-143"
 
-Comparing =sequential == parallel= on the resulting =Vec<f64>= works here because every call uses a fixed seed: the two runs draw bit-identical Langevin chains regardless of how many threads ran them, so their results are exactly equal, not just close.
+Comparing ~sequential == parallel~ on the resulting =Vec<f64>= works here because every call uses a fixed seed: the two runs draw bit-identical Langevin chains regardless of how many threads ran them, so their results are exactly equal, not just close.
 
 * Run it
 #+begin_src console
-$ cargo run --release --example howto_parallel
+$ cargo run --release --features ohtst --example howto_parallel
 #+end_src
 
 #+begin_example
