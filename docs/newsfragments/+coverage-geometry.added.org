@@ -1,0 +1,3 @@
+~coverage_geometry~ measures the directional gap of a saddle search on the circle and the sphere.
+It has no rate model and no potential: ~circle_coverage~, ~circle_probe~, ~sphere_coverage~, ~sphere_probe~, ~unsearched_indices~, ~weyl_uniform~ and ~weyl_normal~ are the public functions, with ~CircleGap~, ~CircleCoverage~, ~SphereCoverage~ and ~CoverageError~.
+A catalog calls them and keeps the posterior.

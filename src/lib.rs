@@ -224,6 +224,7 @@ pub use tangent::TangentKind;
 
 pub mod cell_log;
 pub mod constraints;
+pub mod coverage_geometry;
 pub mod eigensolve;
 pub mod elastic;
 pub mod field;
