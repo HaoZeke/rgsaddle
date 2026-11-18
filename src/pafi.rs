@@ -9,116 +9,26 @@
 //!
 //! `dF/ds = ⟨ (∇E · t) (1 - ψ) ⟩`.
 //!
-//! The paper's `ψ`, its Eq. (5), is `1 - ψ` here, and this average is the
-//! first term of its Eq. (8). The second, Jacobian, term is left out, as
-//! LAMMPS `fix pafi` and Swinburne's reference driver leave it out. The
-//! integral of what remains is the free energy of the flat hyperplanes,
-//! `-kT ln ∫ δ((x - X) · t / |t|) exp(-E/kT) dx`, which does not depend on
-//! how the path is parametrized. Sampling here is overdamped Langevin
-//! (Brownian) dynamics in the plane, the paper's Eq. (9), with the step of
-//! Leimkuhler and Matthews, Appl. Math. Res. Express 2013, 34 (2013),
-//! doi:10.1093/amrx/abs010, Eq. (3): the noise of a step is the sum of two
-//! consecutive draws, which makes stationary averages second order in the
-//! step and exact on a harmonic plane. The parallel piece of the drift and
-//! of the noise is removed, and the plane is restored after every step.
-//! Holding the center of mass is optional and is the `com yes` choice of
-//! `fix pafi`. The integral of `dF/ds` from the reactant is the potential
-//! of mean force. Block averages of the recorded samples supply the
-//! standard error. The block length is at least twice the integrated
-//! autocorrelation time, so a correlated series is not treated as
-//! independent.
-//!
-//! # What goes in
-//!
-//! * A [`PointSurface`] that returns the energy and the Cartesian gradient
-//!   `∇E` (not the force) at a flat coordinate vector. Only
-//!   [`PointSurface::eval`] is used. Energy and length are in whatever
-//!   units the surface uses, and [`PafiConfig::thermal`] and the arc length
-//!   follow them. With [`PafiConfig::fix_com`] the vector is read as
-//!   `x₀, y₀, z₀, x₁, …`, three entries per atom.
-//! * An [`ArcPath`]: ordered frames of the same length, such as the images
-//!   of a converged nudged elastic band, from [`ArcPath::from_positions`],
-//!   or frames with arc lengths of the caller's choosing, from
-//!   [`ArcPath::new`]. The first frame is the reactant and the zero of the
-//!   free energy, so it should be a relaxed minimum. Frames of a periodic
-//!   cell must be unwrapped against the first, because the path is
-//!   interpolated coordinate by coordinate.
-//! * The arc lengths of the hyperplanes to sample, at least two, strictly
-//!   increasing, inside [`ArcPath::bounds`]. [`ArcPath::arcs`] gives one
-//!   plane per frame.
-//! * A [`PafiConfig`].
-//!
-//! # What comes out
-//!
-//! [`pafi_profile`] returns a [`FreeEnergyProfile`], the potential of mean
-//! force `F(s)` from the first plane with its barrier and dividing plane,
-//! and one [`HyperplaneAverage`] per plane with the sampled gradient, its
-//! standard error, `ψ`, the autocorrelation time and the retained
-//! configurations. [`zero_temperature_barrier`] gives the `kT → 0` profile
-//! from the same path without sampling, which is the check that the path
-//! and the surface agree.
-//!
-//! # Example
-//!
-//! A path along the floor of `V = (1 - x²)² + ½ k(x) y²` with
-//! `k = 1.5 + x/2`, from the minimum at `x = -1` to the saddle at `x = 0`.
-//! The transverse stiffness grows along the path, so the free energy
-//! barrier is the potential barrier of 1 plus the transverse entropy
-//! `½ kT ln(k(0) / k(-1))`, here `½ kT ln 1.5`.
-//!
-//! ```
-//! use ndarray::{Array1, ArrayView1};
-//! use rgsaddle::{ArcPath, PafiConfig, PointSurface, SaddleError};
-//! use rgsaddle::{pafi_profile, zero_temperature_barrier};
-//!
-//! struct Widening;
-//!
-//! impl PointSurface for Widening {
-//!     fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
-//!         let (x, y) = (x[0], x[1]);
-//!         let stiffness = 1.5 + 0.5 * x;
-//!         let energy = (1.0 - x * x).powi(2) + 0.5 * stiffness * y * y;
-//!         let gradient = Array1::from_vec(vec![
-//!             -4.0 * x * (1.0 - x * x) + 0.25 * y * y,
-//!             stiffness * y,
-//!         ]);
-//!         Ok((energy, gradient))
-//!     }
-//! }
-//!
-//! # fn main() -> Result<(), SaddleError> {
-//! let images: Vec<Array1<f64>> = (0..11)
-//!     .map(|i| Array1::from_vec(vec![-1.0 + i as f64 / 10.0, 0.0]))
-//!     .collect();
-//! let path = ArcPath::from_positions(&images)?;
-//!
-//! let thermal = 0.05;
-//! let config = PafiConfig::default()
-//!     .with_thermal(thermal)
-//!     .with_time_step(0.004)
-//!     .with_thermalize(400)
-//!     .with_stride(8)
-//!     .with_samples(600)
-//!     .with_blocks(6)
-//!     .with_seed(11)
-//!     .with_fix_com(false)
-//!     .with_retain(2);
-//! let (profile, planes) = pafi_profile(&Widening, &path, &path.arcs(), &config)?;
-//!
-//! let truth = 1.0 + 0.5 * thermal * 1.5_f64.ln();
-//! assert!((profile.barrier - truth).abs() < 0.02);
-//! assert_eq!(profile.dividing, profile.arc.len() - 1);
-//! assert_eq!(planes.len(), profile.arc.len());
-//!
-//! let cold = zero_temperature_barrier(&Widening, &path, &path.arcs())?;
-//! assert!((cold.barrier - 1.0).abs() < 1.0e-3);
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! `tests/pafi_analytic.rs` checks the same estimator against
-//! quadrature on a bent valley, on a harmonic plane, and on a plane of two
-//! wells, and `tests/pafi_reference.rs` against the reference code.
+//! The paper's `ψ`, its Eq. (5), is `1 - ψ` here. [`PafiMeanForce`] selects
+//! either the complete Eq. (8), including its analytic Jacobian derivative,
+//! or the force term alone, which is what LAMMPS `fix pafi` and Swinburne's
+//! public driver record. The force-only integral is the free energy of the
+//! flat hyperplanes,
+//! `-kT ln ∫ δ((x - X) · t / |t|) exp(-E/kT) dx`. Sampling here is
+//! overdamped Langevin (Brownian) dynamics in the plane, the paper's Eq.
+//! (9). The direct
+//! Euler--Maruyama discretization and the step of Leimkuhler and Matthews,
+//! Appl. Math. Res. Express 2013, 34 (2013),
+//! doi:10.1093/amrx/abs010, Eq. (3), are both available through
+//! [`PafiIntegrator`]. The latter sums two consecutive noise draws, which
+//! makes stationary averages second order in the step and exact on a
+//! harmonic plane. The parallel piece of the drift and of the noise is
+//! removed, and the plane is restored after every step. Holding the center
+//! of mass is optional and is the `com yes` choice of `fix pafi`. The
+//! integral of `dF/ds` from the reactant is the potential of mean force.
+//! One trajectory uses block averages for its standard error. An ensemble
+//! uses the spread of independent trajectory means, as Swinburne's
+//! reference code does.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -133,52 +43,71 @@ use crate::relax::RelaxConfig;
 use crate::reparam::Spline;
 use crate::stats::{Rng, block_mean};
 
+/// Time discretization of the projected overdamped Langevin equation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PafiIntegrator {
+    /// Euler--Maruyama applied directly to Eq. (9) of Swinburne and
+    /// Marinica (2018).
+    EulerMaruyama,
+    /// The correlated-noise step of Leimkuhler and Matthews (2013),
+    /// second order for stationary averages.
+    #[default]
+    LeimkuhlerMatthews,
+}
+
+/// Instantaneous mean-force estimator.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PafiMeanForce {
+    /// The modified force recorded by LAMMPS `fix pafi` and the public
+    /// PAFI driver: the first term of the paper's Eq. (8).
+    #[default]
+    ReferenceCode,
+    /// Both terms of Swinburne and Marinica (2018), Eq. (8), including
+    /// `kT d/ds ln(|ψ| / |X'|)`.
+    PublishedEquation8,
+}
+
 /// Overdamped hyperplane sampling.
 ///
 /// Non-exhaustive: start from [`PafiConfig::default`] and chain the
-/// `with_*` setters, one per field. [`PafiConfig::thermal`],
-/// [`PafiConfig::mobility`] and [`PafiConfig::time_step`] follow the units
-/// of the surface: `μ dt ∇E` is a length, so `μ dt` is length² per energy.
-/// The setters of the optional fields, [`PafiConfig::target_error`] and
-/// [`PafiConfig::max_jump`], take a bare value or `None`. A run checks its
-/// configuration on entry: `kT`, the mobility and the step must be finite
-/// and positive, the stride positive, [`PafiConfig::blocks`] at least 2,
-/// [`PafiConfig::samples`] at least twice the blocks, and a given
-/// `max_jump` finite and positive.
+/// `with_*` setters.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct PafiConfig {
-    /// `kT` in the energy unit of the surface. With energies in eV, it is
-    /// `BOLTZMANN_EV_PER_K * T`.
+    /// `kT` in the energy unit of the surface.
     pub thermal: f64,
     /// Mobility `μ` in `dx = -μ ∇E dt + sqrt(2 μ kT dt) ξ`.
     pub mobility: f64,
-    /// Overdamped time step `dt`.
+    /// Overdamped time step.
     pub time_step: f64,
     /// Steps discarded before the first recorded sample.
     pub thermalize: usize,
-    /// Steps between recorded samples. The force is evaluated at every
-    /// step, and the sample is taken from the first of each `stride`.
+    /// Steps between recorded samples.
     pub stride: usize,
     /// Recorded samples. At least twice [`Self::blocks`].
     pub samples: usize,
     /// Contiguous blocks used for the standard error. At least 2.
     pub blocks: usize,
+    /// Independent trajectories of equal length on each plane. With more
+    /// than one, the reported error is the reference PAFI ensemble error
+    /// `sqrt(sum((mean_i - mean)^2)) / trajectories`.
+    pub trajectories: usize,
+    /// Time discretization of the projected overdamped Langevin equation.
+    pub integrator: PafiIntegrator,
+    /// Instantaneous estimator to average.
+    pub mean_force: PafiMeanForce,
     /// Seed of the noise.
     pub seed: u64,
-    /// Hold the center of mass: remove the mean Cartesian drift from the
-    /// normal, the force and the noise. It takes effect when the vector
-    /// holds at least two atoms, three entries each; otherwise it is
-    /// ignored.
+    /// Remove the mean Cartesian drift when the system has at least two atoms.
     pub fix_com: bool,
     /// How many recorded configurations to keep, evenly spaced.
     pub retain: usize,
-    /// Stop early when [`FreeEnergyProfile::barrier_error`] is at or below
-    /// this. `None` runs one pass.
+    /// Stop early when the integrated barrier error is at or below this.
+    /// `None` runs one pass.
     pub target_error: Option<f64>,
-    /// Most sampling passes, the first included, used to reach
-    /// [`Self::target_error`]. Without a target there is one pass whatever
-    /// this is, and `1` is also one pass.
+    /// Extra sampling passes used to reach [`Self::target_error`].
     pub max_rounds: usize,
     /// Largest displacement of one atom, in the length unit of the
     /// surface, between the plane minimum quenched from a sampled
@@ -201,6 +130,9 @@ with_setters!(PafiConfig {
     with_stride => stride: val usize,
     with_samples => samples: val usize,
     with_blocks => blocks: val usize,
+    with_trajectories => trajectories: val usize,
+    with_integrator => integrator: val PafiIntegrator,
+    with_mean_force => mean_force: val PafiMeanForce,
     with_seed => seed: val u64,
     with_fix_com => fix_com: val bool,
     with_retain => retain: val usize,
@@ -212,11 +144,13 @@ with_setters!(PafiConfig {
 
 impl Default for PafiConfig {
     /// `kT` of 300 K in eV, unit mobility, time step 1e-3, 200
-    /// thermalization steps, 200 samples 5 steps apart in 5 blocks, seed 1,
-    /// the center of mass held, 16 kept configurations, one pass, and a
-    /// largest jump of 0.4 (Å), the `MaxJumpThresh` of Swinburne's
-    /// reference code, quenched along the steepest-descent flow
-    /// ([`Method::Ode12r`]) under the other [`RelaxConfig`] defaults.
+    /// thermalization steps, one trajectory of 200 samples 5 steps apart
+    /// in 5 blocks, the Leimkuhler--Matthews integrator, the reference-code
+    /// mean-force estimator, seed 1, the center of mass held, 16 kept
+    /// configurations, one pass, and a largest jump of 0.4 (Å), the
+    /// `MaxJumpThresh` of Swinburne's reference code, quenched along the
+    /// steepest-descent flow ([`Method::Ode12r`]) under the other
+    /// [`RelaxConfig`] defaults.
     fn default() -> Self {
         Self {
             thermal: 0.02585,
@@ -226,6 +160,9 @@ impl Default for PafiConfig {
             stride: 5,
             samples: 200,
             blocks: 5,
+            trajectories: 1,
+            integrator: PafiIntegrator::LeimkuhlerMatthews,
+            mean_force: PafiMeanForce::ReferenceCode,
             seed: 1,
             fix_com: true,
             retain: 16,
@@ -254,10 +191,13 @@ impl PafiConfig {
                 "PAFI time step must be finite and positive".into(),
             ));
         }
-        if self.stride == 0 || self.blocks < 2 || self.samples < self.blocks * 2 {
+        if self.stride == 0
+            || self.blocks < 2
+            || self.samples < self.blocks * 2
+            || self.trajectories == 0
+        {
             return Err(SaddleError::Invalid(
-                "PAFI needs a positive stride, at least two blocks, and two samples per block"
-                    .into(),
+                "PAFI needs a positive stride and trajectory count, at least two blocks, and two samples per block".into(),
             ));
         }
         if let Some(jump) = self.max_jump {
@@ -273,9 +213,6 @@ impl PafiConfig {
 }
 
 /// One frame of a path, with its parameter.
-///
-/// The frames given to [`ArcPath::new`] must share one length, be finite,
-/// and have strictly increasing [`PathFrame::arc`].
 #[derive(Clone, Debug)]
 pub struct PathFrame {
     /// Cartesian coordinates of the frame.
@@ -285,11 +222,7 @@ pub struct PathFrame {
     pub arc: f64,
 }
 
-/// Cubic-spline path `X(s)` through ordered frames.
-///
-/// [`ArcPath::geometry`] returns the point, tangent and curvature of the
-/// path at any `s`, and [`pafi_profile`] and [`zero_temperature_barrier`]
-/// take the path and the values of `s` to sample.
+/// Cubic-spline path through ordered frames.
 ///
 /// Every coordinate is the not-a-knot cubic spline of the frames over
 /// their [`PathFrame::arc`] values: the spline interpolation of NEB images
@@ -303,9 +236,7 @@ pub struct ArcPath {
     spline: Spline,
 }
 
-/// Position and the first two parameter derivatives of a path, from
-/// [`ArcPath::geometry`]. [`average_hyperplane`] takes one of these as the
-/// plane it samples.
+/// Position and the first three parameter derivatives of a path.
 #[derive(Clone, Debug)]
 pub struct PathGeometry {
     /// `X(s)`.
@@ -315,23 +246,17 @@ pub struct PathGeometry {
     pub tangent: Array1<f64>,
     /// `X'' = d²X/ds²`.
     pub curvature: Array1<f64>,
+    /// One-sided `X''' = d³X/ds³` of the cubic spline. At an interior
+    /// knot, where this derivative may jump, this is the derivative from
+    /// the segment on the reactant side.
+    pub jerk: Array1<f64>,
     /// `s`.
     pub arc: f64,
 }
 
 impl ArcPath {
-    /// Build the path from ordered frames and their parameters.
-    ///
-    /// The parameter is the caller's: chord lengths, as
-    /// [`ArcPath::from_positions`] takes, or any strictly increasing scale
-    /// such as the normalized distance from the first frame. `dF/ds` and the
-    /// arcs passed to [`pafi_profile`] are in that parameter.
-    ///
-    /// Returns [`SaddleError::Invalid`] for fewer than two frames, for a
-    /// parameter that does not strictly increase or is not finite, for
-    /// neighboring frames that are equal, or for a singular spline system;
-    /// and [`SaddleError::Shape`] for empty frames, frames of unequal length,
-    /// or a coordinate that is not finite.
+    /// Build the path from ordered frames. The parameter must strictly
+    /// increase and neighboring frames must differ.
     pub fn new(frames: Vec<PathFrame>) -> Result<Self, SaddleError> {
         if frames.len() < 2 {
             return Err(SaddleError::Invalid(
@@ -389,16 +314,7 @@ impl ArcPath {
         )
     }
 
-    /// Build the path from frames in order, reactant first, such as the
-    /// images of a nudged elastic band.
-    ///
-    /// The parameter of each frame is the summed length of the straight
-    /// chords from the first, `|x₁ - x₀|` and so on in the whole coordinate
-    /// vector, so `s` has the length unit of the positions and `dF/ds` is an
-    /// energy per length. The curve through the frames is the spline of
-    /// [`ArcPath`], not the chords. Neighboring frames must be finite and
-    /// distinct; otherwise this returns [`SaddleError::Invalid`], and
-    /// [`SaddleError::Shape`] for frames of unequal length.
+    /// Frames in order, reactant first.
     pub fn from_positions(positions: &[Array1<f64>]) -> Result<Self, SaddleError> {
         if positions.len() < 2 {
             return Err(SaddleError::Invalid(
@@ -432,45 +348,40 @@ impl ArcPath {
         Self::new(frames)
     }
 
-    /// Parameter of the first frame and of the last. [`ArcPath::geometry`]
-    /// clamps to this range.
+    /// Arc length of the reactant and of the product.
     pub fn bounds(&self) -> (f64, f64) {
         let knots = self.spline.knots();
         (knots[0], knots[knots.len() - 1])
     }
 
-    /// Parameter of every frame, in order. Passed to [`pafi_profile`] it
-    /// samples one hyperplane through each frame.
+    /// Arc length of every stored frame.
     pub fn arcs(&self) -> Vec<f64> {
         self.spline.knots().to_vec()
     }
 
-    /// Spline geometry at `arc`, clamped to [`ArcPath::bounds`]. The
-    /// returned [`PathGeometry::arc`] is the clamped value. A `NaN` or
-    /// infinite `arc` is [`SaddleError::NonFinite`].
+    /// Spline geometry at `arc`.
     pub fn geometry(&self, arc: f64) -> Result<PathGeometry, SaddleError> {
         if !arc.is_finite() {
             return Err(SaddleError::NonFinite("PAFI arc"));
         }
         let (first, last) = self.bounds();
-        let arc = arc.clamp(first, last);
-        let [positions, tangent, curvature] = self.spline.derivatives(arc);
+        if arc < first || arc > last {
+            return Err(SaddleError::Invalid(format!(
+                "PAFI coordinate {arc} is outside [{first}, {last}]"
+            )));
+        }
+        let [positions, tangent, curvature, jerk] = self.spline.derivatives(arc);
         Ok(PathGeometry {
             positions,
             tangent,
             curvature,
+            jerk,
             arc,
         })
     }
 }
 
 /// Mean free-energy gradient on one hyperplane.
-///
-/// `gradient` is the average of `(∇E · t)(1 - ψ)` over the recorded
-/// samples, in energy per unit of the path parameter, and `error` is its
-/// standard error from block means. With more than one pass
-/// ([`PafiConfig::target_error`]) the passes are combined by inverse
-/// variance, `samples` and `n_eff` are summed, and `tau` is the largest.
 #[derive(Clone, Debug)]
 pub struct HyperplaneAverage {
     /// `dF/ds` in energy per arc length.
@@ -498,13 +409,6 @@ pub struct HyperplaneAverage {
 }
 
 /// Potential of mean force from the first plane.
-///
-/// The vectors have one entry per plane, in the order of the arcs given to
-/// [`pafi_profile`]. The integral is the trapezoid rule over the planes, so
-/// planes spaced wider than the scale on which `dF/ds` changes bias it. The
-/// errors add the errors of the planes in quadrature, weighted by the
-/// trapezoid weights, as if the planes were independent. They do not
-/// include the error of the quadrature over the planes.
 #[derive(Clone, Debug)]
 pub struct FreeEnergyProfile {
     /// Arc length of each plane.
@@ -544,16 +448,85 @@ pub fn average_hyperplane<S: PointSurface>(
     config: &PafiConfig,
 ) -> Result<HyperplaneAverage, SaddleError> {
     config.check()?;
+    if config.trajectories == 1 {
+        return average_trajectory(surface, geometry, config);
+    }
+    let mut trajectories = Vec::with_capacity(config.trajectories);
+    for index in 0..config.trajectories {
+        let local = config
+            .clone()
+            .with_trajectories(1)
+            .with_seed(config.seed.wrapping_add(index as u64));
+        trajectories.push(average_trajectory(surface, geometry, &local)?);
+    }
+    let count = trajectories.len() as f64;
+    let gradient = trajectories
+        .iter()
+        .map(|trajectory| trajectory.gradient)
+        .sum::<f64>()
+        / count;
+    let error = trajectories
+        .iter()
+        .map(|trajectory| {
+            let residual = trajectory.gradient - gradient;
+            residual * residual
+        })
+        .sum::<f64>()
+        .sqrt()
+        / count;
+    let samples = trajectories
+        .iter()
+        .map(|trajectory| trajectory.samples)
+        .sum();
+    let psi = trajectories
+        .iter()
+        .map(|trajectory| trajectory.psi * trajectory.samples as f64)
+        .sum::<f64>()
+        / samples as f64;
+    let mut retained = Vec::with_capacity(config.retain);
+    for trajectory in &trajectories {
+        let remaining = config.retain.saturating_sub(retained.len());
+        retained.extend(trajectory.retained.iter().take(remaining).cloned());
+    }
+    Ok(HyperplaneAverage {
+        gradient,
+        error,
+        psi,
+        samples,
+        tau: trajectories
+            .iter()
+            .map(|trajectory| trajectory.tau)
+            .fold(0.0, f64::max),
+        n_eff: trajectories.iter().map(|trajectory| trajectory.n_eff).sum(),
+        evaluations: trajectories
+            .iter()
+            .map(|trajectory| trajectory.evaluations)
+            .sum(),
+        retained,
+        rejected: trajectories
+            .iter()
+            .map(|trajectory| trajectory.rejected)
+            .sum(),
+    })
+}
+
+fn average_trajectory<S: PointSurface>(
+    surface: &S,
+    geometry: &PathGeometry,
+    config: &PafiConfig,
+) -> Result<HyperplaneAverage, SaddleError> {
+    config.check()?;
     let n = geometry.positions.len();
-    if geometry.tangent.len() != n || geometry.curvature.len() != n {
+    if geometry.tangent.len() != n || geometry.curvature.len() != n || geometry.jerk.len() != n {
         return Err(SaddleError::Shape(
-            "PAFI tangent and curvature must match the position".into(),
+            "PAFI path derivatives must match the position".into(),
         ));
     }
     if !geometry
         .tangent
         .iter()
         .chain(geometry.curvature.iter())
+        .chain(geometry.jerk.iter())
         .all(|v| v.is_finite())
     {
         return Err(SaddleError::NonFinite("PAFI path geometry"));
@@ -564,7 +537,8 @@ pub fn average_hyperplane<S: PointSurface>(
         surface,
         plane: &plane,
         drift_scale: config.mobility * config.time_step,
-        sigma: (0.5 * config.mobility * config.thermal * config.time_step).sqrt(),
+        thermal_scale: config.mobility * config.thermal * config.time_step,
+        integrator: config.integrator,
     };
     let mut evaluations = 0;
     let basin = match config.max_jump {
@@ -621,8 +595,7 @@ pub fn average_hyperplane<S: PointSurface>(
             for offset in 0..config.stride {
                 let gradient = walk.gradient(&x)?;
                 if offset == 0 {
-                    let (value, deviation) =
-                        projected_gradient(&gradient, &x, geometry, &plane.normal, plane.nn);
+                    let (value, deviation) = projected_gradient(&gradient, &x, &plane, config)?;
                     if !value.is_finite() || !deviation.is_finite() {
                         return Err(SaddleError::NonFinite("PAFI projected gradient"));
                     }
@@ -668,6 +641,10 @@ struct Plane<'a> {
     geometry: &'a PathGeometry,
     /// `t`, less its center-of-mass part when that is held.
     normal: Array1<f64>,
+    /// `dt/ds`, in the same center-of-mass quotient as `normal`.
+    curvature: Array1<f64>,
+    /// `d²t/ds²`, in the same center-of-mass quotient as `normal`.
+    jerk: Array1<f64>,
     /// `|t|²`.
     nn: f64,
     hold_com: bool,
@@ -676,8 +653,12 @@ struct Plane<'a> {
 impl<'a> Plane<'a> {
     fn new(geometry: &'a PathGeometry, hold_com: bool) -> Result<Self, SaddleError> {
         let mut normal = geometry.tangent.clone();
+        let mut curvature = geometry.curvature.clone();
+        let mut jerk = geometry.jerk.clone();
         if hold_com {
             remove_com(&mut normal);
+            remove_com(&mut curvature);
+            remove_com(&mut jerk);
         }
         let nn = normal.dot(&normal);
         if !(nn.is_finite() && nn > 0.0) {
@@ -686,6 +667,8 @@ impl<'a> Plane<'a> {
         Ok(Self {
             geometry,
             normal,
+            curvature,
+            jerk,
             nn,
             hold_com,
         })
@@ -752,8 +735,9 @@ struct Walk<'a, S> {
     plane: &'a Plane<'a>,
     /// `μ dt`.
     drift_scale: f64,
-    /// `sqrt(μ kT dt / 2)`, the weight of each of the two draws in a step.
-    sigma: f64,
+    /// `μ kT dt`.
+    thermal_scale: f64,
+    integrator: PafiIntegrator,
 }
 
 impl<S: PointSurface> Walk<'_, S> {
@@ -774,11 +758,8 @@ impl<S: PointSurface> Walk<'_, S> {
         noise
     }
 
-    /// One step of Leimkuhler and Matthews, Appl. Math. Res. Express 2013,
-    /// 34 (2013), doi:10.1093/amrx/abs010, Eq. (3), from `x`, where the
-    /// gradient is `gradient`: the noise is the sum of the draw of the last
-    /// step, `noise`, and a new one, which replaces it. Stationary averages
-    /// are then second order in `dt`, and exact on a harmonic plane.
+    /// One projected overdamped step from `x`, where `gradient` is the
+    /// gradient at the start of the step.
     fn step(
         &self,
         x: &mut Array1<f64>,
@@ -789,7 +770,13 @@ impl<S: PointSurface> Walk<'_, S> {
         let mut drift = gradient;
         self.plane.project(&mut drift);
         let fresh = self.draw(x.len(), rng);
-        *x = &*x - &(&drift * self.drift_scale) + &((&*noise + &fresh) * self.sigma);
+        let random_step = match self.integrator {
+            PafiIntegrator::EulerMaruyama => &fresh * (2.0 * self.thermal_scale).sqrt(),
+            PafiIntegrator::LeimkuhlerMatthews => {
+                (&*noise + &fresh) * (0.5 * self.thermal_scale).sqrt()
+            }
+        };
+        *x = &*x - &(&drift * self.drift_scale) + &random_step;
         *noise = fresh;
         self.plane.restore(x);
     }
@@ -797,17 +784,7 @@ impl<S: PointSurface> Walk<'_, S> {
 
 /// Integrate plane gradients with the trapezoid rule.
 ///
-/// `gradients` and `errors` have one entry for each of `arcs`, which must
-/// strictly increase. `F` is zero at the first arc, the dividing plane is
-/// the first maximum of `F` (the first arc if it never rises), and
-/// [`FreeEnergyProfile::barrier`] is its value there. The errors are the
-/// standard errors of the gradients, finite and not negative. A mismatch in
-/// length is [`SaddleError::Shape`] and the rest [`SaddleError::Invalid`] or
-/// [`SaddleError::NonFinite`]. [`FreeEnergyProfile::samples`] is 0.
-///
-/// [`pafi_profile`] calls this with its plane averages. Call it directly
-/// to integrate gradients that came from somewhere else, such as the
-/// reference code.
+/// The dividing surface is the maximum of the potential of mean force.
 pub fn integrate_profile(
     arcs: &[f64],
     gradients: &[f64],
@@ -848,24 +825,9 @@ pub fn integrate_profile(
 
 /// Sample every requested arc and integrate.
 ///
-/// `arcs` are values of the path parameter, at least two and strictly
-/// increasing, normally inside [`ArcPath::bounds`] (a value outside is
-/// clamped to it). The planes are sampled in parallel. Plane `k` takes the
-/// seed [`PafiConfig::seed`] `+ k + 1`, so a profile is reproducible and the
-/// planes do not share noise. The returned vector holds one
-/// [`HyperplaneAverage`] per arc, in order.
-///
-/// An error from any plane ends the call: a failed [`PointSurface`]
-/// evaluation, a vanishing tangent, a gradient of the wrong length or not
-/// finite, or [`PafiConfig::max_jump`] rejecting more stretches than there
-/// are blocks.
-///
 /// When [`PafiConfig::target_error`] is set, planes are resampled until the
 /// barrier error is at or below that target or [`PafiConfig::max_rounds`]
-/// is spent. Each later round takes between 2 and 8 times
-/// [`PafiConfig::samples`], by the square of the ratio of the barrier error
-/// to the target, with half the thermalization and fresh noise, and is
-/// inverse-variance combined with the sum so far.
+/// is spent. Later rounds are inverse-variance combined with the first.
 pub fn pafi_profile<S: PointSurface + Sync>(
     surface: &S,
     path: &ArcPath,
@@ -888,7 +850,14 @@ pub fn pafi_profile<S: PointSurface + Sync>(
         if profile.barrier_error <= 0.0 {
             break;
         }
-        let factor = (profile.barrier_error / target).powi(2).clamp(2.0, 8.0);
+        let requested = (profile.barrier_error / target).powi(2);
+        let factor = if requested < 2.0 {
+            2.0
+        } else if requested > 8.0 {
+            8.0
+        } else {
+            requested
+        };
         let samples = ((config.samples as f64) * factor).ceil() as usize;
         let extra = config
             .clone()
@@ -970,21 +939,11 @@ fn combine(mean_a: f64, error_a: f64, mean_b: f64, error_b: f64) -> (f64, f64) {
 
 /// Integral of `∇E · dX/ds` with the system held on the path.
 ///
-/// Every span between neighboring `arcs` is cut into 64 parts and the
-/// trapezoid rule applied, so the arcs need not be the frames. The returned
-/// profile has 64 planes per span and the last arc, its errors are zero,
-/// and [`FreeEnergyProfile::samples`] is 0. `arcs` must be at least two and
-/// strictly increasing, and the surface needs only [`PointSurface::eval`].
-///
 /// The integral is the energy along the spline, `E(X(s)) - E(X(s0))` up to
 /// the quadrature, and passes through the image energies at the frames.
 /// On a converged minimum-energy path the force in each hyperplane
 /// vanishes, so this is also the zero-temperature limit of the PAFI
-/// integral and reproduces the potential barrier. Compare
-/// [`FreeEnergyProfile::barrier`] of this profile with the highest image
-/// energy less the first before sampling: a path that is not a
-/// minimum-energy path, or a surface that is not the one the images were
-/// relaxed on, shows there.
+/// integral and reproduces the potential barrier.
 pub fn zero_temperature_barrier<S: PointSurface>(
     surface: &S,
     path: &ArcPath,
@@ -1062,17 +1021,40 @@ fn dividing_index(free: &[f64]) -> usize {
     best
 }
 
-/// `(∇E · t) (1 - ψ)` and `ψ = (x - X) · X'' / |t|²` for the plane normal
-/// `t`.
+/// The selected Eq. (8) estimator and
+/// `ψ = (x - X) · X'' / |t|²` for the plane normal `t`.
 fn projected_gradient(
     gradient: &Array1<f64>,
     x: &Array1<f64>,
-    geometry: &PathGeometry,
-    normal: &Array1<f64>,
-    nn: f64,
-) -> (f64, f64) {
-    let psi = (x - &geometry.positions).dot(&geometry.curvature) / nn;
-    (gradient.dot(normal) * (1.0 - psi), psi)
+    plane: &Plane<'_>,
+    config: &PafiConfig,
+) -> Result<(f64, f64), SaddleError> {
+    let deviation = x - &plane.geometry.positions;
+    let curvature_deviation = deviation.dot(&plane.curvature);
+    let psi = curvature_deviation / plane.nn;
+    let paper_psi = 1.0 - psi;
+    let force = gradient.dot(&plane.normal) * paper_psi;
+    match config.mean_force {
+        PafiMeanForce::ReferenceCode => Ok((force, psi)),
+        PafiMeanForce::PublishedEquation8 => {
+            if !(paper_psi.is_finite() && paper_psi > 0.0) {
+                return Err(SaddleError::Solver(format!(
+                    "PAFI locality condition failed at s = {}: psi = {paper_psi}",
+                    plane.geometry.arc
+                )));
+            }
+            // At fixed x, q = (x-X)·X'', n = X'·X':
+            // q' = (x-X)·X''' - X'·X'', n' = 2 X'·X''.
+            let tangent_curvature = plane.normal.dot(&plane.curvature);
+            let q_derivative = deviation.dot(&plane.jerk) - tangent_curvature;
+            let norm_derivative = 2.0 * tangent_curvature;
+            let paper_psi_derivative =
+                -q_derivative / plane.nn + curvature_deviation * norm_derivative / plane.nn.powi(2);
+            let jacobian =
+                config.thermal * (paper_psi_derivative / paper_psi - tangent_curvature / plane.nn);
+            Ok((force + jacobian, psi))
+        }
+    }
 }
 
 fn project_out(vector: &mut Array1<f64>, tangent: ArrayView1<f64>) {
@@ -1102,5 +1084,62 @@ pub(crate) fn remove_com(vector: &mut Array1<f64>) {
         for c in 0..3 {
             vector[3 * atom + c] -= mean[c];
         }
+    }
+}
+
+#[cfg(test)]
+mod estimator_tests {
+    use ndarray::Array1;
+
+    use super::{PafiConfig, PafiMeanForce, PathGeometry, Plane, projected_gradient};
+
+    #[test]
+    fn published_estimator_includes_the_analytic_jacobian() {
+        let geometry = PathGeometry {
+            positions: Array1::zeros(2),
+            tangent: Array1::from_vec(vec![1.0, 1.0]),
+            curvature: Array1::from_vec(vec![0.0, 1.0]),
+            jerk: Array1::zeros(2),
+            arc: 1.0,
+        };
+        let plane = Plane::new(&geometry, false).expect("plane");
+        let x = Array1::from_vec(vec![-0.2, 0.2]);
+        let gradient = Array1::zeros(2);
+        let reference = PafiConfig::default()
+            .with_thermal(0.3)
+            .with_mean_force(PafiMeanForce::ReferenceCode);
+        let published = reference
+            .clone()
+            .with_mean_force(PafiMeanForce::PublishedEquation8);
+        let (reference_force, reference_deviation) =
+            projected_gradient(&gradient, &x, &plane, &reference).expect("reference estimator");
+        let (published_force, published_deviation) =
+            projected_gradient(&gradient, &x, &plane, &published).expect("published estimator");
+        let roundoff = 128.0 * f64::EPSILON;
+        assert!(reference_force.abs() <= roundoff);
+        assert!((reference_deviation - 0.1).abs() <= roundoff);
+        assert!((published_deviation - reference_deviation).abs() <= roundoff);
+        assert!((published_force - 0.05).abs() <= roundoff);
+    }
+
+    #[test]
+    fn published_estimator_enforces_the_paper_locality_condition() {
+        let geometry = PathGeometry {
+            positions: Array1::zeros(2),
+            tangent: Array1::from_vec(vec![1.0, 1.0]),
+            curvature: Array1::from_vec(vec![0.0, 1.0]),
+            jerk: Array1::zeros(2),
+            arc: 1.0,
+        };
+        let plane = Plane::new(&geometry, false).expect("plane");
+        let config = PafiConfig::default().with_mean_force(PafiMeanForce::PublishedEquation8);
+        let error = projected_gradient(
+            &Array1::zeros(2),
+            &Array1::from_vec(vec![-2.0, 2.0]),
+            &plane,
+            &config,
+        )
+        .expect_err("zero paper psi violates locality");
+        assert!(error.to_string().contains("locality condition"));
     }
 }

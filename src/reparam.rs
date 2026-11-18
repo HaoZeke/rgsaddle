@@ -301,7 +301,9 @@ impl Spline {
         if span.partial_cmp(&0.0) != Some(Ordering::Greater) {
             return lo;
         }
-        let mut t = lo + (hi - lo) * ((target - arc[seg]) / span).clamp(0.0, 1.0);
+        let fraction = (target - arc[seg]) / span;
+        debug_assert!((0.0..=1.0).contains(&fraction));
+        let mut t = lo + (hi - lo) * fraction;
         for _ in 0..60 {
             let miss = arc[seg] + self.arc_between(seg, self.t[seg], t) - target;
             if miss.abs() <= 1e-14 * arc[k - 1] {
@@ -336,8 +338,8 @@ impl Spline {
         &self.y
     }
 
-    /// `S`, `dS/dt` and `d²S/dt²` at `at`.
-    pub(crate) fn derivatives(&self, at: f64) -> [Array1<f64>; 3] {
+    /// `S`, `dS/dt`, `d²S/dt²` and the one-sided `d³S/dt³` at `at`.
+    pub(crate) fn derivatives(&self, at: f64) -> [Array1<f64>; 4] {
         let seg = self.segment(at);
         let h = self.t[seg + 1] - self.t[seg];
         let b = (at - self.t[seg]) / h;
@@ -350,13 +352,14 @@ impl Spline {
         let (y0, y1) = (self.y.row(seg), self.y.row(seg + 1));
         let (m0, m1) = (self.m.row(seg), self.m.row(seg + 1));
         let n = self.y.ncols();
-        let [mut value, mut slope, mut second] = [(); 3].map(|()| Array1::zeros(n));
+        let [mut value, mut slope, mut second, mut third] = [(); 4].map(|()| Array1::zeros(n));
         for col in 0..n {
             value[col] = a * y0[col] + b * y1[col] + bend_a * m0[col] + bend_b * m1[col];
             slope[col] = (y1[col] - y0[col]) / h + slope_a * m0[col] + slope_b * m1[col];
             second[col] = a * m0[col] + b * m1[col];
+            third[col] = (m1[col] - m0[col]) / h;
         }
-        [value, slope, second]
+        [value, slope, second, third]
     }
 
     pub(crate) fn eval(&self, at: f64) -> Array1<f64> {
