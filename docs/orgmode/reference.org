@@ -103,7 +103,7 @@ A failed callback leaves it unchanged.
 Its =rotation_angle_tol= field stops a dimer rotation once the optimal angle falls under this tolerance in radians.
 The Rust default is five degrees, 0 turns the stop off, and a C config stores the value it is given.
 Both fields are read only from a config whose version minor is 5 or newer.
-=RGSADDLE_ABI_MINOR= is 43.
+=RGSADDLE_ABI_MINOR= is 44.
 From minor 24, =rgsaddle_sella_saddle_set_symmetrized_ritz= sets =SellaSaddleConfig::symmetrized_ritz= from 0 or 1.
 It returns =RGSADDLE_INVALID_PARAMETER= for any other value.
 =rgsaddle_sella_saddle_set_small_system_atom_ceiling= (minor 25) sets =SellaSaddleConfig::small_system_atom_ceiling= from 0 or 1.
@@ -119,7 +119,7 @@ From minor 41 a Lanczos session reads it too.
 From minor 43, =rgsaddle_artn_config_default= fills =rgsaddle_artn_config_t= with the published defaults and =rgsaddle_minmode_set_artn= enables them on a Lanczos session or disables them with NULL.
 =rgsaddle_reparametrize= (minor 38) places a band at equal arc length with an =rgsaddle_reparametrization_t=, and band flag bit 4, =RGSADDLE_BAND_SPLINE_REPARAM=, puts the trust-region band on the not-a-knot spline.
 From minor 42, band flag bit 5, =RGSADDLE_BAND_STRING=, runs the simplified string method of E, Ren, and Vanden-Eijnden (2007) (with =RGSADDLE_BAND_SPLINE_REPARAM= for the not-a-knot spline, or the polyline without it), and =rgsaddle_band_set_string= enables or clears it on a live band.
-From minor 43, =rgsaddle_growing_string_config_default=, =rgsaddle_growing_string_create=, =rgsaddle_growing_string_step=, =rgsaddle_growing_string_n_images=, =rgsaddle_growing_string_nodes_added=, =rgsaddle_growing_string_phase=, =rgsaddle_growing_string_positions=, =rgsaddle_growing_string_ids=, =rgsaddle_growing_string_set_fixed_atoms=, =rgsaddle_growing_string_saddle_index=, and =rgsaddle_growing_string_free= expose the growing string method of Peters, Heyden, Bell, and Chakraborty (2004).
+From minor 44, =rgsaddle_growing_string_config_default=, =rgsaddle_growing_string_create=, =rgsaddle_growing_string_step=, =rgsaddle_growing_string_n_images=, =rgsaddle_growing_string_nodes_added=, =rgsaddle_growing_string_phase=, =rgsaddle_growing_string_positions=, =rgsaddle_growing_string_ids=, =rgsaddle_growing_string_set_fixed_atoms=, =rgsaddle_growing_string_saddle_index=, and =rgsaddle_growing_string_free= expose the growing string method of Peters, Heyden, Bell, and Chakraborty (2004). The growing string =join_tol= uses -1.0 for no early join and treats zero as an inclusive zero-gap threshold.
 The request flags are =RGSADDLE_REQ_ONE_IMAGE= (bit 0) and =RGSADDLE_REQ_CLIMBING_IMAGE= (bit 1).
 From a band config at minor 22, the refinement's one-image requests also set bit 1.
 Their =image= is then the climbing image's band index.

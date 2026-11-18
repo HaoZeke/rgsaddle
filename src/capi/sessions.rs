@@ -3379,13 +3379,13 @@ pub unsafe extern "C" fn rgsaddle_band_set_string(
     }
 }
 
-/// Phase discriminant for growing string in the growing phase (ABI minor 43).
+/// Phase discriminant for growing string in the growing phase (ABI minor 44).
 pub const RGSADDLE_GROWING_STRING_GROWING: i32 = 0;
-/// Phase discriminant for growing string once joined (ABI minor 43).
+/// Phase discriminant for growing string once joined (ABI minor 44).
 pub const RGSADDLE_GROWING_STRING_JOINED: i32 = 1;
 
 #[repr(C)]
-/// Wire configuration for [`rgsaddle_growing_string_create`] (ABI minor 43).
+/// Wire configuration for [`rgsaddle_growing_string_create`] (ABI minor 44).
 pub struct RgsaddleGrowingStringConfig {
     /// ABI version this value was built against.
     pub version: RgsaddleVersion,
@@ -3404,8 +3404,8 @@ pub struct RgsaddleGrowingStringConfig {
     /// Optional cap on steps at the current fragment size (`0` for none,
     /// negative is rejected).
     pub max_steps_per_node: i64,
-    /// Optional gap distance threshold for early join (`0.0` for none,
-    /// negative and non-finite values are rejected).
+    /// Optional gap distance threshold for early join (`-1.0` for none,
+    /// other negative and non-finite values are rejected).
     pub join_tol: f64,
     /// Equal arc-length reparametrization (`rgsaddle_reparametrization_t`).
     pub reparametrization: i32,
@@ -3413,7 +3413,7 @@ pub struct RgsaddleGrowingStringConfig {
     pub force_gate: i32,
 }
 
-/// Opaque handle to a [` crate::GrowingStringSession `] (ABI minor 43).
+/// Opaque handle to a [` crate::GrowingStringSession `] (ABI minor 44).
 pub struct RgsaddleGrowingString {
     session: crate::GrowingStringSession,
     n_atoms: i64,
@@ -3422,7 +3422,7 @@ pub struct RgsaddleGrowingString {
     nodes_added: i64,
 }
 
-/// Fill `out` with the default [`RgsaddleGrowingStringConfig`] (ABI minor 43).
+/// Fill `out` with the default [`RgsaddleGrowingStringConfig`] (ABI minor 44).
 ///
 /// # Safety
 /// `out` must be a valid pointer or null.
@@ -3467,7 +3467,7 @@ pub unsafe extern "C" fn rgsaddle_growing_string_config_default(
         frontier_tol: defaults.frontier_tol,
         min_steps_per_node: defaults.min_steps_per_node as i64,
         max_steps_per_node: 0,
-        join_tol: 0.0,
+        join_tol: -1.0,
         reparametrization: crate::Reparametrization::NotAKnot.to_abi(),
         force_gate: defaults.force_gate.to_abi(),
     };
@@ -3475,7 +3475,7 @@ pub unsafe extern "C" fn rgsaddle_growing_string_config_default(
     RGSADDLE_OK
 }
 
-/// Open a [`RgsaddleGrowingString`] between `reactant` and `product` (ABI minor 43).
+/// Open a [`RgsaddleGrowingString`] between `reactant` and `product` (ABI minor 44).
 ///
 /// # Safety
 /// `config`, `reactant`, and `product` must be valid for `3 * n_atoms`.
@@ -3514,9 +3514,9 @@ pub unsafe extern "C" fn rgsaddle_growing_string_create(
         steps if steps > 0 => Some(steps as usize),
         _ => return std::ptr::null_mut(),
     };
-    let join_tol = if cfg.join_tol == 0.0 {
+    let join_tol = if cfg.join_tol == -1.0 {
         None
-    } else if cfg.join_tol.is_finite() && cfg.join_tol > 0.0 {
+    } else if cfg.join_tol.is_finite() && cfg.join_tol >= 0.0 {
         Some(cfg.join_tol)
     } else {
         return std::ptr::null_mut();
@@ -3549,7 +3549,7 @@ pub unsafe extern "C" fn rgsaddle_growing_string_create(
     }
 }
 
-/// Advance a [`RgsaddleGrowingString`] by one step (ABI minor 43).
+/// Advance a [`RgsaddleGrowingString`] by one step (ABI minor 44).
 ///
 /// # Safety
 /// `session` and `out` must be valid pointers.
@@ -3610,7 +3610,7 @@ pub unsafe extern "C" fn rgsaddle_growing_string_step(
 
 /// Nodes the last [`rgsaddle_growing_string_step`] grew on the reactant
 /// and product fragments (`0`, `1`, or `2`), or 0 for NULL and before the
-/// first step (ABI minor 43).
+/// first step (ABI minor 44).
 ///
 /// # Safety
 /// `session` is a live session or null.
@@ -3624,7 +3624,7 @@ pub unsafe extern "C" fn rgsaddle_growing_string_nodes_added(
     unsafe { (*session).nodes_added }
 }
 
-/// Active image count of a [`RgsaddleGrowingString`] (ABI minor 43).
+/// Active image count of a [`RgsaddleGrowingString`] (ABI minor 44).
 ///
 /// # Safety
 /// `session` is a live session or null.
@@ -3639,7 +3639,7 @@ pub unsafe extern "C" fn rgsaddle_growing_string_n_images(
     session.session.positions().nrows() as i64
 }
 
-/// Phase of a [`RgsaddleGrowingString`] (ABI minor 43).
+/// Phase of a [`RgsaddleGrowingString`] (ABI minor 44).
 ///
 /// # Safety
 /// `session` is a live session or null.
@@ -3657,7 +3657,7 @@ pub unsafe extern "C" fn rgsaddle_growing_string_phase(
     }
 }
 
-/// Copy current positions of a [`RgsaddleGrowingString`] into `out` (ABI minor 43).
+/// Copy current positions of a [`RgsaddleGrowingString`] into `out` (ABI minor 44).
 ///
 /// # Safety
 /// `out` must hold `n_images * 3 * n_atoms` doubles.
@@ -3681,7 +3681,7 @@ pub unsafe extern "C" fn rgsaddle_growing_string_positions(
     RGSADDLE_OK
 }
 
-/// Copy current image IDs of a [`RgsaddleGrowingString`] into `out` (ABI minor 43).
+/// Copy current image IDs of a [`RgsaddleGrowingString`] into `out` (ABI minor 44).
 ///
 /// # Safety
 /// `out` must hold `n_images` `u64` values.
@@ -3703,7 +3703,7 @@ pub unsafe extern "C" fn rgsaddle_growing_string_ids(
     RGSADDLE_OK
 }
 
-/// Set the per-atom fixed mask on a [`RgsaddleGrowingString`] (ABI minor 43).
+/// Set the per-atom fixed mask on a [`RgsaddleGrowingString`] (ABI minor 44).
 ///
 /// # Safety
 /// `fixed` holds `n_atoms` bytes or is null when `n_atoms == 0`.
@@ -3734,7 +3734,7 @@ pub unsafe extern "C" fn rgsaddle_growing_string_set_fixed_atoms(
     }
 }
 
-/// Read the saddle-index certificate of a [`RgsaddleGrowingString`] (ABI minor 43).
+/// Read the saddle-index certificate of a [`RgsaddleGrowingString`] (ABI minor 44).
 ///
 /// # Safety
 /// `out` must be valid, and `curvatures` must hold `capacity` doubles when `capacity > 0`.
@@ -3791,7 +3791,7 @@ pub unsafe extern "C" fn rgsaddle_growing_string_saddle_index(
     RGSADDLE_OK
 }
 
-/// Free a [`RgsaddleGrowingString`] (ABI minor 43).
+/// Free a [`RgsaddleGrowingString`] (ABI minor 44).
 ///
 /// # Safety
 /// Pointer came from [`rgsaddle_growing_string_create`] and is freed once.
