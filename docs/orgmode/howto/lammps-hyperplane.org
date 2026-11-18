@@ -76,8 +76,13 @@ tail, and rejects split-half drift. The backend adds no hidden burn-in.
 
 lammpc advances one projected BAOAB step at a time. Each step projects the
 force and velocity, restores the position to the plane after each drift,
-and thermostats tangent velocity with Langevin noise. The force evaluation
-is the live in-process LAMMPS session. No penalty restraint is used.
+and thermostats tangent velocity with Langevin noise. LAMMPS hard-region
+sampling is pending a lammpc capability that invokes its registered boundary
+callback on every constrained MD step. Current lammpc main has the callback
+registration entry points but not that constrained-step behavior, so the
+adapter must reject a region until the capability is available. The force
+evaluation is the live in-process LAMMPS session. No penalty restraint is
+used.
 
 Mass-weighted sampling returns \(q=M^{1/2}x\), its tangent force, and its
 removed velocity. Cartesian sampling leaves the vectors Cartesian and uses
