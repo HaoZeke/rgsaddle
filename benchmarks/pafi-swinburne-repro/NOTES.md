@@ -120,7 +120,7 @@ are in https://github.com/OmniPotentRPC/lammpc/pull/4 and fix those ABI and setu
 four stub/schema tests; the moderate EAM smoke exercises both patches through
 the real embed. No potential code is copied into rgsaddle.
 
-## Audit of pull request 51
+## Audit of the spline-plane sampler
 
 PR 51 (`feat/pafi-repro-land`, head
 `baa493774ecc50abb32d7576eac8c98062b1dbb1`) did useful work:
