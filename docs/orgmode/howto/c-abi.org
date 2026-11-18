@@ -1,7 +1,7 @@
 #+TITLE: Use the C and C++ interfaces
 #+OPTIONS: toc:nil num:nil
 
-~include/rgsaddle.h~ declares the C application binary interface (ABI), major 1, minor 42. It preserves the main band, minimum-mode and index-1 layouts and adds intrinsic reaction coordinate (IRC), Sella, constraint and geometry controls. Include this header rather than duplicating its structures. Check ~rgsaddle_abi_stamp~ before constructing a session. A meson project takes the headers from the top-level ~meson.build~; see @@rst::doc:`the meson how-to <meson>`@@.
+~include/rgsaddle.h~ declares the C application binary interface (ABI), major 1, minor 43. It preserves the main band, minimum-mode and index-1 layouts and adds intrinsic reaction coordinate (IRC), Sella, constraint and geometry controls. Include this header rather than duplicating its structures. Check ~rgsaddle_abi_stamp~ before constructing a session. A meson project takes the headers from the top-level ~meson.build~; see @@rst::doc:`the meson how-to <meson>`@@.
 
 A surface callback returns ~rgsaddle_status_t~ and receives one ~rgsaddle_surface_request_t~. Positions and gradients are image-major Cartesian triples. The host supplies the energy and gradient arrays for every requested image; the library performs no Message Passing Interface (MPI) communication.
 
@@ -104,3 +104,8 @@ An armed climbing image reflects the potential force along the tangent and stays
 ~rgsaddle_band_project~ and ~rgsaddle_band_project_fixed~ also read ~RGSADDLE_BAND_STRING~.
 A host that loads the library at run time checks ~rgsaddle_abi_version()~ for at least minor 42 before resolving ~rgsaddle_band_set_string~.
 ~include/rgsaddle/session.hpp~ wraps it as ~Band::set_string~, and Python exposes ~rgsaddle.Band(..., string=True)~, ~_core.project_band(..., projection="string")~, and ~rgsaddle.ase.SimplifiedString~.
+
+ABI minor 43 adds the growing string method of Peters, Heyden, Bell, and Chakraborty, J. Chem. Phys. 120, 7877 (2004), doi:10.1063/1.1691018 @@rst::cite:`petersGrowingStringMethod2004`@@.
+~rgsaddle_growing_string_config_default~ initializes an ~rgsaddle_growing_string_config_t~, ~rgsaddle_growing_string_create~ opens an ~RgsaddleGrowingString~ from the reactant and product endpoints, and ~rgsaddle_growing_string_step~ advances the separate fragments until they join and hand off to ~StringSession~.
+~rgsaddle_growing_string_n_images~, ~rgsaddle_growing_string_phase~, ~rgsaddle_growing_string_positions~, ~rgsaddle_growing_string_ids~, ~rgsaddle_growing_string_set_fixed_atoms~, ~rgsaddle_growing_string_saddle_index~, and ~rgsaddle_growing_string_free~ inspect and manage the session.
+~include/rgsaddle/session.hpp~ wraps it as ~rgsaddle::GrowingString~, and Python exposes ~rgsaddle.GrowingString~ and ~rgsaddle.ase.GrowingString~.
