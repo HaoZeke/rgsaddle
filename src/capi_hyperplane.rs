@@ -7,8 +7,8 @@ use ndarray::Array1;
 
 use crate::SaddleError;
 use crate::capi::{
-    RGSADDLE_INVALID_PARAMETER, RGSADDLE_NULL_REPORT, RGSADDLE_NULL_SESSION, RGSADDLE_NULL_SURFACE,
-    RGSADDLE_OK, RgsaddleVersion, status_of,
+    RGSADDLE_ABI_MISMATCH, RGSADDLE_INVALID_PARAMETER, RGSADDLE_NON_FINITE, RGSADDLE_NULL_REPORT,
+    RGSADDLE_NULL_SESSION, RGSADDLE_NULL_SURFACE, RGSADDLE_OK, RgsaddleVersion, status_of,
 };
 use crate::ohtst::{
     THERMODYNAMIC_DERIVATIVE, ThermodynamicIntegrationConfig, thermodynamic_integration,
@@ -112,6 +112,7 @@ pub struct RgsaddleHyperplaneTiResult {
 struct Emitted {
     dimension: usize,
     observations: Vec<HyperplaneObservation>,
+    derivative_required: bool,
     error: Option<SaddleError>,
 }
 
@@ -141,6 +142,10 @@ extern "C" fn emit_observation(
             THERMODYNAMIC_DERIVATIVE.into(),
             observation.thermodynamic_derivative,
         );
+    } else if emitted.derivative_required {
+        emitted.error = Some(SaddleError::NonFinite("thermodynamic derivative"));
+        emitted.observations.push(record);
+        return RGSADDLE_NON_FINITE;
     }
     emitted.observations.push(record);
     RGSADDLE_OK
@@ -169,6 +174,7 @@ impl HyperplaneSampler for RgsaddleHyperplaneSampler {
         let mut emitted = Emitted {
             dimension: plane.dim(),
             observations: Vec::with_capacity(budget.samples),
+            derivative_required: budget.lambda.is_some(),
             error: None,
         };
         let status = (self.sample)(
@@ -180,13 +186,13 @@ impl HyperplaneSampler for RgsaddleHyperplaneSampler {
             emit_observation,
             (&mut emitted as *mut Emitted).cast(),
         );
+        if let Some(error) = emitted.error {
+            return Err(error);
+        }
         if status != RGSADDLE_OK {
             return Err(SaddleError::Surface(format!(
                 "hyperplane sampler callback status {status}"
             )));
-        }
-        if let Some(error) = emitted.error {
-            return Err(error);
         }
         Ok(HyperplaneEnsemble {
             evaluations: emitted.observations.len(),
@@ -264,7 +270,11 @@ pub unsafe extern "C" fn rgsaddle_hyperplane_thermodynamic_integration(
     // SAFETY: checked non-null above.
     let config = unsafe { &*config };
     if config.version.major != crate::capi::RGSADDLE_ABI_MAJOR
-        || config.nodes <= 0
+        || config.version.minor < crate::capi::RGSADDLE_ABI_MINOR
+    {
+        return RGSADDLE_ABI_MISMATCH;
+    }
+    if config.nodes <= 0
         || config.thermalize < 0
         || config.stride <= 0
         || config.samples <= 0
@@ -383,5 +393,159 @@ mod tests {
         assert_eq!(result.evaluations, 400);
         // SAFETY: sampler came from the matching constructor.
         unsafe { rgsaddle_hyperplane_sampler_free(sampler) };
+    }
+
+    fn integration_status(
+        sample: RgsaddleSampleHyperplaneFn,
+        config: &RgsaddleHyperplaneTiConfig,
+    ) -> i32 {
+        let sampler = rgsaddle_hyperplane_sampler_create(std::ptr::null_mut(), Some(sample));
+        let point = [0.0, 0.0];
+        let normal = [1.0, 0.0];
+        let mut result = RgsaddleHyperplaneTiResult {
+            free_energy: f64::NAN,
+            error: f64::NAN,
+            evaluations: -1,
+        };
+        // SAFETY: the pointers stay valid through the call, and the sampler
+        // came from the matching constructor.
+        unsafe {
+            let status = rgsaddle_hyperplane_thermodynamic_integration(
+                sampler,
+                point.as_ptr(),
+                normal.as_ptr(),
+                point.len(),
+                config,
+                &mut result,
+            );
+            rgsaddle_hyperplane_sampler_free(sampler);
+            status
+        }
+    }
+
+    fn ti_config(samples: i64, blocks: i64) -> RgsaddleHyperplaneTiConfig {
+        RgsaddleHyperplaneTiConfig {
+            version: RgsaddleVersion {
+                major: crate::capi::RGSADDLE_ABI_MAJOR,
+                minor: crate::capi::RGSADDLE_ABI_MINOR,
+            },
+            flags: 0,
+            thermal: 0.2,
+            nodes: 1,
+            thermalize: 0,
+            stride: 1,
+            samples,
+            blocks,
+            seed: 1,
+        }
+    }
+
+    extern "C" fn sample_non_finite(
+        _context: *mut c_void,
+        _point: *const f64,
+        _normal: *const f64,
+        _dimension: usize,
+        budget: *const RgsaddleHyperplaneBudget,
+        emit: RgsaddleHyperplaneEmitFn,
+        emit_context: *mut c_void,
+    ) -> i32 {
+        // SAFETY: the library supplies these pointers for the callback.
+        let budget = unsafe { &*budget };
+        for _ in 0..budget.samples {
+            let observation = RgsaddleHyperplaneObservation {
+                constraint_force: 0.0,
+                position: std::ptr::null(),
+                projected_force: std::ptr::null(),
+                thermodynamic_derivative: f64::NAN,
+            };
+            let status = emit(emit_context, &observation);
+            if status != RGSADDLE_OK {
+                return status;
+            }
+        }
+        RGSADDLE_OK
+    }
+
+    extern "C" fn sample_series(
+        _context: *mut c_void,
+        _point: *const f64,
+        _normal: *const f64,
+        _dimension: usize,
+        budget: *const RgsaddleHyperplaneBudget,
+        emit: RgsaddleHyperplaneEmitFn,
+        emit_context: *mut c_void,
+    ) -> i32 {
+        // SAFETY: the library supplies these pointers for the callback.
+        let budget = unsafe { &*budget };
+        let kind = budget.seed;
+        for index in 0..budget.samples {
+            let value = if kind == 14 {
+                let shift = if index < budget.samples / 2 {
+                    0.0
+                } else {
+                    0.05
+                };
+                let alternation = if index % 2 == 0 { 1.0 } else { -1.0 };
+                shift + alternation
+            } else {
+                0.01 * index as f64 + if index % 2 == 0 { 0.001 } else { -0.001 }
+            };
+            let observation = RgsaddleHyperplaneObservation {
+                constraint_force: 0.0,
+                position: std::ptr::null(),
+                projected_force: std::ptr::null(),
+                thermodynamic_derivative: value,
+            };
+            let status = emit(emit_context, &observation);
+            if status != RGSADDLE_OK {
+                return status;
+            }
+        }
+        RGSADDLE_OK
+    }
+
+    #[test]
+    fn hyperplane_ti_rejects_a_stale_minor() {
+        let mut config = ti_config(100, 4);
+        config.version.minor = crate::capi::RGSADDLE_ABI_MINOR - 1;
+        assert_eq!(
+            integration_status(sample, &config),
+            crate::capi::RGSADDLE_ABI_MISMATCH
+        );
+        config.version.minor = crate::capi::RGSADDLE_ABI_MINOR;
+        config.version.major = 0;
+        assert_eq!(
+            integration_status(sample, &config),
+            crate::capi::RGSADDLE_ABI_MISMATCH
+        );
+    }
+
+    #[test]
+    fn a_non_finite_derivative_is_not_an_invalid_parameter() {
+        let config = ti_config(16, 4);
+        assert_eq!(
+            integration_status(sample_non_finite, &config),
+            crate::capi::RGSADDLE_NON_FINITE
+        );
+    }
+
+    #[test]
+    fn split_half_drift_reports_not_equilibrated() {
+        let mut config = ti_config(64, 4);
+        config.seed = 14;
+        assert_eq!(
+            integration_status(sample_series, &config),
+            crate::capi::RGSADDLE_NOT_EQUILIBRATED
+        );
+    }
+
+    #[test]
+    fn a_trend_reports_insufficient_effective_samples() {
+        let mut config = ti_config(400, 8);
+        config.seed = 15;
+        assert_eq!(
+            integration_status(sample_series, &config),
+            crate::capi::RGSADDLE_INSUFFICIENT_EFFECTIVE_SAMPLES
+        );
     }
 }
