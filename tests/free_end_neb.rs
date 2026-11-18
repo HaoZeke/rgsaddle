@@ -73,7 +73,7 @@ impl BandSurface for TiltedNarrowBarrier2D {
 }
 
 #[test]
-fn fea_neb_on_narrow_barrier_long_tilted_2d_path_matches_fixed_end_cineb_with_fewer_images() {
+fn free_end_adaptive_neb_on_narrow_barrier_matches_fixed_end_cineb_with_fewer_images() {
     let reactant = array![0.0, 0.0, 0.0];
     let product = array![6.0, 1.5, 0.0];
     let (e_reactant, [gx0, gy0]) = TiltedNarrowBarrier2D::jet(reactant[0], reactant[1]);
