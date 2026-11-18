@@ -1,0 +1,30 @@
+#+TITLE: PAFI types
+#+OPTIONS: toc:nil num:nil
+
+Full API documentation for every item below is on [[https://docs.rs/rgsaddle][docs.rs/rgsaddle]], under =rgsaddle::pafi=; =cargo doc --open= builds the same pages from a checkout. This page is the inventory: every public configuration and result type the module exports, and the functions that connect them. =tutorials/pafi= walks through using them; =explanation/pafi-ohtst= has the theory.
+
+* Path types
+| Type | Role |
+|------+------|
+| =ArcPath= | A path through ordered frames, parameterized by polyline arc length. =from_positions= builds it from a list of Cartesian configurations, reactant first; =bounds= gives the arc length of the first and last frame, =arcs= every stored frame's arc length, and =geometry(arc)= the position, tangent and tangent derivative at an arc length, from the polyline segment, with zero curvature on each segment since the geometry is the polyline itself, not a fitted spline |
+| =PathFrame= | One frame of a path: =positions= (the Cartesian configuration) and =arc= (arc length from the first frame) |
+| =PathGeometry= | =positions= (=X(s)=), =tangent= (=n = dX/ds=), =curvature= (=dn/ds=), and =arc= (=s=) at one point along a path |
+
+* Sampling configuration and results
+| Type | Role |
+|------+------|
+| =PafiConfig= | Non-exhaustive; chain =with_*= setters from =default=. =thermal= is =kT= in the surface's energy unit; =mobility= and =time_step= set the overdamped Langevin step, =dx = -mobility * grad * time_step + sqrt(2 * mobility * thermal * time_step) * noise=; =thermalize=, =stride=, =samples= and =blocks= control the production run and its block standard error; =seed= fixes the noise stream; =fix_com= removes the mean Cartesian drift on systems with at least two atoms; =retain= keeps that many evenly spaced recorded configurations on each plane for later reuse; =target_error= and =max_rounds= run extra sampling rounds on every plane, inverse-variance combined with the first, until the barrier error meets the target or the round budget is spent (=howto/pafi-ohtst-restarting=) |
+| =HyperplaneAverage= | One plane's result: =gradient= (=dF/ds=), its =error=, the mean =psi= (the correction term, zero on a straight polyline segment), =samples= recorded (summed over rounds), the integrated autocorrelation time =tau= in samples, =n_eff= (=samples / (2 tau)=), total force =evaluations=, and =retained= configurations on the plane (=howto/pafi-ohtst-checking-convergence= covers reading =tau= and =n_eff=) |
+| =FreeEnergyProfile= | The potential of mean force integrated from the first plane: per-plane =arc=, =gradient= and =gradient_error=, the trapezoid-integrated =free_energy= and its propagated =free_energy_error=, the =barrier= (the profile's maximum, with the reactant held at zero) and its =barrier_error=, the index of that maximum in =dividing=, and total recorded =samples= across every plane and round |
+
+* Functions
+| Function | Role |
+|----------+------|
+| =average_hyperplane= | Samples one hyperplane by overdamped Langevin dynamics restricted to the plane and returns its =HyperplaneAverage= |
+| =pafi_profile= | Samples every arc length in parallel on rayon's global thread pool and integrates to a =FreeEnergyProfile=, returning it alongside every plane's =HyperplaneAverage=; runs extra rounds when =PafiConfig::target_error= is set |
+| =integrate_profile= | Trapezoid-integrates a set of arc lengths, gradients and their errors directly, with no sampling, into a =FreeEnergyProfile= |
+| =zero_temperature_barrier= | Integrates the potential's own gradient along a path with no sampling (=PafiConfig::thermal= plays no part): a check of the path itself, exact on a converged minimum-energy path |
+| =attempt_frequency= | Not part of =rgsaddle::pafi= itself (it is exported from =rgsaddle::defect_pair=), but the usual prefactor for turning a PAFI barrier into a rate: =nu = angular * sqrt(lambda / mass) / (2 pi)= from a curvature =lambda= along the path tangent at the reactant. =rgsaddle::arrhenius= (from =rgsaddle::strain_rate=, fixed to eV and kelvin) is the wrong call for a reduced-units surface; multiply =nu= by =exp(-barrier / kT)= directly instead, as =tutorials/pafi= does |
+
+* What the tests check
+=tests/pafi_analytic.rs= checks the sampled profile on a one-dimensional barrier and on a two-dimensional well with a known transverse free-energy shift, against the closed form the shift gives. =examples/pafi_tutorial.rs= runs the same kind of check, on a different surface, with numbers printed rather than asserted; =tutorials/pafi= walks through it.
