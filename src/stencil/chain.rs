@@ -18,15 +18,18 @@ use crate::stencil::{ImageId, Surface};
 
 use super::control::Role;
 
-/// Images per block. Independent of the worker count.
+/// Images per evaluation block (1). Independent of the worker count, so the result
+/// does not depend on the thread count.
 pub const EVAL_BLOCK: usize = 1;
 
-/// What a mesh operation changed. No force was called.
+/// Band geometry operation. Applying one does not evaluate the surface.
+///
+/// Positions are plain Cartesian rows (no cell, no minimum image).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MeshEvent {
-    /// The Unchanged.
+    /// Nothing moved.
     Unchanged,
-    /// The Remeshed.
+    /// The images were redistributed along the path; the cached rows are stale.
     Remeshed,
     /// An image was inserted.
     Inserted {
@@ -45,9 +48,11 @@ pub enum MeshEvent {
 /// Band geometry operation. Applying one does not evaluate the surface.
 #[derive(Clone, Debug)]
 pub enum Mesh {
-    /// The RemeshLinear.
+    /// Equal chord length along the current polyline, by linear interpolation;
+    /// endpoints stay put.
     RemeshLinear,
-    /// The RemeshHermite.
+    /// Equal chord length by cubic Hermite interpolation; endpoints stay put. A
+    /// straight chain matches [`Mesh::RemeshLinear`].
     RemeshHermite,
     /// Equal arc length on the not-a-knot cubic spline through the
     /// images (E, Ren, and Vanden-Eijnden, J. Chem. Phys. 126, 164103
@@ -55,22 +60,66 @@ pub enum Mesh {
     RemeshSpline,
     /// Insert one image after an existing index.
     Insert {
-        /// Insert after this image index.
+        /// Insert after this image index, which must have a following image. The new
+        /// image is the midpoint of the two neighbours.
         after: usize,
     },
-    /// Place a window where the resolution is worst.
+    /// Place a window around the energy peak, sized by how far the energy falls from it.
     WindowAuto {
-        /// Blend of the energy gap and the segment length. Zero uses length only.
+        /// Fraction of the barrier, in `[0, 1)`: the window is the run of images around the
+        /// energy peak whose energy is at least `max(E_first, E_last) + alpha (E_peak - max(E_first, E_last))`.
+        /// Zero keeps every image at or above the higher endpoint.
         alpha: f64,
     },
-    /// Place a window a fixed number of images from the start.
+    /// Place a window of fixed half-width around the energy peak.
     WindowOffset {
-        /// Images kept on each side of the window's centre.
+        /// Images kept on each side of the energy peak: the window is `peak - n` to `peak + n`,
+        /// cut at the chain ends.
         n: usize,
     },
 }
 
 /// Positions, cached rows, and roles. Image ids survive insert and window.
+///
+/// Row `i` is image `i`: a flat Cartesian vector in Angstrom. Energies are in eV and
+/// gradients in eV/Angstrom, with the shape of the positions.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::{Array2, ArrayView2, ArrayViewMut2, array};
+/// use rgsaddle::SaddleError;
+/// use rgsaddle::stencil::{Chain, EvalPool, ImageId, Mesh, MeshEvent, Surface};
+///
+/// // E = |x|^2 / 2 in eV, so the gradient is x.
+/// struct Bowl;
+///
+/// impl Surface for Bowl {
+///     fn eval(
+///         &self,
+///         _ids: &[ImageId],
+///         x: ArrayView2<f64>,
+///         e: &mut [f64],
+///         mut g: ArrayViewMut2<f64>,
+///     ) -> Result<(), SaddleError> {
+///         for (i, row) in x.outer_iter().enumerate() {
+///             e[i] = 0.5 * row.dot(&row);
+///             g.row_mut(i).assign(&row);
+///         }
+///         Ok(())
+///     }
+/// }
+///
+/// let positions: Array2<f64> = array![[0.0, 0.0], [1.0, 0.0], [3.0, 0.0]];
+/// let mut chain = Chain::new(positions)?;
+/// let pool = EvalPool::new(2)?;
+/// chain.evaluate(&Bowl, &pool)?;
+/// assert!((chain.energies()[2] - 4.5).abs() < 0.001);
+/// // Equal spacing puts the middle image at x = 1.5.
+/// assert_eq!(Mesh::RemeshLinear.apply(&mut chain)?, MeshEvent::Remeshed);
+/// assert!((chain.positions()[(1, 0)] - 1.5).abs() < 0.001);
+/// # Ok::<(), SaddleError>(())
+/// ```
 pub struct Chain {
     ids: Vec<ImageId>,
     x: Array2<f64>,
@@ -85,6 +134,12 @@ pub struct Chain {
 impl Chain {
     /// One row per image. Ids start at 0 and increase with insertion.
     /// Endpoints are pinned. Interior rows are images.
+    ///
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] for no rows or no columns; [`SaddleError::NonFinite`] for a
+    /// non-finite position.
     pub fn new(x: Array2<f64>) -> Result<Self, SaddleError> {
         let n = x.nrows();
         if n == 0 || x.ncols() == 0 {
@@ -115,37 +170,42 @@ impl Chain {
         })
     }
 
-    /// Cartesian coordinates. A band stores one row per image.
+    /// Cartesian coordinates in Angstrom: one row per image.
     pub fn positions(&self) -> ArrayView2<'_, f64> {
         self.x.view()
     }
 
-    /// Energies.
+    /// Energies in eV, one per image; zeros until the first [`Chain::evaluate`].
     pub fn energies(&self) -> &[f64] {
         &self.e
     }
 
-    /// Energy gradients, one row per image, in the same order as the positions.
+    /// Energy gradients in eV/Angstrom, one row per image, in the same order as the positions.
     pub fn gradients(&self) -> ArrayView2<'_, f64> {
         self.g.view()
     }
 
-    /// Ids.
+    /// Stable image ids, one per row. An id does not change when images are inserted.
     pub fn ids(&self) -> &[ImageId] {
         &self.ids
     }
 
-    /// Roles.
+    /// The [`Role`] of every image, one per row.
     pub fn roles(&self) -> &[Role] {
         &self.roles
     }
 
-    /// Active.
+    /// Range of rows the next evaluation will move: all of them until a window is set.
     pub fn active(&self) -> Range<usize> {
         self.active.clone()
     }
 
     /// Set role.
+    ///
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] when `index` is outside the chain.
     pub fn set_role(&mut self, index: usize, role: Role) -> Result<(), SaddleError> {
         let Some(slot) = self.roles.get_mut(index) else {
             return Err(SaddleError::Shape("role index is outside the chain".into()));
@@ -161,6 +221,15 @@ impl Chain {
     /// Every block runs. The returned error is the lowest image index,
     /// on one thread or many, and the energy cache stays unread until
     /// every block succeeds.
+    ///
+    ///
+    /// `surface` is called once per image, in blocks of [`EVAL_BLOCK`] spread over `pool`.
+    /// The energies (eV) and gradients (eV/Angstrom) replace the cache.
+    ///
+    /// # Errors
+    ///
+    /// The error of `surface` for the lowest failing image; the cached rows are then
+    /// left unchanged and marked stale.
     pub fn evaluate<S: Surface + ?Sized>(
         &mut self,
         surface: &S,
@@ -314,7 +383,14 @@ fn eval_block<S: Surface + ?Sized>(
 }
 
 impl Mesh {
-    /// Apply.
+    /// Apply the operation to `chain`. The inserting and remeshing operations mark the
+    /// cached energies and gradients stale; windows need them.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] for [`Mesh::Insert`] when `after` has no following image;
+    /// [`SaddleError::Invalid`] for a window when the chain has not been evaluated, or
+    /// for [`Mesh::WindowAuto`] when `alpha` is outside `[0, 1)`.
     pub fn apply(&self, chain: &mut Chain) -> Result<MeshEvent, SaddleError> {
         match self {
             Mesh::RemeshLinear => {
@@ -529,7 +605,11 @@ pub struct EvalPool {
 }
 
 impl EvalPool {
-    /// New.
+    /// A pool of `threads` workers.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Invalid`] for zero threads or when the pool cannot start.
     pub fn new(threads: usize) -> Result<Self, SaddleError> {
         if threads == 0 {
             return Err(SaddleError::Invalid(
@@ -543,7 +623,7 @@ impl EvalPool {
         Ok(Self { threads, pool })
     }
 
-    /// How many images may be evaluated at once.
+    /// Number of worker threads, as given to [`EvalPool::new`].
     pub fn threads(&self) -> usize {
         self.threads
     }
