@@ -167,6 +167,34 @@ int main() {
         return 1;
     }
 
+    auto gcfg = rgsaddle::growing_string_config();
+    gcfg.n_images = 7;
+    gcfg.frontier_tol = 0.5;
+    gcfg.band.force_tol = 0.001;
+    gcfg.band.max_move = 0.1;
+    const double greact[3] = {-1.0, 0.2, 0.0};
+    const double gprod[3] = {1.0, 0.2, 0.0};
+    rgsaddle::GrowingString gstr(gcfg, n_atoms, greact, gprod);
+    if (gstr.joined() || gstr.n_images() != 4) {
+        std::fprintf(stderr, "C++ growing string initial state invalid\n");
+        return 1;
+    }
+    rgsaddle::Report grep;
+    for (int i = 0; i < 500; ++i) {
+        grep = gstr.step(surface, nullptr);
+        if (grep.converged()) {
+            break;
+        }
+    }
+    auto gpos = gstr.positions();
+    auto gids = gstr.ids();
+    if (!grep.converged() || !gstr.joined() || gstr.n_images() != 7 ||
+        gids.size() != 7 || gids[0] != 0 || gids[6] != 1 || grep.ci_index < 1 ||
+        std::fabs(gpos[static_cast<std::size_t>(grep.ci_index * 3)]) > 0.02) {
+        std::fprintf(stderr, "C++ growing string did not converge to the saddle\n");
+        return 1;
+    }
+
     std::vector<double> pair(static_cast<std::size_t>(n_images * 6));
     for (std::size_t i = 0; i < static_cast<std::size_t>(n_images); ++i) {
         for (std::size_t c = 0; c < 3; ++c) {
