@@ -5,6 +5,13 @@
 //! waist is dlpk CUDA ([`EigenDevice::Dlpk`] is the same Host path
 //! until that feature is linked); this crate does not grow a second
 //! device stack.
+//!
+//! The matrices are symmetric `n x n` arrays, in practice a Hessian in
+//! eV/Angstrom^2 (the eigenvalues then carry that unit; the eigenvectors
+//! are dimensionless unit columns). Subspace bases hold one vector per
+//! column. Failures are [`SaddleError::Shape`] for incompatible array
+//! shapes and [`SaddleError::Solver`] for a failed diagonalisation, an
+//! empty subspace or a singular expansion system.
 
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2, s};
 use rgmin::vecops::{axpy, dot, nrm2};
@@ -14,17 +21,22 @@ use crate::error::SaddleError;
 use crate::linalg::{modified_gram_schmidt, symmetrize_vt_av};
 
 /// Where the dense eigen runs. dlpk CUDA is the only device waist.
+///
+/// Both arms give the same spectrum; [`EigenDevice::Dlpk`] only changes which
+/// rgmin route [`lowest_on`] takes and whether [`eigh_on`] consults the GPU policy
+/// (see [`crate::gpu`]), and a build without a CUDA kernel runs on the host.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum EigenDevice {
     #[default]
-    /// The Host.
+    /// Dense solver on the host (Jacobi, or faer above 128 dimensions). This is the
+    /// default and ordinal 0.
     Host,
-    /// rgmin `lowest_mode` (vecops / dlpk). Not a second GPU stack.
+    /// rgmin `lowest_mode` (vecops / dlpk). Not a second GPU stack. Ordinal 1.
     Dlpk,
 }
 
 impl EigenDevice {
-    /// C / Python ordinal.
+    /// C / Python ordinal: 0 for [`EigenDevice::Host`], 1 for [`EigenDevice::Dlpk`].
     pub const fn to_abi(self) -> i32 {
         match self {
             Self::Host => 0,
@@ -32,7 +44,7 @@ impl EigenDevice {
         }
     }
 
-    /// Inverse of [`Self::to_abi`].
+    /// Inverse of [`Self::to_abi`]; any ordinal other than 0 or 1 is `None`.
     pub const fn try_from_abi(v: i32) -> Option<Self> {
         match v {
             0 => Some(Self::Host),
@@ -42,26 +54,31 @@ impl EigenDevice {
     }
 }
 
-/// Sella `eigensolvers.expand` method.
+/// Sella `eigensolvers.expand` method: how [`expand`] turns the residual of the
+/// sought Ritz pair into a new search direction.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ExpandKind {
-    /// The Lanczos.
+    /// The residual itself (plain Lanczos). Ordinal 0.
     Lanczos,
-    /// The Gd.
+    /// Generalised Davidson: solve `(P - shift B) t = r`. Ordinal 1.
     Gd,
     #[default]
-    /// The Jd0.
+    /// Jacobi-Davidson with the correction orthogonal to the sought Ritz vector,
+    /// through an augmented solve. Sella's default and ordinal 2.
     Jd0,
-    /// The Jd0Alt.
+    /// `Jd0` by projecting the preconditioned residual instead of augmenting the
+    /// system. Ordinal 3.
     Jd0Alt,
-    /// The Mjd0.
+    /// `Jd0` with the correction orthogonal to every Ritz vector of the subspace,
+    /// through an augmented solve. Ordinal 4.
     Mjd0,
-    /// The Mjd0Alt.
+    /// `Mjd0` by projection instead of augmentation. Ordinal 5.
     Mjd0Alt,
 }
 
 impl ExpandKind {
-    /// Fn.
+    /// C / Python ordinal: 0 `Lanczos`, 1 `Gd`, 2 `Jd0`, 3 `Jd0Alt`, 4 `Mjd0`,
+    /// 5 `Mjd0Alt`.
     pub const fn to_abi(self) -> i32 {
         match self {
             Self::Lanczos => 0,
@@ -73,7 +90,7 @@ impl ExpandKind {
         }
     }
 
-    /// Fn.
+    /// Inverse of [`Self::to_abi`]; any ordinal outside 0 to 5 is `None`.
     pub const fn try_from_abi(v: i32) -> Option<Self> {
         match v {
             0 => Some(Self::Lanczos),
@@ -116,6 +133,31 @@ pub(crate) const DENSE_JACOBI_LIMIT: usize = 128;
 /// matrix uses faer's self-adjoint eigensolver. The Kani build leaves
 /// that feature off and panics if a block above the Jacobi limit is
 /// reached; those harnesses return before a Sella session.
+///
+/// `a` is a square matrix; it is symmetrised as `(a + a^T) / 2` first. Returns the
+/// eigenvalues (length `n`) and the orthonormal eigenvectors as the columns of an
+/// `n x n` array.
+///
+/// # Errors
+///
+/// [`SaddleError::Shape`] when `a` is not square; [`SaddleError::Solver`] when
+/// the eigen solver does not converge.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::array;
+/// use rgsaddle::eigensolve::exact_eigh;
+///
+/// // Hessian of a saddle: curvature -1 along x and +2 along y, in eV/Angstrom^2.
+/// let hessian = array![[2.0, 0.0], [0.0, -1.0]];
+/// let (values, vectors) = exact_eigh(hessian.view())?;
+/// assert!((values[0] + 1.0).abs() < 0.001);
+/// assert!((values[1] - 2.0).abs() < 0.001);
+/// // The lowest mode is along y.
+/// assert!(vectors[(1, 0)].abs() > 0.99);
+/// # Ok::<(), rgsaddle::SaddleError>(())
+/// ```
 pub fn exact_eigh(a: ArrayView2<f64>) -> Result<(Array1<f64>, Array2<f64>), SaddleError> {
     if a.nrows() != a.ncols() {
         return Err(SaddleError::Shape("eigh needs a square matrix".into()));
@@ -176,13 +218,24 @@ pub(crate) fn faer_eigh(a: &Array2<f64>) -> Result<(Array1<f64>, Array2<f64>), S
     }
 }
 
-/// Ritz eigenvalues, basis vectors, and the operator applied to those vectors.
+/// Ritz eigenvalues (length `k`, ascending), basis vectors (`n x k`, orthonormal
+/// columns) and the operator applied to those vectors (`n x k`).
 pub type RitzDecomposition = (Array1<f64>, Array2<f64>, Array2<f64>);
 
 /// Rayleigh-Ritz on the columns of `v` against a dense `a`.
 ///
 /// Returns `(lams, v_rot, a @ v_rot)`. `gamma <= 0` falls through to
 /// [`exact_eigh`] on `a` (Sella `exact`).
+///
+/// `a` is a symmetric `n x n` matrix and `v` an `n x k` basis (one vector per
+/// column; it is orthonormalised first). Returns the Ritz values, the rotated
+/// basis and `a` times it.
+///
+/// # Errors
+///
+/// [`SaddleError::Shape`] when `a` is not square or `v` has a different row
+/// count; [`SaddleError::Solver`] when `v` spans nothing, or the small
+/// eigenproblem fails.
 pub fn rayleigh_ritz(
     a: ArrayView2<f64>,
     v: ArrayView2<f64>,
@@ -212,6 +265,13 @@ pub fn rayleigh_ritz(
 
 /// Dense eigen on `device`. The host arm is [`exact_eigh`].
 /// [`EigenDevice::Dlpk`] is the lowest-mode arm through rgmin.
+///
+/// `a` is a symmetric `n x n` matrix. Returns the ascending eigenvalues and the
+/// eigenvector columns.
+///
+/// # Errors
+///
+/// The errors of [`exact_eigh`].
 pub fn eigh_on(
     device: EigenDevice,
     a: ArrayView2<f64>,
@@ -226,6 +286,16 @@ pub fn eigh_on(
 ///
 /// This is the dlpk waist Sella `_gpu.py` maps onto. Full spectrum
 /// stays [`exact_eigh`].
+///
+/// `a` is a symmetric `n x n` matrix and `seed` the length-`n` starting vector.
+/// [`EigenDevice::Host`] runs Lanczos and [`EigenDevice::Dlpk`] Rayleigh-Ritz,
+/// both with a Krylov dimension of `n` limited to the range 2 to 8. Returns the
+/// lowest eigenvalue and its unit eigenvector.
+///
+/// # Errors
+///
+/// [`SaddleError::Shape`] when `a` is not square or `seed` has the wrong length;
+/// [`SaddleError::Solver`] when rgmin fails.
 pub fn lowest_on(
     device: EigenDevice,
     a: ArrayView2<f64>,
@@ -258,6 +328,16 @@ pub fn lowest_on(
     clippy::too_many_arguments,
     reason = "The public expansion API names each operator and basis separately."
 )]
+/// Shapes: `v` and `y` are `d x n` (`n` basis vectors of length `d`), `p` is
+/// `d x d`, `b`, if given, is `d x d`, `lams` has length `n` and `vecs` is `n x n`
+/// (the eigenvectors of the projected problem). `shift` is the eigenvalue shift
+/// applied to `p`, `method` the correction formula and `seeking` the index of the
+/// Ritz pair to improve (`seeking < n`). Returns the length-`d` direction.
+///
+/// # Errors
+///
+/// [`SaddleError::Shape`] when the shapes above disagree or `seeking >= n`;
+/// [`SaddleError::Solver`] when a correction system is singular.
 pub fn expand(
     v: ArrayView2<f64>,
     y: ArrayView2<f64>,
@@ -387,8 +467,35 @@ pub fn expand(
     }
 }
 
-/// Sella `rayleigh_ritz` loop: grow `v` with [`expand`] until the
-/// residual is below `gamma |theta|` or the subspace hits `2 n + 1`.
+/// Sella `rayleigh_ritz` loop: grow `v` with [`expand`] until the residuals of the
+/// negative Ritz pairs (the lowest one when none is negative) are below
+/// `gamma |theta|`, or no new direction independent of the subspace remains.
+/// The subspace never exceeds `n` columns.
+///
+/// `a` is a symmetric `n x n` matrix, `v0` an `n x k` starting basis, `gamma` the
+/// relative residual tolerance and `method` the expansion formula. A `gamma` of 0
+/// or less returns the exact spectrum of `a`. The result is as for
+/// [`rayleigh_ritz`].
+///
+/// # Errors
+///
+/// [`SaddleError::Shape`] when `a` is not square or `v0` has a different row
+/// count; [`SaddleError::Solver`] when `v0` spans nothing or a solve fails.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::array;
+/// use rgsaddle::eigensolve::{ExpandKind, rayleigh_ritz_iter};
+///
+/// // Curvatures -1, 2 and 3 eV/Angstrom^2.
+/// let hessian = array![[-1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]];
+/// let start = array![[1.0], [1.0], [1.0]];
+/// let (values, _basis, _applied) =
+///     rayleigh_ritz_iter(hessian.view(), start.view(), 0.1, ExpandKind::Jd0)?;
+/// assert!((values[0] + 1.0).abs() < 0.1);
+/// # Ok::<(), rgsaddle::SaddleError>(())
+/// ```
 pub fn rayleigh_ritz_iter(
     a: ArrayView2<f64>,
     v0: ArrayView2<f64>,
