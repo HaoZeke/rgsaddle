@@ -17,11 +17,15 @@
 //! how the path is parametrized. Production samples arrive through
 //! [`HyperplaneSampler`]. The built-in overdamped Langevin implementation,
 //! the paper's Eq. (9), is retained only as the deterministic
-//! analytic-surface reference: it projects drift and noise, then restores
-//! the plane after every step. Holding the center of mass is optional and
-//! is the `com yes` choice of `fix pafi`. The integral of `dF/ds` from the
-//! reactant is the potential of mean force. Block averages of the
-//! equilibrated records supply the standard error.
+//! analytic-surface reference. It steps as Leimkuhler and Matthews, Appl.
+//! Math. Res. Express 2013, 34 (2013), doi:10.1093/amrx/abs010, Eq. (3):
+//! the noise of a step is the sum of two consecutive draws, which makes
+//! stationary averages second order in the step and exact on a harmonic
+//! plane. It projects drift and noise, then restores the plane after every
+//! step. Holding the center of mass is optional and is the `com yes`
+//! choice of `fix pafi`. The integral of `dF/ds` from the reactant is the
+//! potential of mean force. Block averages of the equilibrated records
+//! supply the standard error.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -568,7 +572,7 @@ impl<S: PointSurface> HyperplaneSampler for PafiAnalyticSampler<'_, S> {
             region: budget.region.as_ref(),
             hold_com: holds_com(config, geometry.positions.len()),
             drift_scale: config.mobility * config.time_step,
-            sigma: (2.0 * config.mobility * budget.thermal * config.time_step).sqrt(),
+            sigma: (0.5 * config.mobility * budget.thermal * config.time_step).sqrt(),
         };
         let mut evaluations = 0;
         let basin = match config.max_jump {
@@ -598,20 +602,21 @@ impl<S: PointSurface> HyperplaneSampler for PafiAnalyticSampler<'_, S> {
             }
             Ok(true)
         };
-        let mut x = loop {
+        let (mut x, mut noise) = loop {
             let mut x = geometry.positions.clone();
+            let mut noise = walk.draw(x.len(), &mut rng);
             for _ in 0..budget.thermalize {
                 let gradient = walk.gradient(&x)?;
-                walk.step(&mut x, gradient, &mut rng)?;
+                walk.step(&mut x, gradient, &mut noise, &mut rng)?;
             }
             evaluations += budget.thermalize;
             if !left(&x, &mut evaluations)? {
-                break x;
+                break (x, noise);
             }
         };
         let stretch = budget.samples.div_ceil(config.blocks);
         let mut observations = Vec::with_capacity(budget.samples);
-        let mut kept = x.clone();
+        let mut kept = (x.clone(), noise.clone());
         while observations.len() < budget.samples {
             let count = stretch.min(budget.samples - observations.len());
             let mut records = Vec::with_capacity(count);
@@ -631,16 +636,16 @@ impl<S: PointSurface> HyperplaneSampler for PafiAnalyticSampler<'_, S> {
                             observables: Default::default(),
                         });
                     }
-                    walk.step(&mut x, gradient, &mut rng)?;
+                    walk.step(&mut x, gradient, &mut noise, &mut rng)?;
                 }
             }
             evaluations += count * budget.stride;
             if left(&x, &mut evaluations)? {
-                x = kept.clone();
+                (x, noise) = kept.clone();
                 continue;
             }
             observations.extend(records);
-            kept = x.clone();
+            kept = (x.clone(), noise.clone());
         }
         self.rejected = rejected;
         Ok(HyperplaneEnsemble {
@@ -659,7 +664,7 @@ struct Walk<'a, S> {
     hold_com: bool,
     /// `μ dt`.
     drift_scale: f64,
-    /// `sqrt(2 μ kT dt)`.
+    /// `sqrt(μ kT dt / 2)`, the weight of each of the two draws in a step.
     sigma: f64,
 }
 
@@ -684,22 +689,31 @@ impl<S: PointSurface> Walk<'_, S> {
         }
     }
 
-    /// One Euler-Maruyama step from `x`, where the gradient is `gradient`.
+    /// A standard normal vector in the plane.
+    fn draw(&self, len: usize, rng: &mut Rng) -> Array1<f64> {
+        let mut noise = Array1::from_shape_simple_fn(len, || rng.normal());
+        self.project(&mut noise);
+        noise
+    }
+
+    /// One step of Leimkuhler and Matthews, Appl. Math. Res. Express 2013,
+    /// 34 (2013), doi:10.1093/amrx/abs010, Eq. (3), from `x`, where the
+    /// gradient is `gradient`: the noise is the sum of the draw of the last
+    /// step, `noise`, and a new one, which replaces it. Stationary averages
+    /// are then second order in `dt`, and exact on a harmonic plane.
     fn step(
         &self,
         x: &mut Array1<f64>,
         gradient: Array1<f64>,
+        noise: &mut Array1<f64>,
         rng: &mut Rng,
     ) -> Result<(), SaddleError> {
         let plane = self.plane;
         let mut drift = gradient;
-        let mut noise = Array1::zeros(x.len());
-        for value in noise.iter_mut() {
-            *value = rng.normal();
-        }
         self.project(&mut drift);
-        self.project(&mut noise);
-        let mut proposal = &*x - &(&drift * self.drift_scale) + &(&noise * self.sigma);
+        let fresh = self.draw(x.len(), rng);
+        let mut proposal = &*x - &(&drift * self.drift_scale) + &((&*noise + &fresh) * self.sigma);
+        *noise = fresh;
         plane.restore_in_place(&mut proposal);
         if let Some(region) = self.region
             && let Some(violation) = region.violation(proposal.view())?
