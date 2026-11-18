@@ -104,7 +104,6 @@ mod plane;
 mod rate;
 mod reactant;
 mod sample;
-pub(crate) mod spline;
 mod ti;
 mod transmission;
 mod transport;

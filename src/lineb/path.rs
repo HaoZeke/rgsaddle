@@ -20,7 +20,7 @@ use super::action::l2;
 use super::mass::Masses;
 use crate::error::SaddleError;
 use crate::minmode::PointSurface;
-use crate::ohtst::spline::Spline;
+use crate::spline::Spline;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Curve {

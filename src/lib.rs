@@ -116,6 +116,7 @@ mod kani_proofs;
 #[cfg(all(test, feature = "verify"))]
 mod differential;
 
+mod spline;
 mod sqnm;
 mod stats;
 #[cfg(feature = "ohtst")]
