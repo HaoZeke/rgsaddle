@@ -50,7 +50,8 @@ use crate::stats::Rng;
 #[non_exhaustive]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum Transport {
-    /// The rigid map.
+    /// The rigid map of the module documentation: the minimal rotation of the
+    /// normal, then the shift of the pivot. The default.
     #[default]
     Rigid,
     /// The Gaussian optimal-transport map within the plane, then the

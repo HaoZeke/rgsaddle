@@ -201,15 +201,6 @@ impl TrustRegion {
     ///
     /// [`SaddleError::Shape`] when `delta` is negative or not finite. Zero is
     /// allowed and clips every step to zero.
-    ///
-    /// `delta` is the clip radius, the largest allowed `|s_i w_i|`, in the units of
-    /// the weighted internals. `counts` is the number of coordinates of each kind
-    /// and `weights` their weights; see [`pack_weights`].
-    ///
-    /// # Errors
-    ///
-    /// [`SaddleError::Shape`] when `delta` is negative or `counts` describes no
-    /// internals. A NaN `delta` is not rejected by this check.
     pub fn new(delta: f64) -> Result<Self, SaddleError> {
         if !delta.is_finite() || delta < 0.0 {
             return Err(SaddleError::Shape(
@@ -624,7 +615,6 @@ impl Default for InternalWeights {
 
 /// Sella `MaxInternalStep`.
 ///
-///
 /// Built by [`MaxInternalStep::new`]. Every method that takes a step expects
 /// it in the packed internal order of [`pack_weights`].
 #[derive(Clone, Debug)]
@@ -635,6 +625,15 @@ pub struct MaxInternalStep {
 
 impl MaxInternalStep {
     /// Clip radius `delta` and Sella packing `counts`.
+    ///
+    /// `delta` is the clip radius, the largest allowed `|s_i w_i|`, in the units of
+    /// the weighted internals. `counts` is the number of coordinates of each kind
+    /// and `weights` their weights; see [`pack_weights`].
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] when `delta` is negative or `counts` describes no
+    /// internals. A NaN `delta` is not rejected by this check.
     pub fn new(
         delta: f64,
         counts: InternalCounts,
