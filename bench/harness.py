@@ -60,6 +60,7 @@ import hashlib
 import json
 import math
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -221,6 +222,50 @@ def pin(args):
     for entry in reversed(args.pythonpath):
         if entry not in sys.path:
             sys.path.insert(0, entry)
+
+
+EON_PROJECT_VERSION = "3.6.0"
+RGSADDLE_BUILD = "release, C API"
+RGPOT_BUILD = "scalar kernels, fast neighbour list on, Fortran pots on"
+
+BUILD_PINS = (
+    ("linkcell", "0.3.5 with rgsaddle, 0.3.11 with eOn"),
+    ("minimage", "0.1.2 with rgsaddle, 0.1.4 with eOn"),
+    ("rgmin", "0.6.0"),
+    ("readcon-core", "0.20.0"),
+)
+
+BUILD_NOTES = (
+    "eOn was built with native architecture off and fast math off. "
+    "Its bundled vector library is not on the timed potential path. "
+    "The eOn rgpot engine calls capnp directly, so that client was linked with capnp-rpc.",
+)
+
+
+def host_cpu_model():
+    try:
+        with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if line.lower().startswith("model name"):
+                    value = line.split(":", 1)[1].strip()
+                    if value:
+                        return sanitize(value)
+    except OSError:
+        pass
+    return "unknown"
+
+
+def tool_line(command):
+    try:
+        out = subprocess.check_output(
+            [command, "--version"],
+            text=True,
+            stderr=subprocess.STDOUT,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    line = out.splitlines()[0].strip() if out else ""
+    return sanitize(line) if line else None
 
 
 def sanitize(text):
@@ -1549,8 +1594,65 @@ def write_table(path, payload):
             lines.append("")
             lines.append(f"{len(failures) - len(shown)} further failures are in the JSON.")
     lines.append("")
+    lines.extend(build_section(payload))
     with open(path, "w", encoding="utf-8") as handle:
         handle.write("\n".join(lines))
+
+
+def build_section(payload):
+    versions = payload.get("versions") or {}
+    shas = payload.get("shas") or {}
+    lines = ["## Build", ""]
+    lines.append("| component | revision or version |")
+    lines.append("| --- | --- |")
+    abi = versions.get("rgsaddle_abi")
+    rgsaddle_parts = [shas.get("rgsaddle") or ""]
+    if abi:
+        rgsaddle_parts.append(f"ABI {abi}")
+    rgsaddle_parts.append(RGSADDLE_BUILD)
+    rgsaddle = ", ".join(part for part in rgsaddle_parts if part)
+    if rgsaddle:
+        lines.append(f"| rgsaddle | {rgsaddle} |")
+    rgpot_parts = [shas.get("rgpot") or "", versions.get("rgpot") or "", RGPOT_BUILD]
+    rgpot = ", ".join(part for part in rgpot_parts if part)
+    if rgpot:
+        lines.append(f"| rgpot | {rgpot} |")
+    eon_parts = [shas.get("eon") or ""]
+    if versions.get("pyeonclient"):
+        eon_parts.append(f"pyeonclient {versions['pyeonclient']}")
+    project = versions.get("eon_project") or EON_PROJECT_VERSION
+    if project:
+        eon_parts.append(f"project version {project}")
+    eon = ", ".join(part for part in eon_parts if part)
+    if eon:
+        lines.append(f"| eOn | {eon} |")
+    for key, label in (
+        ("ase", "ASE"),
+        ("numpy", "numpy"),
+        ("scipy", "scipy"),
+        ("rustc", "rustc"),
+        ("gcc", "gcc"),
+        ("g++", "g++"),
+    ):
+        if versions.get(key):
+            lines.append(f"| {label} | {versions[key]} |")
+    for name, value in BUILD_PINS:
+        lines.append(f"| {name} | {value} |")
+    cpu = payload.get("cpu_model")
+    if cpu:
+        lines.append(f"| cpu | {cpu} |")
+    lines.append("")
+    for note in BUILD_NOTES:
+        lines.append(note)
+    threads = payload.get("threads")
+    rounds = payload.get("rounds")
+    if threads is not None and rounds is not None:
+        if int(threads) == 1:
+            lines.append(f"One core, one thread, {rounds} rounds.")
+        else:
+            lines.append(f"One core, {threads} threads, {rounds} rounds.")
+    lines.append("")
+    return lines
 
 
 def lattice_constant(potential, atomic_number):
@@ -2182,6 +2284,7 @@ def measure(args, library, rgpot, pyec):
         for method in MM_METHODS:
             jobs.append(("mm", system, method, None))
     runs = []
+    recorded = versions(rgpot, pyec, library)
     for round_index in range(args.rounds):
         order = "forward" if round_index % 2 == 0 else "reversed"
         sequence = jobs if round_index % 2 == 0 else list(reversed(jobs))
@@ -2235,20 +2338,33 @@ def measure(args, library, rgpot, pyec):
                 flush=True,
             )
         summary, comparisons = summarize(runs)
-        payload = {
-            "protocol": PROTOCOL,
-            "shas": args.shas,
-            "rounds": args.rounds,
-            "threads": args.threads,
-            "complete": round_index + 1 == args.rounds,
-            "systems": {name: frozen["systems"][name] for name in SYSTEM_ORDER},
-            "summary": summary,
-            "comparisons": comparisons,
-            "runs": runs,
-        }
+        payload = coverage_record(
+            args,
+            recorded,
+            {
+                "complete": round_index + 1 == args.rounds,
+                "systems": {name: frozen["systems"][name] for name in SYSTEM_ORDER},
+                "summary": summary,
+                "comparisons": comparisons,
+                "runs": runs,
+            },
+        )
         dump_json(os.path.join(args.out, "results.json"), payload)
         write_table(os.path.join(args.out, "results.md"), payload)
     print("measure complete", len(runs), flush=True)
+
+
+def coverage_record(args, recorded, body):
+    recorded = dict(recorded)
+    recorded.setdefault("eon_project", EON_PROJECT_VERSION)
+    body = dict(body)
+    body["protocol"] = PROTOCOL
+    body["shas"] = args.shas
+    body["rounds"] = args.rounds
+    body["threads"] = args.threads
+    body["cpu_model"] = host_cpu_model()
+    body["versions"] = recorded
+    return body
 
 
 def versions(rgpot, pyec, library):
@@ -2256,14 +2372,20 @@ def versions(rgpot, pyec, library):
     import numpy
     import scipy
 
-    return {
+    recorded = {
         "rgpot": getattr(rgpot, "__version__", None),
         "pyeonclient": getattr(pyec, "__version__", None),
         "rgsaddle_abi": library.abi,
         "ase": ase.__version__,
         "numpy": numpy.__version__,
         "scipy": scipy.__version__,
+        "eon_project": EON_PROJECT_VERSION,
     }
+    for name in ("rustc", "gcc", "g++"):
+        line = tool_line(name)
+        if line:
+            recorded[name] = line
+    return recorded
 
 
 def main(argv):
