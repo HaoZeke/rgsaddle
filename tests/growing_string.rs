@@ -1180,3 +1180,21 @@ fn golden_trajectories_pin_relaxation_and_placement_arithmetic() {
         );
     }
 }
+
+#[test]
+fn converged_growing_string_certifies_its_saddle_through_the_session() {
+    let config = GrowingStringConfig::default()
+        .with_n_images(9)
+        .with_frontier_tol(0.25)
+        .with_force_tol(DEFAULT_FORCE_TOL)
+        .with_max_move(0.1)
+        .with_min_mode(None);
+    let mut session = symmetric_endpoints(config);
+    assert!(session.saddle_index().is_none(), "nothing is certified yet");
+    let report = session.run(&CurvedChannel2D::default(), 600).expect("run");
+    assert_eq!(report.status, BandStatus::Converged);
+    assert!(report.saddle_index.is_some());
+    let certificate = session.saddle_index().expect("certificate from the session");
+    assert!(certificate.converged);
+    assert_eq!(certificate.index, 1);
+}
