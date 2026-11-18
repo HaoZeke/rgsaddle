@@ -3,7 +3,8 @@
 Stop when the maximum per-atom force norm is under 0.01 eV/Angstrom.
 Spring 5.0 eV/Angstrom^2, linear path, 7 and 11 images, 1000 iterations.
 Success: code converged, reference index is 1, energy within 0.01 eV,
-free-atom RMSD within 0.05 Angstrom. Medians and IQRs use n=12.
+free-atom RMSD within 0.05 Angstrom. A free cluster is centered and
+Kabsch-aligned, and identical species are matched. Medians and IQRs use n=12.
 A/A is a Mann-Whitney test of even rounds against odd rounds.
 Method p-values are Mann-Whitney, and success p-values are Fisher exact.
 ASE ships no Lanczos min-mode search.
@@ -128,23 +129,23 @@ Reference usable: True; index 1; barrier 1.061 eV.
 
 | method | images | success | wall s (IQR) | outside s (IQR) | calls (IQR) | barrier eV (IQR) | rmsd A | A/A wall p |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| rgsaddle-neb | 7 | 0/12 | 0.9101 (0.06253) | 0.8945 (0.06167) | 3872 (0) |  () | 0.9772 | 1 |
-| eon-neb | 7 | 0/12 | 0.09784 (0.006215) | 0.09323 (0.005921) | 1432 (0) |  () | 0.9425 | 0.9362 |
-| ase-neb | 7 | 0/12 | 4.804 (0.4459) | 4.776 (0.4415) | 4627 (0) |  () | 1.162 | 0.9362 |
-| rgsaddle-ci | 7 | 12/12 | 0.1417 (0.01168) | 0.1393 (0.01146) | 602 (0) | 1.061 (0) | 0.008477 | 0.9362 |
-| eon-ci | 7 | 12/12 | 0.01861 (0.002313) | 0.01775 (0.002192) | 272 (0) | 1.061 (0) | 0.01742 | 0.9362 |
-| ase-ci | 7 | 0/12 | 5.08 (0.5506) | 4.98 (0.5381) | 5007 (0) |  () | 12.35 | 0.6889 |
-| rgsaddle-neb | 11 | 0/12 | 0.3155 (0.03564) | 0.3101 (0.03505) | 1397 (0) |  () | 0.02343 | 0.9362 |
-| eon-neb | 11 | 0/12 | 0.4507 (0.04901) | 0.4295 (0.04678) | 6806 (0) |  () | 0.8844 | 0.5752 |
-| ase-neb | 11 | 0/12 | 9.181 (1.372) | 9.133 (1.363) | 9011 (0) |  () | 0.581 | 0.9362 |
-| rgsaddle-ci | 11 | 12/12 | 0.2076 (0.01959) | 0.2041 (0.01918) | 917 (0) | 1.061 (0) | 0.0008927 | 0.5752 |
-| eon-ci | 11 | 0/12 | 0.1468 (0.01886) | 0.14 (0.01801) | 2243 (0) |  () | 0.914 | 0.8102 |
-| ase-ci | 11 | 0/12 | 6.441 (0.7633) | 6.408 (0.7584) | 6275 (0) |  () | 0.3599 | 0.6889 |
-| rgsaddle-dimer |  | 0/12 | 0.7653 (0.5734) | 0.7525 (0.5634) | 3086 (2267) |  () | 1.027 | 0.5752 |
-| eon-dimer |  | 0/12 | 0.009673 (0.008082) | 0.009213 (0.007698) | 138.5 (101.2) |  () | 0.4728 | 0.5752 |
-| ase-dimer |  | 0/12 | 0.04062 (0.1736) | 0.03984 (0.1703) | 173.5 (806.5) |  () | 0.5684 | 0.4712 |
-| rgsaddle-lanczos |  | 0/12 | 1.677 (0.1143) | 1.65 (0.1122) | 6746 (488) |  () | 0.6639 | 0.9362 |
-| eon-lanczos |  | 0/12 | 0.01663 (0.0226) | 0.01585 (0.02147) | 229.5 (284.2) |  () | 0.4321 | 0.9362 |
+| rgsaddle-neb | 7 | 0/12 | 0.9101 (0.06253) | 0.8945 (0.06167) | 3872 (0) |  () | 0.1366 | 1 |
+| eon-neb | 7 | 0/12 | 0.09784 (0.006215) | 0.09323 (0.005921) | 1432 (0) |  () | 0.1367 | 0.9362 |
+| ase-neb | 7 | 0/12 | 4.804 (0.4459) | 4.776 (0.4415) | 4627 (0) |  () | 0.2826 | 0.9362 |
+| rgsaddle-ci | 7 | 12/12 | 0.1417 (0.01168) | 0.1393 (0.01146) | 602 (0) | 1.061 (0) | 0.0002671 | 0.9362 |
+| eon-ci | 7 | 12/12 | 0.01861 (0.002313) | 0.01775 (0.002192) | 272 (0) | 1.061 (0) | 0.0006788 | 0.9362 |
+| ase-ci | 7 | 0/12 | 5.08 (0.5506) | 4.98 (0.5381) | 5007 (0) |  () | 11.54 | 0.6889 |
+| rgsaddle-neb | 11 | 0/12 | 0.3155 (0.03564) | 0.3101 (0.03505) | 1397 (0) |  () | 0.02341 | 0.9362 |
+| eon-neb | 11 | 0/12 | 0.4507 (0.04901) | 0.4295 (0.04678) | 6806 (0) |  () | 0.1366 | 0.5752 |
+| ase-neb | 11 | 0/12 | 9.181 (1.372) | 9.133 (1.363) | 9011 (0) |  () | 0.1448 | 0.9362 |
+| rgsaddle-ci | 11 | 12/12 | 0.2076 (0.01959) | 0.2041 (0.01918) | 917 (0) | 1.061 (0) | 8.82e-06 | 0.5752 |
+| eon-ci | 11 | 0/12 | 0.1468 (0.01886) | 0.14 (0.01801) | 2243 (0) |  () | 0.1367 | 0.8102 |
+| ase-ci | 11 | 0/12 | 6.441 (0.7633) | 6.408 (0.7584) | 6275 (0) |  () | 0.1367 | 0.6889 |
+| rgsaddle-dimer |  | 0/12 | 0.7653 (0.5734) | 0.7525 (0.5634) | 3086 (2267) |  () | 0.3162 | 0.5752 |
+| eon-dimer |  | 2/12 | 0.009673 (0.008082) | 0.009213 (0.007698) | 138.5 (101.2) | 1.061 (2.209e-07) | 0.187 | 0.5752 |
+| ase-dimer |  | 2/12 | 0.04062 (0.1736) | 0.03984 (0.1703) | 173.5 (806.5) | 1.061 (3.017e-06) | 0.2825 | 0.4712 |
+| rgsaddle-lanczos |  | 0/12 | 1.677 (0.1143) | 1.65 (0.1122) | 6746 (488) |  () | 0.5204 | 0.9362 |
+| eon-lanczos |  | 1/12 | 0.01663 (0.0226) | 0.01585 (0.02147) | 229.5 (284.2) | 1.061 (0) | 0.1963 | 0.9362 |
 
 | comparison | images | wall p | outside p | calls p | barrier p | success p |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -156,8 +157,8 @@ Reference usable: True; index 1; barrier 1.061 eV.
 | rgsaddle-neb vs ase-neb | 11 | 3.658e-05 | 3.658e-05 | 1.912e-06 |  | 1 |
 | rgsaddle-ci vs eon-ci | 11 | 3.658e-05 | 3.658e-05 | 1.912e-06 |  | 7.396e-07 |
 | rgsaddle-ci vs ase-ci | 11 | 3.658e-05 | 3.658e-05 | 1.912e-06 |  | 7.396e-07 |
-| rgsaddle-dimer vs eon-dimer |  | 3.658e-05 | 3.658e-05 | 9.735e-05 |  | 1 |
-| rgsaddle-dimer vs ase-dimer |  | 0.001354 | 0.001354 | 0.001493 |  | 1 |
+| rgsaddle-dimer vs eon-dimer |  | 3.658e-05 | 3.658e-05 | 9.735e-05 |  | 0.4783 |
+| rgsaddle-dimer vs ase-dimer |  | 0.001354 | 0.001354 | 0.001493 |  | 0.4783 |
 | rgsaddle-lanczos vs eon-lanczos |  | 3.658e-05 | 3.658e-05 | 3.644e-05 |  | 1 |
 
 ## cu4_h
@@ -166,37 +167,37 @@ Reference usable: True; index 1; barrier 0.2365 eV.
 
 | method | images | success | wall s (IQR) | outside s (IQR) | calls (IQR) | barrier eV (IQR) | rmsd A | A/A wall p |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| rgsaddle-neb | 7 | 0/12 | 0.06332 (0.007198) | 0.06059 (0.006763) | 267 (0) |  () | 0.08322 | 0.4712 |
-| eon-neb | 7 | 0/12 | 0.009479 (0.001314) | 0.008314 (0.001066) | 127 (0) |  () | 0.1089 | 1 |
-| ase-neb | 7 | 0/12 | 0.3606 (0.05208) | 0.3558 (0.05121) | 402 (0) |  () | 0.5323 | 0.298 |
-| rgsaddle-ci | 7 | 0/12 | 0.7579 (0.1161) | 0.7251 (0.1102) | 3196 (0) |  () | 1.408 | 0.3785 |
-| eon-ci | 7 | 0/12 | 0.009505 (0.0009125) | 0.008327 (0.0007694) | 127 (0) |  () | 0.423 | 0.4712 |
-| ase-ci | 7 | 0/12 | 4.662 (0.6059) | 4.599 (0.5962) | 5007 (0) |  () | 13.54 | 0.2298 |
-| rgsaddle-neb | 11 | 0/12 | 0.2255 (0.0188) | 0.2163 (0.01785) | 929 (0) |  () | 0.39 | 0.6889 |
-| eon-neb | 11 | 0/12 | 0.0168 (0.002227) | 0.01484 (0.001871) | 227 (0) |  () | 0.3867 | 0.06555 |
-| ase-neb | 11 | 0/12 | 3.623 (0.3901) | 3.575 (0.3838) | 4097 (0) |  () | 0.1588 | 0.298 |
-| rgsaddle-ci | 11 | 0/12 | 0.2883 (0.02399) | 0.2766 (0.0228) | 1226 (0) |  () | 0.4335 | 0.3785 |
-| eon-ci | 11 | 12/12 | 0.02782 (0.001962) | 0.02464 (0.001715) | 389 (0) | 0.2365 (0) | 0.03116 | 0.6889 |
-| ase-ci | 11 | 0/12 | 7.393 (0.6845) | 7.3 (0.6752) | 8327 (0) |  () | 13.72 | 0.8102 |
-| rgsaddle-dimer |  | 0/12 | 0.114 (0.1716) | 0.1109 (0.1664) | 445 (657) |  () | 1.708 | 0.1282 |
-| eon-dimer |  | 0/12 | 0.0437 (0.03005) | 0.04018 (0.02766) | 612 (384) |  () | 2.31 | 0.1282 |
-| ase-dimer |  | 0/12 | 0.03109 (0.09911) | 0.03013 (0.09607) | 136 (409.5) |  () | 1.307 | 0.3785 |
-| rgsaddle-lanczos |  | 0/12 | 0.1765 (0.4325) | 0.1717 (0.4186) | 704 (1754) |  () | 2.151 | 1 |
-| eon-lanczos |  | 0/12 | 0.0258 (0.03737) | 0.02376 (0.03438) | 363.5 (511) |  () | 1.462 | 0.4712 |
+| rgsaddle-neb | 7 | 0/12 | 0.06332 (0.007198) | 0.06059 (0.006763) | 267 (0) |  () | 0.08286 | 0.4712 |
+| eon-neb | 7 | 0/12 | 0.009479 (0.001314) | 0.008314 (0.001066) | 127 (0) |  () | 0.1086 | 1 |
+| ase-neb | 7 | 0/12 | 0.3606 (0.05208) | 0.3558 (0.05121) | 402 (0) |  () | 0.1349 | 0.298 |
+| rgsaddle-ci | 7 | 0/12 | 0.7579 (0.1161) | 0.7251 (0.1102) | 3196 (0) |  () | 0.5242 | 0.3785 |
+| eon-ci | 7 | 12/12 | 0.009505 (0.0009125) | 0.008327 (0.0007694) | 127 (0) | 0.2365 (0) | 0.006643 | 0.4712 |
+| ase-ci | 7 | 0/12 | 4.662 (0.6059) | 4.599 (0.5962) | 5007 (0) |  () | 11.96 | 0.2298 |
+| rgsaddle-neb | 11 | 0/12 | 0.2255 (0.0188) | 0.2163 (0.01785) | 929 (0) |  () | 0.06062 | 0.6889 |
+| eon-neb | 11 | 0/12 | 0.0168 (0.002227) | 0.01484 (0.001871) | 227 (0) |  () | 0.06253 | 0.06555 |
+| ase-neb | 11 | 0/12 | 3.623 (0.3901) | 3.575 (0.3838) | 4097 (0) |  () | 0.1561 | 0.298 |
+| rgsaddle-ci | 11 | 12/12 | 0.2883 (0.02399) | 0.2766 (0.0228) | 1226 (0) | 0.2365 (0) | 1.647e-06 | 0.3785 |
+| eon-ci | 11 | 12/12 | 0.02782 (0.001962) | 0.02464 (0.001715) | 389 (0) | 0.2365 (0) | 0.007429 | 0.6889 |
+| ase-ci | 11 | 0/12 | 7.393 (0.6845) | 7.3 (0.6752) | 8327 (0) |  () | 12.91 | 0.8102 |
+| rgsaddle-dimer |  | 3/12 | 0.114 (0.1716) | 0.1109 (0.1664) | 445 (657) | 0.2365 (3.297e-05) | 0.5842 | 0.1282 |
+| eon-dimer |  | 3/12 | 0.0437 (0.03005) | 0.04018 (0.02766) | 612 (384) | 0.2365 (1.245e-05) | 0.8569 | 0.1282 |
+| ase-dimer |  | 5/12 | 0.03109 (0.09911) | 0.03013 (0.09607) | 136 (409.5) | 0.2365 (8.757e-06) | 0.4848 | 0.3785 |
+| rgsaddle-lanczos |  | 2/12 | 0.1765 (0.4325) | 0.1717 (0.4186) | 704 (1754) | 0.2364 (2.624e-05) | 0.534 | 1 |
+| eon-lanczos |  | 1/12 | 0.0258 (0.03737) | 0.02376 (0.03438) | 363.5 (511) | 0.2365 (0) | 0.5131 | 0.4712 |
 
 | comparison | images | wall p | outside p | calls p | barrier p | success p |
 | --- | --- | --- | --- | --- | --- | --- |
 | rgsaddle-neb vs eon-neb | 7 | 3.658e-05 | 3.658e-05 | 1.912e-06 |  | 1 |
 | rgsaddle-neb vs ase-neb | 7 | 3.658e-05 | 3.658e-05 | 1.912e-06 |  | 1 |
-| rgsaddle-ci vs eon-ci | 7 | 3.658e-05 | 3.658e-05 | 1.912e-06 |  | 1 |
+| rgsaddle-ci vs eon-ci | 7 | 3.658e-05 | 3.658e-05 | 1.912e-06 |  | 7.396e-07 |
 | rgsaddle-ci vs ase-ci | 7 | 3.658e-05 | 3.658e-05 | 1.912e-06 |  | 1 |
 | rgsaddle-neb vs eon-neb | 11 | 3.658e-05 | 3.658e-05 | 1.912e-06 |  | 1 |
 | rgsaddle-neb vs ase-neb | 11 | 3.658e-05 | 3.658e-05 | 1.912e-06 |  | 1 |
-| rgsaddle-ci vs eon-ci | 11 | 3.658e-05 | 3.658e-05 | 1.912e-06 |  | 7.396e-07 |
-| rgsaddle-ci vs ase-ci | 11 | 3.658e-05 | 3.658e-05 | 1.912e-06 |  | 1 |
-| rgsaddle-dimer vs eon-dimer |  | 0.00201 | 0.001354 | 0.5444 |  | 1 |
-| rgsaddle-dimer vs ase-dimer |  | 0.0531 | 0.0531 | 0.04639 |  | 1 |
-| rgsaddle-lanczos vs eon-lanczos |  | 0.0004777 | 0.0004777 | 0.09988 |  | 1 |
+| rgsaddle-ci vs eon-ci | 11 | 3.658e-05 | 3.658e-05 | 1.912e-06 | 1.912e-06 | 1 |
+| rgsaddle-ci vs ase-ci | 11 | 3.658e-05 | 3.658e-05 | 1.912e-06 |  | 7.396e-07 |
+| rgsaddle-dimer vs eon-dimer |  | 0.00201 | 0.001354 | 0.5444 | 0.08086 | 1 |
+| rgsaddle-dimer vs ase-dimer |  | 0.0531 | 0.0531 | 0.04639 | 0.233 | 0.6668 |
+| rgsaddle-lanczos vs eon-lanczos |  | 0.0004777 | 0.0004777 | 0.09988 | 0.5403 | 1 |
 
 ## Failures
 
@@ -230,20 +231,20 @@ Reference usable: True; index 1; barrier 0.2365 eV.
 | lj7 | rgsaddle-lanczos |  | 0 | max_iterations |
 | lj7 | eon-lanczos |  | 0 | BAD_HIGH_ENERGY |
 | cu4_h | eon-neb | 7 | 0 | GOOD |
-| cu4_h | eon-ci | 7 | 0 | GOOD |
 | cu4_h | ase-ci | 7 | 0 | max_iterations |
 | cu4_h | eon-neb | 11 | 0 | GOOD |
-| cu4_h | eon-dimer |  | 0 | GOOD |
 | cu4_h | eon-lanczos |  | 0 | GOOD |
 | cu4_h | eon-lanczos |  | 1 | GOOD |
 | cu4_h | rgsaddle-lanczos |  | 1 | max_iterations |
-| cu4_h | eon-dimer |  | 1 | GOOD |
 | cu4_h | eon-neb | 11 | 1 | GOOD |
 | cu4_h | ase-ci | 7 | 1 | max_iterations |
-| cu4_h | eon-ci | 7 | 1 | GOOD |
 | cu4_h | eon-neb | 7 | 1 | GOOD |
+| lj7 | eon-lanczos |  | 1 | GOOD |
+| lj7 | rgsaddle-lanczos |  | 1 | max_iterations |
+| lj7 | rgsaddle-dimer |  | 1 | max_iterations |
+| lj7 | eon-ci | 11 | 1 | GOOD |
 
-355 further failures are in the JSON.
+336 further failures are in the JSON.
 
 ## Build
 
@@ -263,4 +264,5 @@ Reference usable: True; index 1; barrier 0.2365 eV.
 | rgmin | 0.6.0 |
 | readcon-core | 0.20.0 |
 
-eOn was built with native architecture off and fast math off. Its bundled vector library is not on the timed potential path. The eOn rgpot engine calls capnp directly, so that client was linked with capnp-rpc. One core, one thread, 12 rounds.
+eOn was built with native architecture off and fast math off. Its bundled vector library is not on the timed potential path. The eOn rgpot engine calls capnp directly, so that client was linked with capnp-rpc.
+One core, one thread, 12 rounds.
