@@ -96,3 +96,10 @@ Its ~certified~ is 1 while a certificate holds for the current point, the climbi
 A host that loads the library at run time checks ~rgsaddle_abi_version()~ for at least minor 40 before resolving these symbols.
 The C++ ~Band~, ~MinMode~ and ~Ocineb~ wrappers have ~set_saddle_check~ and ~saddle_index~, ~rgsaddle::saddle_check()~ returns the defaults and ~rgsaddle::saddle_index~ certifies one point.
 Python's ~MinMode~ reports the index in ~SessionReport.saddle_index~ and has ~saddle_index~ and ~set_saddle_check~, ~rgsaddle.saddle_index~ certifies one point, and ~rgsaddle.ase.saddle_index~ and ~rgsaddle.ase.NEB.saddle_index~ certify ASE atoms and the climbing image of an ASE band.
+
+ABI minor 42 adds dynamic NEB.
+~rgsaddle_band_set_dynamic~ takes 0 to clear it or 1 to set ~fmax~ and ~scale_fmax~; any other flag returns ~RGSADDLE_INVALID_PARAMETER~ and leaves the band unchanged.
+A solid-state band and the trust-region stepper are refused.
+~rgsaddle_dyneb_mask~ applies the same mask to a projected band the host already holds.
+While the option is on, an interior image that a neighbour pulls back over its threshold is requested alone: ~RGSADDLE_REQ_ONE_IMAGE~ is set, ~image~ is that image's band index, ~n_images~ is the band length, and ~RGSADDLE_REQ_CLIMBING_IMAGE~ is not set.
+A host that loads the library at run time checks ~rgsaddle_abi_version()~ for at least minor 42 before resolving either symbol.

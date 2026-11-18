@@ -230,6 +230,9 @@ typedef struct RgsaddleMinMode RgsaddleMinMode;
  * image carried (endpoints 0 and band - 1 appear only on the first
  * evaluation), positions and gradients are 3 * n_atoms, energies is
  * one value, and n_images is the length of the band.
+ * From ABI minor 42 a dynamic NEB step sends this request, without
+ * RGSADDLE_REQ_CLIMBING_IMAGE, for an interior image a neighbour
+ * pulled back over its threshold.
  *
  * While the min-mode refinement runs (ABI minor 21, see
  * RGSADDLE_BAND_NO_MIN_MODE) each request carries the climbing image
