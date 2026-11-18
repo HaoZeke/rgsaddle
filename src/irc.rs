@@ -15,6 +15,18 @@
 //! `gpr_optim` `IRCDriver`. Ambient algebra goes through
 //! `rgmin::vecops`. The host owns the loop. `run` is a convenience
 //! over `step`.
+//!
+//! Units and shapes: positions are flat `3N` Cartesian vectors in Angstrom
+//! (atom-major), energies are in eV and the surface gradient is in
+//! eV/Angstrom, masses are in amu (length `N`, one per atom). The path
+//! metric is mass-weighted, so a sphere radius `dx` and the arc length are in
+//! sqrt(amu) Angstrom for [`IrcSession::new`]; for
+//! [`IrcSession::new_euclidean`] they are in the native units of the
+//! surface. Errors are [`SaddleError::Shape`] for inconsistent lengths,
+//! [`SaddleError::NonFinite`] for a non-finite gradient, and whatever the
+//! surface returns. The follow-up of a saddle search is a minimum: a
+//! first-order saddle and its imaginary mode come from [`crate::minmode`] or
+//! [`mod@crate::saddle_index`].
 
 use ndarray::{Array1, Array2, ArrayView1};
 use rgmin::vecops::{Vector, axpy, dot, nrm2, nrminf};
@@ -36,11 +48,14 @@ use crate::minmode::PointSurface;
 const BFGS_CURVATURE: f64 = 1e-12;
 
 /// Which side of the imaginary mode to follow.
+///
+/// The mode is first signed so that its first nonzero component is positive;
+/// [`IrcDirection::Forward`] launches along it and [`IrcDirection::Reverse`] against it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IrcDirection {
-    /// The Forward.
+    /// Launch along the signed mode.
     Forward,
-    /// The Reverse.
+    /// Launch against the signed mode.
     Reverse,
 }
 
@@ -69,6 +84,9 @@ pub enum IrcKind {
 
 impl IrcKind {
     /// C `rgsaddle_irc_kind_t`.
+    ///
+    /// 0 for [`IrcKind::Gs2`], 1 for [`IrcKind::Morokuma`] and 2 for
+    /// [`IrcKind::SellaSphere`].
     pub const fn to_abi(self) -> i32 {
         match self {
             Self::Gs2 => 0,
@@ -85,21 +103,30 @@ impl IrcKind {
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct IrcConfig {
-    /// Sphere radius in the session metric (Sella `dx`) and Morokuma `h`.
+    /// Sphere radius in the session metric (Sella `dx`) and Morokuma `h`: the
+    /// mass-weighted step length, in sqrt(amu) Angstrom for [`IrcSession::new`].
+    /// [`IrcKind::Gs2`] uses `dx / 2` for its sphere. A rejected trial halves it down
+    /// to `1e-4` and later steps double it back to the requested value. Default 0.1.
     pub dx: f64,
-    /// The search stops when the largest absolute force component falls under this value, in the host's force units.
+    /// The search stops when [`Self::force_gate`] applied to the gradient falls to
+    /// this value or below, in eV/Angstrom. Default 0.05.
     pub force_tol: f64,
-    /// eOn / gpr_optim `ConvergenceForceNorm`.
+    /// Which norm of the gradient is compared with [`Self::force_tol`] and reported
+    /// as [`IrcReport::max_force`]; eOn / gpr_optim `ConvergenceForceNorm`. Default
+    /// [`crate::ForceGate::MaxForceOnAtom`].
     pub force_gate: crate::ForceGate,
-    /// How many inner trials one sphere step may take.
+    /// How many inner trials one sphere step may take. Default 10.
     pub max_inner: usize,
-    /// Finite-difference Hessian action length for the matrix-free kick.
+    /// Finite-difference Hessian action length for the matrix-free kick of
+    /// [`IrcSession::from_surface`], in Angstrom. Default `1e-3`.
     pub dr: f64,
-    /// Krylov dimension for the lowest-mode kick.
+    /// Krylov dimension for the lowest-mode kick of [`IrcSession::from_surface`].
+    /// Default 12.
     pub krylov_dim: usize,
-    /// Closed lowest-mode backend. Unlinked kinds fail closed.
+    /// Closed lowest-mode backend for [`IrcSession::from_surface`]. Unlinked kinds
+    /// fail closed. Default [`EigensolverKind::Lanczos`].
     pub eigen_kind: EigensolverKind,
-    /// [`IrcKind::SellaSphere`] is the default.
+    /// How an outer increment is formed; [`IrcKind::SellaSphere`] is the default.
     pub kind: IrcKind,
 }
 
@@ -129,20 +156,26 @@ impl Default for IrcConfig {
     }
 }
 
-/// One accepted IRC point.
+/// One accepted IRC point, returned by [`IrcSession::step`] and [`IrcSession::run`].
 #[derive(Clone, Debug)]
 pub struct IrcReport {
-    /// Potential energy in the host's energy unit.
+    /// Potential energy at the point, in eV.
     pub energy: f64,
-    /// Largest absolute force component, in the host's force units.
+    /// The [`IrcConfig::force_gate`] norm of the gradient at the point, in eV/Angstrom
+    /// (by default the largest per-atom force magnitude).
     pub max_force: f64,
-    /// The arc.
+    /// Arc length of the path so far in the session metric, in sqrt(amu) Angstrom for
+    /// [`IrcSession::new`]. A sphere step adds `dx` ([`IrcKind::Gs2`]: the
+    /// mass-weighted length of the step); a Morokuma step adds its mass-weighted length.
     pub arc: f64,
-    /// The inner steps.
+    /// Number of inner trials this move used: up to [`IrcConfig::max_inner`] for a
+    /// sphere kind; 0, 1 or 2 for [`IrcKind::Morokuma`], which stops early at a
+    /// minimum.
     pub inner_steps: usize,
-    /// On a sphere step: past the kick, the force at or below `force_tol`,
-    /// and positive curvature along the launch mode at this point. The
-    /// sphere radius does not enter.
+    /// True when the branch has reached a minimum. On a sphere step: past the kick,
+    /// the force at or below `force_tol`, and positive curvature along the launch mode
+    /// at this point; the sphere radius does not enter. On a Morokuma step: past the
+    /// kick with the force at or below `force_tol`, or the path has reversed.
     pub at_minimum: bool,
 }
 
@@ -166,6 +199,42 @@ enum Inside {
 }
 
 /// Forward or reverse roll-down from a first-order saddle.
+///
+/// Build one with [`IrcSession::new`], [`IrcSession::new_euclidean`] or
+/// [`IrcSession::from_surface`], then call [`IrcSession::step`] until
+/// [`IrcReport::at_minimum`] or use [`IrcSession::run`].
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::{Array1, ArrayView1, array};
+/// use rgsaddle::SaddleError;
+/// use rgsaddle::irc::{IrcConfig, IrcDirection, IrcSession};
+/// use rgsaddle::minmode::PointSurface;
+///
+/// // E = (x^2 - 1)^2 + 2 y^2 in eV: minima at (+-1, 0), saddle at the origin.
+/// struct DoubleWell;
+///
+/// impl PointSurface for DoubleWell {
+///     fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+///         let energy = (x[0] * x[0] - 1.0).powi(2) + 2.0 * x[1] * x[1];
+///         let gradient = array![4.0 * x[0] * (x[0] * x[0] - 1.0), 4.0 * x[1]];
+///         Ok((energy, gradient))
+///     }
+/// }
+///
+/// // The imaginary mode at the saddle is along x.
+/// let mut session = IrcSession::new_euclidean(
+///     IrcConfig::default(),
+///     array![0.0, 0.0],
+///     array![1.0, 0.0],
+///     IrcDirection::Forward,
+/// )?;
+/// let report = session.run(&DoubleWell, 200)?;
+/// assert!(report.at_minimum);
+/// assert!((session.position()[0] - 1.0).abs() < 0.05);
+/// # Ok::<(), SaddleError>(())
+/// ```
 pub struct IrcSession {
     config: IrcConfig,
     x: Array1<f64>,
@@ -187,7 +256,17 @@ pub struct IrcSession {
 }
 
 impl IrcSession {
-    /// `mode` is the Cartesian imaginary-mode direction (not yet scaled).
+    /// Atomistic session with mass-weighted Cartesian coordinates.
+    ///
+    /// `config` holds the controls, `saddle` is the `3N` first-order saddle in Angstrom,
+    /// `masses` the `N` atomic masses in amu, and `mode` the `3N` Cartesian
+    /// imaginary-mode direction (not yet scaled; only its direction matters).
+    /// `direction` picks the branch.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] when `saddle` is empty or not a multiple of 3, or when
+    /// `masses` (`N`) or `mode` (`3N`) do not match it.
     pub fn new(
         config: IrcConfig,
         saddle: Array1<f64>,
@@ -220,6 +299,13 @@ impl IrcSession {
     /// The native coordinates are the path metric, so every coordinate has
     /// unit mass weight. Use [`Self::new`] for atomistic Cartesian positions,
     /// where atomic masses define the metric.
+    ///
+    /// `saddle` and `mode` have the same nonzero length, in the native units of the
+    /// surface.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] when `saddle` is empty or `mode` differs in length.
     pub fn new_euclidean(
         config: IrcConfig,
         saddle: Array1<f64>,
@@ -286,6 +372,18 @@ impl IrcSession {
     /// `M^{-1/2} H M^{-1/2}`, the direction in which Fukui's IRC leaves the
     /// saddle, from matrix-free Lanczos on finite-difference Hessian
     /// actions. `seed` and the surface's excluded modes are Cartesian.
+    ///
+    /// `saddle` is the `3N` saddle in Angstrom, `masses` the `N` atomic masses in amu and
+    /// `seed` the `3N` starting direction for Lanczos. `config.eigen_kind`,
+    /// `config.krylov_dim` and `config.dr` control the eigensolve, which costs a
+    /// number of gradient evaluations of `surface`.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] when the lengths disagree, when the excluded modes of
+    /// `surface` are malformed or leave no free direction; [`SaddleError::NonFinite`]
+    /// for a non-finite eigenpair; [`SaddleError::Solver`] when the eigensolver
+    /// fails; and the errors of `surface`.
     pub fn from_surface<S: crate::minmode::PointSurface>(
         config: IrcConfig,
         saddle: Array1<f64>,
@@ -316,19 +414,24 @@ impl IrcSession {
         Self::new(config, saddle, masses, mode, direction)
     }
 
-    /// Cartesian coordinates, length 3N, in the host's length unit.
+    /// Current Cartesian coordinates, length `3N` (the session dimension for
+    /// [`IrcSession::new_euclidean`]), in Angstrom. The saddle itself before the first
+    /// step.
     pub fn position(&self) -> ArrayView1<'_, f64> {
         self.x.view()
     }
 
-    /// Reset.
+    /// Forget the quasi-Newton model and re-seed it with the saddle mode. The position
+    /// and the arc length are kept; use [`IrcSession::set_direction`] to return to the
+    /// saddle.
     pub fn reset(&mut self) {
         self.hess.forget();
         self.hess_pairs = 0;
         self.seed_ts_mode();
     }
 
-    /// Restore the saddle and flip the kick sign.
+    /// Restore the saddle, the requested `dx` and an empty model, and set the kick for
+    /// `direction`. The arc length restarts at zero.
     pub fn set_direction(&mut self, direction: IrcDirection) {
         self.config.dx = self.dx_target;
         self.x = self.x_saddle.clone();
@@ -480,6 +583,14 @@ impl IrcSession {
     /// One outer IRC move. [`IrcKind::SellaSphere`] and [`IrcKind::Gs2`]
     /// minimize on a sphere; [`IrcKind::Morokuma`] is the IRCDriver
     /// predictor-corrector.
+    ///
+    /// The first call performs the kick from the saddle. `surface` supplies the
+    /// gradient in eV/Angstrom; the returned [`IrcReport`] describes the new point.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::NonFinite`] when the gradient is not finite, and the errors of
+    /// `surface`.
     pub fn step<S: PointSurface>(&mut self, surface: &S) -> Result<IrcReport, SaddleError> {
         if self.config.kind == IrcKind::Morokuma {
             return self.step_morokuma(surface);
@@ -738,6 +849,14 @@ impl IrcSession {
     }
 
     /// Convenience loop over [`IrcSession::step`]; nothing more.
+    ///
+    /// Calls `step` at least once and at most `max_steps` times (`0` still takes one
+    /// step), stopping at the first report with [`IrcReport::at_minimum`] set. Returns
+    /// the last report.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`IrcSession::step`].
     pub fn run<S: PointSurface>(
         &mut self,
         surface: &S,
