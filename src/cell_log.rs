@@ -4,6 +4,16 @@
 //! 3x3 `expm` / `logm` are scaling-and-squaring plus a Taylor series.
 //! Dest packs either raw lattice entries or this `L` chart. Niggli
 //! on the log chart transforms the cell Hessian by `T = J_old^{-1} J_new`.
+//!
+//! Units and shapes: the lattice is three row vectors in Angstrom, stored as
+//! a [`M3`] (`a[i]` is lattice vector `i`) or as nine row-major numbers
+//! `[a_x, a_y, a_z, b_x, ...]`. In the entries chart the packed parameters
+//! are those lattice entries in Angstrom; in the log chart they are the
+//! dimensionless entries of `L`. The cell block of a packed gradient is
+//! `dE/dC` in eV/Angstrom (entries chart) or eV (log chart). A mask of nine
+//! flags picks the free entries, and packed vectors hold the free ones in
+//! row-major order. Failures are [`SaddleError::Shape`], for a singular
+//! cell or a mismatched increment.
 
 use ndarray::{Array1, Array2};
 
@@ -16,12 +26,13 @@ pub enum CellChart {
     /// Masked row-major lattice entries.
     #[default]
     Entries,
-    /// Sella `L = logm(F) * factor`.
+    /// Sella `L = logm(F) * factor` with `F = cell @ inv(orig)`, dimensionless.
+    /// Ordinal 1.
     LogDeform,
 }
 
 impl CellChart {
-    /// Fn.
+    /// C / Python ordinal: 0 for [`CellChart::Entries`], 1 for [`CellChart::LogDeform`].
     pub const fn to_abi(self) -> i32 {
         match self {
             Self::Entries => 0,
@@ -29,7 +40,7 @@ impl CellChart {
         }
     }
 
-    /// Fn.
+    /// Inverse of [`CellChart::to_abi`]; any other ordinal is `None`.
     pub const fn try_from_abi(v: i32) -> Option<Self> {
         match v {
             0 => Some(Self::Entries),
@@ -39,15 +50,15 @@ impl CellChart {
     }
 }
 
-/// The M3.
+/// A 3x3 matrix as three rows. As a lattice, row `i` is lattice vector `i`.
 pub type M3 = [[f64; 3]; 3];
 
-/// M3 from row9.
+/// Rows `[c[0..3], c[3..6], c[6..9]]` of a nine-number row-major array.
 pub fn m3_from_row9(c: [f64; 9]) -> M3 {
     [[c[0], c[1], c[2]], [c[3], c[4], c[5]], [c[6], c[7], c[8]]]
 }
 
-/// M3 to row9.
+/// Inverse of [`m3_from_row9`]: the nine entries in row-major order.
 pub fn m3_to_row9(a: M3) -> [f64; 9] {
     [
         a[0][0], a[0][1], a[0][2], a[1][0], a[1][1], a[1][2], a[2][0], a[2][1], a[2][2],
@@ -88,7 +99,7 @@ fn scale(s: f64, a: M3) -> M3 {
     c
 }
 
-/// M3 mul.
+/// Matrix product `a b`.
 pub fn m3_mul(a: M3, b: M3) -> M3 {
     let mut c = [[0.0; 3]; 3];
     for i in 0..3 {
@@ -109,14 +120,18 @@ fn frobenius(a: M3) -> f64 {
     s.sqrt()
 }
 
-/// M3 det.
+/// Determinant of `a`.
 pub fn m3_det(a: M3) -> f64 {
     a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
         - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
         + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0])
 }
 
-/// M3 inv.
+/// Inverse of `a`.
+///
+/// # Errors
+///
+/// [`SaddleError::Shape`] when `|det a|` is below `1e-18`, a singular cell.
 pub fn m3_inv(a: M3) -> Result<M3, SaddleError> {
     let d = m3_det(a);
     if d.abs() < 1e-18 {
@@ -152,7 +167,25 @@ fn sqrtm_db(a: M3) -> Result<M3, SaddleError> {
     Ok(y)
 }
 
-/// Scaling-and-squaring Taylor `expm` on a 3x3.
+/// Scaling-and-squaring Taylor `expm` on a 3x3: `u` is halved while its Frobenius
+/// norm exceeds 0.5 (at most 8 times) and a 13-term series follows, so it is
+/// accurate for the small deformations of a cell, not for a matrix of norm
+/// above about 100.
+///
+/// # Examples
+///
+/// ```
+/// use rgsaddle::cell_log::{expm_3x3, logm_3x3};
+///
+/// let u = [[0.01, 0.02, 0.0], [0.0, -0.01, 0.0], [0.0, 0.0, 0.005]];
+/// let back = logm_3x3(expm_3x3(u))?;
+/// for i in 0..3 {
+///     for j in 0..3 {
+///         assert!((back[i][j] - u[i][j]).abs() < 0.001);
+///     }
+/// }
+/// # Ok::<(), rgsaddle::SaddleError>(())
+/// ```
 pub fn expm_3x3(u: M3) -> M3 {
     let mut a = u;
     let mut s = 0u32;
@@ -173,7 +206,13 @@ pub fn expm_3x3(u: M3) -> M3 {
     sum
 }
 
-/// Inverse-scaling plus series `logm` on a 3x3 near GL+(3).
+/// Inverse-scaling plus series `logm` on a 3x3 near GL+(3): `f` is replaced by its
+/// square root until `|f - 1|` is at most 0.3 (at most 12 times) and an
+/// 17-term series follows.
+///
+/// # Errors
+///
+/// [`SaddleError::Shape`] when a square root meets a singular matrix.
 pub fn logm_3x3(f: M3) -> Result<M3, SaddleError> {
     let mut a = f;
     let mut s = 0u32;
@@ -192,7 +231,8 @@ pub fn logm_3x3(f: M3) -> Result<M3, SaddleError> {
     Ok(scale((1u32 << s) as f64, sum))
 }
 
-/// Finite-difference Frechet `d expm(U)[E]`.
+/// Finite-difference Frechet derivative `d expm(U)[E]`: a central difference of
+/// [`expm_3x3`] with step `1e-7` times the larger of 1 and `|U|`.
 pub fn expm_frechet(u: M3, e: M3) -> M3 {
     let n = frobenius(u).max(1.0);
     let eps = 1e-7 * n;
@@ -201,45 +241,68 @@ pub fn expm_frechet(u: M3, e: M3) -> M3 {
     scale(0.5 / eps, sub(plus, minus))
 }
 
-/// Packed Hessian dest can rewrite (niggli `T`).
+/// Packed Hessian dest can rewrite (niggli `T`). Holds a square matrix over the
+/// packed coordinates, atoms first and the free cell entries last.
 pub struct PackedHess {
     b: Array2<f64>,
 }
 
 impl PackedHess {
-    /// Identity.
+    /// Identity Hessian of dimension `n`.
     pub fn identity(n: usize) -> Self {
         Self { b: Array2::eye(n) }
     }
 
-    /// From matrix.
+    /// Wrap a square matrix `b`, in eV per squared packed unit.
     pub fn from_matrix(b: Array2<f64>) -> Self {
         Self { b }
     }
 
-    /// Hessian.
+    /// The current Hessian.
     pub fn hessian(&self) -> &Array2<f64> {
         &self.b
     }
 
-    /// Forget.
+    /// Reset to the identity of the same dimension.
     pub fn forget(&mut self) {
         let n = self.b.nrows();
         self.b = Array2::eye(n);
     }
 
-    /// Update.
+    /// BFGS secant update with step `s` and gradient difference `y`; see
+    /// [`crate::qn::update_h`] (a pair with `||s|| < 1e-8` or a wrong length is skipped).
     pub fn update(&mut self, s: &Array1<f64>, y: &Array1<f64>) {
         crate::qn::update_h(&mut self.b, s, y, crate::qn::HessUpdate::Bfgs);
     }
 
-    /// Update ts.
+    /// TS-BFGS secant update; see [`crate::qn::HessUpdate::TsBfgs`] and
+    /// [`crate::qn::update_h`].
     pub fn update_ts(&mut self, s: &Array1<f64>, y: &Array1<f64>) {
         crate::qn::update_h(&mut self.b, s, y, crate::qn::HessUpdate::TsBfgs);
     }
 }
 
 /// Living cell chart: lattice, reference, mask, log vs entries.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::array;
+/// use rgsaddle::cell_log::{CellChart, CellState};
+/// use rgsaddle::mic::Cell;
+///
+/// let cell = Cell::ortho(10.0, 10.0, 10.0).unwrap();
+/// let mut state = CellState::new(cell, 8);
+/// state.set_kind(CellChart::LogDeform);
+/// // Free entries: the three diagonal ones (indices 0, 4, 8).
+/// state.set_mask([true, false, false, false, true, false, false, false, true]);
+/// assert_eq!(state.n_cell_dof(), 3);
+/// // Strain the x vector by exp(0.8 / 8) in the log chart (factor 8 = atom count).
+/// state.kick_params(&array![0.8, 0.0, 0.0])?;
+/// let stretched = 10.0 * (0.8f64 / 8.0).exp();
+/// assert!((state.lattice()[0][0] - stretched).abs() < 0.001);
+/// # Ok::<(), rgsaddle::SaddleError>(())
+/// ```
 pub struct CellState {
     cell: Cell,
     orig: [f64; 9],
@@ -249,7 +312,8 @@ pub struct CellState {
 }
 
 impl CellState {
-    /// New.
+    /// Entries chart with every entry free. `cell` is the reference cell (Angstrom) and
+    /// the log factor is `max(n_atoms, 1)`, as Sella uses the atom count.
     pub fn new(cell: Cell, n_atoms: usize) -> Self {
         let orig = cell9_of(&cell);
         Self {
@@ -267,27 +331,31 @@ impl CellState {
     }
 
     /// Set cell.
+    ///
+    /// The new cell also becomes the reference of the log chart.
     pub fn set_cell(&mut self, cell: Cell) {
         self.orig = cell9_of(&cell);
         self.cell = cell;
     }
 
-    /// Set mask.
+    /// Choose which of the nine row-major lattice entries are free. The mask is not
+    /// validated; later increments must have one entry per free flag.
     pub fn set_mask(&mut self, mask: [bool; 9]) {
         self.mask = mask;
     }
 
-    /// Mask.
+    /// The nine free flags, row-major.
     pub fn mask(&self) -> [bool; 9] {
         self.mask
     }
 
-    /// Which estimator produces the lowest mode.
+    /// The active chart.
     pub fn kind(&self) -> CellChart {
         self.kind
     }
 
-    /// Set kind.
+    /// Select the chart. Choosing [`CellChart::LogDeform`] makes the current cell the
+    /// reference, so the log parameters start at zero.
     pub fn set_kind(&mut self, kind: CellChart) {
         self.kind = kind;
         if kind == CellChart::LogDeform {
@@ -295,29 +363,30 @@ impl CellState {
         }
     }
 
-    /// Set factor.
+    /// Set the log-chart factor. A value that is not positive (NaN included) is
+    /// ignored.
     pub fn set_factor(&mut self, factor: f64) {
         if factor > 0.0 {
             self.factor = factor;
         }
     }
 
-    /// Factor.
+    /// The log-chart factor.
     pub fn factor(&self) -> f64 {
         self.factor
     }
 
-    /// N cell dof.
+    /// Number of free lattice entries (set flags in the mask).
     pub fn n_cell_dof(&self) -> usize {
         self.mask.iter().filter(|b| **b).count()
     }
 
-    /// Cell9.
+    /// The nine lattice entries in Angstrom, row-major.
     pub fn cell9(&self) -> [f64; 9] {
         cell9_of(&self.cell)
     }
 
-    /// Lattice.
+    /// The lattice as three row vectors in Angstrom.
     pub fn lattice(&self) -> [[f64; 3]; 3] {
         lattice_of(&self.cell)
     }
@@ -327,7 +396,12 @@ impl CellState {
         Ok(())
     }
 
-    /// Params.
+    /// The free cell parameters in the active chart, row-major over the mask: lattice
+    /// entries in Angstrom, or entries of `L`.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] when the reference cell is singular (log chart).
     pub fn params(&self) -> Result<Array1<f64>, SaddleError> {
         let raw = match self.kind {
             CellChart::Entries => self.cell9(),
@@ -350,6 +424,13 @@ impl CellState {
     }
 
     /// Add a masked increment in the active chart and write the cell.
+    ///
+    /// `d` has one entry per free lattice entry, in the units of [`Self::params`].
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] when `d` does not match [`Self::n_cell_dof`] or the
+    /// resulting cell is singular.
     pub fn kick_params(&mut self, d: &Array1<f64>) -> Result<(), SaddleError> {
         if d.len() != self.n_cell_dof() {
             return Err(SaddleError::Shape(
@@ -385,7 +466,14 @@ impl CellState {
         }
     }
 
-    /// Convert `dE/dC` (row-major 9) into the active chart gradient.
+    /// Convert `dE/dC` (row-major 9, eV/Angstrom) into the active chart gradient: the
+    /// same entries for [`CellChart::Entries`], or `J^T dE/dC` with
+    /// `J[ab, ij] = dC_ab / dL_ij` for the log chart (eV). Only the free entries are
+    /// returned.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] when the cell or its reference is singular.
     pub fn chart_grad(&self, g_c: [f64; 9]) -> Result<Array1<f64>, SaddleError> {
         let g_raw = match self.kind {
             CellChart::Entries => g_c,
@@ -432,8 +520,16 @@ impl CellState {
         Ok(j)
     }
 
-    /// Niggli-reduce. Returns `(applied, T_masked)` on the log chart.
-    /// `T` is `ncell x ncell`. Entries chart returns `None` for `T`.
+    /// Niggli-reduce when some cell angle is more than `angle_threshold` degrees from
+    /// 90. `niggli_fn` maps the three lattice vectors to the reduced ones. Returns
+    /// `(applied, T_masked)`: `T` is `ncell x ncell` on the log chart and `None` for
+    /// the entries chart or when nothing was applied. The cell and the log reference
+    /// are replaced when reduction applies.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] when the cell, its reference or the reduced cell is
+    /// singular.
     pub fn maybe_niggli(
         &mut self,
         angle_threshold: f64,
@@ -516,6 +612,11 @@ fn solve_3n(a: &Array2<f64>, b: &Array2<f64>) -> Result<Array2<f64>, SaddleError
 }
 
 /// Apply `H_new = T^T H_old T` on the cell block of a packed Hessian.
+///
+/// `h` is `n x n` with the `n_noncell` atomic coordinates first and `m` cell entries
+/// last, `t` is `m x m`. The cell block becomes `T^T H_cc T` and the coupling `H_xc`
+/// becomes `H_xc T` (with `H_cx` its transpose). `h` is left unchanged when the
+/// shapes do not match.
 pub fn transform_cell_block(h: &mut Array2<f64>, n_noncell: usize, t: &Array2<f64>) {
     let n = h.nrows();
     let m = t.nrows();
