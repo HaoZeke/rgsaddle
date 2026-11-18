@@ -28,7 +28,7 @@ extern "C" {
 #endif
 
 #define RGSADDLE_ABI_MAJOR 1u
-#define RGSADDLE_ABI_MINOR 45u
+#define RGSADDLE_ABI_MINOR 46u
 
 /**
  * Band config flags bit 0. When set, each evaluation calls the surface
@@ -1221,6 +1221,22 @@ rgsaddle_status_t rgsaddle_idpp_path(int64_t n_images, int64_t n_atoms,
                                      const double *product, const double *cell,
                                      int64_t max_iterations, double grad_tol,
                                      double max_move, double *out);
+
+/**
+ * Translation rotation internal coordinates with splicing, ABI minor 46.
+ *
+ * `initial` and `out` each hold `n_images * 3 * n_atoms` doubles in
+ * image major order. The initial path may come from linear or IDPP
+ * interpolation. One TRIC system is built per image, low diagnostic
+ * segments are interpolated in their internal metrics, and overlapping
+ * endpoints are spliced to `splice_tolerance`. The published tolerance
+ * is 0.0018 Angstrom.
+ */
+rgsaddle_status_t rgsaddle_trics_path(
+    int64_t n_images, int64_t n_atoms, const double *initial,
+    int64_t max_inversion_iterations, double inversion_tolerance,
+    double max_move, int32_t diagnostic_threshold, double splice_tolerance,
+    int64_t max_splice_iterations, double *out);
 
 typedef struct RgsaddleOcineb RgsaddleOcineb;
 

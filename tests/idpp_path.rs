@@ -490,6 +490,38 @@ fn c_abi_idpp_path_copies_the_endpoints() {
 }
 
 #[test]
+#[cfg(feature = "capi")]
+fn c_abi_trics_path_refines_a_supplied_path() {
+    use rgsaddle::capi::{RGSADDLE_OK, rgsaddle_trics_path};
+
+    let reactant = array![0.0, 0.0, 0.0, 0.96, 0.0, 0.0, -0.24, 0.93, 0.0];
+    let product = array![0.2, 0.0, 0.0, 1.18, 0.1, 0.0, -0.1, 1.0, 0.1];
+    let initial = linear_path(reactant.view(), product.view(), 5, None).unwrap();
+    let mut out = vec![0.0; initial.len()];
+    let rc = unsafe {
+        rgsaddle_trics_path(
+            5,
+            3,
+            initial.as_ptr(),
+            50,
+            0.000_000_01,
+            0.1,
+            1,
+            0.001_8,
+            1000,
+            out.as_mut_ptr(),
+        )
+    };
+    assert_eq!(rc, RGSADDLE_OK);
+    assert_eq!(&out[..reactant.len()], reactant.as_slice().unwrap());
+    assert_eq!(
+        &out[out.len() - product.len()..],
+        product.as_slice().unwrap()
+    );
+    assert!(out.iter().all(|value| value.is_finite()));
+}
+
+#[test]
 fn rejects_a_short_path_and_a_bad_stop() {
     let reactant = array![0.0, 0.0, 0.0, 1.0, 0.0, 0.0];
     let product = array![0.0, 1.0, 0.0, 1.0, 1.0, 0.0];

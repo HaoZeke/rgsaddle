@@ -36,7 +36,7 @@ use crate::tangent::TangentKind;
 /// The RGSADDLE ABI MAJOR.
 pub const RGSADDLE_ABI_MAJOR: u32 = 1;
 /// The RGSADDLE ABI MINOR.
-pub const RGSADDLE_ABI_MINOR: u32 = 45;
+pub const RGSADDLE_ABI_MINOR: u32 = 46;
 
 /// A band, min-mode or OCI-NEB config of this minor or newer certifies
 /// the saddle index at convergence by default.
@@ -2192,6 +2192,62 @@ pub unsafe extern "C" fn rgsaddle_idpp_path(
         Ok(path) => {
             for (i, v) in path.iter().enumerate() {
                 out[i] = *v;
+            }
+            RGSADDLE_OK
+        }
+        Err(err) => status_of(&err),
+    }
+}
+
+/// # Safety
+/// `initial` and `out` each hold `n_images * 3 * n_atoms` doubles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_trics_path(
+    n_images: i64,
+    n_atoms: i64,
+    initial: *const f64,
+    max_inversion_iterations: i64,
+    inversion_tolerance: f64,
+    max_move: f64,
+    diagnostic_threshold: i32,
+    splice_tolerance: f64,
+    max_splice_iterations: i64,
+    out: *mut f64,
+) -> i32 {
+    if initial.is_null() || out.is_null() {
+        return RGSADDLE_INVALID_PARAMETER;
+    }
+    if n_images < 2
+        || n_atoms < 1
+        || max_inversion_iterations < 1
+        || max_splice_iterations < 1
+        || !(0..=3).contains(&diagnostic_threshold)
+    {
+        return RGSADDLE_SHAPE;
+    }
+    let dof = (3 * n_atoms) as usize;
+    let images = n_images as usize;
+    let total = dof * images;
+    let initial = unsafe { slice::from_raw_parts(initial, total) };
+    let out = unsafe { slice::from_raw_parts_mut(out, total) };
+    let initial = match Array2::from_shape_vec((images, dof), initial.to_vec()) {
+        Ok(path) => path,
+        Err(_) => return RGSADDLE_SHAPE,
+    };
+    let config = crate::TricsConfig::default()
+        .with_inversion(
+            crate::TricInversionConfig::default()
+                .with_max_iterations(max_inversion_iterations as usize)
+                .with_tolerance(inversion_tolerance)
+                .with_max_atom_move(max_move),
+        )
+        .with_diagnostic_threshold(diagnostic_threshold as u8)
+        .with_splice_tolerance(splice_tolerance)
+        .with_max_splice_iterations(max_splice_iterations as usize);
+    match crate::trics_path(initial.view(), &config) {
+        Ok(report) => {
+            for (slot, value) in out.iter_mut().zip(&report.path) {
+                *slot = *value;
             }
             RGSADDLE_OK
         }
