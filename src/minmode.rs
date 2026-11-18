@@ -3842,6 +3842,40 @@ mod tests {
         }
     }
 
+    #[test]
+    fn dimer_and_lanczos_leave_different_trajectories() {
+        let start = array![0.4, -0.2, 0.3, 0.15];
+        let mode = array![0.2, 0.7, -0.1, 0.4];
+        let open = |kind| {
+            MinModeSession::new(
+                MinModeConfig::default()
+                    .with_kind(kind)
+                    .with_force_tol(1e-12)
+                    .with_max_move(0.2),
+                start.clone(),
+                mode.clone(),
+            )
+            .unwrap()
+        };
+        let mut dimer = open(MinModeKind::Dimer);
+        let mut lanczos = open(MinModeKind::Lanczos);
+        let surface = AnisotropicQuadratic;
+        let mut separated = false;
+        for _ in 0..4 {
+            dimer.step(&surface).unwrap();
+            lanczos.step(&surface).unwrap();
+            let delta = &dimer.position() - &lanczos.position();
+            if delta.dot(&delta).sqrt() > 1e-8 {
+                separated = true;
+                break;
+            }
+        }
+        assert!(
+            separated,
+            "dimer and lanczos shared a trajectory from the same start"
+        );
+    }
+
     struct ExcludedAnisotropicQuadratic;
 
     impl PointSurface for ExcludedAnisotropicQuadratic {

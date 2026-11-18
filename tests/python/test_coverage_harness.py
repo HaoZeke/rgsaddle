@@ -98,3 +98,32 @@ def test_rotated_copy_scores_about_zero():
     swapped = trial.copy()
     swapped[[0, 2]] = swapped[[2, 0]]
     assert harness.rmsd(system, reference, swapped) < 1e-8
+
+
+def test_shared_reactant_does_not_share_a_minmode_start():
+    reactant = np.zeros((6, 3), dtype=np.float64)
+    reactant[1, 0] = 1.2
+    reactant[2, 1] = 0.8
+    fixed = np.zeros(6, dtype=np.uint8)
+    fixed[0] = 1
+    hop = {"name": "pt_hop", "reactant": reactant, "fixed": fixed}
+    exchange = {
+        "name": "pt_exchange",
+        "reactant": reactant.copy(),
+        "fixed": fixed.copy(),
+    }
+    hop_position, hop_mode = harness.displace(hop, 3)
+    exchange_position, exchange_mode = harness.displace(exchange, 3)
+    assert not np.allclose(hop_position, exchange_position)
+    assert not np.allclose(hop_mode, exchange_mode)
+    again, again_mode = harness.displace(hop, 3)
+    assert np.allclose(hop_position, again)
+    assert np.allclose(hop_mode, again_mode)
+
+
+def test_dimer_and_lanczos_are_different_kinds():
+    dimer = harness.minmode_config(0, 0.01)
+    lanczos = harness.minmode_config(1, 0.01)
+    assert dimer.kind == 0
+    assert lanczos.kind == 1
+    assert dimer.kind != lanczos.kind

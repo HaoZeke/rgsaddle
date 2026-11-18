@@ -17,8 +17,10 @@ sets the climbing-after flag with trigger factor 0 and trigger force
 0.5, and turns min-mode refinement off, so the band is plain CI-NEB.
 eOn climbing keeps its own default arm (immediate) and converged_only.
 
-Matched min-mode start: 12 seeds, not a subset. Seed s is
-PCG64(20261118 + s). Each free Cartesian component is an independent
+Matched min-mode start: 12 seeds, not a subset. Seed s for a system
+is PCG64(20261118 + s + tag * 13). The tag is a stable mix of the
+system name, so two systems that share a reactant do not draw the
+same displacement. Each free Cartesian component is an independent
 normal draw with standard deviation 0.1 Angstrom, which is eOn's
 documented displace magnitude. The initial mode is that displacement
 after it is normalized. Fixed components stay zero. The same displaced
@@ -63,6 +65,7 @@ import math
 import os
 import subprocess
 import sys
+import zlib
 import threading
 import time
 
@@ -94,6 +97,10 @@ PROTOCOL = {
     "displacement_sigma_angstrom": 0.1,
     "displacement_generator": "PCG64",
     "displacement_seed_base": 20261118,
+    "displacement_seed": (
+        "PCG64(displacement_seed_base + round + tag * (n_seeds + 1)); "
+        "tag is zlib.crc32 of the system name"
+    ),
     "cluster_rmsd": (
         "center, Kabsch rotation, and enumeration of identical species "
         "when the permutation count is at most 5040"
@@ -1032,10 +1039,18 @@ def rmsd(system, reference, trial):
     return _species_rmsd(left, right, np.asarray(numbers)[free])
 
 
+def displacement_seed(name, seed):
+    # The round index alone is one stream. pt_hop and pt_exchange share a
+    # reactant, and a min-mode search never reads the product, so that
+    # stream was one trajectory. The name tag gives each system its own block.
+    tag = zlib.crc32(str(name).encode("utf-8")) & 0x7FFFFFFF
+    return PROTOCOL["displacement_seed_base"] + int(seed) + tag * (PROTOCOL["n_seeds"] + 1)
+
+
 def displace(system, seed):
     import numpy as np
 
-    rng = np.random.Generator(np.random.PCG64(PROTOCOL["displacement_seed_base"] + seed))
+    rng = np.random.Generator(np.random.PCG64(displacement_seed(system["name"], seed)))
     draw = rng.normal(
         0.0,
         PROTOCOL["displacement_sigma_angstrom"],
