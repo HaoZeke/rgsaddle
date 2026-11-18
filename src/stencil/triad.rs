@@ -8,6 +8,8 @@
 
 use ndarray::{Array1, ArrayView1, ArrayViewMut1, Zip};
 
+use crate::projector::{TangentProjector, UnitNormal};
+
 use crate::error::SaddleError;
 
 /// Inner product used by a stencil. The Euclidean product is
@@ -144,9 +146,7 @@ pub fn reflect_into(force: ArrayView1<f64>, axis: ArrayView1<f64>, out: ArrayVie
 
 /// Perpendicular part `f - (f · v) v`.
 pub fn perp(force: ArrayView1<f64>, axis: ArrayView1<f64>) -> Array1<f64> {
-    let mut out = Array1::zeros(force.len());
-    perp_into(force, axis, out.view_mut());
-    out
+    UnitNormal::new(axis).project(force)
 }
 
 /// [`perp`] written into `out`.

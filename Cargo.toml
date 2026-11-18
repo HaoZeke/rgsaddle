@@ -18,6 +18,8 @@ default = ["faer"]
 capi = []
 par = ["rgmin/par"]
 highs = ["rgmin/highs"]
+ohtst = []
+lammps = ["ohtst", "dep:capnp", "dep:libloading", "dep:rgpot-core"]
 readcon = ["dep:readcon-core"]
 # readcon-db 0.2 pins readcon-core = "=0.17.1", the same release as
 # below, so the corpus and the CON writer share one readcon-core.
@@ -56,6 +58,15 @@ linkcell = { version = "=0.3.5", git = "https://github.com/d-SEAMS/linkcell", re
 minimage = "=0.1.2"
 proptest = { version = "1.6", optional = true }
 rug = { version = "1.27", optional = true }
+capnp = { version = "0.20", optional = true }
+libloading = { version = "0.8.9", optional = true }
+rgpot-core = { version = "=3.7.0", git = "https://github.com/OmniPotentRPC/rgpot", rev = "97ebba0b062128b7dc4637501c4b70ed4944ae9d", features = ["profile"], optional = true }
+
+[package.metadata.rgsaddle-lammps]
+lammpc-git = "https://github.com/OmniPotentRPC/lammpc"
+lammpc-rev = "dc443997"
+rgpot-git = "https://github.com/OmniPotentRPC/rgpot"
+rgpot-rev = "97ebba0b062128b7dc4637501c4b70ed4944ae9d"
 
 [dev-dependencies]
 approx = "0.5"
@@ -66,6 +77,11 @@ sha2 = "0.10"
 [[bench]]
 name = "ohtst"
 harness = false
+required-features = ["ohtst"]
+
+[[example]]
+name = "ohtst_skewed_well"
+required-features = ["ohtst"]
 
 [profile.dev.package.faer]
 opt-level = 3

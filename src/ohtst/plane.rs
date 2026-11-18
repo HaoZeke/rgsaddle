@@ -1,202 +1,59 @@
-//! The hyperplane and the mass-weighted surface it lives on.
+//! Mass-weighted and fixed-cell surfaces used with the shared hyperplane.
 
-use ndarray::{Array1, Array2, ArrayView1, ArrayView2, s};
+use ndarray::{Array1, Array2, ArrayView1};
 
 use crate::error::SaddleError;
-use crate::minmode::{MinModeSession, ModeEstimate, PointSurface};
+use crate::minmode::PointSurface;
+pub use crate::projector::Hyperplane;
+pub(crate) use crate::projector::orthonormal_rows;
+use crate::projector::sqrt_masses;
 
-/// A hyperplane of mass-weighted configuration space.
+/// The three rigid-translation rows in mass-weighted coordinates.
 ///
-/// The plane is `{q : ν · (q - p) = 0}` with `p` a point on it and `ν` a
-/// unit normal. The normal points from the reactant side to the product
-/// side. Sliding `p` inside the plane leaves the plane unchanged.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Hyperplane {
-    point: Array1<f64>,
-    normal: Array1<f64>,
-}
-
-impl Hyperplane {
-    /// The plane through `point` normal to `normal`. The normal is
-    /// normalized.
-    pub fn new(point: Array1<f64>, normal: Array1<f64>) -> Result<Self, SaddleError> {
-        if point.is_empty() || point.len() != normal.len() {
-            return Err(SaddleError::Shape(
-                "hyperplane point and normal need one nonzero length".into(),
-            ));
-        }
-        if !point.iter().chain(normal.iter()).all(|v| v.is_finite()) {
-            return Err(SaddleError::NonFinite("hyperplane"));
-        }
-        let norm = normal.dot(&normal).sqrt();
-        if norm <= 0.0 {
-            return Err(SaddleError::Invalid("hyperplane normal vanishes".into()));
-        }
-        Ok(Self {
-            point,
-            normal: normal / norm,
-        })
+/// `masses` and `n_atoms` both use one value per atom. The returned rows have
+/// shape `(3, 3 * n_atoms)`: x, y and z translations with `sqrt(m_i)` in each
+/// atom block, normalized to unit norm.
+pub fn mass_weighted_rigid_translations(
+    masses: &[f64],
+    n_atoms: usize,
+) -> Result<Array2<f64>, SaddleError> {
+    if n_atoms == 0 {
+        return Err(SaddleError::Invalid(
+            "mass-weighted rigid translations need at least one atom".into(),
+        ));
     }
-
-    /// The plane through a minimum-mode session's position, normal to its
-    /// mode. The session has to run on the mass-weighted surface.
-    pub fn from_min_mode(session: &MinModeSession) -> Result<Self, SaddleError> {
-        Self::new(session.position().to_owned(), session.mode().to_owned())
+    if masses.len() != n_atoms {
+        return Err(SaddleError::Shape(
+            "mass-weighted rigid translations need one mass per atom".into(),
+        ));
     }
-
-    /// The plane through `position` normal to an estimated lowest mode.
-    pub fn from_mode(position: ArrayView1<f64>, mode: &ModeEstimate) -> Result<Self, SaddleError> {
-        Self::new(position.to_owned(), mode.mode.clone())
-    }
-
-    /// The Cartesian plane `{x : n · (x - x0) = 0}` in mass-weighted
-    /// coordinates: `p = M^{1/2} x0` and `ν ∝ M^{-1/2} n`. `masses` has one
-    /// entry per coordinate.
-    pub fn from_cartesian(
-        position: ArrayView1<f64>,
-        normal: ArrayView1<f64>,
-        masses: &[f64],
-    ) -> Result<Self, SaddleError> {
-        let sqrt_mass = sqrt_masses(masses, position.len())?;
-        if normal.len() != position.len() {
-            return Err(SaddleError::Shape(
-                "Cartesian plane point and normal need one length".into(),
-            ));
-        }
-        Self::new(&position * &sqrt_mass, &normal / &sqrt_mass)
-    }
-
-    /// The Cartesian point `M^{-1/2} p` and unit normal `∝ M^{1/2} ν` of
-    /// the same plane.
-    pub fn to_cartesian(&self, masses: &[f64]) -> Result<(Array1<f64>, Array1<f64>), SaddleError> {
-        let sqrt_mass = sqrt_masses(masses, self.dim())?;
-        let normal = &self.normal * &sqrt_mass;
-        let norm = normal.dot(&normal).sqrt();
-        Ok((&self.point / &sqrt_mass, normal / norm))
-    }
-
-    /// A point on the plane.
-    pub fn point(&self) -> ArrayView1<'_, f64> {
-        self.point.view()
-    }
-
-    /// The unit normal.
-    pub fn normal(&self) -> ArrayView1<'_, f64> {
-        self.normal.view()
-    }
-
-    /// Length of the configuration vector.
-    pub fn dim(&self) -> usize {
-        self.point.len()
-    }
-
-    /// Signed distance `ν · (q - p)`, positive on the product side.
-    pub fn distance(&self, q: ArrayView1<f64>) -> f64 {
-        let mut d = 0.0;
-        for i in 0..self.dim() {
-            d += self.normal[i] * (q[i] - self.point[i]);
-        }
-        d
-    }
-
-    /// Orthogonal projection of `q` onto the plane.
-    pub fn project(&self, q: ArrayView1<f64>) -> Array1<f64> {
-        let d = self.distance(q);
-        &q - &(&self.normal * d)
-    }
-
-    /// The same plane with its point moved to the projection of `center`.
-    pub fn recentered(&self, center: ArrayView1<f64>) -> Self {
-        Self {
-            point: self.project(center),
-            normal: self.normal.clone(),
-        }
-    }
-
-    /// The same plane, with the normal reversed when `toward` lies on the
-    /// negative side.
-    pub fn oriented_toward(mut self, toward: ArrayView1<f64>) -> Self {
-        if self.distance(toward) < 0.0 {
-            self.normal.mapv_inplace(|v| -v);
-        }
-        self
-    }
-
-    /// The same plane with its normal made orthogonal to the rows of
-    /// `modes`, rigid translations for instance, and normalized again.
-    pub fn orthogonal_to(&self, modes: ArrayView2<f64>) -> Result<Self, SaddleError> {
-        if modes.nrows() > 0 && modes.ncols() != self.dim() {
-            return Err(SaddleError::Shape(
-                "modes differ in length from the plane".into(),
-            ));
-        }
-        let mut normal = self.normal.clone();
-        for direction in orthonormal_rows(modes, self.dim()) {
-            let c = direction.dot(&normal);
-            normal.scaled_add(-c, &direction);
-        }
-        Self::new(self.point.clone(), normal)
-    }
-
-    /// `[p; ν]`, length `2n`: the layout of
-    /// [`PlaneSample::packed_gradient`](crate::ohtst::PlaneSample::packed_gradient)
-    /// and of the directions
-    /// [`PlaneSample::directional`](crate::ohtst::PlaneSample::directional)
-    /// takes.
-    pub fn packed(&self) -> Array1<f64> {
-        let n = self.dim();
-        let mut x = Array1::zeros(2 * n);
-        x.slice_mut(s![..n]).assign(&self.point);
-        x.slice_mut(s![n..]).assign(&self.normal);
-        x
-    }
-
-    /// Inverse of [`Hyperplane::packed`]. The normal block is normalized.
-    pub fn from_packed(x: ArrayView1<f64>) -> Result<Self, SaddleError> {
-        if x.is_empty() || !x.len().is_multiple_of(2) {
-            return Err(SaddleError::Shape(
-                "a packed hyperplane has an even nonzero length".into(),
-            ));
-        }
-        let n = x.len() / 2;
-        Self::new(x.slice(s![..n]).to_owned(), x.slice(s![n..]).to_owned())
-    }
-}
-
-/// Gram–Schmidt over the rows, twice for round-off. Rows that depend on
-/// earlier ones are dropped.
-pub(crate) fn orthonormal_rows(rows: ArrayView2<f64>, n: usize) -> Vec<Array1<f64>> {
-    let mut basis: Vec<Array1<f64>> = Vec::with_capacity(rows.nrows());
-    for row in rows.rows() {
-        if row.len() != n {
-            continue;
-        }
-        let scale = row.dot(&row).sqrt();
-        let mut v = row.to_owned();
-        for _ in 0..2 {
-            for b in &basis {
-                let c = b.dot(&v);
-                v.scaled_add(-c, b);
-            }
-        }
-        let norm = v.dot(&v).sqrt();
-        if scale > 0.0 && norm > 1.0e-10 * scale {
-            basis.push(v / norm);
-        }
-    }
-    basis
-}
-
-fn sqrt_masses(masses: &[f64], n: usize) -> Result<Array1<f64>, SaddleError> {
-    if masses.len() != n {
-        return Err(SaddleError::Shape("one mass per coordinate".into()));
-    }
-    if !masses.iter().all(|m| m.is_finite() && *m > 0.0) {
+    if !masses.iter().all(|mass| mass.is_finite() && *mass > 0.0) {
         return Err(SaddleError::Invalid(
             "masses must be finite and positive".into(),
         ));
     }
-    Ok(masses.iter().map(|m| m.sqrt()).collect())
+    let normalization = masses.iter().sum::<f64>().sqrt();
+    let mut rows = Array2::zeros((3, 3 * n_atoms));
+    for (atom, mass) in masses.iter().enumerate() {
+        let weight = mass.sqrt() / normalization;
+        let base = 3 * atom;
+        rows[(0, base)] = weight;
+        rows[(1, base + 1)] = weight;
+        rows[(2, base + 2)] = weight;
+    }
+    Ok(rows)
+}
+
+impl Hyperplane {
+    /// Make the normal orthogonal to rigid translations under masses `masses`.
+    pub fn orthogonal_to_mass_weighted_translations(
+        &self,
+        masses: &[f64],
+        n_atoms: usize,
+    ) -> Result<Self, SaddleError> {
+        let translations = mass_weighted_rigid_translations(masses, n_atoms)?;
+        self.orthogonal_to(translations.view())
+    }
 }
 
 /// A Cartesian surface in mass-weighted coordinates `q = M^{1/2} x`.
@@ -339,6 +196,7 @@ impl<S: PointSurface> PointSurface for FixedCell<'_, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ohtst::sample::{LangevinConfig, sample_plane};
     use ndarray::array;
 
     struct Quadratic;
@@ -355,6 +213,40 @@ mod tests {
             modes[(0, 1)] = 1.0;
             Ok(modes)
         }
+    }
+
+    fn center_of_mass(position: ArrayView1<'_, f64>, masses: &[f64]) -> [f64; 3] {
+        let mut com = [0.0; 3];
+        let total_mass = masses.iter().sum::<f64>();
+        for (atom, mass) in masses.iter().enumerate() {
+            let weight = mass.sqrt();
+            let base = 3 * atom;
+            com[0] += weight * position[base];
+            com[1] += weight * position[base + 1];
+            com[2] += weight * position[base + 2];
+        }
+        for value in &mut com {
+            *value /= total_mass;
+        }
+        com
+    }
+
+    fn rigid_translation_axis(normal: ArrayView1<'_, f64>, masses: &[f64]) -> [f64; 3] {
+        let mut axis = [0.0; 3];
+        for (atom, mass) in masses.iter().enumerate() {
+            let weight = mass.sqrt();
+            let base = 3 * atom;
+            axis[0] += weight * normal[base];
+            axis[1] += weight * normal[base + 1];
+            axis[2] += weight * normal[base + 2];
+        }
+        let norm = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+        if norm > 0.0 {
+            axis[0] /= norm;
+            axis[1] /= norm;
+            axis[2] /= norm;
+        }
+        axis
     }
 
     #[test]
@@ -392,6 +284,87 @@ mod tests {
         );
         assert!(Hyperplane::new(array![0.0], array![0.0]).is_err());
         assert!(Hyperplane::new(array![0.0, 1.0], array![1.0]).is_err());
+    }
+
+    #[test]
+    fn mass_weighted_translations_are_orthonormal() {
+        let rows = mass_weighted_rigid_translations(&[1.0, 4.0, 9.0], 3).unwrap();
+        assert_eq!(rows.dim(), (3, 9));
+        for i in 0..3 {
+            for j in 0..3 {
+                let dot = rows.row(i).dot(&rows.row(j));
+                let target = if i == j { 1.0 } else { 0.0 };
+                assert!((dot - target).abs() < 1.0e-14);
+            }
+        }
+        assert!(mass_weighted_rigid_translations(&[], 0).is_err());
+        assert!(mass_weighted_rigid_translations(&[1.0], 2).is_err());
+        assert!(mass_weighted_rigid_translations(&[1.0, 0.0], 2).is_err());
+    }
+
+    #[test]
+    fn hyperplane_can_drop_mass_weighted_translations_from_its_normal() {
+        let masses = [2.0, 5.0];
+        let plane = Hyperplane::new(
+            array![0.0, 0.0, 0.0, 0.2, -0.1, 0.3],
+            array![1.0, 0.2, -0.4, 0.8, 0.1, 0.3],
+        )
+        .unwrap();
+        let orthogonal = plane
+            .orthogonal_to_mass_weighted_translations(&masses, masses.len())
+            .unwrap();
+        let translations = mass_weighted_rigid_translations(&masses, masses.len()).unwrap();
+        for row in translations.rows() {
+            assert!(row.dot(&orthogonal.normal()).abs() < 1.0e-12);
+        }
+    }
+
+    struct TranslationInvariant {
+        translations: Array2<f64>,
+    }
+
+    impl PointSurface for TranslationInvariant {
+        fn eval(&self, q: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+            Ok((0.0, Array1::zeros(q.len())))
+        }
+
+        fn excluded_modes(&self, _q: ArrayView1<f64>) -> Result<Array2<f64>, SaddleError> {
+            Ok(self.translations.clone())
+        }
+    }
+
+    #[test]
+    fn fixed_plane_sampling_has_no_com_drift_along_the_normal() {
+        let masses = [1.0, 3.0];
+        let translations = mass_weighted_rigid_translations(&masses, masses.len()).unwrap();
+        let surface = TranslationInvariant {
+            translations: translations.clone(),
+        };
+        let point = array![0.1, -0.2, 0.3, 0.6, 0.5, -0.4];
+        let raw_normal = array![0.7, 0.3, -0.2, 0.4, 0.1, 0.8];
+        let axis = rigid_translation_axis(raw_normal.view(), &masses);
+        let axis_norm = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+        assert!(axis_norm > 0.0);
+        let plane = Hyperplane::new(point.clone(), raw_normal)
+            .unwrap()
+            .orthogonal_to_mass_weighted_translations(&masses, masses.len())
+            .unwrap();
+        let config = LangevinConfig::default()
+            .with_thermal(0.02)
+            .with_time_step(0.3)
+            .with_records(200)
+            .with_blocks(4)
+            .with_seed(11)
+            .with_retain(4);
+        let sample = sample_plane(&surface, &plane, None, &config).unwrap();
+        let com0 = center_of_mass(point.view(), &masses);
+        for q in sample.retained.iter().chain(std::iter::once(&sample.last)) {
+            let com = center_of_mass(q.view(), &masses);
+            let drift = (com[0] - com0[0]) * axis[0]
+                + (com[1] - com0[1]) * axis[1]
+                + (com[2] - com0[2]) * axis[2];
+            assert!(drift.abs() < 1.0e-12, "COM drift along normal is {drift}");
+        }
     }
 
     #[test]

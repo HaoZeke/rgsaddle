@@ -96,6 +96,7 @@
 mod anharmonic;
 mod basin;
 mod control;
+mod gaussian;
 mod mbar;
 mod optimize;
 mod path;
@@ -104,6 +105,7 @@ mod rate;
 mod reactant;
 mod sample;
 mod spline;
+mod ti;
 mod transmission;
 mod transport;
 mod work;
@@ -111,18 +113,36 @@ mod work;
 pub use anharmonic::{AnharmonicConfig, AnharmonicCorrection, anharmonic_correction};
 pub use basin::{BasinConfig, BasinDensity, BasinEnd, basin_density};
 pub use control::HarmonicReference;
-pub use optimize::{PlaneMetric, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum, PlaneTrace};
+pub use gaussian::{ExactGaussianPlaneSampler, HyperplaneObservable, QuadraticModel};
+pub use optimize::{
+    PlaneMetric, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimizerStatus, PlaneOptimum,
+    PlaneTrace, optimize_plane,
+};
 pub use path::PlanePath;
-pub use plane::{FixedCell, Hyperplane, MassWeighted};
-pub use rate::{OhTstRate, PlaneDensity, flux_mass, ohtst_rate, plane_transmission};
+pub use plane::{FixedCell, Hyperplane, MassWeighted, mass_weighted_rigid_translations};
+pub use rate::{
+    OhTstRate, PlaneDensity, RateMultiplicity, flux_mass, ohtst_rate, plane_transmission,
+};
 pub use reactant::{ReactantDensity, reactant_density};
-pub use sample::{LangevinConfig, PlaneIntegrator, PlaneSample, Uncontrolled, sample_plane};
+pub use sample::{
+    AnalyticSurfaceSampler, LangevinConfig, PlaneIntegrator, PlaneSample, Uncontrolled,
+    sample_plane, sample_plane_with_sampler,
+};
+pub use ti::{
+    AnalyticThermodynamicSampler, THERMODYNAMIC_DERIVATIVE, ThermodynamicIntegrationConfig,
+    ThermodynamicIntegrationEstimate, ThermodynamicIntegrationNode,
+    restricted_thermodynamic_integration, thermodynamic_integration,
+};
+#[allow(deprecated)]
 pub use transmission::{
-    Basins, Counting, EndState, Endpoint, PermutationDistance, QuenchConfig, StateDistance,
+    AnalyticSurfaceDynamics, Basins, Counting, EndState, Endpoint, HyperplaneDynamics,
+    PermutationDistance, QuenchConfig, QuenchedTransitionRegion, StateDistance,
     TransmissionCoefficient, TransmissionConfig, TransmissionEstimate, transmission_coefficient,
+    transmission_coefficient_on_surface,
 };
 pub use transport::{GaussianTransport, Transport};
+#[allow(deprecated)]
 pub use work::{
     ReversibleWork, ReversibleWorkConfig, WorkEstimate, WorkNode, reversible_work,
-    reversible_work_along,
+    reversible_work_along, reversible_work_along_on_surface, reversible_work_on_surface,
 };

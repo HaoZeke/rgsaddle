@@ -20,6 +20,32 @@ pub enum SaddleError {
     #[error("invalid parameter: {0}")]
     /// The Invalid.
     Invalid(String),
+    /// Automated equilibration selected a tail whose two halves still drift.
+    #[error(
+        "constrained ensemble did not equilibrate after {equilibration_steps} steps: split-half drift {drift:.3e} exceeds {sigma_multiple:.1} standard errors ({standard_error:.3e})"
+    )]
+    NotEquilibrated {
+        /// Engine steps discarded, including the configured minimum floor.
+        equilibration_steps: usize,
+        /// Absolute difference of the two half means.
+        drift: f64,
+        /// Root-sum-square block standard error of those means.
+        standard_error: f64,
+        /// Required multiple of `standard_error`.
+        sigma_multiple: f64,
+    },
+    /// The retained tail is too correlated to support the requested blocks.
+    #[error(
+        "constrained ensemble has only {n_eff:.3} effective samples after {equilibration_steps} steps; at least {required:.3} are required"
+    )]
+    InsufficientEffectiveSamples {
+        /// Engine steps discarded, including the configured minimum floor.
+        equilibration_steps: usize,
+        /// Effective sample count of the selected tail.
+        n_eff: f64,
+        /// Minimum effective sample count.
+        required: f64,
+    },
     /// The solver returned the state unchanged while the force is above
     /// its tolerance: the step can no longer make progress.
     #[error("solver step left the state unchanged: {0}")]

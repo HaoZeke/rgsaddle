@@ -19,10 +19,10 @@
 
 use ndarray::{Array1, ArrayView1, array};
 use rgsaddle::{
-    AnharmonicConfig, BasinConfig, HarmonicReference, Hyperplane, LangevinConfig, MinModeConfig,
-    MinModeSession, MinModeStatus, PlaneOptimizer, PlaneOptimizerConfig, PointSurface,
-    ReversibleWorkConfig, SaddleError, anharmonic_correction, basin_density, ohtst_rate,
-    reversible_work, sample_plane,
+    AnalyticSurfaceSampler, AnharmonicConfig, BasinConfig, HarmonicReference, Hyperplane,
+    LangevinConfig, MinModeConfig, MinModeSession, MinModeStatus, PlaneOptimizer,
+    PlaneOptimizerConfig, PointSurface, ReversibleWorkConfig, SaddleError, anharmonic_correction,
+    basin_density, ohtst_rate, reversible_work, sample_plane,
 };
 
 struct SkewedWell;
@@ -116,11 +116,13 @@ fn main() -> Result<(), SaddleError> {
         basin.offsets.len(),
         basin.harmonic_density
     );
+    let work_config = ReversibleWorkConfig::default().with_sampler(sampler.with_records(2000));
+    let mut work_sampler = AnalyticSurfaceSampler::new(&SkewedWell, work_config.sampler.clone())
+        .with_start(reactant.clone());
     let work = reversible_work(
-        &SkewedWell,
+        &mut work_sampler,
         &[basin.plane.clone(), optimum.plane.clone()],
-        Some(reactant.view()),
-        &ReversibleWorkConfig::default().with_sampler(sampler.with_records(2000)),
+        &work_config,
     )?;
     let (bar, bar_error) = (
         work.bar_work.unwrap_or(f64::NAN),

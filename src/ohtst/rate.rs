@@ -79,6 +79,76 @@ impl OhTstRate {
         let error = ((kappa * self.error).powi(2) + (self.rate * kappa_error).powi(2)).sqrt();
         (kappa * self.rate, error)
     }
+
+    /// Apply distinct path and in-plane symmetry multiplicities.
+    ///
+    /// A path multiplicity (for example the 12 nearest-neighbour vacancy
+    /// directions in fcc) and a region degeneracy count different sets of
+    /// images. Put a given symmetry orbit in exactly one factor.
+    pub fn multiplied(&self, multiplicity: &RateMultiplicity) -> Result<Self, SaddleError> {
+        let factor = multiplicity.total()? as f64;
+        let mut rate = self.clone();
+        rate.rate *= factor;
+        rate.error *= factor;
+        rate.log_rate += factor.ln();
+        Ok(rate)
+    }
+}
+
+/// Explicit, separate multiplicities of a rate.
+///
+/// Non-exhaustive: start from [`RateMultiplicity::default`] and use setters.
+#[non_exhaustive]
+#[derive(Clone, Debug)]
+pub struct RateMultiplicity {
+    /// Number of equivalent reaction paths or hop directions.
+    pub paths: usize,
+    /// Degeneracy carried by one symmetry-unique in-plane region.
+    pub in_plane_images: usize,
+}
+
+impl Default for RateMultiplicity {
+    fn default() -> Self {
+        Self {
+            paths: 1,
+            in_plane_images: 1,
+        }
+    }
+}
+
+impl RateMultiplicity {
+    /// Set [`Self::paths`].
+    #[must_use]
+    pub fn with_paths(mut self, paths: usize) -> Self {
+        self.paths = paths;
+        self
+    }
+
+    /// Set [`Self::in_plane_images`].
+    #[must_use]
+    pub fn with_in_plane_images(mut self, in_plane_images: usize) -> Self {
+        self.in_plane_images = in_plane_images;
+        self
+    }
+
+    /// Set the in-plane factor from a hard region.
+    #[must_use]
+    pub fn with_region(mut self, region: &dyn crate::Region) -> Self {
+        self.in_plane_images = region.degeneracy();
+        self
+    }
+
+    /// Product of the two distinct factors.
+    pub fn total(&self) -> Result<usize, SaddleError> {
+        if self.paths == 0 || self.in_plane_images == 0 {
+            return Err(SaddleError::Invalid(
+                "rate multiplicities must be positive".into(),
+            ));
+        }
+        self.paths
+            .checked_mul(self.in_plane_images)
+            .ok_or_else(|| SaddleError::Invalid("rate multiplicity overflow".into()))
+    }
 }
 
 fn same_plane(a: &Hyperplane, b: &Hyperplane) -> bool {
@@ -394,5 +464,29 @@ mod tests {
         let mut empty = density;
         empty.density = -0.01;
         assert!(ohtst_rate(&empty, &work).is_err());
+    }
+
+    #[test]
+    fn path_and_in_plane_counts_are_not_double_applied() {
+        let base = OhTstRate {
+            rate: 2.0,
+            error: 0.2,
+            log_rate: 2.0f64.ln(),
+            log_rate_error: 0.1,
+            flux: 1.0,
+            density: 1.0,
+            density_error: 0.0,
+            free_energy: 0.0,
+            free_energy_error: 0.0,
+        };
+        let twelve_paths = base
+            .multiplied(&RateMultiplicity::default().with_paths(12))
+            .unwrap();
+        let twelve_regions = base
+            .multiplied(&RateMultiplicity::default().with_in_plane_images(12))
+            .unwrap();
+        assert_eq!(twelve_paths.rate, twelve_regions.rate);
+        assert_eq!(twelve_paths.error, twelve_regions.error);
+        assert_eq!(twelve_paths.rate, 24.0);
     }
 }

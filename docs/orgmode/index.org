@@ -75,6 +75,7 @@ while report.status != BandStatus::Converged {
    howto/strain-rate
    howto/defect-pair-rates
    howto/oh-tst
+   howto/lammps-hyperplane
    howto/sparse-hessian
    howto/sella
    howto/irc
@@ -87,7 +88,9 @@ while report.status != BandStatus::Converged {
    howto/formal
    explanation/mep
    explanation/one-stencil
+   explanation/hyperplane-methods
    reference/architecture
+   reference/lammps-hyperplane
    reference/bibliography
    reference/c-symbols
    contributing/index

@@ -40,7 +40,14 @@
 //! Each entry point opens with a runnable example on a small analytic
 //! surface: [`BandSession`], [`AutoNeb`], [`OcinebSession`],
 //! [`MinModeSession`], [`Index1Session`], [`SolidDimer`], [`SolidNeb`],
-//! [`Stencil`], and the [`ohtst`] module. With the `capi` feature the C
+#![cfg_attr(
+    feature = "ohtst",
+    doc = "[`Stencil`], and the optional [`ohtst`] module (crate feature `ohtst`). With the `capi` feature the C"
+)]
+#![cfg_attr(
+    not(feature = "ohtst"),
+    doc = "[`Stencil`], and the optional `ohtst` module (crate feature `ohtst`). With the `capi` feature the C"
+)]
 //! band, min-mode and stencil handles have the same examples in `capi`.
 //! The guides and tutorials are at
 //! <https://omnipotentrpc.github.io/rgsaddle/>.
@@ -55,20 +62,27 @@ pub mod band;
 pub mod bennett;
 #[cfg(feature = "capi")]
 pub mod capi;
+#[cfg(all(feature = "capi", feature = "ohtst"))]
+pub mod capi_hyperplane;
 pub mod connect;
 pub mod defect_pair;
 pub mod error;
 pub mod idpp;
 pub mod indexk;
+#[cfg(feature = "lammps")]
+pub mod lammps;
 pub mod minmode;
 pub mod nichols;
 pub mod occupancy;
 pub mod ocineb;
+#[cfg(feature = "ohtst")]
 pub mod ohtst;
 pub mod pafi;
 pub mod pair_network;
 pub mod prfo;
 pub mod projection;
+pub mod projector;
+pub mod region;
 pub mod relax;
 pub mod saddle_index;
 pub mod solid_dimer;
@@ -121,6 +135,11 @@ pub use indexk::{
     BlockEigenKind, HessianProduct, IndexKConfig, IndexKReport, IndexKSession, WithHessian,
     indexk_step, reflect_force, translated_force,
 };
+#[cfg(feature = "lammps")]
+pub use lammps::{
+    LammpsHyperplaneSampler, LammpsSamplerConfig, LammpsSystem, LammpsThermostatKind,
+    LammpsThermostatRecord,
+};
 pub use minmode::{
     FiniteDifference, MinModeConfig, MinModeKind, MinModeReport, MinModeSession, MinModeStatus,
     ModeEstimate, PointSurface, RaisedStep, halve_raised_energy, rotation_force_error,
@@ -135,20 +154,30 @@ pub use ocineb::{
     backoff_threshold, initial_threshold, mode_alignment, should_trigger, success_threshold,
     walk_helped,
 };
+#[cfg(feature = "ohtst")]
+#[allow(deprecated)]
 pub use ohtst::{
+    AnalyticSurfaceDynamics, AnalyticSurfaceSampler, AnalyticThermodynamicSampler,
     AnharmonicConfig, AnharmonicCorrection, BasinConfig, BasinDensity, BasinEnd, Basins, Counting,
-    EndState, Endpoint, FixedCell, GaussianTransport, HarmonicReference, Hyperplane,
-    LangevinConfig, MassWeighted, OhTstRate, PermutationDistance, PlaneDensity, PlaneIntegrator,
-    PlaneMetric, PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimum, PlanePath, PlaneSample,
-    PlaneTrace, QuenchConfig, ReactantDensity, ReversibleWork, ReversibleWorkConfig, StateDistance,
+    EndState, Endpoint, ExactGaussianPlaneSampler, FixedCell, GaussianTransport, HarmonicReference,
+    HyperplaneDynamics, HyperplaneObservable, LangevinConfig, MassWeighted, OhTstRate,
+    PermutationDistance, PlaneDensity, PlaneIntegrator, PlaneMetric, PlaneOptimizer,
+    PlaneOptimizerConfig, PlaneOptimizerStatus, PlaneOptimum, PlanePath, PlaneSample, PlaneTrace,
+    QuadraticModel, QuenchConfig, QuenchedTransitionRegion, RateMultiplicity, ReactantDensity,
+    ReversibleWork, ReversibleWorkConfig, StateDistance, THERMODYNAMIC_DERIVATIVE,
+    ThermodynamicIntegrationConfig, ThermodynamicIntegrationEstimate, ThermodynamicIntegrationNode,
     TransmissionCoefficient, TransmissionConfig, TransmissionEstimate, Transport, Uncontrolled,
-    WorkEstimate, WorkNode, anharmonic_correction, basin_density, flux_mass, ohtst_rate,
-    plane_transmission, reactant_density, reversible_work, reversible_work_along, sample_plane,
-    transmission_coefficient,
+    WorkEstimate, WorkNode, anharmonic_correction, basin_density, flux_mass,
+    mass_weighted_rigid_translations, ohtst_rate, optimize_plane, plane_transmission,
+    reactant_density, restricted_thermodynamic_integration, reversible_work, reversible_work_along,
+    reversible_work_along_on_surface, reversible_work_on_surface, sample_plane,
+    sample_plane_with_sampler, thermodynamic_integration, transmission_coefficient,
+    transmission_coefficient_on_surface,
 };
 pub use pafi::{
     ArcPath, FreeEnergyProfile, HyperplaneAverage, PafiConfig, PathFrame, PathGeometry,
-    average_hyperplane, integrate_profile, pafi_profile, zero_temperature_barrier,
+    average_hyperplane, average_hyperplane_with_sampler, integrate_profile, pafi_profile,
+    zero_temperature_barrier,
 };
 pub use pair_network::{
     Mat3i, PairConfig, PairEdge, PairExit, PairHop, PairMove, PairNetwork, PairStateClass,
@@ -156,6 +185,16 @@ pub use pair_network::{
 };
 pub use prfo::{PrfoKind, partitioned_rfo_eigen, restricted_prfo_displacement};
 pub use projection::ProjectionKind;
+pub use projector::{
+    Hyperplane, HyperplaneCoordinates, HyperplaneEnsemble, HyperplaneModes, HyperplaneObservation,
+    HyperplaneSampleBudget, HyperplaneSampler, ManifoldTangent, ProjectedConstraint,
+    TangentProjector, UnitNormal,
+};
+pub use region::{
+    AffineSymmetry, BoundaryViolation, PathSlab, PeriodicSymmetryOperations, PlanarBoundary,
+    Region, RegionIntersection, SymmetryOperations, SymmetrySource, SymmetryUniqueRegion,
+    reflect_velocity,
+};
 pub use relax::{
     DEFAULT_FORCE_TOL, DEFAULT_MAX_STEPS, RelaxConfig, Relaxation, max_atom_force,
     relax_to_tolerance,
@@ -168,6 +207,7 @@ pub use solid_dimer::{
 };
 pub use spring::SpringKind;
 pub use ssneb::{SolidImage, SolidNeb, joint_coordinate};
+pub use stats::EquilibrationReport;
 pub use stencil::{
     BAND_PRESET_SEAM, BandBuilder, Chain, Climb, EvalPool, Mesh, MeshEvent, PointBuilder, Preset,
     Role, Stencil, StencilReport, StencilStatus,

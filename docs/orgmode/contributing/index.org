@@ -34,6 +34,9 @@ The ~kani-github-action~ default command is a bare ~cargo-kani~, which would ena
 The workflow overrides that command and does not pass ~--ignore-global-asm~.
 Build the Python package with scikit-build-core (=pip install .=) and run ~tests/python~ against the installed package.
 The algebra and interval checks live in ~validation~ and ~tests/symbolic~; the Lean libraries live in ~formal~.
+The verify workflow's symbolic-script step runs those checks and leaves ~validation/benchmark/~ out.
+Those files are the pt-island campaign drivers.
+They import optbench and take a checkout plus a long run, so they are not part of the minute-long symbolic check.
 
 A git dependency names a full 40-character ~rev~, never a ~tag~ or ~branch~, with the exact version of the crate at that commit, such as ~version = "=0.5.2"~.
 Cargo keys a git source by its reference, so a dependent that pins the same commit another way locks a second copy.
@@ -99,6 +102,8 @@ sphinx-build -b html -n docs/source docs/build
 
 The API documentation builds with every rustdoc warning denied on each feature set CI tests, and once with private items.
 A public doc that links a private item, a broken or redundant intra-doc link, a bare URL or unclosed HTML fails the CI test job.
+The crate overview links the optional =ohtst= module only when that feature is enabled.
+A default-feature build names the module and the =ohtst= feature in code font, because the module is not compiled.
 Each entry point opens with an example on a small analytic surface, which ~cargo test~ runs.
 
 #+begin_src sh

@@ -5,13 +5,16 @@
 #include <stddef.h>
 
 _Static_assert(RGSADDLE_ABI_MAJOR == 1u, "main ABI major");
-_Static_assert(RGSADDLE_ABI_MINOR == 41u, "ABI minor");
+_Static_assert(RGSADDLE_ABI_MINOR == 42u, "ABI minor");
 _Static_assert(RGSADDLE_BAND_NO_MIN_MODE == (1ull << 3), "band flag bit 3");
 _Static_assert(RGSADDLE_BAND_SPLINE_REPARAM == (1ull << 4), "band flag bit 4");
 _Static_assert(RGSADDLE_REPARAM_LINEAR == 0, "rgsaddle_reparametrization_t LINEAR");
 _Static_assert(RGSADDLE_REPARAM_NOT_A_KNOT == 1, "rgsaddle_reparametrization_t NOT_A_KNOT");
 _Static_assert(RGSADDLE_REQ_ONE_IMAGE == (1ull << 0), "request flag bit 0");
 _Static_assert(RGSADDLE_REQ_CLIMBING_IMAGE == (1ull << 1), "request flag bit 1");
+_Static_assert(RGSADDLE_NOT_EQUILIBRATED == -14, "status NOT_EQUILIBRATED");
+_Static_assert(RGSADDLE_INSUFFICIENT_EFFECTIVE_SAMPLES == -15,
+               "status INSUFFICIENT_EFFECTIVE_SAMPLES");
 
 typedef struct {
   uint32_t major;

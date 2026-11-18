@@ -1,0 +1,84 @@
+#+title: LAMMPS hyperplane API
+#+options: toc:2 num:nil
+
+* Cargo feature
+
+=lammps= is opt-in and enables =ohtst=. It adds the pinned
+=rgpot-core= profile dependency. =liblammpc= and =liblammps= are runtime
+shared libraries and are not needed by default builds.
+
+* Public types
+
+| Type | Contract |
+|------+----------|
+| =LammpsSystem= | Flat =PotentialConfig=, Cartesian positions, atomic numbers, masses, and optional cell |
+| =LammpsSamplerConfig= | Shared library path, BAOAB time step in ps, Langevin friction in inverse ps, thermostat kind, and the excluded-mode count used in \(3N - 1 - n_{\mathrm{excluded}}\) |
+| =LammpsThermostatKind= | Thermostat enum stored in records; currently =BaoabLangevin= |
+| =LammpsThermostatRecord= | Serializable thermostat metadata with =thermostat= and =effective_degrees_of_freedom= |
+| =LammpsHyperplaneSampler= | Persistent lammpc session implementing =HyperplaneSampler= |
+
+All configuration structs are =#[non_exhaustive]=, implement =Default=, and
+provide =with_*= builders. A default system is incomplete and validation
+returns =SaddleError::Invalid= or =SaddleError::Shape= before loading the
+engine.
+
+* Units and coordinates
+
+The rgpot =ForceInput= uses angstrom and eV. LAMMPS uses =metal= units.
+The sampler controls use:
+
+| Quantity | Unit |
+|----------+------|
+| time step | ps |
+| friction | ps^-1 |
+| thermal energy | eV |
+| mass | amu |
+
+=HyperplaneCoordinates::MassWeighted= passes the plane in
+\(q=M^{1/2}x\). Returned positions are \(q\), forces are
+\(F_q=M^{-1/2}F_x\), and velocities are \(\dot q=M^{1/2}\dot x\).
+
+=HyperplaneCoordinates::Cartesian= passes Cartesian point and normal. lammpc
+uses the diagonal mass metric when restoring positions and projecting
+velocity and force.
+
+* Thermostat metadata and records
+
+Each =HyperplaneObservation= from =LammpsHyperplaneSampler= carries two stable
+scalar observables:
+
+| Observable | Meaning |
+|------------+---------|
+| =lammps.thermostat= | Numeric code of =LammpsThermostatKind= (1 for =BaoabLangevin=) |
+| =lammps.effective_degrees_of_freedom= | \(3N - 1 - n_{\mathrm{excluded}}\) |
+
+=LammpsThermostatRecord::to_json= writes
+=rgsaddle.lammps_thermostat= documents, and =from_json= reads the same
+format.
+
+* lammpc constrained MD extension
+
+The adapter requires these additive C ABI functions:
+
+#+begin_src c
+int lammpc_session_md_initialize(...);
+int lammpc_session_md_step(LammpcSession *, size_t);
+int lammpc_session_md_state(...);
+#+end_src
+
+=md_initialize= receives one rgpot =ForceInput=, a point, a normal, and
+=LammpcMdConfig=. =md_step= advances exactly the requested number of BAOAB
+steps. =md_state= returns positions, projected forces, removed velocities,
+the scalar constraint force, the force-evaluation count, and the completed
+step count.
+
+The extension is generic. It does not contain an OH-TST, PAFI, pair-style,
+or material type. rgsaddle maps those arrays into =HyperplaneObservation=.
+
+* Errors
+
+Library lookup follows rgpot's =lammpc= profile candidates. An explicit path
+has priority, followed by =LAMMPC_LIBRARY=, =RGPOT_LAMMPC_ENGINE=, and
+platform library names. Missing symbols, an unavailable stub build, ABI
+mismatch, invalid geometry, and LAMMPS failures become
+=SaddleError::Surface= with lammpc's diagnostic.

@@ -1,3 +1,5 @@
+#![cfg(feature = "ohtst")]
+
 //! OH-TST on the LEPS plus harmonic oscillator surface of Jóhannesson and
 //! Jónsson, J. Chem. Phys. 115, 9644 (2001), Appendix B, at
 //! `kT = 0.1 E_A` as in their Sec. III B and at lower temperatures.
@@ -11,12 +13,12 @@
 
 use ndarray::{Array1, array};
 use rgsaddle::{
-    BasinConfig, Basins, Counting, EndState, GaussianTransport, Hyperplane, LangevinConfig,
-    MinModeConfig, MinModeSession, MinModeStatus, PlaneIntegrator, PlaneOptimizer,
-    PlaneOptimizerConfig, PlanePath, ReversibleWorkConfig, ShootingConfig, TransmissionConfig,
-    WorkEstimate, angular_scale_rad_s, basin_density, exact_eigh, ohtst_rate, plane_transmission,
-    reactant_density, reversible_work, reversible_work_along, transmission_coefficient,
-    vineyard_prefactor,
+    AnalyticSurfaceDynamics, AnalyticSurfaceSampler, BasinConfig, Basins, Counting, EndState,
+    GaussianTransport, Hyperplane, LangevinConfig, MinModeConfig, MinModeSession, MinModeStatus,
+    PlaneIntegrator, PlaneOptimizer, PlaneOptimizerConfig, PlanePath, ReversibleWorkConfig,
+    ShootingConfig, TransmissionConfig, WorkEstimate, angular_scale_rad_s, basin_density,
+    exact_eigh, ohtst_rate, plane_transmission, reactant_density, reversible_work,
+    reversible_work_along, transmission_coefficient, vineyard_prefactor,
 };
 
 include!(concat!(
@@ -360,7 +362,9 @@ fn leps_rate_against_quadrature_and_harmonic_tst() {
     let config = ReversibleWorkConfig::default()
         .with_sampler(sampler(kt, 0.1).with_records(2000).with_retain(128))
         .with_nodes(nodes);
-    let work = reversible_work(&LepsHo, &[start, optimal], Some(reactant.view()), &config).unwrap();
+    let mut engine =
+        AnalyticSurfaceSampler::new(&LepsHo, config.sampler.clone()).with_start(reactant.clone());
+    let work = reversible_work(&mut engine, &[start, optimal], &config).unwrap();
     let (value, error) = (work.work / kt, work.error / kt);
     assert!(
         (value - rise).abs() < 4.0 * error,
@@ -459,10 +463,11 @@ fn leps_fixed_orientation_barrier() {
     let config = ReversibleWorkConfig::default()
         .with_sampler(sampler(kt, 0.1).with_records(2000))
         .with_nodes(17);
+    let mut engine = AnalyticSurfaceSampler::new(&LepsHo, config.sampler.clone())
+        .with_start(array![geometry.reactant[0], geometry.reactant[1]]);
     let work = reversible_work(
-        &LepsHo,
+        &mut engine,
         &[geometry.reactant_line(), optimum.plane.clone()],
-        Some(array![geometry.reactant[0], geometry.reactant[1]].view()),
         &config,
     )
     .unwrap();
@@ -521,7 +526,9 @@ fn leps_rate_approaches_harmonic_tst_at_low_temperature() {
     let config = ReversibleWorkConfig::default()
         .with_sampler(sampler(kt, 0.1).with_records(4000))
         .with_nodes(17);
-    let work = reversible_work(&LepsHo, &[start, optimal], Some(reactant.view()), &config).unwrap();
+    let mut engine =
+        AnalyticSurfaceSampler::new(&LepsHo, config.sampler.clone()).with_start(reactant);
+    let work = reversible_work(&mut engine, &[start, optimal], &config).unwrap();
     let rate = ohtst_rate(&density, &work).unwrap();
     assert!(rate.log_rate_error < 0.25, "{rate:?}");
     for (reference, name) in [
@@ -577,8 +584,13 @@ fn leps_transmission_times_tst_rate_is_line_independent() {
         .with_shots(shots)
         .with_blocks(32);
     let optimal_starts = line_draws(LepsHo::energy, summit, unit(theta), kt, 8.0, shots, 5);
-    let free = transmission_coefficient(&LepsHo, &line(summit, theta), &optimal_starts, &shooting)
-        .unwrap();
+    let free = transmission_coefficient(
+        &mut AnalyticSurfaceDynamics::new(&LepsHo),
+        &line(summit, theta),
+        &optimal_starts,
+        &shooting,
+    )
+    .unwrap();
     let early = free.kappa_of_t[3];
     assert!(
         free.kappa < early - 4.0 * free.error,
@@ -598,7 +610,13 @@ fn leps_transmission_times_tst_rate_is_line_independent() {
                 .clone()
                 .with_counting(counting)
                 .with_end_state(end_state);
-            transmission_coefficient(&LepsHo, &plane, &starts, &config).unwrap()
+            transmission_coefficient(
+                &mut AnalyticSurfaceDynamics::new(&LepsHo),
+                &plane,
+                &starts,
+                &config,
+            )
+            .unwrap()
         };
         let first = run(Counting::FirstCrossing, EndState::Side);
         let last = first.kappa_of_t.len() - 1;
@@ -684,12 +702,14 @@ fn leps_work_along_the_minimum_energy_path() {
     let config = ReversibleWorkConfig::default()
         .with_sampler(sampler(kt, 0.1).with_records(2000))
         .with_nodes(3);
-    let rigid = reversible_work_along(&LepsHo, &path, None, &config).unwrap();
+    let mut engine = AnalyticSurfaceSampler::new(&LepsHo, config.sampler.clone());
+    let rigid = reversible_work_along(&mut engine, &path, &config).unwrap();
     let config = config
         .with_transport(GaussianTransport::default().into())
         .with_mbar(true)
         .with_estimate(WorkEstimate::Mbar);
-    let work = reversible_work_along(&LepsHo, &path, None, &config).unwrap();
+    let mut engine = AnalyticSurfaceSampler::new(&LepsHo, config.sampler.clone());
+    let work = reversible_work_along(&mut engine, &path, &config).unwrap();
     let smallest = |work: &rgsaddle::ReversibleWork| {
         work.nodes
             .iter()

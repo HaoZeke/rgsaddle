@@ -106,7 +106,7 @@ pub fn reactant_density<S: PointSurface>(
         ));
     }
     let rng = Rng::new(config.seed);
-    let mut dynamics = Dynamics::new(surface, start.to_owned(), held, walls, config, rng)?;
+    let mut dynamics = Dynamics::new(surface, start.to_owned(), held, walls, None, config, rng)?;
     for _ in 0..config.burn_in {
         dynamics.step()?;
     }

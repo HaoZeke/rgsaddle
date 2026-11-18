@@ -36,7 +36,7 @@ use crate::tangent::TangentKind;
 /// The RGSADDLE ABI MAJOR.
 pub const RGSADDLE_ABI_MAJOR: u32 = 1;
 /// The RGSADDLE ABI MINOR.
-pub const RGSADDLE_ABI_MINOR: u32 = 41;
+pub const RGSADDLE_ABI_MINOR: u32 = 42;
 
 /// A band, min-mode or OCI-NEB config of this minor or newer certifies
 /// the saddle index at convergence by default.
@@ -110,6 +110,10 @@ pub const RGSADDLE_INVALID_PARAMETER: i32 = -11;
 pub const RGSADDLE_NO_EVALUATION: i32 = -12;
 /// The RGSADDLE STALLED.
 pub const RGSADDLE_STALLED: i32 = -13;
+/// The constrained-ensemble tail still drifts after equilibration.
+pub const RGSADDLE_NOT_EQUILIBRATED: i32 = -14;
+/// The constrained-ensemble tail has too few effective samples.
+pub const RGSADDLE_INSUFFICIENT_EFFECTIVE_SAMPLES: i32 = -15;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -423,7 +427,7 @@ fn stamp_report(out: &mut RgsaddleReport) {
     out.flags = 0;
 }
 
-fn status_of(err: &SaddleError) -> i32 {
+pub(crate) fn status_of(err: &SaddleError) -> i32 {
     match err {
         SaddleError::Shape(_) => RGSADDLE_SHAPE,
         SaddleError::Surface(_) => RGSADDLE_SURFACE_FAILED,
@@ -431,6 +435,8 @@ fn status_of(err: &SaddleError) -> i32 {
         SaddleError::Solver(_) => RGSADDLE_SOLVER,
         SaddleError::Invalid(_) => RGSADDLE_INVALID_PARAMETER,
         SaddleError::Stalled(_) => RGSADDLE_STALLED,
+        SaddleError::NotEquilibrated { .. } => RGSADDLE_NOT_EQUILIBRATED,
+        SaddleError::InsufficientEffectiveSamples { .. } => RGSADDLE_INSUFFICIENT_EFFECTIVE_SAMPLES,
     }
 }
 
@@ -472,6 +478,8 @@ pub extern "C" fn rgsaddle_status_name(status: i32) -> *const c_char {
         RGSADDLE_INVALID_PARAMETER => "INVALID_PARAMETER\0",
         RGSADDLE_NO_EVALUATION => "NO_EVALUATION\0",
         RGSADDLE_STALLED => "STALLED\0",
+        RGSADDLE_NOT_EQUILIBRATED => "NOT_EQUILIBRATED\0",
+        RGSADDLE_INSUFFICIENT_EFFECTIVE_SAMPLES => "INSUFFICIENT_EFFECTIVE_SAMPLES\0",
         _ => "UNKNOWN\0",
     };
     s.as_ptr() as *const c_char
