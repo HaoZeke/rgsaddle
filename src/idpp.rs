@@ -30,13 +30,15 @@ use crate::mic::{self, Cell};
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct IdppConfig {
-    /// The max iterations.
+    /// L-BFGS iteration cap per image; at least 1. Default 5000.
     pub max_iterations: usize,
-    /// The grad tol.
+    /// Gradient L2 norm at which an image stops, in Angstrom^-3 (the IDPP
+    /// objective is in Angstrom^-2); must be finite and positive. Default `1e-3`.
     pub grad_tol: f64,
-    /// Largest per-atom displacement, in the host's length unit.
+    /// Largest per-atom displacement of one step, in Angstrom; finite and positive.
+    /// Default 0.1.
     pub max_move: f64,
-    /// Number of vector pairs a limited-memory stepper stores.
+    /// Number of vector pairs a limited-memory stepper stores; at least 1. Default 20.
     pub memory: usize,
 }
 
@@ -64,6 +66,30 @@ impl Default for IdppConfig {
 /// row is `product`. Interior row `i` is
 /// `reactant + (i / (n_images - 1)) * mic(product - reactant)`.
 /// `cell` is `None` in free space.
+///
+/// `reactant` and `product` are flat `3N` positions in Angstrom (atom-major) and
+/// `n_images >= 3`. The result has `n_images` rows of `3N` columns.
+///
+/// # Errors
+///
+/// [`SaddleError::Shape`] when the endpoints differ in length, are empty or not a
+/// multiple of 3, or `n_images < 3`; [`SaddleError::NonFinite`] when an endpoint
+/// holds a non-finite value.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::array;
+/// use rgsaddle::idpp::linear_path;
+///
+/// let reactant = array![0.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+/// let product = array![0.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+/// let path = linear_path(reactant.view(), product.view(), 3, None)?;
+/// // The middle image is the plain average of the endpoints.
+/// assert!((path[(1, 3)] - 0.5).abs() < 0.001);
+/// assert!((path[(1, 4)] - 0.5).abs() < 0.001);
+/// # Ok::<(), rgsaddle::SaddleError>(())
+/// ```
 pub fn linear_path(
     reactant: ArrayView1<f64>,
     product: ArrayView1<f64>,
@@ -100,6 +126,35 @@ pub fn linear_path(
 /// `1e-4` is held at that floor so the weight stays finite. The
 /// endpoints are copied through. The minimizer is L-BFGS. A step that
 /// hits the iteration cap is kept.
+///
+/// Arguments and result as [`linear_path`]; `config` sets the L-BFGS stop.
+///
+/// # Errors
+///
+/// [`SaddleError::Invalid`] when `config` has a zero iteration cap or memory, or a
+/// non-positive or non-finite gradient tolerance or step cap; the errors of
+/// [`linear_path`]; and [`SaddleError::NonFinite`] or [`SaddleError::Shape`] from
+/// the minimum-image distances.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::array;
+/// use rgsaddle::idpp::{IdppConfig, idpp_path, linear_path};
+///
+/// // One atom swings around a second one at 1 Angstrom.
+/// let reactant = array![0.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+/// let product = array![0.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+/// let distance = |row: &[f64]| {
+///     ((row[3] - row[0]).powi(2) + (row[4] - row[1]).powi(2) + (row[5] - row[2]).powi(2)).sqrt()
+/// };
+/// let line = linear_path(reactant.view(), product.view(), 3, None)?;
+/// let path = idpp_path(reactant.view(), product.view(), 3, None, &IdppConfig::default())?;
+/// // The straight line pulls the pair together; IDPP keeps the 1 Angstrom bond.
+/// assert!(distance(line.row(1).as_slice().unwrap()) < 0.75);
+/// assert!((distance(path.row(1).as_slice().unwrap()) - 1.0).abs() < 0.05);
+/// # Ok::<(), rgsaddle::SaddleError>(())
+/// ```
 pub fn idpp_path(
     reactant: ArrayView1<f64>,
     product: ArrayView1<f64>,
@@ -154,18 +209,22 @@ pub(crate) fn idpp_midpoint(
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct SidppConfig {
-    /// Base spring constant `k` of Eqs. 5 and 10.
+    /// Base spring constant `k` of Eqs. 5 and 10, in Angstrom^-4 (a force in
+    /// Angstrom^-3 per Angstrom of stretch); finite and positive. Default 1.
     pub spring: f64,
-    /// Largest NEB force component that ends a stage.
+    /// Largest NEB force component that ends a stage, in Angstrom^-3; finite and
+    /// positive. Default 0.01.
     pub force_tol: f64,
-    /// Root mean square NEB force that, with `force_tol`, ends the
-    /// final stage.
+    /// Root mean square NEB force that, with `force_tol`, ends the final stage, in
+    /// Angstrom^-3; finite and positive. Default 0.005.
     pub rms_tol: f64,
-    /// Initial time step of FIRE and quick-min.
+    /// Initial time step of FIRE and quick-min; finite and positive. Default 0.1.
     pub time_step: f64,
-    /// Largest per-atom displacement, in the host's length unit.
+    /// Largest per-atom displacement of one step, in Angstrom; finite and positive.
+    /// Default 0.1.
     pub max_move: f64,
-    /// The max iterations.
+    /// Iteration cap per growth stage and for the final relaxation; at least 1.
+    /// Default 5000.
     pub max_iterations: usize,
 }
 
@@ -209,6 +268,29 @@ impl Default for SidppConfig {
 /// `force_tol` and `rms_tol` both hold. The minimizer is velocity
 /// projection (quick-min). A stage that hits the iteration cap is
 /// kept, and the side whose frontier force is smaller grows.
+///
+/// Arguments and result as [`linear_path`]; `config` sets the springs and stops.
+///
+/// # Errors
+///
+/// [`SaddleError::Invalid`] when `config` has a zero iteration cap or a
+/// non-positive or non-finite setting, and the errors of [`idpp_path`].
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::array;
+/// use rgsaddle::idpp::{SidppConfig, sidpp_path};
+///
+/// let reactant = array![0.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+/// let product = array![0.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+/// let path = sidpp_path(reactant.view(), product.view(), 5, None, &SidppConfig::default())?;
+/// assert_eq!(path.dim(), (5, 6));
+/// // The endpoints are copied through.
+/// assert_eq!(path.row(0), reactant);
+/// assert_eq!(path.row(4), product);
+/// # Ok::<(), rgsaddle::SaddleError>(())
+/// ```
 pub fn sidpp_path(
     reactant: ArrayView1<f64>,
     product: ArrayView1<f64>,
