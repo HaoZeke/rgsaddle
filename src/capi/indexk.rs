@@ -23,27 +23,40 @@ pub struct RgsaddleIndexKConfig {
     pub version: RgsaddleVersion,
     /// Bit flags. Reserved; write zero.
     pub flags: u64,
-    /// Number of lowest modes, `k >= 1`.
+    /// Number of lowest modes `k`, the saddle index sought; `k >= 1` and at
+    /// most `3 * n_atoms`.
     pub index: i32,
-    /// Estimator: dimer, Lanczos, or block LOBPCG.
+    /// Estimator, a `rgsaddle_minmode_t`. `0` is the dimer with a LOBPCG block
+    /// for `k > 1`; `1` is Lanczos with a block Lanczos iteration for `k > 1`;
+    /// `2` is Lanczos for `k = 1` and LOBPCG for `k > 1`. Any other value is
+    /// refused when the session is created.
     pub method: i32,
-    /// Finite-difference displacement.
+    /// Dimer separation, or finite-difference displacement of the Hessian
+    /// action, in Angstrom.
     pub dr: f64,
-    /// Rotation or Ritz residual.
+    /// Rotation stop, in eV/Angstrom^2: the rotational force of the dimer, or
+    /// the Ritz residual of Lanczos. The core crate's default is 0.0001.
     pub rotation_tol: f64,
-    /// Cap on dimer rotations.
+    /// Cap on dimer rotations, or Lanczos actions, in one step; zero or more.
     pub max_rotations: i64,
-    /// Force norm at which a negative-curvature point has converged.
+    /// Force stop in eV/Angstrom: the largest force component under which a
+    /// point with every curvature negative has converged.
     pub force_tol: f64,
-    /// Largest per-atom translation.
+    /// Largest per-atom translation of one step, in Angstrom.
     pub max_move: f64,
-    /// Residual of the block eigenproblem when `k > 1`.
+    /// Residual of the block eigenproblem in eV/Angstrom^2, used when `k > 1`.
     pub residual_tol: f64,
-    /// Cap on block iterations when `k > 1`.
+    /// Cap on iterations of the block eigensolver, positive, used when `k > 1`.
     pub max_block_iterations: i32,
 }
 
-/// Opaque index-k session. Create it with [`rgsaddle_indexk_create`].
+/// Opaque index-k session: the position, the `k` lowest modes and the last
+/// translated force of a saddle search of index `k`.
+///
+/// Create it with [`rgsaddle_indexk_create`] and release it with
+/// [`rgsaddle_indexk_free`]. The session copies what it is given and calls the
+/// host's functions only inside [`rgsaddle_indexk_step`]. Do not use one
+/// session from two threads at once.
 pub struct RgsaddleIndexK {
     session: IndexKSession,
     n_atoms: i64,
@@ -154,9 +167,22 @@ fn write_modes(modes: ndarray::ArrayView2<f64>, out: &mut [f64]) {
     }
 }
 
+/// Create an index-k session at `position`.
+///
+/// `position` holds the `3 * n_atoms` coordinates in Angstrom, atom-major
+/// (`x0 y0 z0 x1 ...`). `modes` is NULL to seed the modes from the
+/// coordinates, or a row-major `(3 * n_atoms)` by `config.index` block of
+/// starting directions. Both are copied. The index `k` is `config.index`.
+///
+/// Returns NULL, with no other diagnostic, for a NULL `config` or `position`,
+/// `n_atoms < 1`, a config of another ABI major, `index < 1` or above
+/// `3 * n_atoms`, a negative `max_rotations`, a non-positive
+/// `max_block_iterations`, an unknown `method`, or seed modes the core crate
+/// rejects. Free the result with [`rgsaddle_indexk_free`].
+///
 /// # Safety
-/// `position` holds `3 * n_atoms` doubles. `modes` is NULL or row-major
-/// `(3 * n_atoms)` by `config.index`.
+/// `config` is valid for reads. `position` holds `3 * n_atoms` doubles. `modes`
+/// is NULL or row-major `(3 * n_atoms)` by `config.index`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rgsaddle_indexk_create(
     config: *const RgsaddleIndexKConfig,
@@ -195,6 +221,29 @@ pub unsafe extern "C" fn rgsaddle_indexk_create(
     }
 }
 
+/// One index-k step: refresh the `k` lowest modes, translate the force and
+/// move the geometry.
+///
+/// `surface` is called with one geometry (`n_images = 1`, `image = -1`) and
+/// writes the energy in eV and the `3 * n_atoms` gradient in eV/Angstrom.
+/// `hessian`, when not NULL, is called with the Hessian-vector product request
+/// `(user, n, vector, out)` and writes the product `H v` into `out`, in
+/// eV/Angstrom^2 for a unit `vector`; NULL estimates the action by finite
+/// differences of `surface`. A non-zero return from either callback fails the
+/// step with `RGSADDLE_SURFACE_FAILED`.
+///
+/// On success `out` receives `status` 1 when converged and 0 otherwise,
+/// `evaluations`, the largest force component `max_force` in eV/Angstrom, the
+/// lowest of the `k` curvatures in eV/Angstrom^2 as `curvature`, `rotations`,
+/// `iteration`, and `ci_index` of -1. Read the modes with
+/// [`rgsaddle_indexk_modes`] and the translated force with
+/// [`rgsaddle_indexk_translated`].
+///
+/// Returns `RGSADDLE_NULL_SESSION`, `RGSADDLE_NULL_REPORT` or
+/// `RGSADDLE_NULL_SURFACE` for a NULL `session`, `out` or `surface`, and
+/// otherwise the status of the core error (shape, surface, non-finite, solver,
+/// invalid, stalled).
+///
 /// # Safety
 /// `session` comes from [`rgsaddle_indexk_create`]. `out` is writable.
 /// `surface` and `hessian` are called with `user` and must not unwind.
@@ -243,6 +292,12 @@ pub unsafe extern "C" fn rgsaddle_indexk_step(
     }
 }
 
+/// Copy the current geometry, `3 * n_atoms` doubles in Angstrom, atom-major,
+/// into `out`.
+///
+/// Returns `RGSADDLE_NULL_SESSION` for a NULL `session` and
+/// `RGSADDLE_INVALID_PARAMETER` for a NULL `out`.
+///
 /// # Safety
 /// `out` holds `3 * n_atoms` doubles.
 #[unsafe(no_mangle)]
@@ -264,6 +319,16 @@ pub unsafe extern "C" fn rgsaddle_indexk_position(
     RGSADDLE_OK
 }
 
+/// Copy the `k` modes of the last step and their curvatures.
+///
+/// `modes` receives a row-major `(3 * n_atoms)` by `k` block, so mode `j` is
+/// column `j`; the columns are orthonormal. `curvatures` receives `k` values in
+/// eV/Angstrom^2, one per column. Before the first step the modes are the seed
+/// and the curvatures are NaN.
+///
+/// Returns `RGSADDLE_NULL_SESSION` for a NULL `session` and
+/// `RGSADDLE_INVALID_PARAMETER` for a NULL `modes` or `curvatures`.
+///
 /// # Safety
 /// `modes` holds `(3 * n_atoms) * k` doubles, row-major. `curvatures` holds `k`.
 #[unsafe(no_mangle)]
@@ -292,6 +357,17 @@ pub unsafe extern "C" fn rgsaddle_indexk_modes(
     RGSADDLE_OK
 }
 
+/// Copy the translated force of the last step, `3 * n_atoms` doubles in
+/// eV/Angstrom, into `out`.
+///
+/// This is the effective gradient the translation stepper used: the reflection
+/// `F - 2 sum_i v_i (v_i . F)` when every curvature is negative, and
+/// `-sum_i v_i (v_i . F)` otherwise, with `F` the force.
+///
+/// Returns `RGSADDLE_NULL_SESSION` for a NULL `session`,
+/// `RGSADDLE_INVALID_PARAMETER` for a NULL `out`, and `RGSADDLE_NO_EVALUATION`
+/// before the first successful step.
+///
 /// # Safety
 /// `out` holds `3 * n_atoms` doubles.
 #[unsafe(no_mangle)]
@@ -317,6 +393,15 @@ pub unsafe extern "C" fn rgsaddle_indexk_translated(
     RGSADDLE_OK
 }
 
+/// Move the session to `position`, `3 * n_atoms` doubles in Angstrom.
+///
+/// `gradient` is NULL, or the energy gradient at `position` in eV/Angstrom, the
+/// same length; the session then skips the evaluation it would make there.
+///
+/// Returns `RGSADDLE_NULL_SESSION` for a NULL `session`,
+/// `RGSADDLE_INVALID_PARAMETER` for a NULL `position`, and the status of the
+/// core error when it refuses the move.
+///
 /// # Safety
 /// `position` holds `3 * n_atoms` doubles. `gradient` is NULL or the same length.
 #[unsafe(no_mangle)]
@@ -347,6 +432,8 @@ pub unsafe extern "C" fn rgsaddle_indexk_set_position(
     }
 }
 
+/// Release a session. NULL is accepted and ignored.
+///
 /// # Safety
 /// `session` comes from [`rgsaddle_indexk_create`] and is freed once.
 #[unsafe(no_mangle)]
@@ -356,6 +443,18 @@ pub unsafe extern "C" fn rgsaddle_indexk_free(session: *mut RgsaddleIndexK) {
     }
 }
 
+/// Householder reflection of `force` through the columns of `modes`,
+/// `F - 2 sum_i v_i (v_i . F)`.
+///
+/// `n` is the number of coordinates and `k` the number of modes. `force` holds
+/// `n` doubles in eV/Angstrom; `modes` is an orthonormal row-major `n` by `k`
+/// block; `out` receives the `n` reflected components in the units of `force`.
+///
+/// Returns `RGSADDLE_INVALID_PARAMETER` for `n < 1`, `k < 1`, a NULL pointer,
+/// an `out` equal to `force`, or an `n * k` that overflows, and the status of the
+/// core error for a non-finite `force`. The orthonormality of `modes` is not
+/// checked.
+///
 /// # Safety
 /// `force` and `out` each hold `n` doubles and do not alias. `modes` is
 /// row-major `n` by `k`.

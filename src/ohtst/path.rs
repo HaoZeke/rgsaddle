@@ -143,7 +143,8 @@ impl PlanePath {
         Ok(self)
     }
 
-    /// Number of segments.
+    /// Number of segments: one per leg or curve piece, at least one for a built
+    /// path.
     pub fn len(&self) -> usize {
         self.segments.len()
     }
@@ -153,7 +154,7 @@ impl PlanePath {
         self.segments.is_empty()
     }
 
-    /// The first plane.
+    /// The first plane of the path, the plane at `s = 0` of segment 0.
     ///
     /// # Errors
     ///
@@ -162,7 +163,7 @@ impl PlanePath {
         self.plane(0, 0.0)
     }
 
-    /// The last plane.
+    /// The last plane of the path, the plane at `s = 1` of the last segment.
     ///
     /// # Errors
     ///
