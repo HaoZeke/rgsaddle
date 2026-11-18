@@ -1440,8 +1440,9 @@ rgsaddle_status_t rgsaddle_band_set_zoom(RgsaddleBand *band, int32_t enabled,
                                          int32_t cubic);
 
 /**
- * Simplified string method on the band, ABI minor 42 (E, Ren and
- * Vanden-Eijnden, J. Chem. Phys. 126, 164103 (2007)). `enabled` 1
+ * Select the simplified string method on the band, ABI minor 42.
+ * This is the method of E, Ren and Vanden-Eijnden, J. Chem. Phys. 126,
+ * 164103 (2007). `enabled` 1
  * evolves interior images under the full potential force (no spring, no
  * tangent projection) and places them at equal arc length after each
  * step according to `scheme` (`rgsaddle_reparametrization_t`:
