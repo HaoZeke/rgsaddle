@@ -5,6 +5,9 @@
 //! doi:10.1063/1.5007180. Coordinates are converted to
 //! `q_i = sqrt(m_i) x_i`; the abbreviated action and all projections
 //! are evaluated in that Euclidean, mass-scaled chart.
+//! The equation numbering used below is the explicit Appendix A
+//! restatement by Zhang et al., ChemRxiv (2025),
+//! doi:10.26434/chemrxiv-2025-lvfbr-v2.
 //!
 //! Units are deliberately not prescribed. Positions, potential
 //! energies, masses, the reduced Planck constant, spring constant,
@@ -27,14 +30,22 @@ use rgmin::{Control, Method, Oracle, Solver};
 use crate::{BandSurface, SaddleError};
 
 /// All dimensional controls for a fixed-energy LI-NEB session.
+///
+/// Fields may be added; construct this with [`LineNebConfig::default`] and
+/// the `with_*` setters.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct LineNebConfig {
     /// Uniform spring constant in the mass-scaled chart.
     pub spring_k: f64,
     /// Coefficient of the endpoint energy restraint.
     pub endpoint_kappa: f64,
-    /// Convergence tolerance applied to force components.
+    /// Convergence tolerance applied to each interior force norm.
     pub force_tol: f64,
+    /// Convergence tolerance applied to each endpoint force norm.
+    pub endpoint_force_tol: f64,
+    /// Convergence tolerance applied to the sum of interior force norms.
+    pub sum_force_tol: f64,
     /// Fixed tunnelling energy `E`.
     pub energy: f64,
     /// One positive mass per physical coordinate (a 3N host repeats
@@ -44,6 +55,71 @@ pub struct LineNebConfig {
     pub time_step: f64,
     /// Reduced Planck constant in the host's unit system.
     pub reduced_planck: f64,
+}
+
+impl Default for LineNebConfig {
+    fn default() -> Self {
+        Self {
+            spring_k: 1.0,
+            endpoint_kappa: 1.0,
+            force_tol: 0.001,
+            endpoint_force_tol: 0.001,
+            sum_force_tol: 0.001,
+            energy: 0.0,
+            masses: Array1::zeros(0),
+            time_step: 0.01,
+            reduced_planck: 1.0,
+        }
+    }
+}
+
+impl LineNebConfig {
+    pub fn with_spring_k(mut self, spring_k: f64) -> Self {
+        self.spring_k = spring_k;
+        self
+    }
+
+    pub fn with_endpoint_kappa(mut self, endpoint_kappa: f64) -> Self {
+        self.endpoint_kappa = endpoint_kappa;
+        self
+    }
+
+    pub fn with_force_tol(mut self, force_tol: f64) -> Self {
+        self.force_tol = force_tol;
+        self.endpoint_force_tol = force_tol;
+        self.sum_force_tol = force_tol;
+        self
+    }
+
+    pub fn with_endpoint_force_tol(mut self, endpoint_force_tol: f64) -> Self {
+        self.endpoint_force_tol = endpoint_force_tol;
+        self
+    }
+
+    pub fn with_sum_force_tol(mut self, sum_force_tol: f64) -> Self {
+        self.sum_force_tol = sum_force_tol;
+        self
+    }
+
+    pub fn with_energy(mut self, energy: f64) -> Self {
+        self.energy = energy;
+        self
+    }
+
+    pub fn with_masses(mut self, masses: Array1<f64>) -> Self {
+        self.masses = masses;
+        self
+    }
+
+    pub fn with_time_step(mut self, time_step: f64) -> Self {
+        self.time_step = time_step;
+        self
+    }
+
+    pub fn with_reduced_planck(mut self, reduced_planck: f64) -> Self {
+        self.reduced_planck = reduced_planck;
+        self
+    }
 }
 
 /// State of a host-stepped LI-NEB optimization.
@@ -57,11 +133,14 @@ pub enum LineNebStatus {
 #[derive(Clone, Debug)]
 pub struct LineNebReport {
     pub status: LineNebStatus,
-    /// Largest absolute component of the transverse action force over
-    /// the interior images.
+    /// Largest Euclidean norm of the transverse action force over the
+    /// interior images.
     pub max_interior_perpendicular: f64,
-    /// Largest absolute component of the complete optimized endpoint
-    /// force (projected spring plus energy restraint).
+    /// Sum of Euclidean transverse-force norms over interior images,
+    /// the third convergence residual in Eq. (27) of the LI-NEB method.
+    pub sum_interior_perpendicular: f64,
+    /// Largest Euclidean norm of the complete optimized endpoint force
+    /// (projected spring plus energy restraint).
     pub max_endpoint_optimized: f64,
     pub action: f64,
     pub iteration: usize,
@@ -74,6 +153,7 @@ struct Evaluation {
     action: f64,
     optimization_force: Array2<f64>,
     max_interior_perpendicular: f64,
+    sum_interior_perpendicular: f64,
     max_endpoint_optimized: f64,
 }
 
@@ -133,6 +213,9 @@ fn action_weights(
     energy: f64,
     reduced_planck: f64,
 ) -> Result<Array1<f64>, SaddleError> {
+    // Zhang et al. (2025), Appendix A, Eq. (22), reproducing the 2018
+    // LI-NEB derivation: xi_i = sqrt(2(V_i-E))/hbar. The constrained
+    // turning-point images have xi_0 = xi_n = 0.
     let mut xi = Array1::zeros(energies.len());
     for i in 1..energies.len() - 1 {
         let excess = energies[i] - energy;
@@ -180,6 +263,8 @@ pub fn fixed_energy_action(
     let xi = action_weights(energies, energy, reduced_planck)?;
     let (_, lengths) = segments(q.view())?;
     let mut action = 0.0;
+    // Zhang et al. (2025), Appendix A, Eq. (21), reproducing the 2018
+    // LI-NEB trapezoidal discretization.
     for i in 0..lengths.len() {
         action += 0.5 * (xi[i] + xi[i + 1]) * lengths[i];
     }
@@ -208,6 +293,8 @@ fn action_force_q(
     let (unit, lengths) = segments(q)?;
     let mut force = Array2::zeros(q.raw_dim());
     for j in 1..q.nrows() - 1 {
+        // Zhang et al. (2025), Appendix A, Eq. (22), in mass-scaled
+        // coordinates.
         let physical = force_q.row(j).to_owned()
             * ((lengths[j - 1] + lengths[j]) / (xi[j] * reduced_planck * reduced_planck));
         let curvature = &unit[j] * (xi[j + 1] + xi[j]) - &unit[j - 1] * (xi[j] + xi[j - 1]);
@@ -246,10 +333,6 @@ pub fn fixed_energy_action_force(
     let force_q = -&gradients / &sqrt_masses;
     let force = action_force_q(q.view(), energies, force_q.view(), energy, reduced_planck)?;
     Ok(force * &sqrt_masses)
-}
-
-fn max_abs(values: impl Iterator<Item = f64>) -> f64 {
-    values.fold(0.0_f64, |maximum, value| maximum.max(value.abs()))
 }
 
 fn improved_tangent(
@@ -321,6 +404,7 @@ fn evaluate(
     let (_, lengths) = segments(q)?;
     let mut optimization_force = Array2::zeros(q.raw_dim());
     let mut max_interior_perpendicular = 0.0_f64;
+    let mut sum_interior_perpendicular = 0.0_f64;
 
     for j in 1..q.nrows() - 1 {
         let tangent = improved_tangent(
@@ -333,9 +417,12 @@ fn evaluate(
         )?;
         let raw = action_force.row(j);
         let perpendicular = &raw - raw.dot(&tangent) * &tangent;
-        max_interior_perpendicular =
-            max_interior_perpendicular.max(max_abs(perpendicular.iter().copied()));
+        let perpendicular_norm = perpendicular.dot(&perpendicular).sqrt();
+        max_interior_perpendicular = max_interior_perpendicular.max(perpendicular_norm);
+        sum_interior_perpendicular += perpendicular_norm;
         let spring = config.spring_k * (lengths[j] - lengths[j - 1]) * tangent;
+        // LI-NEB transverse action force plus the parallel spring,
+        // Zhang et al. (2025), Appendix A, Eqs. (24)-(25).
         optimization_force
             .row_mut(j)
             .assign(&(perpendicular + spring));
@@ -353,6 +440,7 @@ fn evaluate(
         let spring = config.spring_k * (&q.row(neighbour) - &q.row(endpoint));
         let spring_perpendicular = &spring - spring.dot(&force_hat) * &force_hat;
         let restraint = config.endpoint_kappa * (energies[endpoint] - config.energy) * force_hat;
+        // Turning-point restraint, Zhang et al. (2025), Appendix A, Eq. (26).
         optimization_force
             .row_mut(endpoint)
             .assign(&(spring_perpendicular + restraint));
@@ -362,17 +450,17 @@ fn evaluate(
         return Err(SaddleError::NonFinite("LI-NEB optimization force"));
     }
     let last = q.nrows() - 1;
-    let max_endpoint_optimized = max_abs(
-        optimization_force
-            .row(0)
-            .iter()
-            .chain(optimization_force.row(last).iter())
-            .copied(),
-    );
+    let first_endpoint = optimization_force.row(0);
+    let last_endpoint = optimization_force.row(last);
+    let max_endpoint_optimized = first_endpoint
+        .dot(&first_endpoint)
+        .sqrt()
+        .max(last_endpoint.dot(&last_endpoint).sqrt());
     Ok(Evaluation {
         action,
         optimization_force,
         max_interior_perpendicular,
+        sum_interior_perpendicular,
         max_endpoint_optimized,
     })
 }
@@ -388,11 +476,26 @@ pub struct NaturalCubic {
     second: Vec<Vec<f64>>,
 }
 
+/// A cubic interpolation value and its first two derivatives.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CubicSample {
+    pub value: Vec<f64>,
+    pub first: Vec<f64>,
+    pub second: Vec<f64>,
+}
+
 impl NaturalCubic {
     pub fn new(knots: Vec<f64>, values: Vec<Vec<f64>>) -> Result<Self, SaddleError> {
         if knots.len() != values.len() || knots.len() < 2 {
             return Err(SaddleError::Shape(
                 "cubic interpolation needs at least two equally counted knots and rows".into(),
+            ));
+        }
+        if !knots.iter().all(|knot| knot.is_finite())
+            || knots.windows(2).any(|pair| pair[1] <= pair[0])
+        {
+            return Err(SaddleError::Invalid(
+                "cubic interpolation knots must be finite and strictly increasing".into(),
             ));
         }
         let width = values[0].len();
@@ -413,12 +516,6 @@ impl NaturalCubic {
                     let i = row + 1;
                     let left = knots[i] - knots[i - 1];
                     let right = knots[i + 1] - knots[i];
-                    if !(left.is_finite() && right.is_finite() && left > 0.0 && right > 0.0) {
-                        return Err(SaddleError::Invalid(
-                            "cubic interpolation knots must be finite and strictly increasing"
-                                .into(),
-                        ));
-                    }
                     diagonal[row] = 2.0 * (left + right);
                     if row + 1 < interior {
                         upper[row] = right;
@@ -458,7 +555,7 @@ impl NaturalCubic {
         &self.knots
     }
 
-    pub fn sample(&self, x: f64) -> Result<(Vec<f64>, Vec<f64>, Vec<f64>), SaddleError> {
+    pub fn sample(&self, x: f64) -> Result<CubicSample, SaddleError> {
         if !x.is_finite() || x < self.knots[0] || x > self.knots[self.knots.len() - 1] {
             return Err(SaddleError::Invalid(
                 "cubic interpolation sample lies outside its knot interval".into(),
@@ -486,7 +583,11 @@ impl NaturalCubic {
                 (y1 - y0) / h + ((-3.0 * a * a + 1.0) * m0 + (3.0 * b * b - 1.0) * m1) * h / 6.0;
             second[component] = a * m0 + b * m1;
         }
-        Ok((value, first, second))
+        Ok(CubicSample {
+            value,
+            first,
+            second,
+        })
     }
 }
 
@@ -515,9 +616,9 @@ fn energy_slice(
     if energy <= target {
         return Ok(q.to_owned());
     }
-    let force_q = -gradient / &sqrt_masses;
+    let force_q = -gradient / sqrt_masses;
     let force_norm = force_q.dot(&force_q).sqrt();
-    if !(force_norm > 0.0) {
+    if force_norm.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
         return Err(SaddleError::Invalid(
             "MEP energy slice reached a stationary point above its target".into(),
         ));
@@ -525,7 +626,7 @@ fn energy_slice(
     let direction = force_q / force_norm;
     let mut lower = 0.0;
     let scale = q.iter().map(|value| value.abs()).fold(1.0_f64, f64::max);
-    let mut upper = scale.sqrt() * f64::EPSILON.sqrt();
+    let mut upper = scale * f64::EPSILON.sqrt();
     if !(upper > 0.0 && upper.is_finite()) {
         return Err(SaddleError::NonFinite("MEP energy-slice step"));
     }
@@ -556,7 +657,7 @@ fn energy_slice(
             upper = middle;
         }
     }
-    Ok(q.to_owned() + lower * direction)
+    Ok(q.to_owned() + upper * direction)
 }
 
 /// Energy-sliced steepest-descent seed from an index-one saddle.
@@ -590,7 +691,7 @@ pub fn fixed_energy_mep_seed(
     let saddle_q = &saddle * &sqrt_masses;
     let mode_q = &mode * &sqrt_masses;
     let mode_norm = mode_q.dot(&mode_q).sqrt();
-    if !(mode_norm > 0.0) {
+    if mode_norm.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
         return Err(SaddleError::Invalid(
             "fixed-energy MEP seed mode must be nonzero".into(),
         ));
@@ -600,7 +701,7 @@ pub fn fixed_energy_mep_seed(
         .iter()
         .map(|value| value.abs())
         .fold(1.0_f64, f64::max);
-    let displacement = scale.sqrt() * f64::EPSILON.sqrt();
+    let displacement = scale * f64::EPSILON.sqrt();
     let mut branches = Vec::with_capacity(2);
     for sign in [-1.0, 1.0] {
         let mut branch = Vec::with_capacity(images);
@@ -671,7 +772,9 @@ impl LineNebSession {
         for (name, value) in [
             ("spring constant", config.spring_k),
             ("endpoint restraint", config.endpoint_kappa),
-            ("force tolerance", config.force_tol),
+            ("interior force tolerance", config.force_tol),
+            ("endpoint force tolerance", config.endpoint_force_tol),
+            ("summed force tolerance", config.sum_force_tol),
             ("time step", config.time_step),
         ] {
             if !(value.is_finite() && value > 0.0) {
@@ -730,7 +833,7 @@ impl LineNebSession {
             let q = match flat.to_owned().into_shape_with_order(shape) {
                 Ok(q) => q,
                 Err(err) => {
-                    *error.lock().unwrap() = Some(SaddleError::Shape(err.to_string()));
+                    *lock_unpoisoned(&error) = Some(SaddleError::Shape(err.to_string()));
                     return (f64::INFINITY, Array1::zeros(flat.len()));
                 }
             };
@@ -740,11 +843,11 @@ impl LineNebSession {
                     let gradient =
                         -Array1::from_iter(evaluation.optimization_force.iter().copied());
                     let action = evaluation.action;
-                    *latest.lock().unwrap() = Some(evaluation);
+                    *lock_unpoisoned(&latest) = Some(evaluation);
                     (action, gradient)
                 }
                 Err(err) => {
-                    *error.lock().unwrap() = Some(err);
+                    *lock_unpoisoned(&error) = Some(err);
                     (f64::INFINITY, Array1::zeros(flat.len()))
                 }
             }
@@ -752,7 +855,7 @@ impl LineNebSession {
         let mut flat = Array1::from_iter(self.q.iter().copied());
         let stepped = self.solver.step(&oracle, &mut flat);
         drop(oracle);
-        if let Some(err) = error.into_inner().unwrap() {
+        if let Some(err) = into_inner_unpoisoned(error) {
             self.solver.forget_evaluation();
             return Err(err);
         }
@@ -767,12 +870,13 @@ impl LineNebSession {
             .iteration
             .checked_add(1)
             .ok_or_else(|| SaddleError::Solver("LI-NEB iteration counter overflow".into()))?;
-        let evaluation = latest
-            .into_inner()
-            .unwrap()
+        let evaluation = into_inner_unpoisoned(latest)
             .ok_or_else(|| SaddleError::Solver("LI-NEB step produced no evaluation".into()))?;
+        // All three residuals printed by Zhang et al. (2025), Appendix A,
+        // Eq. (27), reproducing the 2018 LI-NEB convergence test.
         let status = if evaluation.max_interior_perpendicular <= self.config.force_tol
-            && evaluation.max_endpoint_optimized <= self.config.force_tol
+            && evaluation.max_endpoint_optimized <= self.config.endpoint_force_tol
+            && evaluation.sum_interior_perpendicular <= self.config.sum_force_tol
         {
             LineNebStatus::Converged
         } else {
@@ -781,10 +885,25 @@ impl LineNebSession {
         Ok(LineNebReport {
             status,
             max_interior_perpendicular: evaluation.max_interior_perpendicular,
+            sum_interior_perpendicular: evaluation.sum_interior_perpendicular,
             max_endpoint_optimized: evaluation.max_endpoint_optimized,
             action: evaluation.action,
             iteration: self.iteration,
             surface_rows: rows.load(Ordering::Relaxed),
         })
+    }
+}
+
+fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poison) => poison.into_inner(),
+    }
+}
+
+fn into_inner_unpoisoned<T>(mutex: Mutex<T>) -> T {
+    match mutex.into_inner() {
+        Ok(value) => value,
+        Err(poison) => poison.into_inner(),
     }
 }
