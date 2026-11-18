@@ -186,35 +186,59 @@ pub struct RgsaddleBandConfig {
 }
 
 #[repr(C)]
+/// Fixed-energy LI-NEB configuration.
 pub struct RgsaddleLineNebConfig {
+    /// ABI version this value was built against.
     pub version: RgsaddleVersion,
+    /// Bit flags. The header names each bit.
     pub flags: u64,
+    /// Uniform spring constant in mass-scaled coordinates.
     pub spring_k: f64,
+    /// Endpoint restraint coefficient.
     pub endpoint_kappa: f64,
+    /// Interior optimized-force tolerance.
     pub force_tol: f64,
+    /// Endpoint optimized-force tolerance.
     pub endpoint_force_tol: f64,
+    /// Summed interior transverse-force tolerance.
     pub sum_force_tol: f64,
+    /// Fixed target energy.
     pub energy: f64,
+    /// 3 * n_atoms positive coordinate masses, copied at create.
     pub masses: *const f64,
+    /// Quick-min time step.
     pub time_step: f64,
+    /// Reduced Planck constant.
     pub reduced_planck: f64,
 }
 
 #[repr(C)]
+/// One fixed-energy LI-NEB step report.
 pub struct RgsaddleLineNebReport {
+    /// ABI version this value was built against.
     pub version: RgsaddleVersion,
+    /// Bit flags. The header names each bit.
     pub flags: u64,
+    /// `rgsaddle_run_status_t`.
     pub status: i32,
+    /// Surface rows evaluated in this step.
     pub evaluations: i32,
+    /// Largest interior optimized-force norm.
     pub max_interior_optimized: f64,
+    /// Largest interior transverse-force norm.
     pub max_interior_perpendicular: f64,
+    /// Sum of interior transverse-force norms.
     pub sum_interior_perpendicular: f64,
+    /// Largest endpoint optimized-force norm.
     pub max_endpoint_optimized: f64,
+    /// Discrete fixed-energy action.
     pub action: f64,
+    /// Accepted LI-NEB step count.
     pub iteration: i64,
 }
 
 #[repr(C)]
+/// The RgsaddleMinModeConfig.
 pub struct RgsaddleMinModeConfig {
     /// ABI version this value was built against.
     pub version: RgsaddleVersion,
@@ -433,7 +457,7 @@ pub struct RgsaddleBand {
     climbing_request: bool,
 }
 
-/// The RgsaddleMinMode.
+/// The RgsaddleLineNeb.
 pub struct RgsaddleLineNeb {
     session: LineNebSession,
     n_images: i64,
@@ -441,10 +465,12 @@ pub struct RgsaddleLineNeb {
     per_image: bool,
 }
 
+/// The RgsaddleNaturalCubic.
 pub struct RgsaddleNaturalCubic {
     spline: NaturalCubic,
     width: usize,
 }
+/// The RgsaddleMinMode.
 pub struct RgsaddleMinMode {
     session: MinModeSession,
     n_atoms: i64,

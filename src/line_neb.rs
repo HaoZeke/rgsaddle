@@ -74,16 +74,19 @@ impl Default for LineNebConfig {
 }
 
 impl LineNebConfig {
+    /// Set the uniform spring constant in mass-scaled coordinates.
     pub fn with_spring_k(mut self, spring_k: f64) -> Self {
         self.spring_k = spring_k;
         self
     }
 
+    /// Set the endpoint restraint coefficient.
     pub fn with_endpoint_kappa(mut self, endpoint_kappa: f64) -> Self {
         self.endpoint_kappa = endpoint_kappa;
         self
     }
 
+    /// Set all three convergence tolerances to one value.
     pub fn with_force_tol(mut self, force_tol: f64) -> Self {
         self.force_tol = force_tol;
         self.endpoint_force_tol = force_tol;
@@ -91,31 +94,37 @@ impl LineNebConfig {
         self
     }
 
+    /// Set the endpoint-force convergence tolerance.
     pub fn with_endpoint_force_tol(mut self, endpoint_force_tol: f64) -> Self {
         self.endpoint_force_tol = endpoint_force_tol;
         self
     }
 
+    /// Set the summed interior transverse-force tolerance.
     pub fn with_sum_force_tol(mut self, sum_force_tol: f64) -> Self {
         self.sum_force_tol = sum_force_tol;
         self
     }
 
+    /// Set the fixed target energy used by the action.
     pub fn with_energy(mut self, energy: f64) -> Self {
         self.energy = energy;
         self
     }
 
+    /// Set one positive mass per physical coordinate.
     pub fn with_masses(mut self, masses: Array1<f64>) -> Self {
         self.masses = masses;
         self
     }
 
+    /// Set the fixed quick-min step size.
     pub fn with_time_step(mut self, time_step: f64) -> Self {
         self.time_step = time_step;
         self
     }
 
+    /// Set the reduced Planck constant in host units.
     pub fn with_reduced_planck(mut self, reduced_planck: f64) -> Self {
         self.reduced_planck = reduced_planck;
         self
@@ -125,13 +134,16 @@ impl LineNebConfig {
 /// State of a host-stepped LI-NEB optimization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LineNebStatus {
+    /// The configured residuals are not yet below their tolerances.
     Running,
+    /// All LI-NEB residuals satisfy their tolerances.
     Converged,
 }
 
 /// Diagnostics from the configuration evaluated after one step.
 #[derive(Clone, Debug)]
 pub struct LineNebReport {
+    /// Session state after this step.
     pub status: LineNebStatus,
     /// Largest Euclidean norm of the complete optimized force over the
     /// interior images (transverse action plus tangential spring).
@@ -145,7 +157,9 @@ pub struct LineNebReport {
     /// Largest Euclidean norm of the complete optimized endpoint force
     /// (projected spring plus energy restraint).
     pub max_endpoint_optimized: f64,
+    /// Discrete fixed-energy abbreviated action at the accepted path.
     pub action: f64,
+    /// Completed LI-NEB steps in this session.
     pub iteration: usize,
     /// Number of image rows passed to [`BandSurface::eval`] this step.
     pub surface_rows: usize,
@@ -492,12 +506,16 @@ pub struct NaturalCubic {
 /// A cubic interpolation value and its first two derivatives.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CubicSample {
+    /// Interpolated value at the sample point.
     pub value: Vec<f64>,
+    /// First derivative with respect to the knot coordinate.
     pub first: Vec<f64>,
+    /// Second derivative with respect to the knot coordinate.
     pub second: Vec<f64>,
 }
 
 impl NaturalCubic {
+    /// Build a natural cubic interpolation on a strict knot grid.
     pub fn new(knots: Vec<f64>, values: Vec<Vec<f64>>) -> Result<Self, SaddleError> {
         if knots.len() != values.len() || knots.len() < 2 {
             return Err(SaddleError::Shape(
@@ -564,10 +582,12 @@ impl NaturalCubic {
         })
     }
 
+    /// Return the strict knot grid.
     pub fn knots(&self) -> &[f64] {
         &self.knots
     }
 
+    /// Sample value and first two derivatives at `x` within the knot interval.
     pub fn sample(&self, x: f64) -> Result<CubicSample, SaddleError> {
         if !x.is_finite() || x < self.knots[0] || x > self.knots[self.knots.len() - 1] {
             return Err(SaddleError::Invalid(
@@ -845,6 +865,7 @@ pub struct LineNebSession {
 }
 
 impl LineNebSession {
+    /// Create a fixed-energy LI-NEB session from initial physical positions.
     pub fn new(config: LineNebConfig, positions: Array2<f64>) -> Result<Self, SaddleError> {
         let energies = Array1::zeros(positions.nrows());
         validate_inputs(
@@ -871,18 +892,11 @@ impl LineNebSession {
         let q = mass_scaled(positions.view(), config.masses.view());
         segments(q.view())?;
         let dim = q.len();
-        let mut solver = Solver::new(
-            Method::QuickMin,
-            Control {
-                maxiter: usize::MAX,
-                gtol: 0.0,
-                istep: config.time_step,
-                maxmove: None,
-                ftol_rel: None,
-                noise_floor: None,
-            },
-            dim,
-        );
+        let control = Control::default()
+            .with_maxiter(usize::MAX)
+            .with_gtol(0.0)
+            .with_istep(config.time_step);
+        let mut solver = Solver::new(Method::QuickMin, control, dim);
         solver.set_quickmin_options(rgmin::QuickMinOptions::eon());
         solver.set_atom_maxmove(0.0);
         Ok(Self {
@@ -898,10 +912,12 @@ impl LineNebSession {
         &self.q / &self.config.masses.mapv(f64::sqrt)
     }
 
+    /// Read the immutable LI-NEB configuration.
     pub fn config(&self) -> &LineNebConfig {
         &self.config
     }
 
+    /// Number of accepted LI-NEB steps so far.
     pub fn iteration(&self) -> usize {
         self.iteration
     }
