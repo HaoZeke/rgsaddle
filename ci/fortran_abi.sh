@@ -151,6 +151,33 @@ gfortran -std=f2008 -Wall -Wextra -Werror -fcheck=all \
   -o "$work/test_assign.gfortran.x"
 run_assign gfortran "$work/test_assign.gfortran.x"
 
+mkdir -p "$work/doc-examples" "$work/doc-mods"
+python3 - "$root/docs/orgmode/howto/fortran.org" "$work/doc-examples" <<'PY'
+import pathlib, re, sys
+
+doc = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+out_dir = pathlib.Path(sys.argv[2])
+count = 0
+for block in re.findall(r"#\+begin_src fortran\n(.*?)#\+end_src", doc, flags=re.S):
+    m = re.search(r"(?m)^\s*end\s+program\s+([A-Za-z0-9_]+)\s*$", block)
+    if m:
+        (out_dir / f"{m.group(1)}.f90").write_text(block, encoding="utf-8")
+        count += 1
+if count == 0:
+    raise SystemExit("no runnable Fortran program found in howto/fortran.org")
+PY
+for doc_src in "$work/doc-examples"/*.f90; do
+  doc_name="$(basename "$doc_src" .f90)"
+  # shellcheck disable=SC2046
+  compile_and_run gfortran "doc_${doc_name}" \
+    -std=f2008 -Wall -Wextra -Werror -fcheck=all \
+    -J"$work/doc-mods" \
+    $pc_cflags \
+    "$doc_src" \
+    $(link_runtime) \
+    $pc_libs
+done
+
 cat >"$work/smoke.f90" <<'EOF'
 program smoke
   use, intrinsic :: iso_c_binding
