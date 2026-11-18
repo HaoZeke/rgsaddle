@@ -1,0 +1,13 @@
+Improved dimer rotation now uses its five degree trial and fitted angle
+stop by default instead of also inferring the classic torque window.
+The angle criterion follows Heyden, Bell, and Keil, J. Chem. Phys. 123,
+224101 (2005), doi:10.1063/1.2104507, and Kästner and Sherwood,
+J. Chem. Phys. 128, 014106 (2008), doi:10.1063/1.2815812.
+Set ~rotation_angle_tol~ to zero to infer the classic window, or use
+~MinModeSession::set_torque_window~ to select it explicitly.
+The positive curvature climb now limits the normalized global mode step
+before applying the per atom cap, matching eOn conjugate gradients.
+Minimum mode FIRE now opens at rgmin's reference step of 0.1 instead of
+1.0, which avoids immediate capped moves on stiff negative modes.
+Lanczos now uses eOn's relative Ritz value tolerance of 0.01 by default.
+~MinModeSession::set_lanczos_rel_tol~ can replace or disable that stop.
