@@ -1204,8 +1204,11 @@ pub fn pafi_profile<S: PointSurface + Sync>(
             break;
         }
         let requested = (profile.barrier_error / target).powi(2);
-        let at_least_double = requested.max(2.0);
-        let factor = at_least_double.min(8.0);
+        let factor = match (requested.total_cmp(&2.0), requested.total_cmp(&8.0)) {
+            (std::cmp::Ordering::Less, _) => 2.0,
+            (_, std::cmp::Ordering::Greater) => 8.0,
+            _ => requested,
+        };
         let samples = ((config.samples as f64) * factor).ceil() as usize;
         let extra = config
             .clone()
