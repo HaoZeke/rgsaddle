@@ -25,7 +25,7 @@ use crate::stencil::{ascend, curvature_along};
 use super::control::{Action, ArtControl, Controller, Report as ControlReport, Role, StencilView};
 
 /// Error text [`BandBuilder::build`] returns until `feat/band-methods-zoom` lands.
-pub const BAND_PRESET_SEAM: &str = "band presets stay on feat/band-methods-zoom";
+pub const BAND_PRESET_SEAM: &str = "band presets are not implemented";
 
 /// Closed preset list. A band value is accepted by the builder and
 /// rejected by [`BandBuilder::build`] and by [`PointBuilder::build`].
