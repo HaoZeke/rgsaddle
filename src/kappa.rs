@@ -1,19 +1,37 @@
-//! Basin constrained dimer forces from Xiao et al., JCP 141, 164111 (2014).
+//! Basin constrained dimer forces from Xiao, Wu, and Henkelman, J. Chem.
+//! Phys. 141, 164111 (2014), doi:10.1063/1.4898664 (the kappa-dimer).
+//!
+//! The force is built from the gradient, a lowest-mode estimate and a
+//! Hessian-vector callback. Positions are in Angstrom, gradients in
+//! eV/Angstrom, Hessian-vector products in eV/Angstrom^2, all as flat `3N`
+//! arrays in atom-major order `[x0, y0, z0, x1, ...]`.
+//!
+//! The kappa-dimer is for a host that follows the force to a saddle from
+//! inside a convex basin. The ordinary dimer of ASE (`DimerControl`) and
+//! eOn is [`crate::MinModeSession`].
 use crate::SaddleError;
 use ndarray::{Array1, ArrayView1, ArrayView2, s};
 use rgmin::{ApplyHessian, EigenParams, EigensolverKind};
 use std::cell::{Cell, RefCell};
 
 #[derive(Clone, Debug)]
-/// The KappaDimerConfig.
+/// Controls of [`kappa_dimer_force`].
+///
+/// The defaults are `beta = 5.0` Angstrom and a dimer-kind lowest-mode
+/// solve with tolerance `1e-6` and at most 100 iterations.
 ///
 /// Non-exhaustive: start from [`KappaDimerConfig::default`] and chain
 /// the `with_*` setters.
 #[non_exhaustive]
 pub struct KappaDimerConfig {
-    /// Switching length in the position units; beta * kappa is dimensionless.
+    /// Switching length in Angstrom; `beta * kappa` is dimensionless, with
+    /// `kappa` in 1/Angstrom. Must be positive and finite. It sets the width
+    /// of the switch `gamma_parallel = -tanh(beta kappa / 2)`,
+    /// `gamma_perpendicular = 1 / (1 + exp(-beta kappa))`.
     pub beta: f64,
-    /// The eigen.
+    /// Lowest-mode solve of the reduced Hessian, from `rgmin`. Its `tol`
+    /// bounds the residual of the tangent eigenpair relative to
+    /// `max(|H c|, 1)` and must be positive and finite.
     pub eigen: EigenParams,
 }
 
@@ -35,32 +53,102 @@ impl Default for KappaDimerConfig {
 }
 
 #[derive(Clone, Debug)]
-/// The KappaDimerForce.
+/// Result of [`kappa_dimer_force`].
 pub struct KappaDimerForce {
-    /// Force in the ASE convention, the negative of the energy gradient.
+    /// Force in the ASE convention, the negative of the energy gradient,
+    /// length `3N`, in eV/Angstrom. It is zero at a zero gradient.
     pub force: Array1<f64>,
-    /// The tangent mode.
+    /// Unit lowest-mode vector of the Hessian on the tangent space (the
+    /// space orthogonal to the excluded directions and to the gradient),
+    /// lifted back to the full `3N` Cartesian space. Zero when the gradient
+    /// vanishes or the tangent space is empty.
     pub tangent_mode: Array1<f64>,
-    /// The tangent dimension.
+    /// Dimension of the tangent space. It is `3N` minus the number of
+    /// independent excluded directions, less one when the gradient is
+    /// nonzero.
     pub tangent_dimension: usize,
-    /// The tangent curvature.
+    /// Rayleigh quotient of the Hessian along `tangent_mode`, in
+    /// eV/Angstrom^2. Zero when no tangent mode was computed.
     pub tangent_curvature: f64,
-    /// The kappa.
+    /// `-tangent_curvature / |g|` in 1/Angstrom, with `g` the gradient
+    /// projected off the excluded directions. It is `-inf` when the tangent
+    /// space is empty and `0` at a zero gradient.
     pub kappa: f64,
-    /// The gamma parallel.
+    /// Coefficient of the force component along the projected mode,
+    /// dimensionless: `-tanh(beta * kappa / 2)`, so it is `+1` in strongly
+    /// convex regions and `-1` where the tangent curvature is strongly
+    /// negative.
     pub gamma_parallel: f64,
-    /// The gamma perpendicular.
+    /// Coefficient of the force component perpendicular to the projected
+    /// mode, dimensionless: `1 / (1 + exp(-beta * kappa))`, between 0 and 1.
     pub gamma_perpendicular: f64,
-    /// The residual.
+    /// Norm of the residual `H c - nu c` of the tangent eigenpair, in
+    /// eV/Angstrom^2.
     pub residual: f64,
-    /// The actions.
+    /// Number of Hessian-vector callbacks spent, counting the residual check.
     pub actions: usize,
 }
 
 /// Equation (6) in the complement of the force and the excluded modes,
-/// followed by the equation (7) force. Rows of `excluded` are Cartesian
-/// symmetry or constraint directions. The Hessian callback receives full
-/// Cartesian vectors; it need not assemble a matrix.
+/// followed by the equation (7) force (Xiao, Wu, and Henkelman, J. Chem.
+/// Phys. 141, 164111 (2014), doi:10.1063/1.4898664). Rows of `excluded` are
+/// Cartesian symmetry or constraint directions. The Hessian callback
+/// receives full Cartesian vectors; it need not assemble a matrix.
+///
+/// `gradient` is the energy gradient (length `3N`, eV/Angstrom). `mode` is a
+/// starting estimate of the lowest mode, length `3N`, only its direction
+/// matters. `excluded` is `r x 3N` with one direction per row, for example
+/// rigid translations; pass an empty `0 x 3N` view for none. `apply_hessian`
+/// returns `H v` in eV/Angstrom^2 for a full `3N` vector `v`.
+///
+/// # Errors
+///
+/// - [`SaddleError::Shape`] when `gradient` is empty, `mode` or the columns
+///   of `excluded` are not `3N`, or `mode` lies entirely in the excluded
+///   space.
+/// - [`SaddleError::Solver`] when `beta` or the eigensolver tolerance is not
+///   positive and finite, when the lowest-mode solve fails, or when the
+///   tangent eigenpair cannot be refined to the tolerance within the
+///   tangent space.
+/// - [`SaddleError::NonFinite`] when an input, the tangent mode or the force
+///   is not finite.
+/// - Any error returned by `apply_hessian`.
+///
+/// With `g` the gradient projected off the excluded directions, `tau` the
+/// unit projected mode and `kappa = -nu / |g|` for the lowest tangent
+/// curvature `nu`, the force is
+/// `-gamma_perpendicular (g - (g . tau) tau) + gamma_parallel (g . tau) tau`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::{Array1, Array2, ArrayView1, array};
+/// use rgsaddle::SaddleError;
+/// use rgsaddle::kappa::{KappaDimerConfig, kappa_dimer_force};
+///
+/// // E = (x^2 + 2 y^2 + 3 z^2) / 2 at (1, 0, 0): gradient (1, 0, 0) eV/Angstrom
+/// // and Hessian diag(1, 2, 3) eV/Angstrom^2.
+/// let hessian = |v: ArrayView1<f64>| -> Result<Array1<f64>, SaddleError> {
+///     Ok(array![v[0], 2.0 * v[1], 3.0 * v[2]])
+/// };
+/// let gradient = array![1.0, 0.0, 0.0];
+/// let mode = array![0.0, 1.0, 0.0];
+/// let none = Array2::<f64>::zeros((0, 3));
+/// let out = kappa_dimer_force(
+///     gradient.view(),
+///     mode.view(),
+///     none.view(),
+///     hessian,
+///     &KappaDimerConfig::default(),
+/// )?;
+/// // The tangent space is the y-z plane; its lowest curvature is 2 eV/Angstrom^2.
+/// assert_eq!(out.tangent_dimension, 2);
+/// approx::assert_abs_diff_eq!(out.tangent_curvature, 2.0, epsilon = 0.001);
+/// approx::assert_abs_diff_eq!(out.kappa, -2.0, epsilon = 0.001);
+/// // Deep in the convex basin the perpendicular force is switched off.
+/// assert!(out.gamma_perpendicular < 0.001);
+/// # Ok::<(), SaddleError>(())
+/// ```
 pub fn kappa_dimer_force<F>(
     gradient: ArrayView1<f64>,
     mode: ArrayView1<f64>,

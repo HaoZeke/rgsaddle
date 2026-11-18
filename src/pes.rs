@@ -9,6 +9,10 @@
 //! [`CartesianPes::new`] is the unconstrained Hessian store
 //! [`crate::InternalPes`] wraps. IRC keeps a separate MW model on
 //! [`crate::irc::IrcSession`].
+//!
+//! Positions are flat `3N` vectors in Angstrom, atom-major
+//! `[x0, y0, z0, x1, ...]`. Gradients are in eV/Angstrom, the Hessian in
+//! eV/Angstrom^2 and masses in amu.
 
 use ndarray::{Array1, Array2, ArrayView1};
 use rgmin::Manifold;
@@ -36,7 +40,8 @@ impl CartesianHessian {
         Self { b: Array2::eye(n) }
     }
 
-    /// Stored Cartesian Hessian.
+    /// Stored Cartesian Hessian, a `3N x 3N` matrix in eV/Angstrom^2. It is the
+    /// identity until a secant pair or [`Self::install`] changes it.
     pub fn hessian(&self) -> &Array2<f64> {
         &self.b
     }
@@ -77,6 +82,14 @@ impl CartesianHessian {
     }
 
     /// Replace the matrix. The shape must match the living frame.
+    ///
+    /// `b` is `3N x 3N` in eV/Angstrom^2. It is stored as given, not
+    /// symmetrised.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] when `b` is not `3N x 3N`, and
+    /// [`SaddleError::NonFinite`] when an entry is NaN or infinite.
     pub fn install(&mut self, b: Array2<f64>) -> Result<(), SaddleError> {
         if b.nrows() != self.b.nrows() || b.ncols() != self.b.ncols() {
             return Err(SaddleError::Shape(
@@ -92,6 +105,11 @@ impl CartesianHessian {
 }
 
 /// Cartesian geometry plus a persistent Cartesian Hessian.
+///
+/// Sella's `PES` is the reference. The Hessian starts as the identity and
+/// each [`CartesianPes::kick`] adds one secant pair with the BFGS or
+/// TS-BFGS update ([`HessUpdate`]); BFGS skips a pair whose `y . s` is
+/// at most `1e-12`.
 pub struct CartesianPes {
     x: Array1<f64>,
     masses: Array1<f64>,
@@ -106,6 +124,14 @@ pub struct CartesianPes {
 
 impl CartesianPes {
     /// `x` is 3N Cartesian; `masses` is length N.
+    ///
+    /// `x` is in Angstrom and `masses` in amu. The frame carries no
+    /// translation or rotation constraint; see [`Self::with_proj`].
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] when `x` is empty or its length is not a
+    /// multiple of three, or `masses.len() * 3 != x.len()`.
     pub fn new(x: Array1<f64>, masses: Array1<f64>) -> Result<Self, SaddleError> {
         if x.is_empty() || !x.len().is_multiple_of(3) {
             return Err(SaddleError::Shape(
@@ -135,6 +161,14 @@ impl CartesianPes {
     /// Rotation needs two atoms; a smaller frame keeps `proj_rot`
     /// as a no-op. [`Self::new`] stays unconstrained so
     /// [`crate::InternalPes`] does not inherit trans/rot.
+    ///
+    /// `proj_trans` fixes the centre of mass and `proj_rot` the orientation.
+    /// `x` is in Angstrom and `masses` in amu, as for [`Self::new`].
+    ///
+    /// # Errors
+    ///
+    /// The shape errors of [`Self::new`], and any error from building the
+    /// constraint chart at `x`.
     pub fn with_proj(
         x: Array1<f64>,
         masses: Array1<f64>,
@@ -147,6 +181,10 @@ impl CartesianPes {
     }
 
     /// Replace the trans/rot chart. Both false drops it.
+    ///
+    /// # Errors
+    ///
+    /// Any error from building the constraint chart at the living point.
     pub fn set_proj(&mut self, proj_trans: bool, proj_rot: bool) -> Result<(), SaddleError> {
         self.proj_trans = proj_trans;
         self.proj_rot = proj_rot;
@@ -166,12 +204,13 @@ impl CartesianPes {
         Ok(())
     }
 
-    /// Proj trans.
+    /// Whether the centre of mass is held fixed.
     pub fn proj_trans(&self) -> bool {
         self.proj_trans
     }
 
-    /// Proj rot.
+    /// Whether the orientation is held fixed. It stays true on a one-atom
+    /// frame, where no orientation constraint exists.
     pub fn proj_rot(&self) -> bool {
         self.proj_rot
     }
@@ -183,6 +222,9 @@ impl CartesianPes {
 
     /// Project `v` onto `ker(J)` at the living point. Identity when
     /// neither flag is set.
+    ///
+    /// `v` is a flat `3N` vector (a displacement in Angstrom or a force in
+    /// eV/Angstrom); the result has the same length and unit.
     pub fn project(&self, v: &Array1<f64>) -> Array1<f64> {
         match &self.cons {
             Some(c) => c.project(&self.x, v),
@@ -191,6 +233,10 @@ impl CartesianPes {
     }
 
     /// Retract along `v` and restore onto the trans/rot set.
+    ///
+    /// `v` is a `3N` displacement in Angstrom. The result is the new `3N`
+    /// position in Angstrom, `x + v` when no flag is set. The living point
+    /// does not move.
     pub fn retract(&self, v: &Array1<f64>) -> Array1<f64> {
         match &self.cons {
             Some(c) => c.retract(&self.x, v),
@@ -203,6 +249,9 @@ impl CartesianPes {
     }
 
     /// Transport `v` from `x_from` to `x_to` on the trans/rot set.
+    ///
+    /// All three are flat `3N` vectors; `x_from` and `x_to` are positions in
+    /// Angstrom and `v` keeps its unit. Identity when no flag is set.
     pub fn transport(
         &self,
         x_from: &Array1<f64>,
@@ -215,37 +264,51 @@ impl CartesianPes {
         }
     }
 
-    /// Set update.
+    /// Choose the Hessian update applied by later [`Self::kick`] calls.
     pub fn set_update(&mut self, update: HessUpdate) {
         self.update = update;
     }
 
-    /// Update kind.
+    /// The Hessian update applied by [`Self::kick`]; BFGS until changed.
     pub fn update_kind(&self) -> HessUpdate {
         self.update
     }
 
-    /// Cartesian coordinates, length 3N, in the host's length unit.
+    /// Cartesian coordinates, length 3N, in Angstrom.
     pub fn position(&self) -> ArrayView1<'_, f64> {
         self.x.view()
     }
 
-    /// Per-atom masses, length N.
+    /// Per-atom masses in amu, length N.
     pub fn masses(&self) -> ArrayView1<'_, f64> {
         self.masses.view()
     }
 
-    /// Hessian.
+    /// The stored Hessian, a `3N x 3N` matrix in eV/Angstrom^2.
     pub fn hessian(&self) -> &CartesianHessian {
         &self.hess
     }
 
     /// Replace the Cartesian Hessian after a multi-secant update.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`CartesianHessian::install`].
     pub fn install_hessian(&mut self, b: Array2<f64>) -> Result<(), SaddleError> {
         self.hess.install(b)
     }
 
     /// Seed one Cartesian Hessian mode before a quasi-Newton session.
+    ///
+    /// `mode` is a `3N` direction (only its direction matters) and
+    /// `curvature` the eigenvalue to give it, in eV/Angstrom^2. The stored
+    /// matrix becomes `I + (curvature - 1) u u^T` for the unit mode `u`.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] when `mode` is not length `3N` or has a norm of
+    /// at most `1e-16`, and [`SaddleError::NonFinite`] when `mode` or
+    /// `curvature` is not finite.
     pub fn seed_mode(&mut self, mode: ArrayView1<f64>, curvature: f64) -> Result<(), SaddleError> {
         if mode.len() != self.x.len() {
             return Err(SaddleError::Shape(
@@ -263,12 +326,19 @@ impl CartesianPes {
         Ok(())
     }
 
-    /// Reset.
+    /// Forget the learned Hessian and return it to the identity. The
+    /// position and the chosen update are kept.
     pub fn reset(&mut self) {
         self.hess.forget();
     }
 
     /// Add `d` into the living Cartesian frame. No surface eval.
+    ///
+    /// `d` is a `3N` displacement in Angstrom.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] when `d` is not length `3N`.
     pub fn displace(&mut self, d: ArrayView1<f64>) -> Result<(), SaddleError> {
         if d.len() != self.x.len() {
             return Err(SaddleError::Shape(
@@ -282,6 +352,41 @@ impl CartesianPes {
     /// Sella `PES.kick`: displace, eval, store a Cartesian secant pair.
     ///
     /// Sella `_update_H(dx, dg)` is Cartesian. IRC keeps its own model.
+    ///
+    /// `d` is a `3N` displacement in Angstrom. The surface is evaluated
+    /// twice, before and after the move, and the secant pair
+    /// `s = d`, `y = g1 - g0` updates the Hessian. Returns the energy in eV
+    /// and the gradient in eV/Angstrom at the new point.
+    ///
+    /// # Errors
+    ///
+    /// Any error of the surface, and [`SaddleError::NonFinite`] when the new
+    /// gradient has a NaN or infinite entry. The position has moved by then.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::{Array1, ArrayView1, array};
+    /// use rgsaddle::SaddleError;
+    /// use rgsaddle::minmode::PointSurface;
+    /// use rgsaddle::pes::CartesianPes;
+    ///
+    /// /// E = (k / 2) |x|^2 with k = 4 eV/Angstrom^2.
+    /// struct Bowl;
+    /// impl PointSurface for Bowl {
+    ///     fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+    ///         Ok((2.0 * x.dot(&x), 4.0 * &x))
+    ///     }
+    /// }
+    ///
+    /// let mut pes = CartesianPes::new(array![1.0, 0.0, 0.0], array![12.0])?;
+    /// let (energy, gradient) = pes.kick(&Bowl, array![-0.5, 0.0, 0.0].view())?;
+    /// assert_eq!(energy, 0.5);
+    /// assert_eq!(gradient, array![2.0, 0.0, 0.0]);
+    /// // The secant pair (s = -0.5, y = -2) taught the Hessian its curvature.
+    /// assert_eq!(pes.hessian().hessian()[[0, 0]], 4.0);
+    /// # Ok::<(), SaddleError>(())
+    /// ```
     pub fn kick<S: PointSurface>(
         &mut self,
         surface: &S,
@@ -292,6 +397,15 @@ impl CartesianPes {
     }
 
     /// [`Self::kick`] when the caller already evaluated `g0` at `x`.
+    ///
+    /// `g0` is the `3N` gradient at the current point in eV/Angstrom. `d` is
+    /// applied to the leading `min(len(d), 3N)` coordinates without a length
+    /// check, so pass a full `3N` vector.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] when `g0` is not length `3N`, any error of the
+    /// surface, and [`SaddleError::NonFinite`] for a non-finite new gradient.
     pub fn kick_from<S: PointSurface>(
         &mut self,
         surface: &S,

@@ -1,8 +1,8 @@
 //! Bennett–Chandler transmission coefficient.
 //!
 //! Bennett, in Algorithms for Chemical Computations, ACS Symposium Series
-//! 46, 63 (1977), and Chandler, J. Chem. Phys. 68, 2959 (1978),
-//! doi:10.1063/1.436049, write the recrossing factor as the plateau of the
+//! 46, 63 (1977), doi:10.1021/bk-1977-0046.ch004, and Chandler, J. Chem.
+//! Phys. 68, 2959 (1978), doi:10.1063/1.436049, write the recrossing factor as the plateau of the
 //! flux correlation through a dividing surface. For a surface with unit
 //! normal `τ` and configurations drawn from the constrained ensemble,
 //!
@@ -20,6 +20,10 @@
 //! integrated by a velocity-Verlet / Ornstein–Uhlenbeck split. `γ = 0` is
 //! Newtonian. The reported `κ` is `κ(t)` at the requested plateau record.
 //! The standard error is the block standard error of that ratio.
+//!
+//! Units follow the surface: `kT` and energies in eV, positions in
+//! Angstrom, masses in amu, and time in `sqrt(amu Angstrom^2 / eV)`, which
+//! is 10.18 fs.
 
 use ndarray::{Array1, ArrayView1};
 
@@ -29,30 +33,42 @@ use crate::stats::Rng;
 
 /// Inertial shooting from one dividing surface.
 ///
+/// Defaults: `thermal = 0.02585` eV (300 K), `mass = 1.0` amu,
+/// `friction = 0.0` (Newtonian), `time_step = 1.0e-3`, `steps = 200`,
+/// `record_every = 10`, `shots = 64`, `blocks = 4`, `seed = 1`,
+/// `plateau_record = 0`.
+///
 /// Non-exhaustive: start from [`ShootingConfig::default`] and chain the
 /// `with_*` setters.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct ShootingConfig {
-    /// `kT` in the energy unit of the surface.
+    /// `kT` in eV (0.02585 eV is 300 K). Must be positive and finite.
     pub thermal: f64,
-    /// Mass of every degree of freedom, in the surface's mass unit.
+    /// Mass of every degree of freedom, in amu. Must be positive and finite.
     pub mass: f64,
-    /// Langevin friction `γ` in inverse time. Zero is Newtonian.
+    /// Langevin friction `γ` in inverse time (1/(10.18 fs) for eV, Angstrom
+    /// and amu). Zero is Newtonian. Must be finite and nonnegative.
     pub friction: f64,
-    /// Velocity-Verlet time step.
+    /// Velocity-Verlet time step in the time unit of the surface (10.18 fs
+    /// for eV, Angstrom and amu). Must be positive and finite.
     pub time_step: f64,
-    /// Integration steps after the initial velocity is drawn.
+    /// Integration steps after the initial velocity is drawn. At least one.
     pub steps: usize,
-    /// Steps between stored values of `κ(t)`.
+    /// Steps between stored values of `κ(t)`. At least one.
     pub record_every: usize,
-    /// Shots. Starts are cycled if there are fewer configurations than shots.
+    /// Shots. Starts are cycled if there are fewer configurations than
+    /// shots. At least one, and at least `blocks`.
     pub shots: usize,
-    /// Blocks of shots for the standard error of the plateau value.
+    /// Blocks of shots for the standard error of the plateau value. At
+    /// least two. Each block holds `shots / blocks` shots; a remainder is not
+    /// used by the error estimate.
     pub blocks: usize,
-    /// Seed of the velocity draws.
+    /// Seed of the velocity draws. The result is a function of the seed.
     pub seed: u64,
-    /// Which stored time is the plateau. Zero is the first record.
+    /// Index into the stored records that is the plateau. Zero is the
+    /// first record, at time `record_every * time_step`. It must be below
+    /// `ceil(steps / record_every)`.
     pub plateau_record: usize,
 }
 
@@ -87,17 +103,22 @@ impl Default for ShootingConfig {
 }
 
 /// `κ(t)` and the plateau value.
+///
+/// `time` and `kappa_of_t` have `ceil(steps / record_every)` entries.
 #[derive(Clone, Debug)]
 pub struct Transmission {
-    /// Times of the stored records, in the same unit as [`ShootingConfig::time_step`].
+    /// Times of the stored records, `(r + 1) * record_every * time_step`
+    /// for record `r`, in the unit of [`ShootingConfig::time_step`].
     pub time: Vec<f64>,
-    /// `κ(t)` at those times.
+    /// `κ(t)` at those times, dimensionless.
     pub kappa_of_t: Vec<f64>,
-    /// `κ` at [`ShootingConfig::plateau_record`].
+    /// `κ` at [`ShootingConfig::plateau_record`], dimensionless.
     pub kappa: f64,
-    /// Block standard error of `kappa`.
+    /// Block standard error of `kappa`, dimensionless.
     pub error: f64,
-    /// Shots with `v_τ > 0` that entered the denominator.
+    /// Number of shots (out of [`ShootingConfig::shots`]) whose initial
+    /// velocity along the tangent was positive and that entered the
+    /// denominator.
     pub forward: usize,
 }
 
@@ -106,6 +127,54 @@ pub struct Transmission {
 /// `tangent` is the product direction. It is normalised. `reference` is the
 /// point on the dividing surface that defines `s = 0`; every start should
 /// already lie on that plane.
+///
+/// `surface` is a [`PointSurface`] returning the energy in eV and the
+/// gradient in eV/Angstrom. `starts` are configurations on the dividing
+/// surface, each a flat coordinate vector in Angstrom; `reference` and
+/// `tangent` have the same length. The mass is the same for every
+/// coordinate.
+///
+/// # Errors
+///
+/// - [`SaddleError::Invalid`] when `starts` is empty, `thermal`, `mass`,
+///   `time_step` or a count in `config` is out of range (see the field
+///   docs), `friction` is negative or not finite, `tangent` has zero or
+///   non-finite norm, `plateau_record` is past the trajectory, no shot
+///   drew a positive initial velocity, or fewer than two blocks have a
+///   positive flux.
+/// - [`SaddleError::Shape`] when `reference`, `tangent` and every start do
+///   not share a length, or the surface returns a gradient of another
+///   length or with a non-finite entry.
+/// - Any error the surface returns.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::{Array1, ArrayView1, array};
+/// use rgsaddle::minmode::PointSurface;
+/// use rgsaddle::{SaddleError, ShootingConfig, bennett_chandler};
+///
+/// /// V = (x^2 - 1)^2 + 2 y^2 + 2 z^2 in eV and Angstrom: saddle at the origin.
+/// struct DoubleWell;
+///
+/// impl PointSurface for DoubleWell {
+///     fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+///         let energy = (x[0] * x[0] - 1.0).powi(2) + 2.0 * x[1] * x[1] + 2.0 * x[2] * x[2];
+///         let gradient = array![4.0 * x[0] * (x[0] * x[0] - 1.0), 4.0 * x[1], 4.0 * x[2]];
+///         Ok((energy, gradient))
+///     }
+/// }
+///
+/// // Dividing surface x = 0 through the saddle, product side toward +x.
+/// let starts = [array![0.0, 0.1, 0.0], array![0.0, -0.1, 0.05]];
+/// let reference = array![0.0, 0.0, 0.0];
+/// let tangent = array![1.0, 0.0, 0.0];
+/// let config = ShootingConfig::default().with_shots(16).with_blocks(2);
+/// let out = bennett_chandler(&DoubleWell, &starts, reference.view(), tangent.view(), &config)?;
+/// assert!(out.kappa > 0.0 && out.kappa <= 1.0);
+/// assert_eq!(out.kappa_of_t.len(), 20);
+/// # Ok::<(), SaddleError>(())
+/// ```
 pub fn bennett_chandler<S: PointSurface>(
     surface: &S,
     starts: &[Array1<f64>],
