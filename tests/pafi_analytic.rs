@@ -5,7 +5,7 @@
 
 use ndarray::{Array1, ArrayView1};
 use rgsaddle::{
-    ArcPath, PafiConfig, PathFrame, PointSurface, SaddleError, average_hyperplane,
+    ArcPath, PafiConfig, PafiIntegrator, PathFrame, PointSurface, SaddleError, average_hyperplane,
     integrate_profile, pafi_profile, zero_temperature_barrier,
 };
 
@@ -158,6 +158,68 @@ fn harmonic_plane_is_sampled_exactly_at_a_long_step() {
         plane.gradient,
         plane.error
     );
+    let euler = average_hyperplane(
+        &Widening,
+        &geometry,
+        &config.with_integrator(PafiIntegrator::EulerMaruyama),
+    )
+    .expect("Euler--Maruyama plane");
+    // For x[n+1] = (1-a)x[n] + sqrt(2 h kT) R[n], the stationary
+    // variance is (kT/k)/(1-a/2). Here a = μ k dt = 1.2.
+    let euler_truth = truth / (1.0 - 1.2 / 2.0);
+    assert!(
+        (euler.gradient - euler_truth).abs() < 4.0 * euler.error,
+        "Euler gradient {} truth {euler_truth} error {}",
+        euler.gradient,
+        euler.error
+    );
+}
+
+#[test]
+fn trajectory_ensemble_uses_the_reference_error() {
+    let frames: Vec<Array1<f64>> = (0..11)
+        .map(|i| Array1::from_vec(vec![-0.5 + i as f64 / 10.0, 0.0]))
+        .collect();
+    let path = ArcPath::from_positions(&frames).expect("path");
+    let geometry = path.geometry(path.arcs()[5]).expect("middle");
+    let trajectories = 4;
+    let config = PafiConfig::default()
+        .with_thermal(0.05)
+        .with_time_step(0.01)
+        .with_thermalize(20)
+        .with_stride(2)
+        .with_samples(40)
+        .with_blocks(4)
+        .with_trajectories(trajectories)
+        .with_seed(31)
+        .with_fix_com(false)
+        .with_retain(0)
+        .with_max_jump(None);
+    let ensemble = average_hyperplane(&Widening, &geometry, &config).expect("ensemble");
+    let means: Vec<f64> = (0..trajectories)
+        .map(|index| {
+            average_hyperplane(
+                &Widening,
+                &geometry,
+                &config
+                    .clone()
+                    .with_trajectories(1)
+                    .with_seed(config.seed + index as u64),
+            )
+            .expect("trajectory")
+            .gradient
+        })
+        .collect();
+    let mean = means.iter().sum::<f64>() / trajectories as f64;
+    let error = means
+        .iter()
+        .map(|value| (value - mean).powi(2))
+        .sum::<f64>()
+        .sqrt()
+        / trajectories as f64;
+    assert_eq!(ensemble.gradient, mean);
+    assert_eq!(ensemble.error, error);
+    assert_eq!(ensemble.samples, trajectories * config.samples);
 }
 
 #[test]
@@ -219,30 +281,43 @@ fn bent(x: f64, y: f64) -> (f64, f64, f64) {
     (energy, gx, stiffness * rise)
 }
 
-/// `-kT ln ∫ exp(-V/kT) dl` over the line `X(s) + l m`, `m ⟂ X'(s)`, by
-/// the trapezoid rule on `|l| ≤ 1.5`. These lines leave the valley well
+/// `d/ds` of `-kT ln ∫ exp(-V/kT) dl` over the line `X(s) + l m(s)`,
+/// `m ⟂ X'(s)`, by the trapezoid rule on `|l| ≤ 1.5`. The limits do not
+/// depend on `s`, so the derivative is the average of
+/// `∇V · (X' + l m')` over the line, with `m' = (-t_y', t_x') / |t| -
+/// m (t · t') / |t|²` for `t = X'`. These lines leave the valley well
 /// inside that range.
-fn line_free_energy(path: &ArcPath, arc: f64, thermal: f64) -> f64 {
+fn line_free_energy_slope(path: &ArcPath, arc: f64, thermal: f64) -> f64 {
     let geometry = path.geometry(arc).expect("geometry");
     let (tx, ty) = (geometry.tangent[0], geometry.tangent[1]);
+    let (cx, cy) = (geometry.curvature[0], geometry.curvature[1]);
     let norm = tx.hypot(ty);
     let (mx, my) = (-ty / norm, tx / norm);
+    let along = (tx * cx + ty * cy) / (norm * norm);
+    let (dmx, dmy) = (-cy / norm - mx * along, cx / norm - my * along);
     let (x, y) = (geometry.positions[0], geometry.positions[1]);
     let points = 30_001;
     let step = 3.0 / (points - 1) as f64;
-    let energies: Vec<f64> = (0..points)
+    let samples: Vec<(f64, f64)> = (0..points)
         .map(|k| {
             let l = -1.5 + step * k as f64;
-            bent(x + l * mx, y + l * my).0
+            let (energy, gx, gy) = bent(x + l * mx, y + l * my);
+            (energy, gx * (tx + l * dmx) + gy * (ty + l * dmy))
         })
         .collect();
-    let low = energies.iter().copied().fold(f64::INFINITY, f64::min);
-    let weights: Vec<f64> = energies
+    let low = samples
         .iter()
-        .map(|energy| (-(energy - low) / thermal).exp())
+        .map(|sample| sample.0)
+        .fold(f64::INFINITY, f64::min);
+    let weights: Vec<f64> = samples
+        .iter()
+        .map(|sample| (-(sample.0 - low) / thermal).exp())
         .collect();
-    let sum = weights.iter().sum::<f64>() - 0.5 * (weights[0] + weights[points - 1]);
-    low - thermal * (sum * step).ln()
+    let trapezoid = |values: &dyn Fn(usize) -> f64| {
+        (0..points).map(values).sum::<f64>() - 0.5 * (values(0) + values(points - 1))
+    };
+    let normalization = trapezoid(&|k| weights[k]);
+    trapezoid(&|k| weights[k] * samples[k].1) / normalization
 }
 
 /// Five images on the floor of a bent valley at `kT = 0.1`. The gradient
@@ -279,14 +354,9 @@ fn bent_valley_follows_the_spline_hyperplanes() {
         .with_fix_com(false)
         .with_retain(1);
     let (profile, planes) = pafi_profile(&Bent, &path, &arcs, &config).expect("profile");
-    let delta = 1.0e-4;
     let exact: Vec<f64> = arcs
         .iter()
-        .map(|arc| {
-            (line_free_energy(&path, arc + delta, thermal)
-                - line_free_energy(&path, arc - delta, thermal))
-                / (2.0 * delta)
-        })
+        .map(|arc| line_free_energy_slope(&path, *arc, thermal))
         .collect();
     for (k, (plane, truth)) in planes.iter().zip(&exact).enumerate() {
         assert!(
@@ -309,12 +379,13 @@ fn bent_valley_follows_the_spline_hyperplanes() {
 }
 
 /// Not-a-knot splines reproduce a cubic, so the path through samples of
-/// one is that cubic, with its first two derivatives, at any parameter.
+/// one is that cubic, with its first three derivatives, at any parameter.
 #[test]
 fn spline_reproduces_a_cubic() {
     let cubic = |s: f64| [s * s * s - 2.0 * s + 1.0, 0.5 * s * s + s, -s];
     let slope = |s: f64| [3.0 * s * s - 2.0, s + 1.0, -1.0];
     let bend = |s: f64| [6.0 * s, 1.0, 0.0];
+    let jerk = [6.0, 0.0, 0.0];
     for knots in [vec![0.0, 0.4, 1.1, 2.0], vec![0.0, 0.3, 0.5, 1.2, 1.6, 2.0]] {
         let frames = knots
             .iter()
@@ -331,6 +402,7 @@ fn spline_reproduces_a_cubic() {
                 (&geometry.positions, cubic(s)),
                 (&geometry.tangent, slope(s)),
                 (&geometry.curvature, bend(s)),
+                (&geometry.jerk, jerk),
             ] {
                 for (a, b) in got.iter().zip(want) {
                     assert!((a - b).abs() < 1.0e-12, "s {s}: {a} against {b}");
@@ -394,6 +466,7 @@ fn reversed_path_traverses_the_same_curve() {
             (&ahead.positions, &back.positions, 1.0),
             (&ahead.tangent, &back.tangent, -1.0),
             (&ahead.curvature, &back.curvature, 1.0),
+            (&ahead.jerk, &back.jerk, -1.0),
         ] {
             for (x, y) in a.iter().zip(b) {
                 assert!((x - sign * y).abs() < 1.0e-12, "s {s}: {x} against {y}");
