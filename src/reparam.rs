@@ -278,7 +278,7 @@ impl Spline {
     }
 
     /// Cumulative arc length of the spline at each knot.
-    fn knot_arcs(&self) -> Vec<f64> {
+    pub(crate) fn knot_arcs(&self) -> Vec<f64> {
         let mut arc = vec![0.0; self.t.len()];
         for seg in 0..self.t.len() - 1 {
             arc[seg + 1] = arc[seg] + self.arc_between(seg, self.t[seg], self.t[seg + 1]);
@@ -286,10 +286,29 @@ impl Spline {
         arc
     }
 
+    /// First derivative `dS/dt` at parameter `at`.
+    pub(crate) fn derivative(&self, at: f64) -> Array1<f64> {
+        let seg = self.segment(at);
+        let h = self.t[seg + 1] - self.t[seg];
+        let b = (at - self.t[seg]) / h;
+        let a = 1.0 - b;
+        let (ca, cb) = (
+            -(3.0 * a * a - 1.0) * h / 6.0,
+            (3.0 * b * b - 1.0) * h / 6.0,
+        );
+        let (y0, y1) = (self.y.row(seg), self.y.row(seg + 1));
+        let (m0, m1) = (self.m.row(seg), self.m.row(seg + 1));
+        let mut out = Array1::zeros(self.y.ncols());
+        for (col, slot) in out.iter_mut().enumerate() {
+            *slot = (y1[col] - y0[col]) / h + ca * m0[col] + cb * m1[col];
+        }
+        out
+    }
+
     /// The parameter at which the spline's arc length is `target`, from
     /// the knot arcs `arc`: Newton on the arc, kept inside a bisection
     /// bracket of the segment.
-    fn at_arc(&self, arc: &[f64], target: f64) -> f64 {
+    pub(crate) fn at_arc(&self, arc: &[f64], target: f64) -> f64 {
         let k = self.t.len();
         let mut seg = 0;
         while seg + 2 < k && arc[seg + 1] < target {

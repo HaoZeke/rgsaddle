@@ -763,3 +763,142 @@ impl BandSession {
         })
     }
 }
+
+/// Standalone simplified string session (E, Ren, and Vanden-Eijnden,
+/// J. Chem. Phys. 126, 164103 (2007), doi:10.1063/1.2720838) with
+/// preserved per-image [`crate::stencil::ImageId`]s and batched surface
+/// evaluations.
+///
+/// [`GrowingStringSession`](super::GrowingStringSession) hands off to
+/// this session once its reactant and product fragments join.
+pub struct StringSession {
+    session: BandSession,
+}
+
+impl StringSession {
+    /// Open a simplified string session over `positions` (`n_images >= 3`
+    /// rows of `3 * n_atoms`). Image IDs default to `0..n_images`.
+    pub fn new(config: BandConfig, positions: Array2<f64>) -> Result<Self, SaddleError> {
+        let ids: Vec<crate::stencil::ImageId> =
+            (0..positions.nrows() as crate::stencil::ImageId).collect();
+        Self::with_ids(config, ids, positions)
+    }
+
+    /// Open a simplified string session with explicit per-image `ids`.
+    pub fn with_ids(
+        mut config: BandConfig,
+        ids: Vec<crate::stencil::ImageId>,
+        positions: Array2<f64>,
+    ) -> Result<Self, SaddleError> {
+        if config.string.is_none() {
+            config.string = Some(StringConfig::default());
+        }
+        if ids.len() != positions.nrows() {
+            return Err(SaddleError::Shape(format!(
+                "string session needs one image id per row; got {} ids for {} rows",
+                ids.len(),
+                positions.nrows()
+            )));
+        }
+        let mut session = BandSession::new(config, positions)?;
+        session.set_ids(ids)?;
+        Ok(Self { session })
+    }
+
+    /// Take one simplified-string step on `surface`.
+    pub fn step<S: BandSurface>(&mut self, surface: &S) -> Result<BandReport, SaddleError> {
+        self.session.step(surface)
+    }
+
+    /// Loop [`StringSession::step`] until convergence or `max_steps`.
+    pub fn run<S: BandSurface>(
+        &mut self,
+        surface: &S,
+        max_steps: usize,
+    ) -> Result<BandReport, SaddleError> {
+        self.session.run(surface, max_steps)
+    }
+
+    /// Current string positions (`n_images x 3N`).
+    #[must_use]
+    pub fn positions(&self) -> ndarray::ArrayView2<'_, f64> {
+        self.session.positions()
+    }
+
+    /// Replace the string positions.
+    pub fn set_positions(&mut self, positions: Array2<f64>) -> Result<(), SaddleError> {
+        self.session.set_positions(positions)
+    }
+
+    /// Stable image identifiers of the string rows.
+    #[must_use]
+    pub fn ids(&self) -> &[crate::stencil::ImageId] {
+        self.session.ids()
+    }
+
+    /// Last cached evaluation (`energies`, `gradients`, `projected`), if valid.
+    #[must_use]
+    pub fn evaluation(&self) -> Option<super::BandEvaluation> {
+        self.session.evaluation()
+    }
+
+    /// Index of the armed climbing image, if any.
+    #[must_use]
+    pub fn climbing_image(&self) -> Option<usize> {
+        self.session.climbing_image()
+    }
+
+    /// Certified saddle index of the climbing image at convergence, if any.
+    #[must_use]
+    pub fn saddle_index(&self) -> Option<&crate::saddle_index::SaddleIndex> {
+        self.session.saddle_index()
+    }
+
+    /// Number of steps taken in this string session.
+    #[must_use]
+    pub fn iteration(&self) -> usize {
+        self.session.iteration()
+    }
+
+    /// Restart optimizer history and climbing state, keeping cached endpoint energies.
+    pub fn restart(&mut self) {
+        self.session.restart();
+    }
+
+    /// Reset optimizer history, climbing state, and all cached evaluations.
+    pub fn reset(&mut self) {
+        self.session.reset();
+    }
+
+    /// Set worker threads for batched image evaluation.
+    pub fn set_image_threads(&mut self, threads: usize) -> Result<(), SaddleError> {
+        self.session.set_image_threads(threads)
+    }
+
+    /// Worker thread count for batched image evaluation.
+    #[must_use]
+    pub fn image_threads(&self) -> usize {
+        self.session.image_threads()
+    }
+
+    /// Replace the per-atom fixed mask.
+    pub fn set_fixed_atoms(&mut self, fixed: Vec<bool>) -> Result<(), SaddleError> {
+        self.session.set_fixed_atoms(fixed)
+    }
+
+    /// Borrow the underlying [`BandSession`].
+    #[must_use]
+    pub fn band_session(&self) -> &BandSession {
+        &self.session
+    }
+
+    /// Consume into the underlying [`BandSession`].
+    #[must_use]
+    pub fn into_band_session(self) -> BandSession {
+        self.session
+    }
+
+    pub(crate) fn seed_endpoint_energies(&mut self, energies: [f64; 2]) -> Result<(), SaddleError> {
+        self.session.seed_endpoint_energies(energies)
+    }
+}
