@@ -3,11 +3,44 @@
 //! The force pulls the fragment centers together. Each atom in a
 //! fragment receives an equal share. This is the force term an AFIR
 //! contributes beside the physical force. The host owns the path search.
+//!
+//! The pull has a constant magnitude `alpha`, along the line joining the
+//! two fragment centroids. It is a centroid simplification of the
+//! artificial force induced reaction (AFIR) method of Maeda and Morokuma,
+//! J. Chem. Phys. 132, 241102 (2010), doi:10.1063/1.3457903, which
+//! weights an atom-pair force by interatomic distances. Use it to push two
+//! fragments together; it does not reproduce the AFIR energy function.
+//!
+//! Units: positions in Angstrom, `alpha` and the returned force in eV/Angstrom.
+//! A host adds the returned array to the physical force of its own
+//! calculator before it hands the sum to a minimizer or a band.
 
 /// Pull fragments `a` and `b` together with total magnitude `alpha`.
 ///
-/// `alpha` is finite and nonnegative. The returned force has one vector per row of
-/// `positions`. Atoms in neither fragment are left at zero.
+/// `positions` is one `[x, y, z]` row per atom, in Angstrom, in the atom
+/// order of the host. `fragment_a` and `fragment_b` list atom indices into
+/// those rows; the two lists must be nonempty and disjoint. `alpha` is the
+/// magnitude in eV/Angstrom of the total force on each fragment, finite and
+/// nonnegative. Each atom of a fragment gets `alpha / len` along the
+/// centroid line, directed toward the other fragment. The returned force is
+/// one `[fx, fy, fz]` row per row of `positions`, in eV/Angstrom, and atoms
+/// in neither fragment are left at zero.
+///
+/// # Panics
+///
+/// Panics on every condition for which [`try_afir_force`] returns an error.
+/// Use that function in a host that must not abort.
+///
+/// # Examples
+///
+/// ```
+/// use rgsaddle::afir::afir_force;
+///
+/// // Two atoms 2 Angstrom apart along x, pulled together with 1 eV/Angstrom.
+/// let positions = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
+/// let force = afir_force(&positions, &[0], &[1], 1.0);
+/// assert_eq!(force, vec![[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]]);
+/// ```
 pub fn afir_force(
     positions: &[[f64; 3]],
     fragment_a: &[usize],
@@ -20,6 +53,22 @@ pub fn afir_force(
 }
 
 /// Checked artificial force with explicit shape and numerical errors.
+///
+/// The arguments, units and result are those of [`afir_force`].
+///
+/// # Errors
+///
+/// - [`SaddleError::Invalid`](crate::SaddleError::Invalid) when `alpha` is
+///   negative or not finite, when a fragment index repeats within or across
+///   the two fragments, or when the fragment centroids coincide while
+///   `alpha > 0` (a vanishing direction).
+/// - [`SaddleError::Shape`](crate::SaddleError::Shape) when either fragment
+///   is empty or an index is not a row of `positions`.
+/// - [`SaddleError::NonFinite`](crate::SaddleError::NonFinite) when a
+///   position component is NaN or infinite.
+///
+/// `alpha == 0.0` returns an all-zero force without checking the centroid
+/// separation.
 pub fn try_afir_force(
     positions: &[[f64; 3]],
     fragment_a: &[usize],

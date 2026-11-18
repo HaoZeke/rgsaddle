@@ -1,5 +1,11 @@
 //! Band tangents, ported from eOn NEBTangent.cpp with identical
 //! branch structure.
+//!
+//! A tangent is a unit vector in the 3N configuration space of one band
+//! image. It is built from the two neighbour displacements (Angstrom) and
+//! the three image energies (eV). [`TangentKind::Improved`] is ASE's
+//! `method="improvedtangent"` in `ase.mep.NEB` and eOn's improved
+//! `NEBTangent`.
 
 use ndarray::{Array1, ArrayView1};
 
@@ -8,20 +14,49 @@ use crate::error::SaddleError;
 /// Which tangent estimate the band uses.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TangentKind {
-    /// Mills, Jonsson, Schenter, Surf. Sci. 324:305 (1995): the
-    /// forward difference alone.
+    /// Mills, Jónsson, and Schenter, Surf. Sci. 324, 305 (1995),
+    /// doi:10.1016/0039-6028(94)00731-4: the forward difference alone,
+    /// `R[i+1] - R[i]`, normalised.
     Simple,
-    /// Henkelman & Jonsson, JCP 113:9978 (2000): uphill selection at
-    /// monotonic points, energy-weighted interpolation at extrema.
+    /// Henkelman and Jónsson, J. Chem. Phys. 113, 9978 (2000),
+    /// doi:10.1063/1.1323224: the segment toward the higher neighbour at
+    /// monotonic points, and an energy-weighted blend of both segments at
+    /// extrema. This is the default.
     #[default]
     Improved,
 }
 
-/// Unit tangent at one interior image. `pos_diff_next` is
-/// `R[i+1] - R[i]`, `pos_diff_prev` is `R[i] - R[i-1]` (the host
-/// minimum-images both when periodic). The result has unit norm; an
-/// image on top of both neighbours returns [`SaddleError::Invalid`].
+/// Unit tangent at one interior image.
+///
+/// `pos_diff_next` is `R[i+1] - R[i]` and `pos_diff_prev` is
+/// `R[i] - R[i-1]`, both flat `3N` vectors in Angstrom, atom-major
+/// `[x0, y0, z0, x1, ...]` (the host minimum-images both when periodic).
+/// `energy`, `energy_prev` and `energy_next` are the energies in eV of
+/// image `i`, `i-1` and `i+1`, in that order. [`TangentKind::Simple`] ignores
+/// them. The result has length `3N` and unit norm.
+///
+/// # Errors
+///
+/// [`SaddleError::Invalid`] when the weighted tangent, the forward segment
+/// and the backward segment all have a norm under `1e-10` Angstrom or are not
+/// finite, which is an image sitting on both neighbours.
+///
 /// The arithmetic lives on [`crate::stencil::unit_tangent`].
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::array;
+/// use rgsaddle::tangent::{TangentKind, compute_tangent};
+///
+/// // A collinear image on an uphill segment: the improved tangent is the
+/// // forward segment, normalised.
+/// let next = array![0.0, 0.0, 2.0];
+/// let prev = array![0.0, 0.0, 1.0];
+/// let t = compute_tangent(TangentKind::Improved, next.view(), prev.view(), 0.0, -1.0, 1.0)?;
+/// assert_eq!(t, array![0.0, 0.0, 1.0]);
+/// # Ok::<(), rgsaddle::SaddleError>(())
+/// ```
 pub fn compute_tangent(
     kind: TangentKind,
     pos_diff_next: ArrayView1<f64>,
