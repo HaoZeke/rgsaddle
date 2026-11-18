@@ -79,6 +79,10 @@ approx = "0.5"
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 faer = { version = "0.24.4", default-features = false, features = ["std", "linalg"] }
 sha2 = "0.10"
+# Tag v3.6.0. Zero dependencies of its own, so it adds no second copy of
+# eindir-core, dlpk or rgmin. Rev 97ebba0b of rgpot-pair pins cc to
+# =1.4.2, which cannot share cc 1.x with the other build dependencies.
+rgpot-pair = { version = "=3.6.0", git = "https://github.com/OmniPotentRPC/rgpot", rev = "20c58fe5a2859cd0a79a3e06d64d567f96d0ccbe" }
 
 [[bench]]
 name = "ohtst"
