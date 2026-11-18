@@ -146,9 +146,9 @@ pub struct HyperplaneObservation {
     pub constraint_force: f64,
     /// Complete PAFI plane-gradient record, when the backend computes it.
     ///
-    /// If absent, the PAFI estimator derives it from `constraint_force` and
-    /// `position`; analytic reference samplers set it to preserve their
-    /// historical floating-point operation order.
+    /// PAFI requires this value and returns
+    /// [`SaddleError::MissingPafiGradient`]
+    /// when a backend omits it.
     pub pafi_gradient: Option<f64>,
     /// PAFI metric/Jacobian correction `psi`; zero for a fixed flat plane.
     pub jacobian: f64,

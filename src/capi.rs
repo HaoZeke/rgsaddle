@@ -36,7 +36,7 @@ use crate::tangent::TangentKind;
 /// The RGSADDLE ABI MAJOR.
 pub const RGSADDLE_ABI_MAJOR: u32 = 1;
 /// The RGSADDLE ABI MINOR.
-pub const RGSADDLE_ABI_MINOR: u32 = 45;
+pub const RGSADDLE_ABI_MINOR: u32 = 48;
 
 /// A band, min-mode or OCI-NEB config of this minor or newer certifies
 /// the saddle index at convergence by default.
@@ -478,6 +478,23 @@ pub(crate) fn status_of(err: &SaddleError) -> i32 {
         SaddleError::NonFinite(_) => RGSADDLE_NON_FINITE,
         SaddleError::Solver(_) => RGSADDLE_SOLVER,
         SaddleError::Invalid(_) => RGSADDLE_INVALID_PARAMETER,
+        SaddleError::MissingBlocks { .. } => RGSADDLE_INVALID_PARAMETER,
+        SaddleError::MissingSamples { .. } => RGSADDLE_INVALID_PARAMETER,
+        SaddleError::MissingExcludedBasis => RGSADDLE_INVALID_PARAMETER,
+        SaddleError::MissingPafiGradient { .. } => RGSADDLE_INVALID_PARAMETER,
+        SaddleError::MissingPafiTimeStep => RGSADDLE_INVALID_PARAMETER,
+        SaddleError::MissingPafiComAtomCount => RGSADDLE_INVALID_PARAMETER,
+        SaddleError::PafiComLayoutMismatch { .. } => RGSADDLE_INVALID_PARAMETER,
+        SaddleError::PafiComAtomCountMismatch { .. } => RGSADDLE_INVALID_PARAMETER,
+        SaddleError::UnsupportedPafiComLayout { .. } => RGSADDLE_INVALID_PARAMETER,
+        SaddleError::PafiArcOutsidePath { .. } => RGSADDLE_INVALID_PARAMETER,
+        SaddleError::PafiSampleCountOverflow => RGSADDLE_INVALID_PARAMETER,
+        SaddleError::TimeStepAboveBound { .. } => RGSADDLE_INVALID_PARAMETER,
+        SaddleError::TemperatureMismatch { .. } => RGSADDLE_INVALID_PARAMETER,
+        SaddleError::MissingCurvatureImages => RGSADDLE_INVALID_PARAMETER,
+        SaddleError::MissingHessianVector { .. } => RGSADDLE_INVALID_PARAMETER,
+        SaddleError::NonPositiveStiffnessBound { .. } => RGSADDLE_INVALID_PARAMETER,
+        SaddleError::UnsupportedRingCenterOfMass { .. } => RGSADDLE_INVALID_PARAMETER,
         SaddleError::Stalled(_) => RGSADDLE_STALLED,
         SaddleError::NotEquilibrated { .. } => RGSADDLE_NOT_EQUILIBRATED,
         SaddleError::InsufficientEffectiveSamples { .. } => RGSADDLE_INSUFFICIENT_EFFECTIVE_SAMPLES,

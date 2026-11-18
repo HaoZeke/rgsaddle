@@ -20,11 +20,12 @@
 
 use ndarray::Array1;
 use rayon::prelude::*;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use crate::Region;
 use crate::error::SaddleError;
-use crate::minmode::PointSurface;
+use crate::minmode::{CartesianLayout, PointSurface};
 use crate::projector::{
     Hyperplane, HyperplaneEnsemble, HyperplaneObservation, HyperplaneSampleBudget,
     HyperplaneSampler, ProjectedConstraint, TangentProjector,
@@ -42,8 +43,8 @@ pub struct PafiConfig {
     pub thermal: f64,
     /// Mobility `μ` in `dx = -μ ∇E dt + sqrt(2 μ kT dt) ξ`.
     pub mobility: f64,
-    /// Overdamped time step.
-    pub time_step: f64,
+    /// Explicit overdamped time step. `None` is rejected before sampling.
+    pub time_step: Option<f64>,
     /// Minimum engine warm-up floor before automated equilibration detection.
     pub thermalize: usize,
     /// Steps between recorded samples.
@@ -54,8 +55,15 @@ pub struct PafiConfig {
     pub blocks: usize,
     /// Seed of the noise.
     pub seed: u64,
-    /// Remove the mean Cartesian drift when the system has at least two atoms.
+    /// Remove unweighted Cartesian centre-of-geometry drift.
+    ///
+    /// Two or more real atoms must be supplied through [`Self::com_atoms`].
     pub fix_com: bool,
+    /// Real Cartesian atom count for a surface with an uncertified layout.
+    ///
+    /// A surface that certifies Cartesian coordinates supplies this count;
+    /// when both are present, they must agree.
+    pub com_atoms: Option<NonZeroUsize>,
     /// How many recorded configurations to keep, evenly spaced.
     pub retain: usize,
     /// Stop early when the integrated barrier error is at or below this.
@@ -70,19 +78,26 @@ pub struct PafiConfig {
 with_setters!(PafiConfig {
     with_thermal => thermal: val f64,
     with_mobility => mobility: val f64,
-    with_time_step => time_step: val f64,
     with_thermalize => thermalize: val usize,
     with_stride => stride: val usize,
     with_samples => samples: val usize,
     with_blocks => blocks: val usize,
     with_seed => seed: val u64,
     with_fix_com => fix_com: val bool,
+    with_com_atoms => com_atoms: opt NonZeroUsize,
     with_retain => retain: val usize,
     with_target_error => target_error: opt f64,
     with_max_rounds => max_rounds: val usize,
 });
 
 impl PafiConfig {
+    /// Set an explicit overdamped time step.
+    #[must_use]
+    pub fn with_time_step(mut self, time_step: f64) -> Self {
+        self.time_step = Some(time_step);
+        self
+    }
+
     /// Restrict every fixed PAFI plane to a hard region.
     #[must_use]
     pub fn with_region(mut self, region: Arc<dyn Region>) -> Self {
@@ -96,13 +111,14 @@ impl Default for PafiConfig {
         Self {
             thermal: 0.02585,
             mobility: 1.0,
-            time_step: 1.0e-3,
+            time_step: None,
             thermalize: 200,
             stride: 5,
             samples: 200,
             blocks: 5,
             seed: 1,
             fix_com: true,
+            com_atoms: None,
             retain: 16,
             target_error: None,
             max_rounds: 4,
@@ -123,10 +139,17 @@ impl PafiConfig {
                 "PAFI mobility must be finite and positive".into(),
             ));
         }
-        if !(self.time_step.is_finite() && self.time_step > 0.0) {
+        let time_step = self.checked_time_step()?;
+        if !(time_step.is_finite() && time_step > 0.0) {
             return Err(SaddleError::Invalid(
                 "PAFI time step must be finite and positive".into(),
             ));
+        }
+        if self.blocks == 0 {
+            return Err(SaddleError::MissingBlocks { context: "PAFI" });
+        }
+        if self.samples == 0 {
+            return Err(SaddleError::MissingSamples { context: "PAFI" });
         }
         if self.stride == 0 || self.blocks < 2 || self.samples < self.blocks * 2 {
             return Err(SaddleError::Invalid(
@@ -134,7 +157,16 @@ impl PafiConfig {
                     .into(),
             ));
         }
+        if self.max_rounds == 0 {
+            return Err(SaddleError::Invalid(
+                "PAFI adaptive sampling needs at least one round".into(),
+            ));
+        }
         Ok(())
+    }
+
+    pub(crate) fn checked_time_step(&self) -> Result<f64, SaddleError> {
+        self.time_step.ok_or(SaddleError::MissingPafiTimeStep)
     }
 }
 
@@ -277,7 +309,11 @@ impl ArcPath {
             return Err(SaddleError::NonFinite("PAFI arc"));
         }
         let last = self.frames.len() - 1;
-        let arc = arc.clamp(self.frames[0].arc, self.frames[last].arc);
+        let start = self.frames[0].arc;
+        let end = self.frames[last].arc;
+        if arc < start || arc > end {
+            return Err(SaddleError::PafiArcOutsidePath { arc, start, end });
+        }
         let mut seg = last - 1;
         for i in 0..last {
             if arc <= self.frames[i + 1].arc {
@@ -288,7 +324,7 @@ impl ArcPath {
         let s0 = self.frames[seg].arc;
         let s1 = self.frames[seg + 1].arc;
         let dt = s1 - s0;
-        let t = ((arc - s0) / dt).clamp(0.0, 1.0);
+        let t = (arc - s0) / dt;
         let x0 = &self.frames[seg].positions;
         let x1 = &self.frames[seg + 1].positions;
         let n = x0.len();
@@ -321,7 +357,7 @@ pub struct HyperplaneAverage {
     pub samples: usize,
     /// Integrated autocorrelation time of the recorded series, in samples.
     pub tau: f64,
-    /// `samples / (2 τ)`.
+    /// `(samples - equilibration.discard) / max(1, 2 τ)`.
     pub n_eff: f64,
     /// Force evaluations spent on this plane, summed over rounds.
     pub evaluations: usize,
@@ -369,6 +405,9 @@ pub fn average_hyperplane<S: PointSurface>(
 }
 
 /// Estimate the PAFI mean force from any constrained-ensemble engine.
+///
+/// Every observation must provide [`HyperplaneObservation::pafi_gradient`];
+/// this function does not silently recompute it from other fields.
 pub fn average_hyperplane_with_sampler<E: HyperplaneSampler>(
     sampler: &mut E,
     geometry: &PathGeometry,
@@ -418,21 +457,13 @@ fn estimate_pafi(
             "PAFI engine did not return the requested samples".into(),
         ));
     }
-    let observations: Vec<f64> = ensemble
-        .observations
-        .iter()
-        .map(|sample| {
-            sample.pafi_gradient.unwrap_or_else(|| {
-                let psi = sample
-                    .position
-                    .as_ref()
-                    .map_or(sample.jacobian, |position| {
-                        (position - &geometry.positions).dot(&geometry.curvature)
-                    });
-                -sample.constraint_force * norm(&geometry.tangent) * (1.0 - psi)
-            })
-        })
-        .collect();
+    let mut observations = Vec::with_capacity(ensemble.observations.len());
+    for (index, sample) in ensemble.observations.iter().enumerate() {
+        let value = sample
+            .pafi_gradient
+            .ok_or(SaddleError::MissingPafiGradient { observation: index })?;
+        observations.push(value);
+    }
     if observations.iter().any(|value| !value.is_finite()) {
         return Err(SaddleError::NonFinite("PAFI projected gradient"));
     }
@@ -456,13 +487,10 @@ fn estimate_pafi(
         })
         .sum::<f64>()
         / kept_observations.len() as f64;
-    let retain_gap = kept_observations
-        .len()
-        .div_ceil(config.retain.max(1))
-        .max(1);
     let retained = if config.retain == 0 {
         Vec::new()
     } else {
+        let retain_gap = kept_observations.len().div_ceil(config.retain);
         kept_observations
             .iter()
             .enumerate()
@@ -502,16 +530,58 @@ impl<S: PointSurface> HyperplaneSampler for PafiAnalyticSampler<'_, S> {
         let n = geometry.positions.len();
         let mut x = geometry.positions.clone();
         let mut rng = Rng::new(budget.seed);
-        let sigma = (2.0 * config.mobility * budget.thermal * config.time_step).sqrt();
-        let drift_scale = config.mobility * config.time_step;
+        let time_step = config.checked_time_step()?;
+        let sigma = (2.0 * config.mobility * budget.thermal * time_step).sqrt();
+        let drift_scale = config.mobility * time_step;
+        let com_atoms = if config.fix_com {
+            let atoms = match self.surface.cartesian_layout() {
+                CartesianLayout::Unknown => config
+                    .com_atoms
+                    .ok_or(SaddleError::MissingPafiComAtomCount)?,
+                CartesianLayout::Cartesian { atoms } => {
+                    if let Some(configured) = config.com_atoms
+                        && configured != atoms
+                    {
+                        return Err(SaddleError::PafiComAtomCountMismatch {
+                            configured: configured.get(),
+                            surface: atoms.get(),
+                        });
+                    }
+                    atoms
+                }
+                layout @ (CartesianLayout::Wrapped | CartesianLayout::NonCartesian) => {
+                    return Err(SaddleError::UnsupportedPafiComLayout { layout });
+                }
+            };
+            let coordinates =
+                atoms
+                    .get()
+                    .checked_mul(3)
+                    .ok_or(SaddleError::PafiComLayoutMismatch {
+                        coordinates: n,
+                        atoms: atoms.get(),
+                    })?;
+            if coordinates != n {
+                return Err(SaddleError::PafiComLayoutMismatch {
+                    coordinates: n,
+                    atoms: atoms.get(),
+                });
+            }
+            Some(atoms.get())
+        } else {
+            None
+        };
         let total = budget.thermalize + budget.stride * budget.samples;
         let mut observations = Vec::with_capacity(budget.samples);
         for step in 0..total {
             let (_energy, gradient) = self.surface.eval(x.view())?;
-            if gradient.len() != n || !gradient.iter().all(|value| value.is_finite()) {
+            if gradient.len() != n {
                 return Err(SaddleError::Shape(
                     "PAFI gradient must match the path".into(),
                 ));
+            }
+            if !gradient.iter().all(|value| value.is_finite()) {
+                return Err(SaddleError::NonFinite("PAFI gradient"));
             }
             if step >= budget.thermalize && (step - budget.thermalize).is_multiple_of(budget.stride)
             {
@@ -533,9 +603,9 @@ impl<S: PointSurface> HyperplaneSampler for PafiAnalyticSampler<'_, S> {
                 *value = rng.normal();
             }
             plane.project_in_place(&mut noise);
-            if config.fix_com && n >= 6 && n.is_multiple_of(3) {
-                remove_com(&mut drift);
-                remove_com(&mut noise);
+            if let Some(atoms) = com_atoms {
+                remove_com(&mut drift, atoms);
+                remove_com(&mut noise, atoms);
                 plane.project_in_place(&mut drift);
                 plane.project_in_place(&mut noise);
             }
@@ -631,7 +701,7 @@ pub fn pafi_profile<S: PointSurface + Sync>(
     }
     let mut planes = sample_planes(surface, path, arcs, config, 0)?;
     let mut profile = profile_of(arcs, &planes)?;
-    let rounds = config.max_rounds.max(1);
+    let rounds = config.max_rounds;
     let mut round = 1usize;
     while let Some(target) = config.target_error {
         if profile.barrier_error <= target || round >= rounds {
@@ -640,11 +710,15 @@ pub fn pafi_profile<S: PointSurface + Sync>(
         if profile.barrier_error <= 0.0 {
             break;
         }
-        let factor = (profile.barrier_error / target).powi(2).clamp(2.0, 8.0);
-        let samples = ((config.samples as f64) * factor).ceil() as usize;
+        let factor = (profile.barrier_error / target).powi(2);
+        let requested = ((config.samples as f64) * factor).ceil();
+        if !requested.is_finite() || requested > usize::MAX as f64 {
+            return Err(SaddleError::PafiSampleCountOverflow);
+        }
+        let samples = requested as usize;
         let extra = config
             .clone()
-            .with_samples(samples.max(config.blocks * 2))
+            .with_samples(samples)
             .with_thermalize(config.thermalize / 2)
             .with_target_error(None);
         let more = sample_planes(surface, path, arcs, &extra, round as u64 * 10_000)?;
@@ -815,11 +889,7 @@ fn difference(end: &Array1<f64>, start: &Array1<f64>, ds: f64) -> Array1<f64> {
     (end - start) / ds
 }
 
-pub(crate) fn remove_com(vector: &mut Array1<f64>) {
-    let n = vector.len() / 3;
-    if n == 0 {
-        return;
-    }
+pub(crate) fn remove_com(vector: &mut Array1<f64>, n: usize) {
     let mut mean = [0.0; 3];
     for atom in 0..n {
         for c in 0..3 {
@@ -850,6 +920,9 @@ mod tests {
         planes: Vec<Hyperplane>,
     }
 
+    #[derive(Default)]
+    struct MissingGradientSampler;
+
     impl HyperplaneSampler for RecordingSampler {
         fn sample_hyperplane(
             &mut self,
@@ -876,6 +949,31 @@ mod tests {
         }
     }
 
+    impl HyperplaneSampler for MissingGradientSampler {
+        fn sample_hyperplane(
+            &mut self,
+            plane: &Hyperplane,
+            budget: &HyperplaneSampleBudget,
+        ) -> Result<HyperplaneEnsemble, SaddleError> {
+            let observations = (0..budget.samples)
+                .map(|_| HyperplaneObservation {
+                    constraint_force: -1.0,
+                    pafi_gradient: None,
+                    jacobian: 0.0,
+                    position: Some(plane.point().to_owned()),
+                    projected_force: None,
+                    projected_velocity: None,
+                    observables: Default::default(),
+                })
+                .collect();
+            Ok(HyperplaneEnsemble {
+                observations,
+                evaluations: budget.samples,
+                acceptance: 1.0,
+            })
+        }
+    }
+
     #[test]
     fn pafi_hands_the_sampler_one_unchanged_path_plane() {
         let geometry = PathGeometry {
@@ -885,6 +983,7 @@ mod tests {
             arc: 0.7,
         };
         let config = PafiConfig::default()
+            .with_time_step(1.0)
             .with_thermalize(0)
             .with_samples(40)
             .with_blocks(4);
@@ -893,5 +992,44 @@ mod tests {
         assert_eq!(sampler.planes.len(), 1);
         assert_eq!(sampler.planes[0].point(), geometry.positions);
         assert_eq!(sampler.planes[0].normal(), array![1.0, 0.0]);
+    }
+
+    #[test]
+    fn pafi_requires_observed_gradients() {
+        let geometry = PathGeometry {
+            positions: array![0.3, -0.4],
+            tangent: array![2.0, 0.0],
+            curvature: Array1::zeros(2),
+            arc: 0.7,
+        };
+        let config = PafiConfig::default()
+            .with_time_step(1.0)
+            .with_thermalize(0)
+            .with_samples(4)
+            .with_blocks(2);
+        let mut sampler = MissingGradientSampler;
+        let result = average_hyperplane_with_sampler(&mut sampler, &geometry, &config);
+        assert!(matches!(
+            result,
+            Err(SaddleError::MissingPafiGradient { observation: 0 })
+        ));
+    }
+
+    #[test]
+    fn pafi_typed_errors_cover_empty_sampling() {
+        let no_blocks = PafiConfig::default().with_time_step(1.0).with_blocks(0);
+        assert!(matches!(
+            no_blocks.check(),
+            Err(SaddleError::MissingBlocks { context: "PAFI" })
+        ));
+        let no_samples = PafiConfig::default().with_time_step(1.0).with_samples(0);
+        assert!(matches!(
+            no_samples.check(),
+            Err(SaddleError::MissingSamples { context: "PAFI" })
+        ));
+        assert!(matches!(
+            PafiConfig::default().check(),
+            Err(SaddleError::MissingPafiTimeStep)
+        ));
     }
 }
