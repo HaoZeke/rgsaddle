@@ -330,7 +330,7 @@ impl CellState {
         &self.cell
     }
 
-    /// Set cell.
+    /// Replace the cell (Angstrom).
     ///
     /// The new cell also becomes the reference of the log chart.
     pub fn set_cell(&mut self, cell: Cell) {

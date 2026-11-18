@@ -8,65 +8,73 @@
 /// What an image is allowed to do. A walker is one centre.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
-    /// The Pinned.
+    /// Held fixed: an endpoint, or an image outside the active window.
     Pinned,
-    /// The Image.
+    /// An ordinary interior image.
     Image,
-    /// The Climb.
+    /// The climbing image: the energy maximum of the active window, as marked by
+    /// the window operations of [`super::Mesh`].
     Climb,
-    /// The Walker.
+    /// The one centre of a point search (a chain of a single image).
     Walker,
 }
 
-/// Whether the last step may stop.
+/// Whether the last step may stop. A copy local to the controllers, with the same
+/// variants as the status of a stencil report.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StencilStatus {
+    /// The force gate is not met yet.
     Running,
+    /// The force gate is met.
     Converged,
 }
 
 /// The fields a controller may read. Positions stay on the chain.
 #[derive(Clone, Copy, Debug)]
 pub struct StencilView<'a> {
-    /// The roles.
+    /// Role of every image, one per chain row.
     pub roles: &'a [Role],
-    /// Curvature along the mode, energy per length squared.
+    /// Curvature along the mode, eV/Angstrom^2.
     pub curvature: f64,
-    /// Largest absolute force component, in the host's force units.
+    /// Largest absolute force component, in eV/Angstrom.
     pub max_force: f64,
 }
 
 /// Outcome of the previous step, as the controller sees it.
 #[derive(Clone, Copy, Debug)]
 pub struct Report {
-    /// Whether this step is still running or has converged.
+    /// Whether the last step converged.
     pub status: StencilStatus,
-    /// Largest absolute force component, in the host's force units.
+    /// Largest absolute force component, in eV/Angstrom.
     pub max_force: f64,
-    /// Curvature along the mode, energy per length squared.
+    /// Curvature along the mode, eV/Angstrom^2.
     pub curvature: f64,
 }
 
 /// What the builder should do next.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
-    /// The Step.
+    /// Take an ordinary step of the stencil.
     Step,
-    /// The Push.
+    /// Push along the seed direction (ART).
     Push,
-    /// The Climb.
+    /// Switch to, or stay on, the climbing step.
     Climb,
-    /// The Stop.
+    /// Stop with this status.
     Stop(StencilStatus),
 }
 
 /// One decision per step. The builder stores the spec, not a trait object.
 pub trait Controller {
-    /// Decide.
+    /// Choose the next action from the current view and the previous step's report.
     fn decide(&mut self, view: &StencilView<'_>, last: &Report) -> Action;
 }
 
 /// Keep stepping until the report says the gate is met.
+///
+///
+/// [`Controller::decide`] returns [`Action::Stop`] with `Converged` once the last
+/// report says converged, and [`Action::Step`] otherwise.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Fixed;
 
@@ -81,6 +89,12 @@ impl Controller for Fixed {
 }
 
 /// Ascend along the seed until the curvature drops under the threshold.
+///
+///
+/// Pushes up to `push_steps` times while the curvature is not below `threshold`
+/// (a non-finite curvature counts as not below), then climbs for good; a stop
+/// follows a converged report. Malek and Mousseau, Phys. Rev. E 62, 7723 (2000),
+/// doi:10.1103/PhysRevE.62.7723.
 #[derive(Clone, Debug)]
 pub struct ArtControl {
     threshold: f64,
@@ -89,7 +103,8 @@ pub struct ArtControl {
 }
 
 impl ArtControl {
-    /// New.
+    /// `threshold` is the curvature under which the climb opens, in eV/Angstrom^2, and
+    /// `push_steps` the most pushes before it opens regardless.
     pub fn new(threshold: f64, push_steps: usize) -> Self {
         Self {
             threshold,
@@ -98,12 +113,13 @@ impl ArtControl {
         }
     }
 
-    /// When set, a climbing image may arm. None keeps every image on the spring.
+    /// True once the controller has switched to climbing; until then every image
+    /// stays on the spring.
     pub fn climbing(&self) -> bool {
         self.climbing
     }
 
-    /// Push left.
+    /// Pushes left before the climb opens regardless of the curvature.
     pub fn push_left(&self) -> usize {
         self.push_left
     }
