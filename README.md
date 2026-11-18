@@ -82,7 +82,7 @@ fn main() -> Result<(), SaddleError> {
 }
 ```
 
-With rgsaddle 0.5.0 from crates.io, `cargo run` prints:
+`cargo run` prints:
 
 ```text
 Converged after 8 steps, max force 2.6e-4

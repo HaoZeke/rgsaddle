@@ -5,6 +5,49 @@ All notable changes to rgsaddle since 0.3.2 are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-11-18
+
+### Breaking
+
+- Converged band, minimum-mode, and OCI-NEB sessions certify the saddle
+  index by default. The certificate evaluations are included in each
+  report, and `with_saddle_check(None)` restores the earlier cost.
+- `BandReport`, `MinModeReport`, and `OcinebReport` add the public
+  `saddle_index` field.
+
+### Added
+
+- `SaddleIndexCheck` certifies the lowest curvatures with block Lanczos
+  and can escape a higher-index saddle along its extra unstable modes.
+  Rust, C, C++, and Python expose the certificate.
+- `SymmetryUniqueRegion::from_crystal_operations` constructs a hard
+  symmetry-unique dividing-plane region from crystal operations while
+  keeping region degeneracy separate from path multiplicity.
+- Hyperplane optimization, reversible work, shooting, restricted modes,
+  exact Gaussian sampling, and fixed-plane thermodynamic integration
+  share `HyperplaneSampler` and `HyperplaneDynamics`. Fixed-plane
+  thermodynamic integration is also available from C and Python.
+- Lambda thermodynamic integration gains `ThermodynamicDerivative`,
+  harmonic-reference samplers, LAMMPS configuration, and the
+  `rgsaddle_thermodynamic_derivative_observable` C symbol.
+- Tagged releases publish tested wheels and an sdist to PyPI.
+
+### Changed
+
+- The `rgmin` 0.6.0 dependency resolves from crates.io so downstream
+  builds do not split the package by source.
+- Lanczos minimum-mode estimation uses the same torque window as the
+  classic dimer rotation. `set_torque_window` controls both methods.
+
+### Fixed
+
+- Lambda thermodynamic integration evaluates the full-minus-harmonic
+  observable in the sampler frame and supplies the harmonic reference
+  geometry to the LAMMPS mixing hook.
+- The Python thermodynamic-integration stub, optional OH-TST rustdoc
+  link, OH-TST example feature, symbolic validation selection, and
+  libm artifact selection match their implementations.
+
 ## [0.5.0] - 2026-11-17
 
 ### Breaking
@@ -145,6 +188,7 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   A negative `maxmove` in that control means no step cap.
   The band and minimum-mode sessions over atoms keep the rgmin 0.5.0 behaviour.
 
+[0.6.0]: https://github.com/OmniPotentRPC/rgsaddle/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/OmniPotentRPC/rgsaddle/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/OmniPotentRPC/rgsaddle/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/OmniPotentRPC/rgsaddle/releases/tag/v0.3.2
