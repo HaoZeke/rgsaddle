@@ -27,7 +27,7 @@ use crate::projector::{
     HyperplaneEnsemble, HyperplaneObservation, HyperplaneSampleBudget, HyperplaneSampler,
 };
 use crate::region::Region;
-use crate::stats::{EquilibrationReport, Rng, autocorr_time, equilibrate};
+use crate::stats::{EquilibrationReport, Rng, autocorr_time, batch_blocks, equilibrate};
 
 /// Random projections of `(ν · ∇V) (q - p)` whose correlation times
 /// join that of `ν · ∇V` in the block width.
@@ -1049,21 +1049,19 @@ fn estimate_engine_plane(
     let n = plane.dim();
     let normal = plane.normal().to_owned();
     let point = plane.point().to_owned();
-    // Batch means use blocks of at least ceil(2 tau). Widening past that drops
-    // tail records and moves the mean, so the length stays the autocorrelation time.
+    // Width is floor(tail / requested blocks), and at least ceil(2 tau).
+    // The remainder is dropped so every block has that width. Ceiling the
+    // width instead leaves a single block when the tail is odd and two
+    // blocks were requested: 15 records would ask for width 8.
     let correlation_width = ((2.0 * equilibration.tau).ceil() as usize).max(1);
-    let width = observations
-        .len()
-        .div_ceil(config.blocks)
-        .max(correlation_width);
-    let blocks = observations.len() / width;
-    if blocks < 2 {
+    let Some((blocks, width)) = batch_blocks(observations.len(), config.blocks, correlation_width)
+    else {
         return Err(SaddleError::InsufficientEffectiveSamples {
             equilibration_steps: equilibration.equilibration_steps,
             n_eff: equilibration.n_eff,
             required: 2.0 * correlation_width as f64,
         });
-    }
+    };
     let records = blocks * width;
     let observations = &observations[..records];
     let mut block_gradients = Array2::zeros((blocks, 2 * n));
@@ -1760,5 +1758,107 @@ mod tests {
                 .chain(std::iter::once(&sample.last))
                 .all(|point| point[1] <= 0.1)
         );
+    }
+
+    /// Engine-path pass counts for the same seeds as
+    /// `iid_batch_pass_rates_match_the_equal_width_layout`. A `div_ceil`
+    /// width at two blocks drops the odd lengths from about 180 of 200
+    /// passes to about 10. Cells with fewer records than two per block are
+    /// rejected by the sampler configuration before any batch is built;
+    /// record count 13 with 7 blocks is that one cell, and the equilibration
+    /// test covers it.
+    #[test]
+    fn engine_iid_batches_match_the_equal_width_pass_rates() {
+        const TRIALS: usize = 200;
+        const BASE: [[usize; 6]; 18] = [
+            [188, 198, 200, 200, 198, 189],
+            [190, 198, 200, 200, 200, 195],
+            [184, 199, 199, 200, 199, 194],
+            [183, 198, 198, 200, 200, 198],
+            [185, 198, 198, 200, 200, 199],
+            [191, 198, 199, 200, 200, 200],
+            [189, 198, 199, 199, 200, 200],
+            [194, 196, 199, 199, 200, 200],
+            [190, 196, 199, 199, 200, 200],
+            [189, 198, 199, 199, 200, 200],
+            [194, 196, 200, 200, 200, 200],
+            [190, 198, 199, 200, 200, 200],
+            [190, 197, 199, 200, 200, 200],
+            [193, 197, 199, 200, 200, 200],
+            [194, 197, 199, 200, 200, 200],
+            [179, 198, 200, 200, 200, 200],
+            [182, 194, 199, 199, 200, 200],
+            [190, 195, 199, 199, 200, 200],
+        ];
+        struct Iid {
+            seed: u64,
+        }
+        impl HyperplaneSampler for Iid {
+            fn sample_hyperplane(
+                &mut self,
+                plane: &Hyperplane,
+                budget: &HyperplaneSampleBudget,
+            ) -> Result<HyperplaneEnsemble, SaddleError> {
+                let mut rng = Rng::new(self.seed);
+                let origin = plane.point().to_owned();
+                let zeros = Array1::zeros(origin.len());
+                let observations = (0..budget.samples)
+                    .map(|_| {
+                        HyperplaneObservation::default()
+                            .with_constraint_force(rng.normal())
+                            .with_position(origin.clone())
+                            .with_projected_force(zeros.clone())
+                    })
+                    .collect();
+                Ok(HyperplaneEnsemble {
+                    observations,
+                    evaluations: budget.samples,
+                    acceptance: 1.0,
+                })
+            }
+        }
+        let plane = Hyperplane::new(array![0.0, 0.0], array![1.0, 0.0]).unwrap();
+        for (row, records) in (13..=30).enumerate() {
+            for (col, blocks) in (2..=7).enumerate() {
+                if records < 2 * blocks {
+                    continue;
+                }
+                let mut passes = 0usize;
+                for seed in 1..=TRIALS as u64 {
+                    let config = LangevinConfig::default()
+                        .with_records(records)
+                        .with_blocks(blocks)
+                        .with_stride(1)
+                        .with_burn_in(0)
+                        .with_seed(seed);
+                    match sample_plane_with_sampler(&mut Iid { seed }, &plane, &config) {
+                        Ok(sample) => {
+                            let nrows = sample.block_gradients.nrows();
+                            assert!(nrows >= 2);
+                            assert_eq!(sample.records % nrows, 0);
+                            assert!(sample.records / nrows >= 1);
+                            assert!(sample.records <= records);
+                            passes += 1;
+                        }
+                        Err(
+                            SaddleError::InsufficientEffectiveSamples { .. }
+                            | SaddleError::NotEquilibrated { .. },
+                        ) => {}
+                        Err(error) => {
+                            panic!("records {records} blocks {blocks} seed {seed}: {error}")
+                        }
+                    }
+                }
+                let variance =
+                    BASE[row][col] as f64 * (TRIALS - BASE[row][col]) as f64 / TRIALS as f64;
+                let allowance = (3.0 * variance.sqrt()).ceil() as usize;
+                let floor = BASE[row][col].saturating_sub(allowance);
+                assert!(
+                    passes >= floor,
+                    "records {records} blocks {blocks}: {passes} passes, base {}, allowance {floor}",
+                    BASE[row][col]
+                );
+            }
+        }
     }
 }

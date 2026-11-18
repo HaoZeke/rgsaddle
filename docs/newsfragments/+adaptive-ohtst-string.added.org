@@ -8,7 +8,9 @@
   `Unresolved` is the same split below the cap.
   Correlation-width batching is shared by every engine-backed hyperplane
   sample, so it can change reported standard errors outside the adaptive
-  string as well.
+  string as well. An odd tail is dropped so every block has the same width.
+  The effective-sample floor is the block count that caller passed, 20 for
+  a plane or thermodynamic integration and 5 for PAFI.
   Symmetry
   multiplicity is `with_region` once inside the estimator; the caller adds
   `with_paths` and does not call `with_region` again. Rotating bounded planes
