@@ -502,7 +502,7 @@ impl HyperplaneSampler for LammpsHyperplaneSampler {
             })?;
             engine.set_boundaries(&boundaries, plane.dim())?;
         }
-        if let Some(lambda) = budget.lambda {
+        let reference = if let Some(lambda) = budget.lambda {
             let reference = self
                 .config
                 .thermodynamic_reference
@@ -514,65 +514,86 @@ impl HyperplaneSampler for LammpsHyperplaneSampler {
                     )
                 })?;
             engine.set_thermodynamic_coupling(lambda, reference, plane.dim())?;
-        }
-        engine.step(budget.thermalize)?;
-
-        let mut observations = Vec::with_capacity(budget.samples);
-        let mut accounting = MdObservation::default();
-        for _ in 0..budget.samples {
-            engine.step(budget.stride)?;
-            let state = engine.state(plane.dim())?;
-            accounting = state.accounting;
-            // md_state returns Cartesian positions. The Taylor model is stored
-            // in the sampler frame of the plane, so the observable uses the
-            // same conversion as the returned record.
-            let cartesian = state.positions.clone();
-            let (position, projected_force, projected_velocity) =
-                convert_state(&self.system, budget.coordinates, state);
-            let thermodynamic_derivative = if budget.lambda.is_some() {
-                let reference = self
-                    .config
-                    .thermodynamic_reference
-                    .as_ref()
-                    .ok_or_else(|| {
-                        SaddleError::Invalid(
-                        "LAMMPS lambda sampling needs LammpsSamplerConfig::thermodynamic_reference"
-                            .into(),
-                    )
-                    })?;
-                let harmonic = reference.energy_at(position.view())?;
-                let full = engine.full_potential_energy(&cartesian)?;
-                let value = full - harmonic;
-                if !value.is_finite() {
-                    return Err(SaddleError::NonFinite("LAMMPS thermodynamic derivative"));
-                }
-                Some(value)
-            } else {
-                None
-            };
-            let mut observables = thermostat
-                .observables()
-                .into_iter()
-                .collect::<BTreeMap<_, _>>();
-            if let Some(value) = thermodynamic_derivative {
-                observables.insert(THERMODYNAMIC_DERIVATIVE.into(), value);
-            }
-            observations.push(HyperplaneObservation {
-                constraint_force: accounting.constraint_force,
-                pafi_gradient: None,
-                jacobian: 0.0,
-                position: budget.positions.then_some(position),
-                projected_force: Some(projected_force),
-                projected_velocity: Some(projected_velocity),
-                observables,
-            });
-        }
-        Ok(HyperplaneEnsemble {
-            observations,
-            evaluations: accounting.force_evaluations,
-            acceptance: 1.0,
-        })
+            Some(reference)
+        } else {
+            None
+        };
+        gather_constrained_samples(
+            &mut engine,
+            &self.system,
+            budget,
+            plane.dim(),
+            &thermostat,
+            reference,
+        )
     }
+}
+
+trait PotentialStep {
+    fn step(&mut self, steps: usize) -> Result<(), SaddleError>;
+    fn state(&mut self, dimension: usize) -> Result<MdState, SaddleError>;
+    fn full_potential_energy(&mut self, position: &[f64]) -> Result<f64, SaddleError>;
+}
+
+fn gather_constrained_samples<E: PotentialStep>(
+    engine: &mut E,
+    system: &LammpsSystem,
+    budget: &HyperplaneSampleBudget,
+    dimension: usize,
+    thermostat: &LammpsThermostatRecord,
+    reference: Option<&LammpsThermodynamicReference>,
+) -> Result<HyperplaneEnsemble, SaddleError> {
+    if reference.is_some() {
+        let initial = engine.state(dimension)?;
+        engine.full_potential_energy(&initial.positions)?;
+    }
+    engine.step(budget.thermalize)?;
+
+    let mut observations = Vec::with_capacity(budget.samples);
+    let mut accounting = MdObservation::default();
+    for _ in 0..budget.samples {
+        engine.step(budget.stride)?;
+        let state = engine.state(dimension)?;
+        accounting = state.accounting;
+        // md_state returns Cartesian positions. The Taylor model is stored
+        // in the sampler frame of the plane, so the observable uses the
+        // same conversion as the returned record.
+        let cartesian = state.positions.clone();
+        let (position, projected_force, projected_velocity) =
+            convert_state(system, budget.coordinates, state);
+        let thermodynamic_derivative = if let Some(reference) = reference {
+            let harmonic = reference.energy_at(position.view())?;
+            let full = engine.full_potential_energy(&cartesian)?;
+            let value = full - harmonic;
+            if !value.is_finite() {
+                return Err(SaddleError::NonFinite("LAMMPS thermodynamic derivative"));
+            }
+            Some(value)
+        } else {
+            None
+        };
+        let mut observables = thermostat
+            .observables()
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        if let Some(value) = thermodynamic_derivative {
+            observables.insert(THERMODYNAMIC_DERIVATIVE.into(), value);
+        }
+        observations.push(HyperplaneObservation {
+            constraint_force: accounting.constraint_force,
+            pafi_gradient: None,
+            jacobian: 0.0,
+            position: budget.positions.then_some(position),
+            projected_force: Some(projected_force),
+            projected_velocity: Some(projected_velocity),
+            observables,
+        });
+    }
+    Ok(HyperplaneEnsemble {
+        observations,
+        evaluations: accounting.force_evaluations,
+        acceptance: 1.0,
+    })
 }
 
 fn convert_state(
@@ -954,6 +975,20 @@ impl Engine {
     }
 }
 
+impl PotentialStep for Engine {
+    fn step(&mut self, steps: usize) -> Result<(), SaddleError> {
+        Engine::step(self, steps)
+    }
+
+    fn state(&mut self, dimension: usize) -> Result<MdState, SaddleError> {
+        Engine::state(self, dimension)
+    }
+
+    fn full_potential_energy(&mut self, position: &[f64]) -> Result<f64, SaddleError> {
+        Engine::full_potential_energy(self, position)
+    }
+}
+
 impl Drop for Engine {
     fn drop(&mut self) {
         unsafe {
@@ -1063,5 +1098,64 @@ mod tests {
     fn thermodynamic_coupling_is_two_doubles() {
         assert_eq!(std::mem::size_of::<MdThermodynamicCoupling>(), 16);
         assert_eq!(std::mem::align_of::<MdThermodynamicCoupling>(), 8);
+    }
+
+    struct NanAtRest {
+        steps: usize,
+    }
+
+    impl PotentialStep for NanAtRest {
+        fn step(&mut self, steps: usize) -> Result<(), SaddleError> {
+            self.steps += steps;
+            Ok(())
+        }
+
+        fn state(&mut self, dimension: usize) -> Result<MdState, SaddleError> {
+            Ok(MdState {
+                positions: vec![0.1; dimension],
+                forces: vec![0.0; dimension],
+                removed_velocities: vec![0.0; dimension],
+                accounting: MdObservation::default(),
+            })
+        }
+
+        fn full_potential_energy(&mut self, _position: &[f64]) -> Result<f64, SaddleError> {
+            if self.steps == 0 {
+                Err(SaddleError::NonFinite("LAMMPS potential energy"))
+            } else {
+                Ok(1.0)
+            }
+        }
+    }
+
+    #[test]
+    fn lambda_sampling_rejects_a_non_finite_energy_before_the_first_step() {
+        let reference = LammpsThermodynamicReference {
+            point: Array1::zeros(1),
+            energy: 0.0,
+            gradient: Array1::zeros(1),
+            hessian: Array2::zeros((1, 1)),
+        };
+        let budget = HyperplaneSampleBudget::default()
+            .with_thermalize(4)
+            .with_stride(1)
+            .with_samples(1)
+            .with_coordinates(HyperplaneCoordinates::Cartesian);
+        let thermostat = LammpsThermostatRecord {
+            thermostat: LammpsThermostatKind::BaoabLangevin,
+            effective_degrees_of_freedom: 0,
+        };
+        let mut engine = NanAtRest { steps: 0 };
+        let error = gather_constrained_samples(
+            &mut engine,
+            &LammpsSystem::default(),
+            &budget,
+            1,
+            &thermostat,
+            Some(&reference),
+        )
+        .expect_err("the resting energy is not finite");
+        assert!(matches!(error, SaddleError::NonFinite(_)), "{error:?}");
+        assert_eq!(engine.steps, 0);
     }
 }
