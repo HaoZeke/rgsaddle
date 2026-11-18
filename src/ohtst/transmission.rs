@@ -531,9 +531,10 @@ impl Basins {
 /// Hard transition region whose exterior is any basin reached by an rgmin
 /// steepest-descent quench.
 ///
-/// The reflection normal joins the nearest reference minimum of the reached
-/// state to the nearest reference minimum of the opposite state. Membership
-/// itself comes from [`Basins::assign`], not from that linear normal model.
+/// The reflection normal joins the reference minimum of the reached state
+/// nearest the quenched configuration to the reference minimum of the
+/// opposite state nearest that configuration. Membership itself comes from
+/// [`Basins::assign`], not from that linear normal model.
 pub struct QuenchedTransitionRegion<S> {
     surface: Arc<S>,
     basins: Basins,
@@ -565,8 +566,13 @@ impl<S: PointSurface + Send + Sync> Region for QuenchedTransitionRegion<S> {
         &self,
         point: ArrayView1<'_, f64>,
     ) -> Result<Option<BoundaryViolation>, SaddleError> {
-        let (state, _) = self.basins.assign(self.surface.as_ref(), point)?;
-        let Some(state) = state else {
+        self.basins.quench.check()?;
+        let acceptance = self.basins.acceptance()?;
+        let (reached, _) = quench(self.surface.as_ref(), point, &self.basins.quench)?;
+        let Some(reached) = reached else {
+            return Ok(None);
+        };
+        let Some(state) = self.basins.classify_within(reached.view(), acceptance)? else {
             return Ok(None);
         };
         let (outside, opposite) = match state {
@@ -576,7 +582,10 @@ impl<S: PointSurface + Send + Sync> Region for QuenchedTransitionRegion<S> {
         let nearest = |minima: &[Array1<f64>]| -> Result<Array1<f64>, SaddleError> {
             let mut best: Option<(f64, Array1<f64>)> = None;
             for minimum in minima {
-                let distance = self.basins.distance.distance(point, minimum.view())?;
+                let distance = self
+                    .basins
+                    .distance
+                    .distance(reached.view(), minimum.view())?;
                 if best.as_ref().is_none_or(|known| distance < known.0) {
                     best = Some((distance, minimum.clone()));
                 }
@@ -1451,5 +1460,32 @@ mod tests {
         assert!(velocity[0] < 0.0);
         assert!(velocity[1].abs() <= 16.0 * f64::EPSILON);
         assert!((velocity.dot(&velocity) - speed).abs() <= 64.0 * f64::EPSILON * speed);
+    }
+
+    /// Every start quenches to the product at `(1, 0)`. The query sits next
+    /// to a second reactant, so the nearest reactant of the query and of
+    /// the quenched configuration disagree.
+    struct ProductBowl;
+
+    impl PointSurface for ProductBowl {
+        fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+            let (a, b) = (x[0] - 1.0, x[1]);
+            Ok((0.5 * (a * a + b * b), array![a, b]))
+        }
+    }
+
+    #[test]
+    fn the_reflection_normal_uses_the_quenched_configuration() {
+        let basins = Basins::new(
+            vec![array![-1.0, 0.0], array![1.0, 3.0]],
+            vec![array![1.0, 0.0]],
+        )
+        .with_quench(QuenchConfig::default().with_force_tol(1.0e-8));
+        let region = QuenchedTransitionRegion::new(Arc::new(ProductBowl), basins);
+        let violation = region
+            .violation(array![0.2, 2.9].view())
+            .unwrap()
+            .expect("the quench reaches the product");
+        assert!(violation.normal[0] > 0.5, "{:?}", violation.normal);
     }
 }
