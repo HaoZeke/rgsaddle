@@ -219,6 +219,12 @@ impl LangevinConfig {
                 "sampler friction must be finite and positive".into(),
             ));
         }
+        if self.blocks == 0 {
+            return Err(SaddleError::MissingBlocks { context: "sampler" });
+        }
+        if self.records == 0 {
+            return Err(SaddleError::MissingSamples { context: "sampler" });
+        }
         if self.stride == 0 || self.blocks < 2 || self.records < 2 * self.blocks {
             return Err(SaddleError::Invalid(
                 "sampler needs a positive stride, two blocks, and two records per block".into(),
@@ -1019,9 +1025,12 @@ fn estimate_engine_plane(
     let (normal_force, normal_force_error) = mean_and_error(&normal_forces);
     let (grad_point, _) = column_means(&block_gradients, 0);
     let (grad_normal, grad_normal_error) = column_means(&block_gradients, n);
-    let centroid = block_centroids
-        .mean_axis(ndarray::Axis(0))
-        .unwrap_or_else(|| Array1::zeros(n));
+    let centroid =
+        block_centroids
+            .mean_axis(ndarray::Axis(0))
+            .ok_or(SaddleError::MissingSamples {
+                context: "sampler block centroids",
+            })?;
     let lever = &centroid - &point;
     let mut centroid_block_gradients = block_gradients.clone();
     for (block, mut row) in centroid_block_gradients.rows_mut().into_iter().enumerate() {
@@ -1497,6 +1506,20 @@ mod tests {
         assert!(matches!(
             error,
             SaddleError::NotEquilibrated { .. } | SaddleError::InsufficientEffectiveSamples { .. }
+        ));
+    }
+
+    #[test]
+    fn sampler_typed_errors_cover_empty_records_and_blocks() {
+        let no_blocks = LangevinConfig::default().with_blocks(0);
+        assert!(matches!(
+            no_blocks.check(),
+            Err(SaddleError::MissingBlocks { context: "sampler" })
+        ));
+        let no_records = LangevinConfig::default().with_records(0);
+        assert!(matches!(
+            no_records.check(),
+            Err(SaddleError::MissingSamples { context: "sampler" })
         ));
     }
 

@@ -128,6 +128,12 @@ impl PafiConfig {
                 "PAFI time step must be finite and positive".into(),
             ));
         }
+        if self.blocks == 0 {
+            return Err(SaddleError::MissingBlocks { context: "PAFI" });
+        }
+        if self.samples == 0 {
+            return Err(SaddleError::MissingSamples { context: "PAFI" });
+        }
         if self.stride == 0 || self.blocks < 2 || self.samples < self.blocks * 2 {
             return Err(SaddleError::Invalid(
                 "PAFI needs a positive stride, at least two blocks, and two samples per block"
@@ -369,6 +375,9 @@ pub fn average_hyperplane<S: PointSurface>(
 }
 
 /// Estimate the PAFI mean force from any constrained-ensemble engine.
+///
+/// Every observation must provide [`HyperplaneObservation::pafi_gradient`];
+/// this function does not silently recompute it from other fields.
 pub fn average_hyperplane_with_sampler<E: HyperplaneSampler>(
     sampler: &mut E,
     geometry: &PathGeometry,
@@ -418,21 +427,13 @@ fn estimate_pafi(
             "PAFI engine did not return the requested samples".into(),
         ));
     }
-    let observations: Vec<f64> = ensemble
-        .observations
-        .iter()
-        .map(|sample| {
-            sample.pafi_gradient.unwrap_or_else(|| {
-                let psi = sample
-                    .position
-                    .as_ref()
-                    .map_or(sample.jacobian, |position| {
-                        (position - &geometry.positions).dot(&geometry.curvature)
-                    });
-                -sample.constraint_force * norm(&geometry.tangent) * (1.0 - psi)
-            })
-        })
-        .collect();
+    let mut observations = Vec::with_capacity(ensemble.observations.len());
+    for (index, sample) in ensemble.observations.iter().enumerate() {
+        let value = sample
+            .pafi_gradient
+            .ok_or(SaddleError::MissingPafiGradient { observation: index })?;
+        observations.push(value);
+    }
     if observations.iter().any(|value| !value.is_finite()) {
         return Err(SaddleError::NonFinite("PAFI projected gradient"));
     }
@@ -850,6 +851,9 @@ mod tests {
         planes: Vec<Hyperplane>,
     }
 
+    #[derive(Default)]
+    struct MissingGradientSampler;
+
     impl HyperplaneSampler for RecordingSampler {
         fn sample_hyperplane(
             &mut self,
@@ -861,6 +865,31 @@ mod tests {
                 .map(|_| HyperplaneObservation {
                     constraint_force: -1.0,
                     pafi_gradient: Some(1.0),
+                    jacobian: 0.0,
+                    position: Some(plane.point().to_owned()),
+                    projected_force: None,
+                    projected_velocity: None,
+                    observables: Default::default(),
+                })
+                .collect();
+            Ok(HyperplaneEnsemble {
+                observations,
+                evaluations: budget.samples,
+                acceptance: 1.0,
+            })
+        }
+    }
+
+    impl HyperplaneSampler for MissingGradientSampler {
+        fn sample_hyperplane(
+            &mut self,
+            plane: &Hyperplane,
+            budget: &HyperplaneSampleBudget,
+        ) -> Result<HyperplaneEnsemble, SaddleError> {
+            let observations = (0..budget.samples)
+                .map(|_| HyperplaneObservation {
+                    constraint_force: -1.0,
+                    pafi_gradient: None,
                     jacobian: 0.0,
                     position: Some(plane.point().to_owned()),
                     projected_force: None,
@@ -893,5 +922,39 @@ mod tests {
         assert_eq!(sampler.planes.len(), 1);
         assert_eq!(sampler.planes[0].point(), geometry.positions);
         assert_eq!(sampler.planes[0].normal(), array![1.0, 0.0]);
+    }
+
+    #[test]
+    fn pafi_requires_observed_gradients() {
+        let geometry = PathGeometry {
+            positions: array![0.3, -0.4],
+            tangent: array![2.0, 0.0],
+            curvature: Array1::zeros(2),
+            arc: 0.7,
+        };
+        let config = PafiConfig::default()
+            .with_thermalize(0)
+            .with_samples(4)
+            .with_blocks(2);
+        let mut sampler = MissingGradientSampler;
+        let result = average_hyperplane_with_sampler(&mut sampler, &geometry, &config);
+        assert!(matches!(
+            result,
+            Err(SaddleError::MissingPafiGradient { observation: 0 })
+        ));
+    }
+
+    #[test]
+    fn pafi_typed_errors_cover_empty_sampling() {
+        let no_blocks = PafiConfig::default().with_blocks(0);
+        assert!(matches!(
+            no_blocks.check(),
+            Err(SaddleError::MissingBlocks { context: "PAFI" })
+        ));
+        let no_samples = PafiConfig::default().with_samples(0);
+        assert!(matches!(
+            no_samples.check(),
+            Err(SaddleError::MissingSamples { context: "PAFI" })
+        ));
     }
 }

@@ -20,6 +20,72 @@ pub enum SaddleError {
     #[error("invalid parameter: {0}")]
     /// The Invalid.
     Invalid(String),
+    /// Sampling requested zero blocks.
+    #[error("{context} needs at least one block")]
+    MissingBlocks {
+        /// Which sampler or integrator reported this.
+        context: &'static str,
+    },
+    /// Sampling requested zero records.
+    #[error("{context} needs at least one sample")]
+    MissingSamples {
+        /// Which sampler or integrator reported this.
+        context: &'static str,
+    },
+    /// Ring excluded-mode assembly produced no bead basis.
+    #[error("ring excluded-mode assembly produced no bead basis")]
+    MissingExcludedBasis,
+    /// A PAFI observation omitted the projected force.
+    #[error("PAFI observation {observation} omitted pafi_gradient")]
+    MissingPafiGradient {
+        /// Zero-based index of the offending observation.
+        observation: usize,
+    },
+    /// A requested ring time step exceeded the stability bound.
+    #[error(
+        "ring time step {provided:.16e} exceeds stability bound {bound:.16e}; lower time_step or compute an explicit automatic step"
+    )]
+    TimeStepAboveBound {
+        /// Caller-provided time step.
+        provided: f64,
+        /// Bound from the ring stiffness estimate.
+        bound: f64,
+    },
+    /// The ring-polymer inverse temperature and the sampling temperature differ.
+    #[error(
+        "ring-polymer beta and PAFI thermal disagree: beta={beta:.16e}, thermal={thermal:.16e}, expected thermal={expected_thermal:.16e}"
+    )]
+    TemperatureMismatch {
+        /// Inverse temperature in `RingSettings`.
+        beta: f64,
+        /// Thermal energy in `PafiConfig`.
+        thermal: f64,
+        /// `1/beta`.
+        expected_thermal: f64,
+    },
+    /// A ring stiffness bound was requested without physical images.
+    #[error("ring stiffness needs at least one physical image")]
+    MissingCurvatureImages,
+    /// The bead surface did not provide a Hessian-vector product.
+    #[error("ring stiffness needs a Hessian-vector product at image {image}")]
+    MissingHessianVector {
+        /// Zero-based physical-image index.
+        image: usize,
+    },
+    /// The supplied images and ring springs have no positive stiffness bound.
+    #[error("ring stiffness bound must be positive, got {bound:.16e}")]
+    NonPositiveStiffnessBound {
+        /// Computed image-local Gershgorin-plus-spring bound.
+        bound: f64,
+    },
+    /// Cartesian centre-of-mass removal was requested for a non-Cartesian bead.
+    #[error(
+        "centre-of-mass removal needs a multiple of three coordinates per bead, got {dof}; set fix_com=false"
+    )]
+    UnsupportedRingCenterOfMass {
+        /// Coordinates in one physical bead.
+        dof: usize,
+    },
     /// Automated equilibration selected a tail whose two halves still drift.
     #[error(
         "constrained ensemble did not equilibrate after {equilibration_steps} steps: split-half drift {drift:.3e} exceeds {sigma_multiple:.1} standard errors ({standard_error:.3e})"
