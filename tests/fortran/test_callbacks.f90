@@ -741,17 +741,68 @@ contains
 
 end module rgsaddle_fortran_callback_fixtures
 
+module rgsaddle_fortran_callback_forwarders
+  use, intrinsic :: iso_c_binding
+  use rgsaddle
+  use rgsaddle_fortran_callback_fixtures, only: SURFACE_CTX_MAGIC
+  implicit none
+  private
+
+  public :: forward_band_step_c, forward_minmode_step_c, &
+    forward_pafi_run_c, forward_ohtst_run_c
+
+contains
+
+  subroutine forward_band_step_c(session, surface, report, status, user)
+    type(band_handle), intent(inout) :: session
+    type(c_funptr), value :: surface
+    type(rgsaddle_report_t), intent(out) :: report
+    integer(c_int), intent(out) :: status
+    type(c_ptr), intent(in), optional :: user
+    if (SURFACE_CTX_MAGIC == 0_c_int64_t) stop 9
+    status = session%step_c(surface, user, report)
+  end subroutine forward_band_step_c
+
+  subroutine forward_minmode_step_c(session, surface, report, status, user)
+    type(minmode_handle), intent(inout) :: session
+    type(c_funptr), value :: surface
+    type(rgsaddle_report_t), intent(out) :: report
+    integer(c_int), intent(out) :: status
+    type(c_ptr), intent(in), optional :: user
+    status = session%step_c(surface, user, report)
+  end subroutine forward_minmode_step_c
+
+  subroutine forward_pafi_run_c(session, surface, status, user)
+    type(pafi_handle), intent(inout) :: session
+    type(c_funptr), value :: surface
+    integer(c_int), intent(out) :: status
+    type(c_ptr), intent(in), optional :: user
+    status = session%run_c(surface, user)
+  end subroutine forward_pafi_run_c
+
+  subroutine forward_ohtst_run_c(session, surface, status, user)
+    type(ohtst_handle), intent(inout) :: session
+    type(c_funptr), value :: surface
+    integer(c_int), intent(out) :: status
+    type(c_ptr), intent(in), optional :: user
+    status = session%run_c(surface, user)
+  end subroutine forward_ohtst_run_c
+
+end module rgsaddle_fortran_callback_forwarders
+
 program test_callbacks
   use, intrinsic :: iso_c_binding
   use rgsaddle
   use rgsaddle_fortran_test_support, only: check_status
   use rgsaddle_fortran_callback_fixtures
+  use rgsaddle_fortran_callback_forwarders
   implicit none
 
   call check_band_user_forwarding()
   call check_minmode_user_forwarding()
   call check_pafi_user_forwarding()
   call check_ohtst_user_forwarding()
+  call check_forwarded_c_user()
   call check_nested_surface_reentrancy()
   call check_nested_minmode_reentrancy(int(RGSADDLE_MINMODE_DIMER, c_int32_t))
   call check_nested_minmode_reentrancy(int(RGSADDLE_MINMODE_LANCZOS, c_int32_t))
@@ -1267,5 +1318,126 @@ contains
     call check_status("result nested outer ohtst", status)
     if (ores%evaluations < 1_c_int64_t) stop 7
   end subroutine check_nested_point_reentrancy
+
+  subroutine check_forwarded_c_user()
+    integer, parameter :: n_images = 5
+    type(surface_ctx), target :: b_ctx, m_ctx
+    type(point_ctx), target :: p_ctx, o_ctx
+    type(rgsaddle_band_config_t) :: bcfg
+    type(rgsaddle_minmode_config_t) :: mcfg
+    type(rgsaddle_pafi_config_t) :: pcfg
+    type(rgsaddle_ohtst_config_t) :: ocfg
+    type(rgsaddle_report_t) :: report
+    type(rgsaddle_pafi_result_t) :: pres
+    type(rgsaddle_ohtst_result_t) :: ores
+    type(band_handle) :: b_omitted, b_present
+    type(minmode_handle) :: m_omitted, m_present
+    type(pafi_handle) :: p_omitted, p_present
+    type(ohtst_handle) :: o_omitted, o_present
+    real(c_double) :: zero_band(3, n_images), shifted_band(3, n_images)
+    real(c_double) :: zero_start(3), shifted_start(3), seed(3)
+    real(c_double) :: zero_frames(3), shifted_frames(3), pt(2), zero_pt(2), nrm(2), t
+    integer(c_int) :: status
+    integer :: i
+
+    b_ctx%magic = SURFACE_CTX_MAGIC
+    b_ctx%self_ptr = c_loc(b_ctx)
+    b_ctx%center = [0.20_c_double, -0.10_c_double, 0.05_c_double]
+    b_ctx%scale = 1.5_c_double
+    b_ctx%calls = 0_c_int64_t
+    do i = 1, n_images
+      t = real(i - 1, c_double) / real(n_images - 1, c_double)
+      zero_band(1, i) = -1.0_c_double + 2.0_c_double * t
+      zero_band(2, i) = 0.3_c_double * sin(acos(-1.0_c_double) * t)
+      zero_band(3, i) = 0.0_c_double
+      shifted_band(:, i) = zero_band(:, i) + b_ctx%center
+    end do
+    call init_band_config(bcfg)
+    bcfg%max_move = 0.1_c_double
+    status = b_omitted%create(bcfg, int(n_images, c_int64_t), 1_c_int64_t, zero_band)
+    call check_status("create band forwarded omitted", status)
+    call forward_band_step_c(b_omitted, c_funloc(c_null_user_surface), report, status)
+    call check_status("band forwarded omitted step_c", status)
+    status = b_present%create(bcfg, int(n_images, c_int64_t), 1_c_int64_t, shifted_band)
+    call check_status("create band forwarded user", status)
+    call forward_band_step_c(b_present, c_funloc(c_shifted_surface), report, status, c_loc(b_ctx))
+    call check_status("band forwarded user step_c", status)
+    if (b_ctx%calls < 1_c_int64_t) stop 8
+
+    m_ctx%magic = SURFACE_CTX_MAGIC
+    m_ctx%self_ptr = c_loc(m_ctx)
+    m_ctx%center = [-0.15_c_double, 0.25_c_double, 0.0_c_double]
+    m_ctx%scale = 1.25_c_double
+    m_ctx%calls = 0_c_int64_t
+    zero_start = [0.35_c_double, 0.20_c_double, -0.10_c_double]
+    shifted_start = zero_start + m_ctx%center
+    seed = [0.8_c_double, 0.2_c_double, 0.1_c_double]
+    call init_minmode_config(mcfg, int(RGSADDLE_MINMODE_DIMER, c_int32_t))
+    mcfg%max_move = 0.1_c_double
+    status = m_omitted%create(mcfg, 1_c_int64_t, zero_start, seed)
+    call check_status("create minmode forwarded omitted", status)
+    call forward_minmode_step_c(m_omitted, c_funloc(c_null_user_surface), report, status)
+    call check_status("minmode forwarded omitted step_c", status)
+    status = m_present%create(mcfg, 1_c_int64_t, shifted_start, seed)
+    call check_status("create minmode forwarded user", status)
+    call forward_minmode_step_c(m_present, c_funloc(c_shifted_surface), report, status, c_loc(m_ctx))
+    call check_status("minmode forwarded user step_c", status)
+    if (m_ctx%calls < 1_c_int64_t) stop 8
+
+    zero_frames = [-1.0_c_double, 0.0_c_double, 1.0_c_double]
+    p_ctx%magic = POINT_CTX_MAGIC
+    p_ctx%self_ptr = c_loc(p_ctx)
+    p_ctx%scale = 2.0_c_double
+    p_ctx%shift = 0.25_c_double
+    shifted_frames = zero_frames + p_ctx%shift
+    call init_pafi_config(pcfg)
+    pcfg%thermalize = 1_c_int64_t
+    pcfg%stride = 1_c_int64_t
+    pcfg%samples = 4_c_int64_t
+    pcfg%blocks = 2_c_int64_t
+    pcfg%fix_com = 0_c_int32_t
+    pcfg%retain = 1_c_int64_t
+    pcfg%max_rounds = 1_c_int64_t
+    status = p_omitted%create(pcfg, 3_c_int64_t, 1_c_int64_t, zero_frames)
+    call check_status("create pafi forwarded omitted", status)
+    call forward_pafi_run_c(p_omitted, c_funloc(c_null_user_point_surface), status)
+    call check_status("pafi forwarded omitted run_c", status)
+    status = p_present%create(pcfg, 3_c_int64_t, 1_c_int64_t, shifted_frames)
+    call check_status("create pafi forwarded user", status)
+    call forward_pafi_run_c(p_present, c_funloc(c_scaled_point_surface), status, c_loc(p_ctx))
+    call check_status("pafi forwarded user run_c", status)
+    status = p_present%result(pres)
+    call check_status("pafi forwarded user result", status)
+    if (pres%evaluations < 1_c_int64_t) stop 8
+
+    o_ctx%magic = POINT_CTX_MAGIC
+    o_ctx%self_ptr = c_loc(o_ctx)
+    o_ctx%scale = 2.25_c_double
+    o_ctx%shift = 0.30_c_double
+    zero_pt = [0.0_c_double, 0.0_c_double]
+    pt = [o_ctx%shift, 0.0_c_double]
+    nrm = [1.0_c_double, 0.0_c_double]
+    call init_ohtst_config(ocfg)
+    ocfg%sample_burn_in = 2_c_int64_t
+    ocfg%sample_stride = 1_c_int64_t
+    ocfg%sample_records = 4_c_int64_t
+    ocfg%sample_blocks = 2_c_int64_t
+    ocfg%sample_retain = 2_c_int64_t
+    ocfg%shooting_steps = 4_c_int64_t
+    ocfg%shooting_check_every = 2_c_int64_t
+    ocfg%shooting_shots = 4_c_int64_t
+    ocfg%shooting_blocks = 2_c_int64_t
+    status = o_omitted%create(ocfg, 2_c_int64_t, zero_pt, nrm)
+    call check_status("create ohtst forwarded omitted", status)
+    call forward_ohtst_run_c(o_omitted, c_funloc(c_null_user_point_surface), status)
+    call check_status("ohtst forwarded omitted run_c", status)
+    status = o_present%create(ocfg, 2_c_int64_t, pt, nrm)
+    call check_status("create ohtst forwarded user", status)
+    call forward_ohtst_run_c(o_present, c_funloc(c_scaled_point_surface), status, c_loc(o_ctx))
+    call check_status("ohtst forwarded user run_c", status)
+    status = o_present%result(ores)
+    call check_status("ohtst forwarded user result", status)
+    if (ores%evaluations < 1_c_int64_t) stop 8
+  end subroutine check_forwarded_c_user
 
 end program test_callbacks
