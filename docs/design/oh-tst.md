@@ -482,7 +482,7 @@ specific problems:
    reactant minimum. Its printed speed and Vineyard rate instead both select
    $k_BT=0.25$ in the Appendix B energy units with unit mass. At that
    convention the paper's crossing estimator and trapezoidal work, repeated
-   over eight seeds, give $(4.340\pm0.132)\times10^{-7}$, inside the printed
+   over sixteen seeds, give $(4.377\pm0.078)\times10^{-7}$, inside the printed
    $(4.5\pm0.2)\times10^{-7}$ band. Section 10.3 gives the full check.
 
 ### 3.9 Numerical checks
@@ -1490,7 +1490,7 @@ $k_\mathrm{hTST}=4.33127\times10^{-7}$. At that convention:
 |---|---|
 | analytic Vineyard hTST | $4.33127\times10^{-7}$ |
 | optimal-line quadrature | $4.20148\times10^{-7}$ |
-| Eq. (22) crossings plus trapezoidal work, 8 independent seeds | $(4.340\pm0.132)\times10^{-7}$ |
+| Eq. (22) crossings plus trapezoidal work, 16 independent seeds | $(4.377\pm0.078)\times10^{-7}$ |
 | paper | $(4.5\pm0.2)\times10^{-7}$ |
 
 The sampled estimate uses 1000 records for each plane optimization, 8000
@@ -1500,8 +1500,8 @@ with stochastic collisions; it does not report a time step, collision
 frequency, trajectory length, number of planes, masses, or physical units.
 The test therefore states its sample counts rather than attributing them to
 the paper. It keeps the paper's crossing estimator and trapezoidal
-integration. The mean sits $0.160\times10^{-7}$ below the printed
-$4.5\times10^{-7}$ and $0.040\times10^{-7}$ above the lower edge of the
+integration. The mean sits $0.123\times10^{-7}$ below the printed
+$4.5\times10^{-7}$ and $0.077\times10^{-7}$ above the lower edge of the
 printed band, so it is compatible with the paper but does not reproduce its
 central value. `docs/design/ohtst-paper-reproduction.md` gives the
 per-seed rates, the standard error, and the command that prints them.
