@@ -1,19 +1,19 @@
 #+TITLE: PAFI types
-#+OPTIONS: toc:nil num:nil
+#+OPTIONS: toc:nil num:nil author:nil
 
 Full API documentation for every item below is on [[https://docs.rs/rgsaddle][docs.rs/rgsaddle]], under =rgsaddle::pafi=; =cargo doc --open= builds the same pages from a checkout. This page is the inventory: every public configuration and result type the module exports, and the functions that connect them. =tutorials/pafi= walks through using them; =explanation/pafi-ohtst= has the theory.
 
 * Path types
 | Type | Role |
 |------+------|
-| =ArcPath= | A path through ordered frames, parameterized by polyline arc length. =from_positions= builds it from a list of Cartesian configurations, reactant first; =bounds= gives the arc length of the first and last frame, =arcs= every stored frame's arc length, and =geometry(arc)= the position, tangent and tangent derivative at an arc length, from the polyline segment, with zero curvature on each segment since the geometry is the polyline itself, not a fitted spline |
+| =ArcPath= | A path through ordered frames, parameterized by polyline arc length. =from_positions= builds it from a list of Cartesian configurations, reactant first, and =new= builds it from explicit =PathFrame= values with strictly increasing arc lengths; =bounds= gives the arc length of the first and last frame, =arcs= every stored frame's arc length, and =geometry(arc)= the position, tangent and tangent derivative at an arc length, from the polyline segment, with zero curvature on each segment since the geometry is the polyline itself, not a fitted spline |
 | =PathFrame= | One frame of a path: =positions= (the Cartesian configuration) and =arc= (arc length from the first frame) |
 | =PathGeometry= | =positions= (=X(s)=), =tangent= (=n = dX/ds=), =curvature= (=dn/ds=), and =arc= (=s=) at one point along a path |
 
 * Sampling configuration and results
 | Type | Role |
 |------+------|
-| =PafiConfig= | Non-exhaustive; chain =with_*= setters from =default=. =thermal= is =kT= in the surface's energy unit; =mobility= and =time_step= set the overdamped Langevin step, =dx = -mobility * grad * time_step + sqrt(2 * mobility * thermal * time_step) * noise=; =thermalize=, =stride=, =samples= and =blocks= control the production run and its block standard error; =seed= fixes the noise stream; =fix_com= removes the mean Cartesian drift on systems with at least two atoms; =retain= keeps that many evenly spaced recorded configurations on each plane for later reuse; =target_error= and =max_rounds= run extra sampling rounds on every plane, inverse-variance combined with the first, until the barrier error meets the target or the round budget is spent (=howto/pafi-ohtst-restarting=) |
+| =PafiConfig= | Non-exhaustive; chain =with_*= setters from =default=. Defaults: =thermal = 0.02585= (300 K in eV), =mobility = 1.0=, =time_step = 1e-3=, =thermalize = 200=, =stride = 5=, =samples = 200=, =blocks = 5=, =seed = 1=, =fix_com = true=, =retain = 16=, =target_error = None=, =max_rounds = 4=. =mobility= and =time_step= set the overdamped Langevin step, =dx = -mobility * grad * time_step + sqrt(2 * mobility * thermal * time_step) * noise=; =fix_com= removes the mean Cartesian drift on systems with at least two atoms; =retain= keeps that many evenly spaced recorded configurations on each plane; =target_error= and =max_rounds= run extra sampling rounds on every plane, inverse-variance combined with earlier rounds, until the barrier error meets the target or the round budget is spent (=howto/pafi-ohtst-restarting=) |
 | =HyperplaneAverage= | One plane's result: =gradient= (=dF/ds=), its =error=, the mean =psi= (the correction term, zero on a straight polyline segment), =samples= recorded (summed over rounds), the integrated autocorrelation time =tau= in samples, =n_eff= (=samples / (2 tau)=), total force =evaluations=, and =retained= configurations on the plane (=howto/pafi-ohtst-checking-convergence= covers reading =tau= and =n_eff=) |
 | =FreeEnergyProfile= | The potential of mean force integrated from the first plane: per-plane =arc=, =gradient= and =gradient_error=, the trapezoid-integrated =free_energy= and its propagated =free_energy_error=, the =barrier= (the profile's maximum, with the reactant held at zero) and its =barrier_error=, the index of that maximum in =dividing=, and total recorded =samples= across every plane and round |
 
