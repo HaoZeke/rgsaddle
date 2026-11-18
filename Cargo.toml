@@ -84,6 +84,10 @@ required-features = ["ohtst"]
 name = "ohtst_skewed_well"
 required-features = ["ohtst"]
 
+[[bench]]
+name = "band_scaling"
+harness = false
+
 [profile.dev.package.faer]
 opt-level = 3
 
