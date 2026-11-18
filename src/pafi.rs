@@ -2,23 +2,28 @@
 //!
 //! Swinburne and Marinica, Phys. Rev. Lett. 120, 135503 (2018),
 //! doi:10.1103/PhysRevLett.120.135503, give a path-based free-energy
-//! gradient that does not need a collective variable. The same estimator
-//! is what LAMMPS `fix pafi` averages (Swinburne's implementation of that
-//! paper): with `n = dX/ds` the path derivative, `dn/ds` its derivative,
-//! and `ψ = (x - X) · dn/ds`,
+//! gradient that does not need a collective variable. The path `X(s)` is
+//! the spline through the images of [`ArcPath`], and the hyperplane at `s`
+//! is `(x - X) · t = 0`, with `t = X'` less its center-of-mass part when
+//! the center of mass is held. With `ψ = (x - X) · X'' / |t|²`,
 //!
-//! `dF/ds = ⟨ (∇E · n) (1 - ψ) ⟩`.
+//! `dF/ds = ⟨ (∇E · t) (1 - ψ) ⟩`.
 //!
-//! The average is over the hyperplane `(x - X) · n = 0`. Production samples
-//! arrive through [`HyperplaneSampler`]. The built-in overdamped Langevin
-//! implementation is retained only as the deterministic analytic-surface
-//! reference: it projects drift and noise, then restores the plane after
-//! every step. A center-of-mass projection is optional and is the `com yes`
-//! choice of `fix pafi`. The integral of `dF/ds` from the reactant is the
-//! potential of mean force. Block averages of the equilibrated records
-//! supply the standard error.
+//! The paper's `ψ`, its Eq. (5), is `1 - ψ` here, and this average is the
+//! first term of its Eq. (8). The second, Jacobian, term is left out, as
+//! LAMMPS `fix pafi` and Swinburne's reference driver leave it out. The
+//! integral of what remains is the free energy of the flat hyperplanes,
+//! `-kT ln ∫ δ((x - X) · t / |t|) exp(-E/kT) dx`, which does not depend on
+//! how the path is parametrized. Production samples arrive through
+//! [`HyperplaneSampler`]. The built-in overdamped Langevin implementation,
+//! the paper's Eq. (9), is retained only as the deterministic
+//! analytic-surface reference: it projects drift and noise, then restores
+//! the plane after every step. Holding the center of mass is optional and
+//! is the `com yes` choice of `fix pafi`. The integral of `dF/ds` from the
+//! reactant is the potential of mean force. Block averages of the
+//! equilibrated records supply the standard error.
 
-use ndarray::Array1;
+use ndarray::{Array1, Array2};
 use rayon::prelude::*;
 use std::sync::Arc;
 
@@ -29,6 +34,7 @@ use crate::projector::{
     Hyperplane, HyperplaneEnsemble, HyperplaneObservation, HyperplaneSampleBudget,
     HyperplaneSampler, ProjectedConstraint, TangentProjector,
 };
+use crate::reparam::Spline;
 use crate::stats::{EquilibrationReport, Rng, block_mean, equilibrate};
 
 /// Overdamped hyperplane sampling.
@@ -141,42 +147,47 @@ impl PafiConfig {
     }
 }
 
-/// One frame of a piecewise path, with its arc length from the reactant.
+/// One frame of a path, with its parameter.
 #[derive(Clone, Debug)]
 pub struct PathFrame {
     /// Cartesian coordinates of the frame.
     pub positions: Array1<f64>,
-    /// Arc length from the first frame.
+    /// Path parameter of the frame. [`ArcPath::from_positions`] uses the
+    /// summed chord lengths from the first frame.
     pub arc: f64,
 }
 
-/// Cubic Hermite path. The parameter is the polyline arc length.
+/// Cubic-spline path through ordered frames.
+///
+/// Every coordinate is the not-a-knot cubic spline of the frames over
+/// their [`PathFrame::arc`] values: the spline interpolation of NEB images
+/// of Swinburne and Marinica (2018) and the default end condition of
+/// scipy's `CubicSpline`, which their reference code uses. Two frames give
+/// the straight line and three the parabola through them. `X`, `X'` and
+/// `X''` are continuous, so the hyperplanes turn smoothly along the path
+/// and the plane through a frame is the same from either side of it.
 #[derive(Clone, Debug)]
 pub struct ArcPath {
-    frames: Vec<PathFrame>,
-    /// Endpoint derivatives kept so a caller can rebuild the Hermite data.
-    /// The geometry used for the integral is the polyline through the frames:
-    /// a cubic spline between NEB images cuts the corner off a curved saddle
-    /// and the zero-temperature integral then falls short of the barrier.
-    #[allow(dead_code)]
-    tangents: Vec<Array1<f64>>,
+    spline: Spline,
 }
 
-/// Position, path derivative `n = dX/ds`, and `dn/ds` at one arc length.
+/// Position and the first two parameter derivatives of a path.
 #[derive(Clone, Debug)]
 pub struct PathGeometry {
     /// `X(s)`.
     pub positions: Array1<f64>,
-    /// `n = dX/ds`.
+    /// `X' = dX/ds`, the hyperplane normal before any center-of-mass part
+    /// is removed.
     pub tangent: Array1<f64>,
-    /// `dn/ds`.
+    /// `X'' = d²X/ds²`.
     pub curvature: Array1<f64>,
     /// `s`.
     pub arc: f64,
 }
 
 impl ArcPath {
-    /// Build the path from ordered frames. Arc lengths must strictly increase.
+    /// Build the path from ordered frames. The parameter must strictly
+    /// increase and neighboring frames must differ.
     pub fn new(frames: Vec<PathFrame>) -> Result<Self, SaddleError> {
         if frames.len() < 2 {
             return Err(SaddleError::Invalid(
@@ -198,36 +209,40 @@ impl ArcPath {
                     "PAFI arc length must strictly increase".into(),
                 ));
             }
-        }
-        let mut tangents = Vec::with_capacity(frames.len());
-        for i in 0..frames.len() {
-            let tangent = if i == 0 {
-                difference(
-                    &frames[1].positions,
-                    &frames[0].positions,
-                    frames[1].arc - frames[0].arc,
-                )
-            } else if i + 1 == frames.len() {
-                difference(
-                    &frames[i].positions,
-                    &frames[i - 1].positions,
-                    frames[i].arc - frames[i - 1].arc,
-                )
-            } else {
-                difference(
-                    &frames[i + 1].positions,
-                    &frames[i - 1].positions,
-                    frames[i + 1].arc - frames[i - 1].arc,
-                )
-            };
-            if tangent.iter().all(|v| *v == 0.0) {
+            if i > 0 && frame.positions == frames[i - 1].positions {
                 return Err(SaddleError::Invalid(
-                    "a PAFI frame has a zero tangent".into(),
+                    "neighboring PAFI frames must differ".into(),
                 ));
             }
-            tangents.push(tangent);
         }
-        Ok(Self { frames, tangents })
+        let arcs: Vec<f64> = frames.iter().map(|frame| frame.arc).collect();
+        let mut values = Array2::zeros((frames.len(), n));
+        for (mut row, frame) in values.outer_iter_mut().zip(&frames) {
+            row.assign(&frame.positions);
+        }
+        let spline = Spline::fit(&arcs, &values)
+            .ok_or_else(|| SaddleError::Invalid("the PAFI spline system is singular".into()))?;
+        Ok(Self { spline })
+    }
+
+    /// The same curve traversed from the last frame, with the parameter
+    /// `first + last - s`. Integrating it gives the reversal test of a
+    /// profile: its forward barrier starts from the other end.
+    pub fn reversed(&self) -> Result<Self, SaddleError> {
+        let (first, last) = self.bounds();
+        let values = self.spline.values();
+        Self::new(
+            self.spline
+                .knots()
+                .iter()
+                .zip(values.outer_iter())
+                .rev()
+                .map(|(arc, positions)| PathFrame {
+                    positions: positions.to_owned(),
+                    arc: first + last - arc,
+                })
+                .collect(),
+        )
     }
 
     /// Frames in order, reactant first.
@@ -266,46 +281,27 @@ impl ArcPath {
 
     /// Arc length of the reactant and of the product.
     pub fn bounds(&self) -> (f64, f64) {
-        (self.frames[0].arc, self.frames.last().expect("frames").arc)
+        let knots = self.spline.knots();
+        (knots[0], knots[knots.len() - 1])
     }
 
     /// Arc length of every stored frame.
     pub fn arcs(&self) -> Vec<f64> {
-        self.frames.iter().map(|frame| frame.arc).collect()
+        self.spline.knots().to_vec()
     }
 
-    /// Polyline geometry at `arc`. The tangent is the chord of the segment.
+    /// Spline geometry at `arc`, clamped to the path.
     pub fn geometry(&self, arc: f64) -> Result<PathGeometry, SaddleError> {
         if !arc.is_finite() {
             return Err(SaddleError::NonFinite("PAFI arc"));
         }
-        let last = self.frames.len() - 1;
-        let arc = arc.clamp(self.frames[0].arc, self.frames[last].arc);
-        let mut seg = last - 1;
-        for i in 0..last {
-            if arc <= self.frames[i + 1].arc {
-                seg = i;
-                break;
-            }
-        }
-        let s0 = self.frames[seg].arc;
-        let s1 = self.frames[seg + 1].arc;
-        let dt = s1 - s0;
-        let t = ((arc - s0) / dt).clamp(0.0, 1.0);
-        let x0 = &self.frames[seg].positions;
-        let x1 = &self.frames[seg + 1].positions;
-        let n = x0.len();
-        let mut position = Array1::zeros(n);
-        let mut tangent = Array1::zeros(n);
-        for i in 0..n {
-            let step = x1[i] - x0[i];
-            position[i] = x0[i] + t * step;
-            tangent[i] = step / dt;
-        }
+        let (first, last) = self.bounds();
+        let arc = arc.clamp(first, last);
+        let [positions, tangent, curvature] = self.spline.derivatives(arc);
         Ok(PathGeometry {
-            positions: position,
+            positions,
             tangent,
-            curvature: Array1::zeros(n),
+            curvature,
             arc,
         })
     }
@@ -318,7 +314,8 @@ pub struct HyperplaneAverage {
     pub gradient: f64,
     /// Standard error from the block means.
     pub error: f64,
-    /// Mean of `ψ = (x - X) · dn/ds`.
+    /// Mean of `ψ = (x - X) · X'' / |t|²`. The paper's locality condition,
+    /// its Eq. (6), is `1 - ψ > 0`.
     pub psi: f64,
     /// Recorded samples in the production run.
     pub samples: usize,
@@ -392,11 +389,12 @@ pub fn average_hyperplane_with_sampler<E: HyperplaneSampler>(
     {
         return Err(SaddleError::NonFinite("PAFI path geometry"));
     }
-    let tangent_norm = norm(&geometry.tangent);
+    let normal = plane_normal(geometry, config);
+    let tangent_norm = norm(&normal);
     if !(tangent_norm.is_finite() && tangent_norm > 0.0) {
         return Err(SaddleError::Invalid("PAFI tangent vanishes".into()));
     }
-    let plane = Hyperplane::from_path(geometry.positions.view(), geometry.tangent.view())?;
+    let plane = Hyperplane::from_path(geometry.positions.view(), normal.view())?;
     let mut budget = HyperplaneSampleBudget::default()
         .with_thermal(config.thermal)
         .with_seed(config.seed)
@@ -408,12 +406,27 @@ pub fn average_hyperplane_with_sampler<E: HyperplaneSampler>(
         budget = budget.with_region(Arc::clone(region));
     }
     let ensemble = sampler.sample_hyperplane(&plane, &budget)?;
-    estimate_pafi(ensemble, geometry, config)
+    estimate_pafi(ensemble, geometry, &normal, config)
+}
+
+/// The hyperplane normal `t`: the path derivative less its center-of-mass
+/// part when the center of mass is held.
+fn plane_normal(geometry: &PathGeometry, config: &PafiConfig) -> Array1<f64> {
+    let mut normal = geometry.tangent.clone();
+    if holds_com(config, normal.len()) {
+        remove_com(&mut normal);
+    }
+    normal
+}
+
+fn holds_com(config: &PafiConfig, n: usize) -> bool {
+    config.fix_com && n >= 6 && n.is_multiple_of(3)
 }
 
 fn estimate_pafi(
     ensemble: HyperplaneEnsemble,
     geometry: &PathGeometry,
+    normal: &Array1<f64>,
     config: &PafiConfig,
 ) -> Result<HyperplaneAverage, SaddleError> {
     if ensemble.observations.len() != config.samples {
@@ -421,19 +434,22 @@ fn estimate_pafi(
             "PAFI engine did not return the requested samples".into(),
         ));
     }
+    let nn = normal.dot(normal);
+    let psi_of = |sample: &HyperplaneObservation| {
+        sample
+            .position
+            .as_ref()
+            .map_or(sample.jacobian, |position| {
+                (position - &geometry.positions).dot(&geometry.curvature) / nn
+            })
+    };
     let observations: Vec<f64> = ensemble
         .observations
         .iter()
         .map(|sample| {
-            sample.pafi_gradient.unwrap_or_else(|| {
-                let psi = sample
-                    .position
-                    .as_ref()
-                    .map_or(sample.jacobian, |position| {
-                        (position - &geometry.positions).dot(&geometry.curvature)
-                    });
-                -sample.constraint_force * norm(&geometry.tangent) * (1.0 - psi)
-            })
+            sample
+                .pafi_gradient
+                .unwrap_or_else(|| -sample.constraint_force * nn.sqrt() * (1.0 - psi_of(sample)))
         })
         .collect();
     if observations.iter().any(|value| !value.is_finite()) {
@@ -447,18 +463,7 @@ fn estimate_pafi(
     )?;
     let kept_observations = &ensemble.observations[equilibration.discard..];
     let kept_values = &observations[equilibration.discard..];
-    let psi = kept_observations
-        .iter()
-        .map(|sample| {
-            sample
-                .position
-                .as_ref()
-                .map_or(sample.jacobian, |position| {
-                    (position - &geometry.positions).dot(&geometry.curvature)
-                })
-        })
-        .sum::<f64>()
-        / kept_observations.len() as f64;
+    let psi = kept_observations.iter().map(psi_of).sum::<f64>() / kept_observations.len() as f64;
     let retain_gap = kept_observations
         .len()
         .div_ceil(config.retain.max(1))
@@ -503,6 +508,8 @@ impl<S: PointSurface> HyperplaneSampler for PafiAnalyticSampler<'_, S> {
         let geometry = self.geometry;
         let config = self.config;
         let n = geometry.positions.len();
+        let normal = plane_normal(geometry, config);
+        let nn = normal.dot(&normal);
         let mut x = geometry.positions.clone();
         let mut rng = Rng::new(budget.seed);
         let sigma = (2.0 * config.mobility * budget.thermal * config.time_step).sqrt();
@@ -518,7 +525,8 @@ impl<S: PointSurface> HyperplaneSampler for PafiAnalyticSampler<'_, S> {
             }
             if step >= budget.thermalize && (step - budget.thermalize).is_multiple_of(budget.stride)
             {
-                let (pafi_gradient, jacobian) = projected_gradient(&gradient, &x, geometry);
+                let (pafi_gradient, jacobian) =
+                    projected_gradient(&gradient, &x, geometry, &normal, nn);
                 observations.push(HyperplaneObservation {
                     constraint_force: -gradient.dot(&plane.normal()),
                     pafi_gradient: Some(pafi_gradient),
@@ -536,7 +544,7 @@ impl<S: PointSurface> HyperplaneSampler for PafiAnalyticSampler<'_, S> {
                 *value = rng.normal();
             }
             plane.project_in_place(&mut noise);
-            if config.fix_com && n >= 6 && n.is_multiple_of(3) {
+            if holds_com(config, n) {
                 remove_com(&mut drift);
                 remove_com(&mut noise);
                 plane.project_in_place(&mut drift);
@@ -724,9 +732,11 @@ fn combine(mean_a: f64, error_a: f64, mean_b: f64, error_b: f64) -> (f64, f64) {
 
 /// Integral of `∇E · dX/ds` with the system held on the path.
 ///
-/// This is the zero-temperature limit of the PAFI integral: `ψ = 0` and
-/// there is no thermal average. On a converged minimum-energy path it
-/// reproduces the potential barrier.
+/// The integral is the energy along the spline, `E(X(s)) - E(X(s0))` up to
+/// the quadrature, and passes through the image energies at the frames.
+/// On a converged minimum-energy path the force in each hyperplane
+/// vanishes, so this is also the zero-temperature limit of the PAFI
+/// integral and reproduces the potential barrier.
 pub fn zero_temperature_barrier<S: PointSurface>(
     surface: &S,
     path: &ArcPath,
@@ -737,7 +747,7 @@ pub fn zero_temperature_barrier<S: PointSurface>(
             "the zero-temperature integral needs at least two points".into(),
         ));
     }
-    let arcs = dense_arcs(arcs, 24);
+    let arcs = dense_arcs(arcs, 64);
     let mut gradients = Vec::with_capacity(arcs.len());
     let errors = vec![0.0; arcs.len()];
     for arc in &arcs {
@@ -753,7 +763,7 @@ pub fn zero_temperature_barrier<S: PointSurface>(
     integrate_profile(&arcs, &gradients, &errors)
 }
 
-/// Eight samples on every span. One trapezoid per image is not enough
+/// `parts` samples on every span. One trapezoid per image is not enough
 /// when the directional derivative curves, and the integral then sits
 /// below the barrier.
 fn dense_arcs(arcs: &[f64], parts: usize) -> Vec<f64> {
@@ -804,18 +814,17 @@ fn dividing_index(free: &[f64]) -> usize {
     best
 }
 
+/// `(∇E · t) (1 - ψ)` and `ψ = (x - X) · X'' / |t|²` for the plane normal
+/// `t`.
 fn projected_gradient(
     gradient: &Array1<f64>,
     x: &Array1<f64>,
     geometry: &PathGeometry,
+    normal: &Array1<f64>,
+    nn: f64,
 ) -> (f64, f64) {
-    let psi = (x - &geometry.positions).dot(&geometry.curvature);
-    let parallel = gradient.dot(&geometry.tangent);
-    (parallel * (1.0 - psi), psi)
-}
-
-fn difference(end: &Array1<f64>, start: &Array1<f64>, ds: f64) -> Array1<f64> {
-    (end - start) / ds
+    let psi = (x - &geometry.positions).dot(&geometry.curvature) / nn;
+    (gradient.dot(normal) * (1.0 - psi), psi)
 }
 
 pub(crate) fn remove_com(vector: &mut Array1<f64>) {
