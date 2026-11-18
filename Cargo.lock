@@ -1913,6 +1913,7 @@ dependencies = [
  "eindir-core",
  "faer",
  "libloading",
+ "libm",
  "linkcell",
  "minimage",
  "ndarray",

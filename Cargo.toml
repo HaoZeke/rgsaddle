@@ -70,6 +70,8 @@ rgpot-rev = "97ebba0b062128b7dc4637501c4b70ed4944ae9d"
 
 [dev-dependencies]
 approx = "0.5"
+libm = "0.2"
+rgmin = "=0.6.0"
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 faer = { version = "0.24.4", default-features = false, features = ["std", "linalg"] }
 sha2 = "0.10"
