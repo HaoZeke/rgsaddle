@@ -470,7 +470,7 @@ pub fn expand(
 /// Sella `rayleigh_ritz` loop: grow `v` with [`expand`] until the residuals of the
 /// negative Ritz pairs (the lowest one when none is negative) are below
 /// `gamma |theta|`, or no new direction independent of the subspace remains.
-/// The subspace never exceeds `n` columns.
+/// The loop also stops once the subspace has `n` columns.
 ///
 /// `a` is a symmetric `n x n` matrix, `v0` an `n x k` starting basis, `gamma` the
 /// relative residual tolerance and `method` the expansion formula. A `gamma` of 0
@@ -513,7 +513,7 @@ pub fn rayleigh_ritz_iter(
         return Ok((lams, vecs, av));
     }
     let n = a.nrows();
-    let maxiter = (2 * n + 1).max(2);
+    let max_columns = n;
     let mut v = modified_gram_schmidt(v0, None, 1e-14);
     if v.ncols() == 0 {
         return Err(SaddleError::Solver("empty Ritz subspace".into()));
@@ -526,7 +526,7 @@ pub fn rayleigh_ritz_iter(
         av = matmul(av.view(), vecs.view());
         v = matmul(v.view(), vecs.view());
         let k = v.ncols();
-        if k >= maxiter {
+        if k >= max_columns {
             return Ok((lams, v, av));
         }
         // Sella `nneg = max(1, sum(lams < 0))`.
@@ -1237,6 +1237,33 @@ mod tests {
             exact[0]
         );
         assert_eq!(vecs.nrows(), 4);
+    }
+
+    #[test]
+    fn rayleigh_ritz_iter_caps_columns_at_dimension() {
+        for &n in &[2usize, 3, 5] {
+            let mut a = Array2::<f64>::zeros((n, n));
+            for i in 0..n {
+                a[(i, i)] = -2.0 + i as f64;
+            }
+            if n >= 2 {
+                a[(0, 1)] = 0.25;
+                a[(1, 0)] = 0.25;
+            }
+            let mut v0 = Array2::zeros((n, 1));
+            v0[(0, 0)] = 1.0;
+            let (lams, vecs, _av) =
+                rayleigh_ritz_iter(a.view(), v0.view(), 1e-12, ExpandKind::Jd0).unwrap();
+            assert_eq!(vecs.nrows(), n, "n={n}");
+            assert!(vecs.ncols() <= n, "n={n}, k={}", vecs.ncols());
+            let (exact, _) = exact_eigh(a.view()).unwrap();
+            assert!(
+                (lams[0] - exact[0]).abs() < 1e-10,
+                "n={n}, iter={}, exact={}",
+                lams[0],
+                exact[0]
+            );
+        }
     }
 
     #[test]
