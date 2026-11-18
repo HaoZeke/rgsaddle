@@ -388,7 +388,7 @@ pub fn expand(
 }
 
 /// Sella `rayleigh_ritz` loop: grow `v` with [`expand`] until the
-/// residual is below `gamma |theta|` or the subspace hits `2 n + 1`.
+/// residual is below `gamma |theta|` or the subspace has `n` columns.
 pub fn rayleigh_ritz_iter(
     a: ArrayView2<f64>,
     v0: ArrayView2<f64>,
@@ -406,7 +406,6 @@ pub fn rayleigh_ritz_iter(
         return Ok((lams, vecs, av));
     }
     let n = a.nrows();
-    let maxiter = (2 * n + 1).max(2);
     let mut v = modified_gram_schmidt(v0, None, 1e-14);
     if v.ncols() == 0 {
         return Err(SaddleError::Solver("empty Ritz subspace".into()));
@@ -419,7 +418,7 @@ pub fn rayleigh_ritz_iter(
         av = matmul(av.view(), vecs.view());
         v = matmul(v.view(), vecs.view());
         let k = v.ncols();
-        if k >= maxiter {
+        if k >= n {
             return Ok((lams, v, av));
         }
         // Sella `nneg = max(1, sum(lams < 0))`.
@@ -1130,6 +1129,58 @@ mod tests {
             exact[0]
         );
         assert_eq!(vecs.nrows(), 4);
+    }
+
+    #[test]
+    fn rayleigh_ritz_iter_returns_once_the_basis_spans_the_space() {
+        // A one-dimensional basis already spans R^1. The shift of 1 makes
+        // the `Gd` system `(P - shift) t = r` singular, so a loop that keeps
+        // expanding fails here instead of returning the exact pair.
+        let a = array![[1.0]];
+        let v0 = array![[1.0]];
+        let (lams, vecs, av) =
+            rayleigh_ritz_iter(a.view(), v0.view(), 0.1, ExpandKind::Gd).unwrap();
+        assert_eq!(vecs.ncols(), 1);
+        assert!((lams[0] - 1.0).abs() < 1e-12, "{}", lams[0]);
+        assert!((av[(0, 0)] - vecs[(0, 0)]).abs() < 1e-12);
+    }
+
+    #[test]
+    fn rayleigh_ritz_iter_never_passes_n_columns() {
+        for n in 1..=6 {
+            let mut a = Array2::<f64>::zeros((n, n));
+            for i in 0..n {
+                a[(i, i)] = i as f64 - 1.5;
+                if i + 1 < n {
+                    a[(i, i + 1)] = 0.4;
+                    a[(i + 1, i)] = 0.4;
+                }
+            }
+            let mut v0 = Array2::zeros((n, 1));
+            v0[(0, 0)] = 1.0;
+            for kind in [
+                ExpandKind::Lanczos,
+                ExpandKind::Gd,
+                ExpandKind::Jd0,
+                ExpandKind::Jd0Alt,
+                ExpandKind::Mjd0,
+                ExpandKind::Mjd0Alt,
+            ] {
+                let (lams, vecs, av) =
+                    rayleigh_ritz_iter(a.view(), v0.view(), 1e-12, kind).unwrap();
+                let k = vecs.ncols();
+                assert!(k <= n, "n={n} {kind:?}: {k} columns");
+                assert_eq!(lams.len(), k);
+                assert_eq!(av.ncols(), k);
+                let gram = matmul(vecs.t(), vecs.view());
+                for i in 0..k {
+                    for j in 0..k {
+                        let want = if i == j { 1.0 } else { 0.0 };
+                        assert!((gram[(i, j)] - want).abs() < 1e-8, "n={n} {kind:?}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
