@@ -269,7 +269,7 @@ fn curved_well_chord_is_wrong_but_optimal_plane_recovers_the_rate() {
         &CurvedWell2D,
         &chord,
         &chord_arcs,
-        &pafi_config(kt, 900, 77),
+        &pafi_config(kt, 1_200, 77),
     )
     .expect("chord PAFI");
     assert_profile_matches_exact(
