@@ -683,7 +683,7 @@ fn join_tol_joins_on_the_gap_left_after_this_steps_additions() {
 
 #[test]
 fn join_tol_fills_the_string_to_n_images_after_an_early_join() {
-    for n_images in [6, 8, 10, 13] {
+    for n_images in [6, 7, 8, 10, 13] {
         let config = flat_config(n_images).with_join_tol(Some(1000.0));
         let mut session = flat_session(config);
         let report = session.step(&FlatSurface).expect("step");
@@ -694,6 +694,18 @@ fn join_tol_fills_the_string_to_n_images_after_an_early_join() {
         let spacing = 9.0 / (n_images - 1) as f64;
         let expected: Vec<f64> = (0..n_images).map(|k| spacing * k as f64).collect();
         assert_abscissae(abscissae(positions.view()), &expected, "filled string");
+        // The hand-off keeps the filled reactant fragment: each fill node
+        // lands one slot along, so the last one is slot n_images - 4.
+        assert_abscissae(
+            abscissae(session.left_fragment()),
+            &expected[..n_images - 3],
+            "filled reactant fragment",
+        );
+        assert_abscissae(
+            abscissae(session.right_fragment()),
+            &expected[n_images - 3..],
+            "product fragment",
+        );
         let mut ids = session.ids();
         ids.sort_unstable();
         assert_eq!(ids, (0..n_images as u64).collect::<Vec<_>>());
@@ -805,4 +817,366 @@ fn config_builders_store_every_value() {
     assert!(armed.band.saddle_check.is_some());
     assert!(!armed.band.quickmin);
     assert!(armed.band.remove_translation);
+}
+
+/// Left of the origin the frontier sits on the valley floor, right of it
+/// the valley floor is at `y = 0.5`: only the reactant frontier is ready.
+struct AsymmetricValley;
+
+impl BandSurface for AsymmetricValley {
+    fn eval(
+        &self,
+        positions: ArrayView2<f64>,
+        energies: &mut Array1<f64>,
+        gradients: &mut Array2<f64>,
+    ) -> Result<(), SaddleError> {
+        for (i, r) in positions.outer_iter().enumerate() {
+            let target_y = if r[0] > 0.0 { 0.5 } else { 0.0 };
+            energies[i] = 4.0 * (r[1] - target_y).powi(2) + r[2] * r[2];
+            gradients[(i, 0)] = 0.0;
+            gradients[(i, 1)] = 8.0 * (r[1] - target_y);
+            gradients[(i, 2)] = 2.0 * r[2];
+        }
+        Ok(())
+    }
+}
+
+fn asymmetric_config(n_images: usize) -> GrowingStringConfig {
+    GrowingStringConfig::default()
+        .with_n_images(n_images)
+        .with_frontier_tol(0.1)
+        .with_remove_translation(false)
+        .with_saddle_check(None)
+        .with_min_mode(None)
+}
+
+fn symmetric_endpoints(config: GrowingStringConfig) -> GrowingStringSession {
+    GrowingStringSession::new(config, array![-1.0, 0.0, 0.0], array![1.0, 0.0, 0.0])
+        .expect("session")
+}
+
+#[test]
+fn a_full_string_joins_only_when_a_node_was_added_or_both_frontiers_are_ready() {
+    // Four images are four slots: nothing can be added, so a lone ready
+    // frontier must not join the string.
+    let mut four = symmetric_endpoints(asymmetric_config(4));
+    let report = four.step(&AsymmetricValley).expect("step");
+    assert_eq!(report.nodes_added, 0);
+    assert!(!report.joined_this_step, "only the reactant frontier is ready");
+    assert_eq!(report.phase, GrowingStringPhase::Growing);
+    assert_eq!((report.left_nodes, report.right_nodes), (2, 2));
+    assert!(!four.is_joined());
+
+    // Both frontiers ready on a full string joins with nothing added.
+    let mut flat_four = flat_session(flat_config(4));
+    let report = flat_four.step(&FlatSurface).expect("step");
+    assert_eq!(report.nodes_added, 0);
+    assert!(report.joined_this_step);
+
+    // Five images: the ready reactant frontier fills the last slot, and
+    // that addition alone joins the string.
+    let mut five = symmetric_endpoints(asymmetric_config(5));
+    let report = five.step(&AsymmetricValley).expect("step");
+    assert_eq!(report.nodes_added, 1);
+    assert!(report.joined_this_step, "a node was added into the last slot");
+    assert_eq!(report.n_images, 5);
+    assert!(five.is_joined());
+}
+
+#[test]
+fn max_steps_per_node_forces_a_node_on_exactly_that_step() {
+    // A constant transverse force and a frontier tolerance it never meets:
+    // only the cap adds nodes.
+    struct ConstantPush;
+    impl BandSurface for ConstantPush {
+        fn eval(
+            &self,
+            positions: ArrayView2<f64>,
+            energies: &mut Array1<f64>,
+            gradients: &mut Array2<f64>,
+        ) -> Result<(), SaddleError> {
+            for (i, r) in positions.outer_iter().enumerate() {
+                energies[i] = r[1];
+                gradients[(i, 1)] = 1.0;
+            }
+            Ok(())
+        }
+    }
+    let config = GrowingStringConfig::default()
+        .with_n_images(12)
+        .with_frontier_tol(f64::MIN_POSITIVE)
+        .with_max_steps_per_node(Some(3))
+        .with_remove_translation(false);
+    let mut session = symmetric_endpoints(config);
+    let added: Vec<usize> = (0..3)
+        .map(|_| session.step(&ConstantPush).expect("step").nodes_added)
+        .collect();
+    assert_eq!(added, vec![0, 0, 2]);
+    // The fragments restart their count on growth: three more steps.
+    let added: Vec<usize> = (0..3)
+        .map(|_| session.step(&ConstantPush).expect("step").nodes_added)
+        .collect();
+    assert_eq!(added, vec![0, 0, 2]);
+}
+
+#[test]
+fn step_counters_and_run_limit_follow_the_steps_taken() {
+    let config = flat_config(30);
+    let mut session = flat_session(config);
+    for expected in 1..=3_usize {
+        let report = session.step(&FlatSurface).expect("step");
+        assert_eq!(report.iteration, expected);
+        assert_eq!(session.iteration(), expected);
+    }
+    assert_eq!(session.total_surface_rows(), 4 + 4 + 6);
+
+    let report = session.run(&FlatSurface, 5).expect("run");
+    assert_eq!(session.iteration(), 5, "run stops at max_steps");
+    assert_eq!(report.status, BandStatus::Running);
+    assert!(!session.is_joined());
+
+    let mut joined = flat_session(flat_config(6).with_join_tol(Some(1000.0)));
+    let first = joined.step(&FlatSurface).expect("step 1");
+    assert!(first.joined_this_step);
+    let rows_at_join = joined.total_surface_rows();
+    let second = joined.step(&FlatSurface).expect("step 2");
+    assert_eq!(second.iteration, 2);
+    assert_eq!(joined.iteration(), 2);
+    assert!(second.surface_rows > 0);
+    assert_eq!(joined.total_surface_rows(), rows_at_join + second.surface_rows);
+    assert_eq!(second.total_surface_rows, joined.total_surface_rows());
+    assert_eq!(joined.energies().len(), 6);
+}
+
+#[test]
+fn image_threads_and_fixed_atoms_apply_to_the_running_session() {
+    let mut session = flat_session(flat_config(8));
+    assert_eq!(session.image_threads(), 1);
+    assert!(session.set_image_threads(0).is_err());
+    session.set_image_threads(2).expect("two threads");
+    assert_eq!(session.image_threads(), 2);
+    session.set_image_threads(1).expect("one thread");
+    assert_eq!(session.image_threads(), 1);
+    session.set_image_threads(2).expect("two threads");
+    session.step(&FlatSurface).expect("threaded step");
+
+    let mut handed_off = flat_session(flat_config(6).with_join_tol(Some(1000.0)));
+    handed_off.set_image_threads(2).expect("threads before join");
+    handed_off.step(&FlatSurface).expect("step");
+    let joined = handed_off.string_session().expect("joined");
+    assert_eq!(joined.image_threads(), 2, "the join keeps the thread count");
+    handed_off.set_image_threads(3).expect("threads after join");
+    assert_eq!(handed_off.string_session().unwrap().image_threads(), 3);
+
+    let mut fixed = GrowingStringSession::new(
+        GrowingStringConfig::default()
+            .with_n_images(6)
+            .with_frontier_tol(10.0)
+            .with_remove_translation(false),
+        array![-1.0, 0.0, 0.0, 3.0, 4.0, 5.0],
+        array![1.0, 0.0, 0.0, 3.0, 4.0, 5.0],
+    )
+    .expect("two atoms");
+    assert!(fixed.set_fixed_atoms(vec![true]).is_err(), "mask length");
+    assert!(fixed.set_fixed_atoms(vec![true, true]).is_err(), "no free atom");
+    fixed.set_fixed_atoms(vec![false, true]).expect("mask");
+    for _ in 0..3 {
+        fixed.step(&AsymmetricValley).expect("step after the mask");
+    }
+    for row in fixed.positions().outer_iter() {
+        assert_eq!(&row.as_slice().unwrap()[3..], &[3.0, 4.0, 5.0]);
+    }
+    assert!(
+        fixed.left_fragment().outer_iter().skip(1).any(|r| r[1] != 0.0),
+        "the free atom relaxed"
+    );
+}
+
+#[test]
+fn invalid_configurations_and_endpoints_are_refused() {
+    let r = array![-1.0, 0.0, 0.0];
+    let p = array![1.0, 0.0, 0.0];
+    let refuse = |config: GrowingStringConfig, what: &str| {
+        let outcome = GrowingStringSession::new(config, r.clone(), p.clone());
+        assert!(outcome.is_err(), "{what} must be refused");
+    };
+    let accept = |config: GrowingStringConfig, what: &str| {
+        if let Err(err) = GrowingStringSession::new(config, r.clone(), p.clone()) {
+            panic!("{what} must be accepted: {err}");
+        }
+    };
+    let base = GrowingStringConfig::default;
+
+    refuse(base().with_n_images(3), "three images");
+    accept(base().with_n_images(4), "four images");
+    for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        refuse(base().with_frontier_tol(bad), "frontier_tol");
+    }
+    refuse(base().with_min_steps_per_node(0), "min_steps_per_node 0");
+    refuse(
+        base()
+            .with_min_steps_per_node(3)
+            .with_max_steps_per_node(Some(2)),
+        "max below min",
+    );
+    accept(
+        base()
+            .with_min_steps_per_node(3)
+            .with_max_steps_per_node(Some(3)),
+        "max equal to min",
+    );
+    for bad in [-1.0, f64::NAN, f64::INFINITY] {
+        refuse(base().with_join_tol(Some(bad)), "join_tol");
+    }
+    accept(base().with_join_tol(Some(0.0)), "join_tol 0");
+    for bad in [-1.0, f64::NAN, f64::INFINITY] {
+        refuse(base().with_force_tol(bad), "force_tol");
+    }
+    accept(base().with_force_tol(0.0), "force_tol 0");
+    for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        refuse(base().with_max_move(bad), "max_move");
+        refuse(base().with_time_step(bad), "time_step");
+    }
+
+    let sized = |reactant: Array1<f64>, product: Array1<f64>| {
+        GrowingStringSession::new(base(), reactant, product)
+    };
+    assert!(sized(Array1::zeros(0), Array1::zeros(0)).is_err(), "empty");
+    assert!(sized(array![0.0, 0.0, 0.0, 0.0], array![1.0, 0.0, 0.0, 0.0]).is_err());
+    assert!(sized(array![0.0, 0.0, 0.0], array![1.0, 0.0, 0.0, 0.0, 0.0, 0.0]).is_err());
+    assert!(sized(array![f64::NAN, 0.0, 0.0], array![1.0, 0.0, 0.0]).is_err());
+    assert!(sized(array![0.0, 0.0, 0.0], array![f64::INFINITY, 0.0, 0.0]).is_err());
+    assert!(sized(array![0.0, 0.0, 0.0], array![0.0, 0.0, 0.0]).is_err(), "coincident");
+
+    let rows = Array2::zeros((3, 3));
+    assert!(GrowingStringSession::from_endpoints(base(), rows.view()).is_err());
+    let pair = array![[-1.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+    assert!(GrowingStringSession::from_endpoints(base(), pair.view()).is_ok());
+}
+
+#[test]
+fn non_finite_energies_gradients_and_forces_are_errors() {
+    struct Poisoned(f64, f64, f64);
+    impl BandSurface for Poisoned {
+        fn eval(
+            &self,
+            positions: ArrayView2<f64>,
+            energies: &mut Array1<f64>,
+            gradients: &mut Array2<f64>,
+        ) -> Result<(), SaddleError> {
+            for (i, r) in positions.outer_iter().enumerate() {
+                energies[i] = if r[0] < 0.0 { self.0 } else { 0.0 };
+                gradients[(i, 1)] = if r[0] < 0.0 { self.1 } else { 0.0 };
+                gradients[(i, 2)] = if r[0] > 0.0 { self.2 } else { 0.0 };
+            }
+            Ok(())
+        }
+    }
+    let message = |surface: Poisoned| {
+        let mut session = symmetric_endpoints(flat_config(8));
+        session
+            .step(&surface)
+            .expect_err("a poisoned surface must fail")
+            .to_string()
+    };
+    assert!(message(Poisoned(f64::NAN, 0.0, 0.0)).contains("energies"));
+    assert!(message(Poisoned(0.0, f64::NAN, 0.0)).contains("gradients"));
+    assert!(message(Poisoned(0.0, 0.0, f64::INFINITY)).contains("gradients"));
+    // Finite gradients whose squared norm overflows reach the force check
+    // on one fragment only.
+    assert!(message(Poisoned(0.0, 1.0e200, 0.0)).contains("force norm"));
+    assert!(message(Poisoned(0.0, 0.0, 1.0e200)).contains("force norm"));
+}
+
+/// Golden trajectories on the curved channel for every stepper and both
+/// reparametrization schemes: `(stepper, scheme, steps, rows, sum of y,
+/// row-weighted sum of y)` of `positions()` after that many steps, from the
+/// reviewed implementation. They pin the relaxation, tangent, constraint,
+/// fragment reparametrization, and node placement arithmetic together.
+const GOLDEN_TRAJECTORIES: &[(&str, &str, usize, usize, f64, f64)] = &[
+    ("fire", "linear", 5, 4, 1.0, 2.5),
+    ("fire", "linear", 6, 6, 1.924090908060685, 6.734318178212398),
+    ("fire", "linear", 8, 6, 2.376087591023748, 8.31630656858312),
+    ("fire", "linear", 12, 9, 4.870698356315499, 24.35369373433049),
+    ("fire", "spline", 5, 4, 0.6466045396553552, 1.616511349138388),
+    ("fire", "spline", 6, 6, 1.669963401674019, 5.844871905941059),
+    ("fire", "spline", 8, 6, 1.731733117284771, 6.061065910587134),
+    ("fire", "spline", 12, 8, 3.308413025356654, 14.88785861431214),
+    ("fire-v1", "linear", 5, 4, 1.0, 2.5),
+    ("fire-v1", "linear", 6, 6, 1.773873852967226, 6.208558485385293),
+    ("fire-v1", "linear", 8, 6, 2.248965319199389, 7.871378617197862),
+    ("fire-v1", "linear", 12, 9, 4.915805376171914, 24.57875047437767),
+    ("fire-v1", "spline", 5, 6, 1.690422760624184, 5.916479661789108),
+    ("fire-v1", "spline", 6, 6, 1.718129720274779, 6.01345402054491),
+    ("fire-v1", "spline", 8, 6, 1.760928332536802, 6.163249163429728),
+    ("fire-v1", "spline", 12, 8, 3.360847106655585, 15.12381197924003),
+    ("lbfgs", "linear", 5, 4, 1.0, 2.5),
+    ("lbfgs", "linear", 6, 6, 1.773873852967226, 6.208558485385293),
+    ("lbfgs", "linear", 8, 6, 2.248965319199389, 7.871378617197862),
+    ("lbfgs", "linear", 12, 9, 4.71236297187415, 23.56024115993499),
+    ("lbfgs", "spline", 5, 6, 1.663283013343839, 5.821490546884619),
+    ("lbfgs", "spline", 6, 6, 1.731549766702423, 6.060424183660089),
+    ("lbfgs", "spline", 8, 8, 3.509594134514499, 15.79317360575033),
+    ("lbfgs", "spline", 12, 9, 4.838030055048254, 24.1894579568356),
+    ("quickmin", "linear", 5, 4, 1.0, 2.5),
+    ("quickmin", "linear", 6, 6, 1.773873852967226, 6.208558485385293),
+    ("quickmin", "linear", 8, 6, 2.248965319199389, 7.871378617197862),
+    ("quickmin", "linear", 12, 9, 4.915805376171914, 24.57875047437767),
+    ("quickmin", "spline", 5, 6, 1.690422760624184, 5.916479661789108),
+    ("quickmin", "spline", 6, 6, 1.718129720274779, 6.01345402054491),
+    ("quickmin", "spline", 8, 6, 1.760928332536802, 6.163249163429728),
+    ("quickmin", "spline", 12, 8, 3.360847106655585, 15.12381197924003),
+];
+
+#[test]
+fn golden_trajectories_pin_relaxation_and_placement_arithmetic() {
+    let tolerance = 1.0e9 * f64::EPSILON;
+    for &(stepper, scheme, steps, rows, sum_y, weighted_y) in GOLDEN_TRAJECTORIES {
+        let (method, quickmin) = match stepper {
+            "fire" => (Method::fire(rgmin::FireKind::V2), false),
+            "fire-v1" => (Method::fire(rgmin::FireKind::V1), false),
+            "lbfgs" => (Method::lbfgs_with_memory(10), false),
+            "quickmin" => (Method::fire(rgmin::FireKind::V2), true),
+            other => panic!("unknown stepper {other}"),
+        };
+        let reparametrization = match scheme {
+            "linear" => Reparametrization::Linear,
+            _ => Reparametrization::NotAKnot,
+        };
+        let config = GrowingStringConfig::default()
+            .with_n_images(9)
+            .with_frontier_tol(2.0)
+            .with_max_move(0.1)
+            .with_method(method)
+            .with_quickmin(quickmin)
+            .with_reparametrization(reparametrization)
+            .with_remove_translation(false)
+            .with_saddle_check(None)
+            .with_min_mode(None);
+        let mut session =
+            GrowingStringSession::new(config, array![-1.0, 0.0, 0.0], array![1.0, 0.0, 0.0])
+                .expect("session");
+        let surface = CurvedChannel2D::default();
+        for _ in 0..steps {
+            session.step(&surface).expect("step");
+        }
+        let positions = session.positions();
+        let label = format!("{stepper} {scheme} after {steps} steps");
+        assert_eq!(positions.nrows(), rows, "{label}: rows");
+        let got_sum: f64 = positions.column(1).iter().sum();
+        let got_weighted: f64 = positions
+            .column(1)
+            .iter()
+            .enumerate()
+            .map(|(i, y)| (i as f64 + 1.0) * y)
+            .sum();
+        assert!(
+            (got_sum - sum_y).abs() <= tolerance,
+            "{label}: sum of y {got_sum} vs {sum_y}"
+        );
+        assert!(
+            (got_weighted - weighted_y).abs() <= tolerance,
+            "{label}: weighted sum of y {got_weighted} vs {weighted_y}"
+        );
+    }
 }
