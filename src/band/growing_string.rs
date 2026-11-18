@@ -833,9 +833,9 @@ impl GrowingStringSession {
 
     fn force_norm(&self, force: ArrayView1<'_, f64>) -> f64 {
         match self.config.force_gate {
-            ForceGate::LinfNorm => force.iter().fold(0.0_f64, |largest, value| {
-                largest.max(value.abs())
-            }),
+            ForceGate::LinfNorm => force
+                .iter()
+                .fold(0.0_f64, |largest, value| largest.max(value.abs())),
             gate => gate.value(force),
         }
     }
