@@ -3807,7 +3807,8 @@ pub unsafe extern "C" fn rgsaddle_band_set_free_end(
             if (has_target_energy != 0 && has_target_energy != 1)
                 || (cubic != 0 && cubic != 1)
                 || max_cuts < 0
-                || (max_cuts > 0 && (stability < 1 || window_offset < 1))
+                || stability < 1
+                || window_offset < 1
             {
                 return RGSADDLE_INVALID_PARAMETER;
             }
@@ -3823,8 +3824,8 @@ pub unsafe extern "C" fn rgsaddle_band_set_free_end(
                     .with_max_cuts(max_cuts as usize)
                     .with_cut_force(cut_force)
                     .with_energy_tol(energy_tol)
-                    .with_stability(stability.max(1) as usize)
-                    .with_window_offset(window_offset.max(1) as usize)
+                    .with_stability(stability as usize)
+                    .with_window_offset(window_offset as usize)
                     .with_cubic(cubic == 1),
             )
         }

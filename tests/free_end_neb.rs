@@ -10,8 +10,8 @@
 //!    CI-NEB within tolerance, with 3x fewer images.
 //! 2. Both FreeEndSide::Last and FreeEndSide::First move on E(x_end) = E_target
 //!    and report target_energy_residual.
-//! 3. Nonzero endpoint gradient requirement, rgmin LevelSetConstraint
-//!    projection orthogonality, and fixed-endpoint default preservation.
+//! 3. Nonzero endpoint gradient requirement and fixed-endpoint default
+//!    preservation.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -297,4 +297,36 @@ fn free_end_first_side_and_zero_gradient_rejection() {
         matches!(err, SaddleError::Invalid(_)),
         "expected SaddleError::Invalid for zero endpoint gradient, got {err:?}"
     );
+}
+
+#[test]
+fn band_step_runs_free_end_min_mode_and_saddle_check() {
+    let reactant = array![0.0, 0.0, 0.0];
+    let slope = array![1.75, 0.48, 0.0];
+    let initial = linear_path(reactant.view(), slope.view(), 7, None).expect("path");
+    let config = BandConfig::default()
+        .with_free_end(
+            FreeEndConfig::default()
+                .with_target_energy(Some(-0.2))
+                .with_max_cuts(0),
+        )
+        .with_remove_translation(false)
+        .with_climbing(Some(CiConfig::after_rel(0.5)))
+        .with_force_tol(1e-6)
+        .with_max_move(0.08);
+    let surface = TiltedNarrowBarrier2D::default();
+    let mut session = BandSession::new(config, initial).expect("session");
+    let mut refinement_seen = false;
+    let report = loop {
+        let report = session.step(&surface).expect("step");
+        refinement_seen |= report.curvature.is_some();
+        if report.status == BandStatus::Converged {
+            break report;
+        }
+        assert!(session.iteration() < 800, "free-end band did not converge");
+    };
+
+    assert!(refinement_seen, "min-mode refinement never ran");
+    let index = report.saddle_index.expect("saddle-index certificate");
+    assert_eq!(index.index, 1);
 }
