@@ -8,6 +8,10 @@
 //! (multipole-to-local), which is the fast multipole method of Greengard
 //! and Rokhlin, J. Comput. Phys. 73, 325 (1987),
 //! doi:10.1016/0021-9991(87)90140-9.
+//!
+//! Units: positions and separations in Angstrom, the shear modulus in
+//! eV/Angstrom^3 (1 GPa is 0.00624151 eV/Angstrom^3), dipoles in eV, strain
+//! dimensionless and strain gradients in 1/Angstrom.
 
 use crate::cell_log::M3;
 use crate::elastic::{LocalField, StrainGradient};
@@ -17,18 +21,21 @@ use crate::strain_rate::{ElasticDipole, Strain};
 const PI: f64 = std::f64::consts::PI;
 
 /// One defect's centre and its elastic dipole.
+///
+/// Defects are point sources in an unbounded medium; no periodic images are
+/// summed.
 #[derive(Clone, Copy, Debug)]
 pub struct DefectSource {
-    /// Cartesian centre.
+    /// Cartesian centre `[x, y, z]` in Angstrom.
     pub position: [f64; 3],
-    /// Elastic dipole at that centre.
+    /// Elastic dipole at that centre, in eV.
     pub dipole: ElasticDipole,
 }
 
 /// Isotropic Kelvin Green's function.
 ///
-/// `shear_modulus` is μ. `poisson` is ν. The displacement due to a unit
-/// point force is
+/// `shear_modulus` is μ in eV/Angstrom^3. `poisson` is ν, dimensionless. The
+/// displacement due to a unit point force is
 ///
 /// `G_ij = A [(3 - 4ν) δ_ij / R + r_i r_j / R^3]`,
 ///
@@ -41,6 +48,13 @@ pub struct Kelvin {
 
 impl Kelvin {
     /// μ > 0 and -1 < ν < 1/2.
+    ///
+    /// `shear_modulus` is in eV/Angstrom^3 and `poisson` is dimensionless.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Invalid`] when `shear_modulus` is not finite and
+    /// positive, or `poisson` is not finite and strictly between -1 and 1/2.
     pub fn new(shear_modulus: f64, poisson: f64) -> Result<Self, SaddleError> {
         if !(shear_modulus.is_finite() && shear_modulus > 0.0) {
             return Err(SaddleError::Invalid(
@@ -63,6 +77,14 @@ impl Kelvin {
     }
 
     /// Symmetric strain at `r` due to a point force at the origin.
+    ///
+    /// `r` is `[x, y, z]` in Angstrom and `force` is in eV/Angstrom; the
+    /// strain is dimensionless.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Invalid`] when `|r|` is under `1e-12` Angstrom, where the
+    /// kernel is singular.
     #[allow(clippy::needless_range_loop)]
     pub fn strain_from_force(&self, r: [f64; 3], force: [f64; 3]) -> Result<M3, SaddleError> {
         let distance = length(r);
@@ -89,6 +111,14 @@ impl Kelvin {
     /// Symmetric strain at `r` due to a dipole at the origin.
     ///
     /// `u_i = -∂_k G_ij P_jk`.
+    ///
+    /// `r` is `[x, y, z]` in Angstrom from the dipole to the field point and
+    /// the dipole is in eV. The strain is a dimensionless symmetric 3x3
+    /// tensor, `M3[i][j]`.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Invalid`] when `|r|` is under `1e-12` Angstrom.
     #[allow(clippy::needless_range_loop)]
     pub fn strain_from_dipole(
         &self,
@@ -123,6 +153,13 @@ impl Kelvin {
     ///
     /// `ε_source` is the Kelvin strain of `source`. The energy falls as
     /// `1/r^3` and depends on the direction of `separation`.
+    ///
+    /// `separation` is `[x, y, z]` in Angstrom from the source to the target,
+    /// both dipoles are in eV, and the result is in eV.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Invalid`] when `|separation|` is under `1e-12` Angstrom.
     pub fn dipole_interaction(
         &self,
         separation: [f64; 3],
@@ -134,6 +171,13 @@ impl Kelvin {
     }
 
     /// `∂_n ε_ij` at `r` due to a dipole at the origin.
+    ///
+    /// `r` is `[x, y, z]` in Angstrom and the dipole is in eV. The result
+    /// is indexed `[i][j][n]` and is in 1/Angstrom.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Invalid`] when `|r|` is under `1e-12` Angstrom.
     #[allow(clippy::needless_range_loop)]
     pub fn strain_gradient_from_dipole(
         &self,
@@ -178,10 +222,41 @@ impl Kelvin {
 /// Field of every defect at every other defect.
 pub trait FieldSolver {
     /// Strain and its gradient at each defect, from all the others, in input order.
+    ///
+    /// The result has one [`LocalField`] per entry of `defects`, with the
+    /// strain dimensionless and the gradient (always `Some`) in 1/Angstrom.
+    /// A defect does not act on itself.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Invalid`] when two defects sit closer than
+    /// `1e-12` Angstrom, and, for [`FmmSolver`], when `theta` is not in
+    /// `(0, 1)` or `leaf` is zero.
     fn fields(&self, defects: &[DefectSource]) -> Result<Vec<LocalField>, SaddleError>;
 }
 
 /// Pair sum. Cost grows as the square of the number of defects.
+///
+/// # Examples
+///
+/// ```
+/// use rgsaddle::elastic::LocalField;
+/// use rgsaddle::field::{DefectSource, DirectSolver, FieldSolver, Kelvin};
+/// use rgsaddle::strain_rate::ElasticDipole;
+///
+/// // Copper-like medium: mu = 0.3 eV/Angstrom^3, nu = 0.34.
+/// let green = Kelvin::new(0.3, 0.34)?;
+/// // Two isotropic dipoles of 10 eV, 8 Angstrom apart along x.
+/// let dipole = ElasticDipole::from_tensor([[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]])?;
+/// let defects = [
+///     DefectSource { position: [0.0, 0.0, 0.0], dipole },
+///     DefectSource { position: [8.0, 0.0, 0.0], dipole },
+/// ];
+/// let fields: Vec<LocalField> = DirectSolver { green }.fields(&defects)?;
+/// assert_eq!(fields.len(), 2);
+/// assert!(fields[0].gradient.is_some());
+/// # Ok::<(), rgsaddle::SaddleError>(())
+/// ```
 #[derive(Clone, Copy, Debug)]
 pub struct DirectSolver {
     /// Medium the dipoles sit in.
@@ -200,26 +275,47 @@ impl FieldSolver for DirectSolver {
 
 /// Dual-tree multipole walk.
 ///
-/// `theta` is the opening angle. A source cell of half-width `s` and a
+/// `theta` is the opening angle, dimensionless. A source cell of half-width `s` and a
 /// target cell of half-width `t` are well separated when the distance
 /// between centres exceeds `(s + t) / theta`. `leaf` is the most particles
 /// a cell keeps before it splits.
 ///
 /// Non-exhaustive: build it with [`FmmSolver::new`] and the `with_*`
 /// setters.
+///
+/// # Examples
+///
+/// ```
+/// use rgsaddle::field::{DefectSource, DirectSolver, FieldSolver, FmmSolver, Kelvin};
+/// use rgsaddle::strain_rate::ElasticDipole;
+///
+/// let green = Kelvin::new(0.3, 0.34)?;
+/// let dipole = ElasticDipole::from_tensor([[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]])?;
+/// let defects = [
+///     DefectSource { position: [0.0, 0.0, 0.0], dipole },
+///     DefectSource { position: [8.0, 0.0, 0.0], dipole },
+/// ];
+/// // With fewer defects than one leaf the walk is the direct sum.
+/// let fmm = FmmSolver::new(green).with_theta(0.3).fields(&defects)?;
+/// let direct = DirectSolver { green }.fields(&defects)?;
+/// assert_eq!(fmm[1].strain.tensor(), direct[1].strain.tensor());
+/// # Ok::<(), rgsaddle::SaddleError>(())
+/// ```
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub struct FmmSolver {
     /// Medium the dipoles sit in.
     pub green: Kelvin,
-    /// Opening angle.
+    /// Opening angle, dimensionless, in `(0, 1)`. A smaller value is more
+    /// accurate and slower; `0.22` is the default.
     pub theta: f64,
-    /// Most particles in a leaf cell.
+    /// Most particles in a leaf cell. At least one; `16` is the default.
     pub leaf: usize,
 }
 
 impl FmmSolver {
-    /// `theta` 0.22 and leaves of 16.
+    /// `theta` 0.22 and leaves of 16, in the medium `green`. The values are
+    /// checked when [`FieldSolver::fields`] runs.
     pub fn new(green: Kelvin) -> Self {
         Self {
             green,

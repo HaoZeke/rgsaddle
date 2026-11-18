@@ -9,6 +9,21 @@
 //! needs the point on a set calls [`SamdSession::step_on`]: project
 //! the Verlet increment, retract, transport the velocity, then the
 //! BDP rescale. Ambient reductions go through [`rgmin::vecops`].
+//!
+//! The thermostat is the stochastic velocity rescaling of Bussi, Donadio,
+//! and Parrinello, J. Chem. Phys. 126, 014101 (2007),
+//! doi:10.1063/1.2408420, as written in Sella's `samd.py` (Hermes,
+//! Sargsyan, Najm, and Zádor, J. Chem. Theory Comput. 18, 6974 (2022),
+//! doi:10.1021/acs.jctc.2c00395).
+//!
+//! Units: positions in Angstrom, potential energy in eV, gradients in
+//! eV/Angstrom. Every coordinate has unit mass (Sella's convention), so a
+//! velocity is in Angstrom per time unit with the time unit
+//! `sqrt(amu Angstrom^2 / eV)` = 10.18 fs, and the temperature `t` of a
+//! schedule is `kT` in eV per degree of freedom: the target kinetic energy is
+//! `3N t / 2`. LAMMPS `fix temp/csvr` and ASE's `ase.md.bussi.Bussi` apply
+//! the same thermostat; this one differs by the unit mass and by the
+//! host-supplied random draw.
 
 use ndarray::{Array1, ArrayView1};
 use rgmin::Manifold;
@@ -34,10 +49,15 @@ use rgmin::ManifoldKind;
 #[non_exhaustive]
 pub struct VelocitySofteningConfig {
     /// Number of force probes. Each iteration costs one surface evaluation.
+    /// The default is `0`, which only projects and normalizes the seed.
     pub steps: usize,
-    /// Distance from the minimum at which the force is evaluated.
+    /// Distance from the minimum at which the force is evaluated, in
+    /// Angstrom (the position unit of the surface). Positive and finite;
+    /// the default is `0.1`.
     pub displacement: f64,
-    /// Perpendicular-force mixing factor.
+    /// Perpendicular-force mixing factor `alpha`, in Angstrom/eV: the
+    /// direction is a dimensionless unit vector and the force is in
+    /// eV/Angstrom. Positive and finite; the default is `0.15`.
     pub mixing: f64,
 }
 
@@ -60,7 +80,8 @@ impl Default for VelocitySofteningConfig {
 /// Softened unit direction and its exact force-evaluation cost.
 #[derive(Clone, Debug)]
 pub struct VelocitySofteningReport {
-    /// The direction.
+    /// Softened unit direction in the free (tangent) coordinates, length
+    /// `3N`, dimensionless.
     pub direction: Array1<f64>,
     /// Surface evaluations performed by this call.
     pub evaluations: usize,
@@ -73,6 +94,48 @@ pub struct VelocitySofteningReport {
 /// `F_perp = F(y) - (F(y) . N) N`, and update
 /// `N = normalize(N + alpha F_perp)`. Projection before and after every update
 /// keeps constrained or quotient-space launches in their physical tangent.
+///
+/// `center` is the minimum, a flat `3N` position vector in Angstrom, and
+/// `seed` the starting direction of the same length (only its direction
+/// matters). The surface returns gradients in eV/Angstrom. `man` fixes the
+/// tangent space; pass a Euclidean manifold for no constraint.
+///
+/// # Errors
+///
+/// - [`SaddleError::Shape`] when `center` is empty, `seed` has another length,
+///   `man` rejects the length, `displacement` or `mixing` is not positive and
+///   finite, or the surface returns a gradient of another length.
+/// - [`SaddleError::Solver`] when the projected seed, or an updated
+///   direction, has a norm of at most `1e-14`.
+/// - [`SaddleError::NonFinite`] when a probed gradient is not finite.
+/// - Any error of the surface.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::{Array1, ArrayView1, array};
+/// use rgmin::ManifoldKind;
+/// use rgsaddle::SaddleError;
+/// use rgsaddle::geom::SellaGeom;
+/// use rgsaddle::minmode::PointSurface;
+/// use rgsaddle::samd::{VelocitySofteningConfig, soften_velocity_on};
+///
+/// /// E = (x^2 - y^2) / 2 in eV and Angstrom: the y direction is soft.
+/// struct Saddle;
+/// impl PointSurface for Saddle {
+///     fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+///         Ok((0.5 * (x[0] * x[0] - x[1] * x[1]), array![x[0], -x[1], 0.0]))
+///     }
+/// }
+///
+/// let man = SellaGeom::Kind(ManifoldKind::Euclidean);
+/// let seed = array![1.0, 1.0, 0.0];
+/// let config = VelocitySofteningConfig::default().with_steps(5);
+/// let out = soften_velocity_on(&man, Array1::<f64>::zeros(3).view(), seed.view(), &Saddle, config)?;
+/// assert_eq!(out.evaluations, 5);
+/// assert!(out.direction[1] > out.direction[0]);
+/// # Ok::<(), SaddleError>(())
+/// ```
 pub fn soften_velocity_on<M, S>(
     man: &M,
     center: ArrayView1<f64>,
@@ -144,6 +207,11 @@ where
 }
 
 /// Linear ramp `T0 + i (Tf - T0) / (n - 1)`.
+///
+/// `t0` and `tf` are `kT` in eV, `i` the step index and `n` the number of
+/// steps in the schedule. It returns `tf` when `n <= 1`. It does not clamp:
+/// an `i` beyond `n - 1` continues the line past `tf` (and below zero when
+/// `tf < t0`), so stop the schedule at `n` steps.
 pub fn t_linear(i: usize, t0: f64, tf: f64, n: usize) -> f64 {
     if n <= 1 {
         return tf;
@@ -152,6 +220,10 @@ pub fn t_linear(i: usize, t0: f64, tf: f64, n: usize) -> f64 {
 }
 
 /// Exponential ramp `T0 (Tf / T0)^{i / n}`.
+///
+/// `t0` and `tf` are `kT` in eV and `n` the length of the schedule. It
+/// returns `t0` unchanged when either temperature is not positive. As for
+/// [`t_linear`], an `i` beyond `n` continues the curve.
 pub fn t_exp(i: usize, t0: f64, tf: f64, n: usize) -> f64 {
     if t0 <= 0.0 || tf <= 0.0 {
         return t0;
@@ -159,23 +231,31 @@ pub fn t_exp(i: usize, t0: f64, tf: f64, n: usize) -> f64 {
     t0 * (tf / t0).powf((i as f64) / (n.max(1) as f64))
 }
 
-/// The SamdConfig.
+/// Controls of [`SamdSession`]: the Verlet step, the thermostat coupling
+/// and the temperature schedule.
+///
+/// The defaults are `dt = 0.1`, `tau = 1.0`, `t0 = 1.0`, `tf = 0.1`,
+/// `ngen = 8` and a linear ramp.
 ///
 /// Non-exhaustive: start from [`SamdConfig::default`] and chain the
 /// `with_*` setters.
 #[non_exhaustive]
 pub struct SamdConfig {
-    /// The dt.
+    /// Velocity-Verlet time step in the time unit of the surface with unit
+    /// mass (10.18 fs for eV, Angstrom and amu).
     pub dt: f64,
-    /// The tau.
+    /// Thermostat relaxation time `tau` of the BDP rescale, in the same
+    /// time unit as `dt`.
     pub tau: f64,
-    /// The t0.
+    /// Initial temperature of the schedule, `kT` in eV per degree of
+    /// freedom.
     pub t0: f64,
-    /// The tf.
+    /// Final temperature of the schedule, `kT` in eV per degree of freedom.
     pub tf: f64,
-    /// The ngen.
+    /// Number of steps over which the schedule goes from `t0` to `tf`.
     pub ngen: usize,
-    /// The exponential.
+    /// Ramp shape: `true` for the exponential ramp [`t_exp`], `false` for
+    /// the linear ramp [`t_linear`].
     pub exponential: bool,
 }
 
@@ -201,17 +281,45 @@ impl Default for SamdConfig {
     }
 }
 
-/// The SamdReport.
+/// State after one thermostatted step.
 pub struct SamdReport {
-    /// Potential energy in the host's energy unit.
+    /// Potential energy in eV at the new position.
     pub energy: f64,
-    /// The kinetic.
+    /// Kinetic energy `|v|^2 / 2` in eV (unit mass) after the rescale.
     pub kinetic: f64,
-    /// The temperature.
+    /// Target `kT` in eV used by this step, from the schedule.
     pub temperature: f64,
 }
 
-/// The SamdSession.
+/// Sella's surface-adapted MD: velocity Verlet with a BDP thermostat whose
+/// temperature follows a schedule.
+///
+/// The host owns the loop and supplies one standard-normal vector of length
+/// `3N` per step. See the module docs for the units.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::{Array1, ArrayView1, array};
+/// use rgsaddle::SaddleError;
+/// use rgsaddle::minmode::PointSurface;
+/// use rgsaddle::samd::{SamdConfig, SamdSession};
+///
+/// /// E = x^2 / 2 per coordinate, in eV and Angstrom.
+/// struct Harmonic;
+/// impl PointSurface for Harmonic {
+///     fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+///         Ok((0.5 * x.dot(&x), x.to_owned()))
+///     }
+/// }
+///
+/// let mut md = SamdSession::new(SamdConfig::default(), array![1.0, 0.0, 0.0], Array1::zeros(3), &Harmonic)?;
+/// // The draws would come from the host's random number generator.
+/// let draws = vec![array![0.3, -0.2, 0.1]; 4];
+/// let report = md.run(&Harmonic, &draws)?;
+/// assert!(report.energy.is_finite() && report.kinetic >= 0.0);
+/// # Ok::<(), SaddleError>(())
+/// ```
 pub struct SamdSession {
     x: Array1<f64>,
     v: Array1<f64>,
@@ -223,7 +331,17 @@ pub struct SamdSession {
 }
 
 impl SamdSession {
-    /// New.
+    /// Start a session at `x` with velocity `v0`, evaluating the surface once.
+    ///
+    /// `x` is a flat `3N` position vector in Angstrom, `v0` the velocity of the
+    /// same length in Angstrom per time unit. The frame is unconstrained
+    /// ([`SellaGeom`] Euclidean).
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] when `v0` and `x` differ in length,
+    /// [`SaddleError::NonFinite`] when the gradient is not finite, and any
+    /// error of the surface.
     pub fn new(
         config: SamdConfig,
         x: Array1<f64>,
@@ -251,6 +369,9 @@ impl SamdSession {
     }
 
     /// Retain an equality chart for every Verlet step.
+    ///
+    /// Arguments and errors as [`SamdSession::new`], and any error from
+    /// building the geometry of `chart`.
     pub fn with_chart(
         config: SamdConfig,
         x: Array1<f64>,
@@ -262,6 +383,9 @@ impl SamdSession {
     }
 
     /// Retain a geometry and project the initial velocity onto its tangent.
+    ///
+    /// Arguments and errors as [`SamdSession::new`], and any error of
+    /// `geom` for the frame length.
     pub fn on(
         config: SamdConfig,
         x: Array1<f64>,
@@ -285,17 +409,31 @@ impl SamdSession {
         &self.geom
     }
 
-    /// Cartesian coordinates, length 3N, in the host's length unit.
+    /// Cartesian coordinates, length 3N, in Angstrom.
     pub fn position(&self) -> ArrayView1<'_, f64> {
         self.x.view()
     }
 
-    /// Velocity.
+    /// Velocity, length 3N, in Angstrom per time unit.
     pub fn velocity(&self) -> ArrayView1<'_, f64> {
         self.v.view()
     }
 
     /// One BDP step. `r` is length `3N` (Sella `np.random.normal`).
+    ///
+    /// `r` is a vector of independent standard-normal draws, length `3N`; its
+    /// first entry gives the thermal noise and its squared norm the
+    /// chi-square term. The step is the velocity Verlet update followed by
+    /// the rescale of the kinetic energy toward `3N t / 2` at the scheduled
+    /// `t`. A kinetic energy at most `1e-12` eV, or a non-positive rescale
+    /// factor, leaves the velocity unscaled. Each call advances the schedule
+    /// by one step.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] when `r` is not length `3N`,
+    /// [`SaddleError::NonFinite`] when the new gradient is not finite, and
+    /// any error of the surface.
     pub fn step(
         &mut self,
         surface: &impl PointSurface,
@@ -330,6 +468,9 @@ impl SamdSession {
     }
 
     /// Riemannian BDP step: tangent Verlet, retract, transport, rescale.
+    ///
+    /// As [`SamdSession::step`], with the move projected onto the tangent
+    /// space of `man` and retracted onto it. The same errors apply.
     pub fn step_on<M: Manifold>(
         &mut self,
         man: &M,
@@ -389,7 +530,15 @@ impl SamdSession {
         })
     }
 
-    /// Run.
+    /// Take one [`SamdSession::step`] per entry of `draws` and return the
+    /// last report.
+    ///
+    /// Each draw is a standard-normal vector of length `3N`. An empty slice
+    /// returns the current state with `temperature = t0` and takes no step.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`SamdSession::step`].
     pub fn run(
         &mut self,
         surface: &impl PointSurface,
@@ -429,6 +578,10 @@ fn bdp_scale(k: f64, k_target: f64, d: f64, dt: f64, tau: f64, r: ArrayView1<f64
 }
 
 /// Ambient Verlet increment `dt v - 0.5 dt^2 g`.
+///
+/// `v` is the velocity (Angstrom per time unit), `g` the energy gradient
+/// (eV/Angstrom, unit mass) and `dt` the step in the time unit. Returns the
+/// displacement in Angstrom.
 pub fn verlet_increment(v: &Array1<f64>, g: &Array1<f64>, dt: f64) -> Array1<f64> {
     let mut dx = Array1::zeros(v.len());
     axpy(dt, v.view(), &mut dx);
@@ -437,11 +590,17 @@ pub fn verlet_increment(v: &Array1<f64>, g: &Array1<f64>, dt: f64) -> Array1<f64
 }
 
 /// Project a SAMD increment onto a manifold (Sella waist: stay on set).
+///
+/// `x` and `v` are flat vectors of the manifold's dimension, `x` in
+/// Angstrom; the result keeps the unit of `v`.
 pub fn project_velocity<M: Manifold>(m: &M, x: &Array1<f64>, v: &Array1<f64>) -> Array1<f64> {
     m.project(x, v)
 }
 
 /// Verlet increment, project, retract. The arrival point stays on the set.
+///
+/// `v` is the velocity, `egrad` the ambient gradient in eV/Angstrom and `dt`
+/// the step. Returns the new position in Angstrom.
 pub fn retract_samd<M: Manifold>(
     man: &M,
     x: &Array1<f64>,
@@ -455,7 +614,8 @@ pub fn retract_samd<M: Manifold>(
     man.retract(x, &s)
 }
 
-/// Vector transport of a SAMD velocity from `x_from` to `x_to`.
+/// Vector transport of a SAMD velocity from `x_from` to `x_to`; `v` keeps
+/// its unit.
 pub fn transport_velocity<M: Manifold>(
     man: &M,
     x_from: &Array1<f64>,
