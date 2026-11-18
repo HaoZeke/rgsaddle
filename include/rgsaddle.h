@@ -28,7 +28,7 @@ extern "C" {
 #endif
 
 #define RGSADDLE_ABI_MAJOR 1u
-#define RGSADDLE_ABI_MINOR 42u
+#define RGSADDLE_ABI_MINOR 43u
 
 /**
  * Band config flags bit 0. When set, each evaluation calls the surface
@@ -1750,6 +1750,103 @@ rgsaddle_status_t rgsaddle_saddle_index(const rgsaddle_saddle_check_t *check,
                                         const uint8_t *fixed, rgsaddle_surface_fn surface,
                                         void *user, rgsaddle_saddle_index_t *out,
                                         double *curvatures, int64_t capacity);
+
+/** Opaque handle to a growing string session, ABI minor 43. */
+typedef struct RgsaddleGrowingString RgsaddleGrowingString;
+
+/** Phase of a growing string session, ABI minor 43. */
+typedef enum {
+  RGSADDLE_GROWING_STRING_GROWING = 0,
+  RGSADDLE_GROWING_STRING_JOINED = 1
+} rgsaddle_growing_string_phase_t;
+
+/**
+ * Configuration of rgsaddle_growing_string_create, ABI minor 43.
+ * Peters, Heyden, Bell, and Chakraborty, J. Chem. Phys. 120, 7877 (2004),
+ * doi:10.1063/1.1691018.
+ */
+typedef struct {
+  rgsaddle_version_t version;
+  uint64_t flags;
+  rgsaddle_band_config_t band;
+  int64_t n_images;
+  double frontier_tol;
+  int64_t min_steps_per_node;
+  int64_t max_steps_per_node;
+  double join_tol;
+  int32_t reparametrization;
+  int32_t force_gate;
+} rgsaddle_growing_string_config_t;
+
+/**
+ * Fill out with the default growing-string controls (n_images 11,
+ * frontier_tol 0.2, min_steps_per_node 1, not-a-knot spline), ABI minor 43.
+ */
+rgsaddle_status_t rgsaddle_growing_string_config_default(
+    rgsaddle_growing_string_config_t *out);
+
+/**
+ * Open a growing string session between reactant and product (3 * n_atoms
+ * values each), ABI minor 43. Returns NULL when the config or shape is
+ * invalid.
+ */
+RgsaddleGrowingString *rgsaddle_growing_string_create(
+    const rgsaddle_growing_string_config_t *config, int64_t n_atoms,
+    const double *reactant, const double *product);
+
+/**
+ * Advance a growing string session by one step (or one simplified-string
+ * step once joined), ABI minor 43.
+ */
+rgsaddle_status_t rgsaddle_growing_string_step(RgsaddleGrowingString *session,
+                                               rgsaddle_surface_fn surface,
+                                               void *user,
+                                               rgsaddle_report_t *out);
+
+/**
+ * Active image count of a growing string session (left_nodes + right_nodes
+ * while growing, n_images once joined), or 0 for NULL, ABI minor 43.
+ */
+int64_t rgsaddle_growing_string_n_images(const RgsaddleGrowingString *session);
+
+/**
+ * Phase of a growing string session (RGSADDLE_GROWING_STRING_GROWING or
+ * RGSADDLE_GROWING_STRING_JOINED), or RGSADDLE_NULL_SESSION for NULL,
+ * ABI minor 43.
+ */
+int32_t rgsaddle_growing_string_phase(const RgsaddleGrowingString *session);
+
+/**
+ * Copy the active positions (rgsaddle_growing_string_n_images(session) *
+ * 3 * n_atoms values) into out, ABI minor 43.
+ */
+rgsaddle_status_t rgsaddle_growing_string_positions(
+    const RgsaddleGrowingString *session, double *out);
+
+/**
+ * Copy the stable image identifiers (rgsaddle_growing_string_n_images(session)
+ * uint64_t values) into out, ABI minor 43.
+ */
+rgsaddle_status_t rgsaddle_growing_string_ids(
+    const RgsaddleGrowingString *session, uint64_t *out);
+
+/**
+ * Replace the per-atom fixed mask (n_atoms bytes, 1 fixed and 0 free) on
+ * a growing string session, ABI minor 43.
+ */
+rgsaddle_status_t rgsaddle_growing_string_set_fixed_atoms(
+    RgsaddleGrowingString *session, const uint8_t *fixed, int64_t n_atoms);
+
+/**
+ * Read the saddle-index certificate of a joined growing string session,
+ * ABI minor 43.
+ */
+rgsaddle_status_t rgsaddle_growing_string_saddle_index(
+    const RgsaddleGrowingString *session, rgsaddle_saddle_index_t *out,
+    double *curvatures, int64_t capacity);
+
+/** Free a growing string session, ABI minor 43. */
+void rgsaddle_growing_string_free(RgsaddleGrowingString *session);
 
 #ifdef __cplusplus
 }

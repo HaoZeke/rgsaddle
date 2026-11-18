@@ -673,6 +673,53 @@ int main(void) {
     rgsaddle_band_free(sb);
   }
 
+  /* Growing string method (ABI minor 43): fragment growth, join hand-off,
+   * image IDs, and convergence to the double-well saddle. */
+  {
+    rgsaddle_growing_string_config_t gcfg;
+    if (rgsaddle_growing_string_config_default(NULL) != RGSADDLE_INVALID_PARAMETER ||
+        rgsaddle_growing_string_config_default(&gcfg) != RGSADDLE_OK) {
+      return fail(RGSADDLE_INVALID_PARAMETER, "growing string default config");
+    }
+    gcfg.n_images = 7;
+    gcfg.frontier_tol = 0.5;
+    gcfg.band.force_tol = 0.001;
+    gcfg.band.max_move = 0.1;
+    const double greact[3] = {-1.0, 0.2, 0.0};
+    const double gprod[3] = {1.0, 0.2, 0.0};
+    RgsaddleGrowingString *gs =
+        rgsaddle_growing_string_create(&gcfg, n_atoms, greact, gprod);
+    if (!gs || rgsaddle_growing_string_n_images(gs) != 4 ||
+        rgsaddle_growing_string_phase(gs) != RGSADDLE_GROWING_STRING_GROWING) {
+      return fail(RGSADDLE_SHAPE, "growing string create");
+    }
+    uint64_t gids[7];
+    if (rgsaddle_growing_string_ids(gs, gids) != RGSADDLE_OK ||
+        gids[0] != 0 || gids[1] != 2 || gids[2] != 3 || gids[3] != 1) {
+      return fail(RGSADDLE_SHAPE, "growing string initial ids");
+    }
+    climbing_seen_t gseen = {1, 0, -1};
+    rgsaddle_report_t gr;
+    memset(&gr, 0, sizeof gr);
+    int gk = 0;
+    do {
+      st = rgsaddle_growing_string_step(gs, surface, &gseen, &gr);
+      if (st != RGSADDLE_OK) {
+        return fail(st, "growing string step");
+      }
+      ++gk;
+    } while (gr.status == RGSADDLE_STATUS_RUNNING && gk < 500);
+    double gp[7 * 3];
+    if (gr.status != RGSADDLE_STATUS_CONVERGED ||
+        rgsaddle_growing_string_phase(gs) != RGSADDLE_GROWING_STRING_JOINED ||
+        rgsaddle_growing_string_n_images(gs) != 7 || gr.ci_index < 1 ||
+        rgsaddle_growing_string_positions(gs, gp) != RGSADDLE_OK ||
+        fabs(gp[gr.ci_index * 3]) > 0.02) {
+      return fail(RGSADDLE_SOLVER, "growing string did not converge to saddle");
+    }
+    rgsaddle_growing_string_free(gs);
+  }
+
   printf("RGSADDLE_C_ABI_OK steps=%d ci=%lld\n", steps, (long long)rep.ci_index);
   return RGSADDLE_OK;
 }
