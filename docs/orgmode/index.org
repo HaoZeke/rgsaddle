@@ -66,6 +66,8 @@ while report.status != BandStatus::Converged {
    tutorials/dimer
    tutorials/sella
    tutorials/quickstart
+   tutorials/pafi
+   tutorials/oh-tst
    howto/band
    howto/autoneb
    howto/minmode
@@ -78,6 +80,10 @@ while report.status != BandStatus::Converged {
    howto/pafi
    howto/oh-tst
    howto/lammps-hyperplane
+   howto/rgpot
+   howto/pafi-ohtst-restarting
+   howto/pafi-ohtst-parallel-sampling
+   howto/pafi-ohtst-checking-convergence
    howto/sparse-hessian
    howto/sella
    howto/irc
@@ -93,10 +99,13 @@ while report.status != BandStatus::Converged {
    explanation/one-stencil
    explanation/hyperplane-methods
    explanation/symmetry-regions
+   explanation/pafi-ohtst
    reference/architecture
    reference/lammps-hyperplane
    reference/bibliography
    reference/c-symbols
+   reference/pafi
+   reference/ohtst
    contributing/index
    changelog
 #+end_export
