@@ -142,6 +142,8 @@ pub(super) struct StringState {
     dt: Option<f64>,
     /// Climbing image index of the previous step.
     prev_ci: Option<usize>,
+    /// Whether the preceding accepted string step met the force tolerance.
+    converged_once: bool,
 }
 
 fn lock_guard<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -557,53 +559,21 @@ impl BandSession {
         } else {
             let config = &self.config;
             let state = &self.state;
-            let base_positions = &self.positions;
             let start_grad = -&step_force_start;
-            let slot: Mutex<Option<ReparamTrial>> = Mutex::new(None);
             let oracle = Oracle::unbounded(interior_dof, |xv: ArrayView1<f64>| {
                 if xv == before.view() {
                     return (e_start, start_grad.clone());
                 }
-                let shape = match xv.to_shape((n_images - 2, dof)) {
-                    Ok(view) => view,
-                    Err(e) => {
-                        state.record_error(SaddleError::Shape(e.to_string()));
-                        return (f64::INFINITY, Array1::zeros(interior_dof));
-                    }
-                };
-                let mut band = base_positions.clone();
-                band.slice_mut(s![1..n_images - 1, ..]).assign(&shape);
-                reparametrize(
-                    &mut band,
-                    anchor_before,
-                    config.cell.as_ref(),
-                    string_cfg.reparametrization,
-                );
-                pin_fixed_rows(&state.fixed, &mut band);
-                let x_after: Array1<f64> = band
-                    .slice(s![1..n_images - 1, ..])
-                    .iter()
-                    .copied()
-                    .collect();
                 match assemble_string_with(
                     config,
                     state,
                     surface,
                     endpoint_first.view(),
                     endpoint_last.view(),
-                    x_after.view(),
+                    xv,
                     metrics,
                 ) {
-                    Ok((e, evol_f, step_f, target)) => {
-                        let grad_out = -&step_f;
-                        *lock_guard(&slot) = Some(ReparamTrial {
-                            band,
-                            x: x_after,
-                            evol_force: evol_f,
-                            climb_target: target,
-                        });
-                        (e, grad_out)
-                    }
+                    Ok((e, _, step_f, _)) => (e, -step_f),
                     Err(err) => {
                         state.record_error(err);
                         (f64::INFINITY, Array1::zeros(interior_dof))
@@ -620,48 +590,46 @@ impl BandSession {
             if !x_evol.iter().all(|v| v.is_finite()) {
                 return Err(SaddleError::NonFinite("band step"));
             }
-            let captured = lock_guard(&slot).take();
-            match captured {
-                Some(t) if x_evol != before => t,
-                _ => {
-                    if max_abs(&evol_start) > 0.0 {
-                        let raw_max = self.state.convergence_force(&evol_start);
-                        if raw_max > self.config.force_tol {
-                            return Err(SaddleError::Stalled(format!(
-                                "band unchanged with max force {raw_max:e} above {:e}",
-                                self.config.force_tol
-                            )));
-                        }
-                    }
-                    let mut band = self.positions.clone();
-                    reparametrize(
-                        &mut band,
-                        anchor_before,
-                        self.config.cell.as_ref(),
-                        string_cfg.reparametrization,
-                    );
-                    pin_fixed_rows(&self.state.fixed, &mut band);
-                    let x_after: Array1<f64> = band
-                        .slice(s![1..n_images - 1, ..])
-                        .iter()
-                        .copied()
-                        .collect();
-                    let (_, evol_after, _, target) = assemble_string_with(
-                        &self.config,
-                        &self.state,
-                        surface,
-                        endpoint_first.view(),
-                        endpoint_last.view(),
-                        x_after.view(),
-                        metrics,
-                    )?;
-                    ReparamTrial {
-                        band,
-                        x: x_after,
-                        evol_force: evol_after,
-                        climb_target: target,
-                    }
+            if x_evol == before && max_abs(&evol_start) > 0.0 {
+                let raw_max = self.state.convergence_force(&evol_start);
+                if raw_max > self.config.force_tol {
+                    return Err(SaddleError::Stalled(format!(
+                        "band unchanged with max force {raw_max:e} above {:e}",
+                        self.config.force_tol
+                    )));
                 }
+            }
+            let mut band = self.positions.clone();
+            for i in 1..n_images - 1 {
+                band.row_mut(i)
+                    .assign(&x_evol.slice(s![(i - 1) * dof..i * dof]));
+            }
+            reparametrize(
+                &mut band,
+                anchor_before,
+                self.config.cell.as_ref(),
+                string_cfg.reparametrization,
+            );
+            pin_fixed_rows(&self.state.fixed, &mut band);
+            let x_after: Array1<f64> = band
+                .slice(s![1..n_images - 1, ..])
+                .iter()
+                .copied()
+                .collect();
+            let (_, evol_after, _, target) = assemble_string_with(
+                &self.config,
+                &self.state,
+                surface,
+                endpoint_first.view(),
+                endpoint_last.view(),
+                x_after.view(),
+                metrics,
+            )?;
+            ReparamTrial {
+                band,
+                x: x_after,
+                evol_force: evol_after,
+                climb_target: target,
             }
         };
 
@@ -764,6 +732,7 @@ impl BandSession {
                 prev_step: None,
                 dt: self.string_state.dt,
                 prev_ci: self.state.ci(),
+                converged_once: false,
             };
             self.solver.forget();
         } else if !self.config.quickmin
@@ -833,11 +802,13 @@ impl BandSession {
         self.pin_fixed();
         self.iteration += 1;
 
-        let status = if max_component <= self.config.force_tol {
+        let under_tolerance = max_component <= self.config.force_tol;
+        let status = if under_tolerance && self.string_state.converged_once {
             BandStatus::Converged
         } else {
             BandStatus::Running
         };
+        self.string_state.converged_once = under_tolerance;
         if !self.zoom_latch(status) {
             self.refine_latch(status)?;
         }
