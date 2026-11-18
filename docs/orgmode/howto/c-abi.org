@@ -1,7 +1,7 @@
 #+TITLE: Use the C and C++ interfaces
 #+OPTIONS: toc:nil num:nil
 
-~include/rgsaddle.h~ declares the C application binary interface (ABI), major 1, minor 43. It preserves the main band, minimum-mode and index-1 layouts and adds intrinsic reaction coordinate (IRC), Sella, constraint and geometry controls. Include this header rather than duplicating its structures. Check ~rgsaddle_abi_stamp~ before constructing a session. A meson project takes the headers from the top-level ~meson.build~; see @@rst::doc:`the meson how-to <meson>`@@.
+~include/rgsaddle.h~ declares the C application binary interface (ABI), major 1, minor 44. It preserves the main band, minimum-mode and index-1 layouts and adds intrinsic reaction coordinate (IRC), Sella, constraint and geometry controls. Include this header rather than duplicating its structures. Check ~rgsaddle_abi_stamp~ before constructing a session. A meson project takes the headers from the top-level ~meson.build~; see @@rst::doc:`the meson how-to <meson>`@@.
 
 A surface callback returns ~rgsaddle_status_t~ and receives one ~rgsaddle_surface_request_t~. Positions and gradients are image-major Cartesian triples. The host supplies the energy and gradient arrays for every requested image; the library performs no Message Passing Interface (MPI) communication.
 
@@ -109,3 +109,8 @@ ABI minor 43 adds the growing string method of Peters, Heyden, Bell, and Chakrab
 ~rgsaddle_growing_string_config_default~ initializes an ~rgsaddle_growing_string_config_t~, ~rgsaddle_growing_string_create~ opens an ~RgsaddleGrowingString~ from the reactant and product endpoints, and ~rgsaddle_growing_string_step~ advances the separate fragments until they join and hand off to ~StringSession~.
 ~rgsaddle_growing_string_n_images~, ~rgsaddle_growing_string_phase~, ~rgsaddle_growing_string_positions~, ~rgsaddle_growing_string_ids~, ~rgsaddle_growing_string_set_fixed_atoms~, ~rgsaddle_growing_string_saddle_index~, and ~rgsaddle_growing_string_free~ inspect and manage the session.
 ~include/rgsaddle/session.hpp~ wraps it as ~rgsaddle::GrowingString~, and Python exposes ~rgsaddle.GrowingString~ and ~rgsaddle.ase.GrowingString~.
+
+ABI minor 44 adds the free-end adaptive nudged elastic band (FEA-NEB) of Jiayong Zhang, Hongwu Zhang, Hongfei Ye, and Yonggang Zheng, J. Chem. Phys. 145, 094104 (2016), doi:10.1063/1.4962019 @@rst::cite:`zhangFreeEndAdaptive2016`@@.
+~rgsaddle_band_set_free_end~ enables or clears free-end mode on a live ~RgsaddleBand~ (~RGSADDLE_FREE_END_FIRST~ or ~RGSADDLE_FREE_END_LAST~) with target energy \(E_{\mathrm{target}}\) enforced by ~rgmin~'s generic solver level-set constraint and up to ~max_cuts~ adaptive cut-and-remesh stages around the detected saddle.
+~rgsaddle_band_free_end_residual~ writes the signed target-energy residual \(E(x_{\mathrm{end}}) - E_{\mathrm{target}}\) into ~out~, and ~rgsaddle_band_free_end_cuts~ returns the number of completed cuts.
+~include/rgsaddle/session.hpp~ wraps them as ~Band::set_free_end~, ~Band::free_end_residual~, and ~Band::free_end_cuts~, and Python exposes ~Band.set_free_end~, ~Band.target_energy_residual~, and ~Band.free_end_cuts~.
