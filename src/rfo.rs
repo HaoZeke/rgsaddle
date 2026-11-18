@@ -13,6 +13,15 @@
 //! Ambient reductions go through [`rgmin::vecops`]. A host that
 //! wants a point on a set calls [`RationalFunctionOptimization::step_on`]:
 //! `egrad2rgrad`, `project`, `retract`.
+//!
+//! The rational-function step follows Banerjee, Adams, Simons, and Shepard,
+//! J. Phys. Chem. 89, 52 (1985), doi:10.1021/j100247a015.
+//!
+//! Units and shapes: `h` is the `n x n` Hessian in eV/Angstrom^2, `g` the
+//! length-`n` energy gradient in eV/Angstrom, and every step is a length-`n`
+//! displacement in Angstrom. `alpha` is dimensionless. The methods do not
+//! return errors: a wrongly shaped `h` or `g` gives the zero step, and a
+//! negative `alpha` is treated as zero.
 
 use ndarray::{Array1, Array2};
 use rgmin::{Manifold, rfo_get_s, rfo_restricted};
@@ -26,48 +35,66 @@ pub const SYNONYMS: &[&str] = &["rfo", "rational function optimization"];
 /// not stored state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct RationalFunctionOptimization {
-    /// Sella `order`: 0 for a minimum, 1 for a first-order saddle.
+    /// Sella `order`: 0 for a minimum, 1 for a first-order saddle. It is the
+    /// index of the augmented eigenvector taken, so `order` modes are
+    /// maximized. The default is 0.
     pub order: usize,
 }
 
 impl RationalFunctionOptimization {
-    /// Sella `alpha0`.
+    /// Sella `alpha0`, the starting scaling (1, the unrestricted step).
     pub const ALPHA0: f64 = 1.0;
-    /// Sella `alphamin`.
+    /// Sella `alphamin`, the smallest scaling (0, the zero step).
     pub const ALPHAMIN: f64 = 0.0;
-    /// Sella `alphamax`.
+    /// Sella `alphamax`, the largest scaling (1).
     pub const ALPHAMAX: f64 = 1.0;
     /// Sella `slope`: \(\|s\|\) grows with alpha.
     pub const SLOPE: f64 = 1.0;
     /// Sella `newton_safe`. RFO is not Newton-safe on \(\|s(\alpha)\|\).
     pub const NEWTON_SAFE: bool = false;
 
-    /// Stepper at the given saddle order.
+    /// Stepper at the given saddle order: 0 for a minimum, 1 for a first-order
+    /// saddle.
     pub fn new(order: usize) -> Self {
         Self { order }
     }
 
-    /// Exact Sella `BaseStepper.match`.
+    /// Exact Sella `BaseStepper.match`: whether `name` is one of
+    /// [`SYNONYMS`], compared exactly (case and spacing matter).
     pub fn match_name(name: &str) -> bool {
         SYNONYMS.contains(&name)
     }
 
-    /// Factory: `Some` when `name` is an RFO synonym.
+    /// Factory: `Some` when `name` is an RFO synonym (see [`SYNONYMS`]),
+    /// else `None`.
     pub fn from_name(name: &str, order: usize) -> Option<Self> {
         Self::match_name(name).then_some(Self { order })
     }
 
     /// Sella `get_s(alpha)`. The increment is ambient Euclidean.
+    ///
+    /// `h` is `n x n` in eV/Angstrom^2, `g` length `n` in eV/Angstrom and
+    /// `alpha` in `[0, 1]`. Returns the displacement in Angstrom; `alpha = 1`
+    /// is the unrestricted step.
     pub fn get_s(&self, h: &Array2<f64>, g: &Array1<f64>, alpha: f64) -> Array1<f64> {
         rfo_get_s(h, g, self.order, alpha)
     }
 
     /// Trust-region companion: \(\|s\|\le\delta\), alpha bisected in \(\[0,1\]\).
+    ///
+    /// `delta` is the trust radius in Angstrom. The step is the unrestricted
+    /// one when it already fits, else the step at the bisected `alpha`. If
+    /// the bisection does not reach `delta` in 64 halvings, the last trial
+    /// step is returned.
     pub fn restricted(&self, h: &Array2<f64>, g: &Array1<f64>, delta: f64) -> Array1<f64> {
         rfo_restricted(h, g, self.order, delta)
     }
 
     /// Riemannian RFO step: Riemannian gradient, tangent projection, retract.
+    ///
+    /// `x` is the current point, a flat vector in Angstrom, and the result is
+    /// the new point on `man`, also in Angstrom. The other arguments are as
+    /// for [`Self::get_s`].
     pub fn step_on<M: Manifold>(
         &self,
         man: &M,
@@ -83,6 +110,9 @@ impl RationalFunctionOptimization {
     }
 
     /// Vector transport of the RFO increment from `x` to `x_to`.
+    ///
+    /// The increment is the projected step of [`Self::step_on`], in Angstrom,
+    /// transported along `man` to `x_to`.
     pub fn transport_step<M: Manifold>(
         &self,
         man: &M,
@@ -100,6 +130,9 @@ impl RationalFunctionOptimization {
 }
 
 /// Factory matching Sella `get_stepper` for the RFO synonyms only.
+///
+/// Returns `None` for any name outside [`SYNONYMS`], including the P-RFO
+/// names, which belong to [`crate::prfo::prfo_stepper`].
 pub fn rfo_stepper(name: &str, order: usize) -> Option<RationalFunctionOptimization> {
     RationalFunctionOptimization::from_name(name, order)
 }
