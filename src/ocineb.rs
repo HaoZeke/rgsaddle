@@ -33,6 +33,13 @@
 //! [`BandConfig::saddle_check`], on by default: the report carries its
 //! saddle index, and an escape set in that check climbs again off a
 //! saddle of higher index.
+//!
+//! Units and shapes: positions are one row per image, each row a flat `3N`
+//! Cartesian vector in Angstrom (atom-major), endpoints included; forces
+//! and thresholds are in eV/Angstrom and curvatures in eV/Angstrom^2.
+//! Errors are [`SaddleError::Invalid`] for settings out of range and
+//! [`SaddleError::Shape`] for a malformed path, plus whatever the surface
+//! returns.
 
 use ndarray::{Array1, Array2, ArrayView1};
 
@@ -44,11 +51,12 @@ use crate::force::ForceGate;
 use crate::minmode::{MinModeConfig, PointSurface};
 use crate::saddle_index::{SaddleIndex, SaddleIndexCheck};
 
-/// Published floor on the tangent overlap. Below it the force inversion
-/// points away from the saddle of the path.
+/// Published floor on the tangent overlap, `1/sqrt(2)`: [`OcinebConfig::angle_tol`]
+/// may not be lower. Below it the force inversion points away from the saddle of
+/// the path.
 pub const MIN_ALIGNMENT: f64 = std::f64::consts::FRAC_1_SQRT_2;
 
-/// Which solver the last step ran.
+/// Which solver the last step ran. The C values are the discriminants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i32)]
 pub enum OcinebPhase {
@@ -60,20 +68,22 @@ pub enum OcinebPhase {
     MinMode = 2,
 }
 
+/// Whether the hand-off band has converged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i32)]
-/// The OcinebStatus.
 pub enum OcinebStatus {
-    /// The Running.
+    /// The climbing image has not met the force tolerance yet. C value 0.
     Running = 0,
-    /// The Converged.
+    /// The climbing image meets the force tolerance. C value 1.
     Converged = 1,
 }
 
 /// Band, minimum-mode, and the hand-off parameters.
 ///
-/// Non-exhaustive: start from [`OcinebConfig::default`] and chain the
-/// `with_*` setters.
+/// [`OcinebSession::new`] rejects a `band` without a climbing image or with a
+/// solid-state block, a negative or non-finite trigger, an `angle_tol` outside
+/// `1/sqrt(2)` to 1 (a `1e-4` slack on the lower end), a negative
+/// `stability_count`, a zero `max_mmf_steps` and a non-positive `minmode.dr`.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct OcinebConfig {
@@ -83,19 +93,23 @@ pub struct OcinebConfig {
     /// controls. The climb is the band's P-RFO step, so `method`,
     /// `force_tol` and `max_move` are not read.
     pub minmode: MinModeConfig,
-    /// Relative trigger on the largest per-atom force,
-    /// `ci_mmf_after_rel`. Published value 0.31.
+    /// Relative trigger on the largest per-atom force, `ci_mmf_after_rel`, as a
+    /// fraction of the largest per-atom force of the initial path. Published value 0.31
+    /// (the default); must be finite and non-negative.
     pub trigger_factor: f64,
-    /// Absolute trigger, `ci_mmf_after`. Used when `trigger_factor` is 0.
+    /// Absolute trigger, `ci_mmf_after`, in eV/Angstrom. Used when `trigger_factor`
+    /// is 0; finite and non-negative. Default 0.
     pub trigger_force: f64,
-    /// Minimum `|mode · tangent|`. Published value 0.85.
+    /// Minimum `|mode . tangent|`, dimensionless, between `1/sqrt(2)` and 1.
+    /// Published value 0.85 (the default).
     pub angle_tol: f64,
-    /// Stable climbing-image iterations required before a hand-off.
-    /// The counter must exceed this value. Published value 5.
+    /// Stable climbing-image iterations required before a hand-off. The counter
+    /// must exceed this value; non-negative. Published value 5 (the default).
     pub stability_count: i64,
-    /// Climb steps per hand-off. Published value 1000.
+    /// Climb steps per hand-off; at least 1. Published value 1000 (the default).
     pub max_mmf_steps: usize,
     /// Also restore the climbing image when a walk does not lower the force.
+    /// Default false.
     pub restore_unhelpful: bool,
 }
 
@@ -132,45 +146,52 @@ impl Default for OcinebConfig {
     }
 }
 
-/// One host step.
+/// One host step: what ran, and where the band stands.
 #[derive(Clone, Debug)]
 pub struct OcinebReport {
-    /// The phase.
+    /// The solver this step ran.
     pub phase: OcinebPhase,
     /// Whether this step is still running or has converged.
     pub status: OcinebStatus,
-    /// Largest absolute force component, in the host's force units.
+    /// Largest absolute force component of the band, in eV/Angstrom; the gate is
+    /// set by [`OcinebSession::set_force_gate`].
     pub max_force: f64,
     /// Index of the climbing image, or none when no image climbs.
     pub ci_index: Option<usize>,
-    /// Number of steps taken.
+    /// Number of steps taken by the session so far.
     pub iteration: usize,
     /// Surface evaluations performed by this call.
     pub evaluations: usize,
-    /// Curvature along the mode, energy per length squared.
+    /// Curvature along the mode, eV/Angstrom^2. NaN when none was estimated.
     pub curvature: f64,
-    /// The alignment.
+    /// `|mode . tangent|` of the last alignment, dimensionless; NaN before any.
     pub alignment: f64,
-    /// The rotations.
+    /// Mode rotations the last alignment or climb step spent; 0 when none ran.
     pub rotations: usize,
     /// The climb ended on a positive curvature or a mode that left the
     /// tangent cone, and the band has the next step.
     pub fell_back: bool,
-    /// The threshold.
+    /// Current hand-off force threshold, in eV/Angstrom; NaN when none is armed.
     pub threshold: f64,
     /// Saddle index of the converged climbing image; see
     /// [`crate::BandReport::saddle_index`].
     pub saddle_index: Option<SaddleIndex>,
 }
 
-/// Initial threshold: `max(λ F0, F_abs, 2 tol)`, with `F_abs` only when `λ` is 0.
+/// `baseline` is the largest per-atom force of the initial path, `factor` the relative
+/// trigger, `absolute` the absolute trigger and `force_tol` the band tolerance, all
+/// forces in eV/Angstrom. The result is in eV/Angstrom.
 pub fn initial_threshold(baseline: f64, factor: f64, absolute: f64, force_tol: f64) -> f64 {
     let relative = baseline * factor;
     let abs_term = if factor == 0.0 { absolute } else { 0.0 };
     relative.max(abs_term).max(2.0 * force_tol)
 }
 
-/// `F_new (1/2 + 2/5 F_new / F_CI)`, capped at the initial threshold.
+/// `F_new (1/2 + 2/5 F_new / F_CI)`, capped at the initial threshold. `conv_force` is
+/// `F_CI`, the climbing-image force before the walk, and `new_force` is `F_new`,
+/// the force after it; both in eV/Angstrom. A `conv_force` of 0 or less gives 0.
+/// The other arguments are those of [`initial_threshold`] (with a zero absolute
+/// trigger).
 pub fn success_threshold(
     conv_force: f64,
     new_force: f64,
@@ -187,8 +208,9 @@ pub fn success_threshold(
     updated.min(cap)
 }
 
-/// Linear penalty `(1/2 + 1/2 α)` on the initial relative threshold,
-/// floored at twice the force tolerance.
+/// Linear penalty `(1/2 + 1/2 alpha)` on the initial relative threshold, floored at
+/// twice the force tolerance. `alignment` is `alpha`, restricted to 0 to 1;
+/// forces are in eV/Angstrom.
 pub fn backoff_threshold(alignment: f64, baseline: f64, factor: f64, force_tol: f64) -> f64 {
     let alpha = alignment.clamp(0.0, 1.0);
     let penalty = 0.5 + 0.5 * alpha;
@@ -196,11 +218,13 @@ pub fn backoff_threshold(alignment: f64, baseline: f64, factor: f64, force_tol: 
 }
 
 /// The walked image lowered the band force, and the curvature was not positive.
+/// Forces are in eV/Angstrom; the test is `walked_force < conv_force`.
 pub fn walk_helped(walked_force: f64, conv_force: f64, positive_curvature: bool) -> bool {
     walked_force < conv_force && !positive_curvature
 }
 
-/// `|û · τ̂|`. A zero vector scores 0.
+/// `|u . t| / (|u| |t|)`, the absolute cosine between `mode` and `tangent`, in
+/// 0 to 1. A vector of norm `1e-14` or less scores 0.
 pub fn mode_alignment(mode: ArrayView1<f64>, tangent: ArrayView1<f64>) -> f64 {
     let mn = mode.dot(&mode).sqrt();
     let tn = tangent.dot(&tangent).sqrt();
@@ -214,6 +238,9 @@ pub fn mode_alignment(mode: ArrayView1<f64>, tangent: ArrayView1<f64>) -> f64 {
 /// is under the threshold. A climbing image that already meets the
 /// force tolerance is handed off too: the alignment step confirms the
 /// negative curvature, and the band converges there.
+///
+/// `stability` must exceed `stability_count`, `ci_index` must name an interior image
+/// (1 to `n_interior`), and `conv_force` must be below `threshold` (eV/Angstrom).
 pub fn should_trigger(
     ci_active: bool,
     ci_index: Option<usize>,
@@ -239,7 +266,8 @@ pub fn should_trigger(
 }
 
 impl OcinebConfig {
-    /// The band's refinement controls for this hand-off.
+    /// The band's refinement controls for this hand-off, built from the trigger,
+    /// alignment, stability and mode settings of the config.
     pub fn refine(&self) -> MinModeRefine {
         MinModeRefine::default()
             .with_trigger_factor(self.trigger_factor)
@@ -359,6 +387,14 @@ pub struct OcinebSession {
 
 impl OcinebSession {
     /// Open the band on `initial`, one image per row, endpoints included.
+    ///
+    /// `initial` is the starting path, one row per image with the endpoints included,
+    /// each row a flat `3N` vector in Angstrom.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Invalid`] for settings listed under [`OcinebConfig`], and the
+    /// errors of [`BandSession::new`] for a malformed path.
     pub fn new(config: OcinebConfig, initial: Array2<f64>) -> Result<Self, SaddleError> {
         validate(&config)?;
         if !(config.minmode.dr.is_finite() && config.minmode.dr > 0.0) {
@@ -373,7 +409,7 @@ impl OcinebSession {
         })
     }
 
-    /// What the next step runs.
+    /// What the next step runs: a band step, an alignment or a climb step.
     pub fn phase(&self) -> OcinebPhase {
         match self.band.refine_phase() {
             RefinePhase::Band => OcinebPhase::Band,
@@ -382,22 +418,22 @@ impl OcinebSession {
         }
     }
 
-    /// Threshold.
+    /// Current hand-off force threshold in eV/Angstrom, or `None` before it is armed.
     pub fn threshold(&self) -> Option<f64> {
         self.band.refine_threshold()
     }
 
-    /// Stability.
+    /// Consecutive iterations the climbing-image index has stayed fixed.
     pub fn stability(&self) -> i64 {
         self.band.refine_stability() as i64
     }
 
-    /// Cartesian coordinates. A band stores one row per image.
+    /// Cartesian coordinates in Angstrom: one row per image, endpoints included.
     pub fn positions(&self) -> ndarray::ArrayView2<'_, f64> {
         self.band.positions()
     }
 
-    /// Climbing image.
+    /// Row index of the climbing image, or `None` when no image climbs.
     pub fn climbing_image(&self) -> Option<usize> {
         self.band.climbing_image()
     }
@@ -432,7 +468,8 @@ impl OcinebSession {
         self.band.set_force_gate(gate);
     }
 
-    /// Set highs.
+    /// Select the optional HiGHS feasible-set step of the band; requires the
+    /// `highs` feature. Disabled by default.
     pub fn set_highs(&mut self, enabled: bool) {
         self.band.set_highs(enabled);
     }
@@ -452,6 +489,12 @@ impl OcinebSession {
     }
 
     /// One band step, one alignment, or one climb step.
+    ///
+    /// The returned [`OcinebReport`] names the phase that ran.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`BandSession::step`] and of `surface`.
     pub fn step<S: BandSurface + PointSurface>(
         &mut self,
         surface: &S,
@@ -484,6 +527,12 @@ impl OcinebSession {
     }
 
     /// Loop [`Self::step`] until convergence or `max_steps` steps.
+    ///
+    /// At least one step is taken, even for `max_steps` of 0. Returns the last report.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Self::step`].
     pub fn run<S: BandSurface + PointSurface>(
         &mut self,
         surface: &S,
