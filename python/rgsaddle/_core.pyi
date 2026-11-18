@@ -303,6 +303,42 @@ class Band:
         Drop optimizer history and climbing state, keeping cached surface values.
         """
 
+class GrowingString:
+    def __init__(self, reactant: Annotated[NDArray[numpy.float64], dict(shape=(None,), order='C', device='cpu', writable=False)], product: Annotated[NDArray[numpy.float64], dict(shape=(None,), order='C', device='cpu', writable=False)], n_images: int = 11, frontier_tol: float = 0.2, min_steps_per_node: int = 1, max_steps_per_node: int = 0, join_tol: float = 0.0, climb: bool = True, ci_after: float = 0.5, ci_after_rel: float = 0.0, method: str = 'fire', memory: int = 20, force_tol: float = 0.001, max_move: float = 0.2, remove_translation: bool = True, min_mode: bool = False, reparametrization: str = 'not-a-knot', cell: object | None = None, fixed: object | None = None) -> None:
+        """
+        Growing string session (Peters, Heyden, Bell and Chakraborty 2004, ABI minor 43).
+        """
+
+    def step(self, surface: Callable[..., tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]]) -> SessionReport:
+        """One growing-string or joined simplified-string step."""
+
+    def run(self, surface: Callable[..., tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]], max_steps: int = 1000) -> SessionReport:
+        """Loop step until the fragments join and converge, or until max_steps."""
+
+    def n_images(self) -> int:
+        """
+        Active image count (left_nodes + right_nodes while growing, n_images once joined).
+        """
+
+    def joined(self) -> bool:
+        """
+        True once the reactant and product fragments have joined into a StringSession.
+        """
+
+    def positions(self) -> NDArray[numpy.float64]:
+        """Copy of the active positions, shaped (active_images, 3N)."""
+
+    def ids(self) -> NDArray[numpy.uint64]:
+        """Stable uint64 image IDs of the active rows."""
+
+    def set_fixed_atoms(self, fixed: Annotated[NDArray[numpy.uint8], dict(shape=(None,), order='C', device='cpu', writable=False)]) -> None:
+        """Replace the per-atom fixed mask (1 fixed, 0 free)."""
+
+    def saddle_index(self) -> SaddleIndex:
+        """
+        Certificate of the climbing image once joined and converged (ABI minor 43).
+        """
+
 class SellaSaddle:
     def __init__(self, x: Annotated[NDArray[numpy.float64], dict(shape=(None,), order='C', device='cpu', writable=False)], masses: Annotated[NDArray[numpy.float64], dict(shape=(None,), order='C', device='cpu', writable=False)], order: int = 1, delta: float = 0.1, force_tol: float = 0.001) -> None:
         """
