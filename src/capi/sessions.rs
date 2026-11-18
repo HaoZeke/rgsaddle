@@ -3379,6 +3379,404 @@ pub unsafe extern "C" fn rgsaddle_band_set_string(
     }
 }
 
+/// Phase discriminant for growing string in the growing phase (ABI minor 43).
+pub const RGSADDLE_GROWING_STRING_GROWING: i32 = 0;
+/// Phase discriminant for growing string once joined (ABI minor 43).
+pub const RGSADDLE_GROWING_STRING_JOINED: i32 = 1;
+
+#[repr(C)]
+/// Wire configuration for [`rgsaddle_growing_string_create`] (ABI minor 43).
+pub struct RgsaddleGrowingStringConfig {
+    /// ABI version this value was built against.
+    pub version: RgsaddleVersion,
+    /// Bit flags.
+    pub flags: u64,
+    /// Underlying band configuration.
+    pub band: RgsaddleBandConfig,
+    /// Target total image count (`>= 4`).
+    pub n_images: i64,
+    /// Frontier perpendicular force tolerance for adding a node.
+    pub frontier_tol: f64,
+    /// Minimum steps at the current fragment size before adding a node.
+    pub min_steps_per_node: i64,
+    /// Optional cap on steps at the current fragment size (`<= 0` for none).
+    pub max_steps_per_node: i64,
+    /// Optional gap distance threshold for early join (`<= 0.0` for none).
+    pub join_tol: f64,
+    /// Equal arc-length reparametrization (`rgsaddle_reparametrization_t`).
+    pub reparametrization: i32,
+    /// Force norm gate (`rgsaddle_force_gate_t`).
+    pub force_gate: i32,
+}
+
+/// Opaque handle to a [` crate::GrowingStringSession `] (ABI minor 43).
+pub struct RgsaddleGrowingString {
+    session: crate::GrowingStringSession,
+    n_atoms: i64,
+    per_image: bool,
+    climbing_request: bool,
+}
+
+/// Fill `out` with the default [`RgsaddleGrowingStringConfig`] (ABI minor 43).
+///
+/// # Safety
+/// `out` must be a valid pointer or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_growing_string_config_default(
+    out: *mut RgsaddleGrowingStringConfig,
+) -> i32 {
+    if out.is_null() {
+        return RGSADDLE_INVALID_PARAMETER;
+    }
+    let defaults = crate::GrowingStringConfig::default();
+    let band_defaults = crate::BandConfig::default();
+    let cfg = RgsaddleGrowingStringConfig {
+        version: RgsaddleVersion {
+            major: RGSADDLE_ABI_MAJOR,
+            minor: RGSADDLE_ABI_MINOR,
+        },
+        flags: 0,
+        band: RgsaddleBandConfig {
+            version: RgsaddleVersion {
+                major: RGSADDLE_ABI_MAJOR,
+                minor: RGSADDLE_ABI_MINOR,
+            },
+            flags: RGSADDLE_BAND_CI_AFTER
+                | RGSADDLE_BAND_NO_MIN_MODE
+                | RGSADDLE_BAND_SPLINE_REPARAM
+                | RGSADDLE_BAND_STRING,
+            tangent: 1,
+            spring: 0,
+            projection: 1,
+            method: 0,
+            spring_k: 5.0,
+            spring_ks: std::ptr::null(),
+            ci_trigger_factor: 0.0,
+            ci_trigger_force: 0.5,
+            cell: std::ptr::null(),
+            force_tol: band_defaults.force_tol,
+            max_move: band_defaults.max_move,
+            memory: 20,
+        },
+        n_images: defaults.n_images as i64,
+        frontier_tol: defaults.frontier_tol,
+        min_steps_per_node: defaults.min_steps_per_node as i64,
+        max_steps_per_node: 0,
+        join_tol: 0.0,
+        reparametrization: crate::Reparametrization::NotAKnot.to_abi(),
+        force_gate: defaults.force_gate.to_abi(),
+    };
+    unsafe { *out = cfg };
+    RGSADDLE_OK
+}
+
+/// Open a [`RgsaddleGrowingString`] between `reactant` and `product` (ABI minor 43).
+///
+/// # Safety
+/// `config`, `reactant`, and `product` must be valid for `3 * n_atoms`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_growing_string_create(
+    config: *const RgsaddleGrowingStringConfig,
+    n_atoms: i64,
+    reactant: *const f64,
+    product: *const f64,
+) -> *mut RgsaddleGrowingString {
+    if config.is_null() || reactant.is_null() || product.is_null() || n_atoms < 1 {
+        return std::ptr::null_mut();
+    }
+    let cfg = unsafe { &*config };
+    if cfg.version.major != RGSADDLE_ABI_MAJOR || cfg.n_images < 4 {
+        return std::ptr::null_mut();
+    }
+    let dof = (3 * n_atoms) as usize;
+    let Some(parsed) = (unsafe { parse_band_config(&cfg.band, cfg.n_images, dof, None) }) else {
+        return std::ptr::null_mut();
+    };
+    if parsed.method == 2 {
+        return std::ptr::null_mut();
+    }
+    let Some(reparam) = crate::Reparametrization::from_abi(cfg.reparametrization) else {
+        return std::ptr::null_mut();
+    };
+    let Some(gate) = force_gate_of(cfg.force_gate) else {
+        return std::ptr::null_mut();
+    };
+    let defaults = crate::GrowingStringConfig::default();
+    let frontier_tol = positive_or(cfg.frontier_tol, defaults.frontier_tol);
+    let min_steps = if cfg.min_steps_per_node > 0 {
+        cfg.min_steps_per_node as usize
+    } else {
+        defaults.min_steps_per_node
+    };
+    let max_steps = if cfg.max_steps_per_node > 0 {
+        Some(cfg.max_steps_per_node as usize)
+    } else {
+        None
+    };
+    let join_tol = if cfg.join_tol > 0.0 {
+        Some(cfg.join_tol)
+    } else {
+        None
+    };
+    let band_cfg = parsed
+        .config
+        .with_string(crate::StringConfig::default().with_reparametrization(reparam));
+    let gsm_cfg = crate::GrowingStringConfig::default()
+        .with_band(band_cfg)
+        .with_n_images(cfg.n_images as usize)
+        .with_frontier_tol(frontier_tol)
+        .with_min_steps_per_node(min_steps)
+        .with_max_steps_per_node(max_steps)
+        .with_join_tol(join_tol)
+        .with_force_gate(gate);
+
+    let r_slice = unsafe { slice::from_raw_parts(reactant, dof) };
+    let p_slice = unsafe { slice::from_raw_parts(product, dof) };
+    let r_arr = Array1::from(r_slice.to_vec());
+    let p_arr = Array1::from(p_slice.to_vec());
+    match crate::GrowingStringSession::new(gsm_cfg, r_arr, p_arr) {
+        Ok(session) => Box::into_raw(Box::new(RgsaddleGrowingString {
+            session,
+            n_atoms,
+            per_image: parsed.per_image,
+            climbing_request: cfg.band.version.minor >= 23,
+        })),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// Advance a [`RgsaddleGrowingString`] by one step (ABI minor 43).
+///
+/// # Safety
+/// `session` and `out` must be valid pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_growing_string_step(
+    session: *mut RgsaddleGrowingString,
+    surface: Option<RgsaddleSurfaceFn>,
+    user: *mut c_void,
+    out: *mut RgsaddleReport,
+) -> i32 {
+    if session.is_null() {
+        return RGSADDLE_NULL_SESSION;
+    }
+    if out.is_null() {
+        return RGSADDLE_NULL_REPORT;
+    }
+    let Some(f) = surface else {
+        return RGSADDLE_NULL_SURFACE;
+    };
+    let session = unsafe { &mut *session };
+    let current_n = session.session.positions().nrows() as i64;
+    let cs = CSurface {
+        f,
+        user,
+        n_atoms: session.n_atoms,
+        n_images: current_n,
+        per_image: session.per_image,
+        climbing_request: session.climbing_request,
+        rows: Default::default(),
+    };
+    match session.session.step(&cs) {
+        Ok(report) => {
+            let out = unsafe { &mut *out };
+            stamp_report(out);
+            out.status = match report.status {
+                BandStatus::Running => 0,
+                BandStatus::Converged => 1,
+            };
+            out.evaluations = cs.evaluation_rows();
+            out.max_force = report.max_force;
+            out.ci_index = match report.ci_index {
+                Some(i) => i as i64,
+                None => -1,
+            };
+            out.iteration = report.iteration as i64;
+            out.curvature = 0.0;
+            out.rotations = report.nodes_added as i64;
+            RGSADDLE_OK
+        }
+        Err(e) => status_of(&e),
+    }
+}
+
+/// Active image count of a [`RgsaddleGrowingString`] (ABI minor 43).
+///
+/// # Safety
+/// `session` is a live session or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_growing_string_n_images(
+    session: *const RgsaddleGrowingString,
+) -> i64 {
+    if session.is_null() {
+        return 0;
+    }
+    let session = unsafe { &*session };
+    session.session.positions().nrows() as i64
+}
+
+/// Phase of a [`RgsaddleGrowingString`] (ABI minor 43).
+///
+/// # Safety
+/// `session` is a live session or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_growing_string_phase(
+    session: *const RgsaddleGrowingString,
+) -> i32 {
+    if session.is_null() {
+        return RGSADDLE_NULL_SESSION;
+    }
+    let session = unsafe { &*session };
+    match session.session.phase() {
+        crate::GrowingStringPhase::Growing => RGSADDLE_GROWING_STRING_GROWING,
+        crate::GrowingStringPhase::Joined => RGSADDLE_GROWING_STRING_JOINED,
+    }
+}
+
+/// Copy current positions of a [`RgsaddleGrowingString`] into `out` (ABI minor 43).
+///
+/// # Safety
+/// `out` must hold `n_images * 3 * n_atoms` doubles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_growing_string_positions(
+    session: *const RgsaddleGrowingString,
+    out: *mut f64,
+) -> i32 {
+    if session.is_null() {
+        return RGSADDLE_NULL_SESSION;
+    }
+    if out.is_null() {
+        return RGSADDLE_INVALID_PARAMETER;
+    }
+    let session = unsafe { &*session };
+    let pos = session.session.positions();
+    let dst = unsafe { slice::from_raw_parts_mut(out, pos.len()) };
+    for (i, v) in pos.iter().enumerate() {
+        dst[i] = *v;
+    }
+    RGSADDLE_OK
+}
+
+/// Copy current image IDs of a [`RgsaddleGrowingString`] into `out` (ABI minor 43).
+///
+/// # Safety
+/// `out` must hold `n_images` `u64` values.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_growing_string_ids(
+    session: *const RgsaddleGrowingString,
+    out: *mut u64,
+) -> i32 {
+    if session.is_null() {
+        return RGSADDLE_NULL_SESSION;
+    }
+    if out.is_null() {
+        return RGSADDLE_INVALID_PARAMETER;
+    }
+    let session = unsafe { &*session };
+    let ids = session.session.ids();
+    let dst = unsafe { slice::from_raw_parts_mut(out, ids.len()) };
+    dst.copy_from_slice(&ids);
+    RGSADDLE_OK
+}
+
+/// Set the per-atom fixed mask on a [`RgsaddleGrowingString`] (ABI minor 43).
+///
+/// # Safety
+/// `fixed` holds `n_atoms` bytes or is null when `n_atoms == 0`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_growing_string_set_fixed_atoms(
+    session: *mut RgsaddleGrowingString,
+    fixed: *const u8,
+    n_atoms: i64,
+) -> i32 {
+    if session.is_null() {
+        return RGSADDLE_NULL_SESSION;
+    }
+    let session = unsafe { &mut *session };
+    let mask = if n_atoms == 0 && fixed.is_null() {
+        Vec::new()
+    } else if n_atoms == session.n_atoms && !fixed.is_null() {
+        let raw = unsafe { slice::from_raw_parts(fixed, n_atoms as usize) };
+        if raw.iter().any(|&b| b > 1) {
+            return RGSADDLE_INVALID_PARAMETER;
+        }
+        raw.iter().map(|&b| b != 0).collect()
+    } else {
+        return RGSADDLE_SHAPE;
+    };
+    match session.session.set_fixed_atoms(mask) {
+        Ok(()) => RGSADDLE_OK,
+        Err(e) => status_of(&e),
+    }
+}
+
+/// Read the saddle-index certificate of a [`RgsaddleGrowingString`] (ABI minor 43).
+///
+/// # Safety
+/// `out` must be valid, and `curvatures` must hold `capacity` doubles when `capacity > 0`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_growing_string_saddle_index(
+    session: *const RgsaddleGrowingString,
+    out: *mut RgsaddleSaddleIndex,
+    curvatures: *mut f64,
+    capacity: i64,
+) -> i32 {
+    if session.is_null() {
+        return RGSADDLE_NULL_SESSION;
+    }
+    if out.is_null() {
+        return RGSADDLE_NULL_REPORT;
+    }
+    if capacity < 0 || (capacity > 0 && curvatures.is_null()) {
+        return RGSADDLE_SHAPE;
+    }
+    let session = unsafe { &*session };
+    let out = unsafe { &mut *out };
+    out.version = RgsaddleVersion {
+        major: RGSADDLE_ABI_MAJOR,
+        minor: RGSADDLE_ABI_MINOR,
+    };
+    out.flags = 0;
+    match session.session.saddle_index() {
+        Some(cert) => {
+            out.certified = 1;
+            out.index = cert.index as i32;
+            out.converged = i32::from(cert.converged);
+            out.n_curvatures = cert.curvatures.len() as i32;
+            out.evaluations = cert.evaluations as i64;
+            out.total_evaluations = cert.evaluations as i64;
+            out.escapes = 0;
+            let count = cert.curvatures.len().min(capacity as usize);
+            if count > 0 {
+                let dst = unsafe { slice::from_raw_parts_mut(curvatures, count) };
+                for (i, v) in cert.curvatures.iter().take(count).enumerate() {
+                    dst[i] = *v;
+                }
+            }
+        }
+        None => {
+            out.certified = 0;
+            out.index = 0;
+            out.converged = 0;
+            out.n_curvatures = 0;
+            out.evaluations = 0;
+            out.total_evaluations = 0;
+            out.escapes = 0;
+        }
+    }
+    RGSADDLE_OK
+}
+
+/// Free a [`RgsaddleGrowingString`] (ABI minor 43).
+///
+/// # Safety
+/// Pointer came from [`rgsaddle_growing_string_create`] and is freed once.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_growing_string_free(session: *mut RgsaddleGrowingString) {
+    if !session.is_null() {
+        drop(unsafe { Box::from_raw(session) });
+    }
+}
+
 /// # Safety
 /// `session` is a live session or null. `enabled` is 0 or 1.
 #[unsafe(no_mangle)]
