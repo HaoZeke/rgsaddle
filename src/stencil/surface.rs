@@ -16,8 +16,19 @@ use crate::minmode::PointSurface;
 pub type ImageId = u64;
 
 /// Batched rows. `eval` writes `e[row]` and `g.row(row)` for each id.
+///
+/// Positions are flat Cartesian rows in Angstrom, energies are in eV and gradients
+/// in eV/Angstrom. A type that implements this trait also implements
+/// [`crate::minmode::PointSurface`] and [`crate::band::BandSurface`].
 pub trait Surface: Sync {
-    /// Eval.
+    /// Energies and gradients of every row of `x` (`n x dof`, Angstrom).
+    ///
+    /// `ids` has `n` entries, `e` receives `n` energies in eV and `g` is `n x dof` and
+    /// receives the energy gradients in eV/Angstrom (the negative of the forces).
+    ///
+    /// # Errors
+    ///
+    /// Any [`SaddleError`] the host raises; the callers do not use `e` or `g` then.
     fn eval(
         &self,
         ids: &[ImageId],
@@ -26,7 +37,10 @@ pub trait Surface: Sync {
         g: ArrayViewMut2<f64>,
     ) -> Result<(), SaddleError>;
 
-    /// Analytic Cartesian Hessian action. `None` selects a finite difference.
+    /// Analytic Cartesian Hessian action `H v` in eV/Angstrom^2 times the unit of `v`,
+    /// at `x`. The default is `None`, which selects a finite difference. Note the
+    /// nesting: `Option<Result<..>>`, the reverse of
+    /// [`crate::minmode::PointSurface::hessian_vector`].
     fn hessian_vector(
         &self,
         _x: ArrayView1<f64>,
@@ -36,6 +50,15 @@ pub trait Surface: Sync {
     }
 
     /// Energies, Cartesian gradients, and Cauchy stresses. `s` is `n × 9`.
+    ///
+    /// `x` is `n x dof` in Angstrom, `cells` has one cell per row, `e` receives energies
+    /// in eV, `g` gradients in eV/Angstrom and `s` the row-major 3x3 Cauchy stress in
+    /// eV/Angstrom^3.
+    ///
+    /// # Errors
+    ///
+    /// The default returns [`SaddleError::Invalid`]: a surface that does not evaluate
+    /// cells refuses.
     fn eval_cells(
         &self,
         _x: ArrayView2<f64>,
@@ -51,6 +74,11 @@ pub trait Surface: Sync {
 }
 
 /// Existing point surface viewed as one row.
+///
+/// The wrapped [`crate::minmode::PointSurface`] is evaluated once per row, so a
+/// multi-row batch is a loop over its rows. [`Surface::eval`] fails with a
+/// [`SaddleError::Shape`] when `ids`, `x`, `e` and `g` disagree in length, or the
+/// point surface returns a gradient of the wrong length.
 pub struct FromPoint<T>(pub T);
 
 impl<T: PointSurface> Surface for FromPoint<T> {
@@ -90,6 +118,9 @@ impl<T: PointSurface> Surface for FromPoint<T> {
 
 /// Existing band surface viewed as a batch. The old trait has no image
 /// ids, so the rows are evaluated in the order given.
+///
+/// The whole batch goes to [`crate::band::BandSurface::eval`] in one call.
+/// [`Surface::eval`] fails with a [`SaddleError::Shape`] when the lengths disagree.
 pub struct FromBand<T>(pub T);
 
 impl<T: BandSurface> Surface for FromBand<T> {
