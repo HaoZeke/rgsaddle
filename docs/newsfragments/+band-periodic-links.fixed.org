@@ -1,0 +1,8 @@
+A periodic band keeps the lattice translation of each link between neighbouring images from one step to the next.
+It used to wrap every link to its minimum image again at each assembly.
+Once an atom sat more than half a cell from its counterpart in the next image, the wrapped displacement jumped by a lattice vector, and the tangent and the spring force jumped with it.
+A band that relaxes toward that cut sat on it: the force changed sign for a move of a few ulp, FIRE never saw a positive power, its time step halved to nothing, and the step ended in =SaddleError::Stalled= with the force still far above the gate.
+The 7 image NEB and CI-NEB on the Pt(111) exchange system stopped that way at iteration 483.
+They now keep stepping.
+=BandSession::set_positions= recomputes the translation of a link beside a replaced row, and rows that differ from the session's own only by a lattice vector are still taken as unchanged.
+Bands with every link under half a cell are bit for bit as before.

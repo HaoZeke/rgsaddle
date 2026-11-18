@@ -116,6 +116,55 @@ impl Cell {
         }
     }
 
+    /// Lattice translations, in units of the lattice vectors, that
+    /// [`Cell::minimum_image`] subtracts from each atom's displacement
+    /// in `diff`. Applying them with [`Cell::subtract_translations`]
+    /// reproduces the wrapped displacement bit for bit, and applying
+    /// them to a later displacement of the same atoms keeps that
+    /// displacement continuous where a fresh wrap would jump by a
+    /// lattice vector.
+    pub(crate) fn wrap_translations(&self, diff: ArrayView1<f64>) -> Vec<[f64; 3]> {
+        let h = &self.0;
+        let periodic: [bool; 3] = std::array::from_fn(|i| h[i].iter().any(|v| *v != 0.0));
+        let mut out = vec![[0.0; 3]; diff.len() / 3];
+        if periodic.iter().all(|p| *p)
+            && let Some(inv) = self.inverse()
+        {
+            for (a, shift) in out.iter_mut().enumerate() {
+                let d = [diff[3 * a], diff[3 * a + 1], diff[3 * a + 2]];
+                for (i, si) in shift.iter_mut().enumerate() {
+                    let s = d[0] * inv[0][i] + d[1] * inv[1][i] + d[2] * inv[2][i];
+                    *si = s.round();
+                }
+            }
+            return out;
+        }
+        for (a, shift) in out.iter_mut().enumerate() {
+            for c in 0..3 {
+                let l = h[c][c];
+                let axis_aligned = (0..3).all(|k| k == c || h[c][k] == 0.0);
+                if periodic[c] && axis_aligned && l > 0.0 {
+                    shift[c] = (diff[3 * a + c] / l).round();
+                }
+            }
+        }
+        out
+    }
+
+    /// Subtract the lattice translations that
+    /// [`Cell::wrap_translations`] returned from `diff`.
+    pub(crate) fn subtract_translations(&self, mut diff: ArrayViewMut1<f64>, shifts: &[[f64; 3]]) {
+        let h = &self.0;
+        for (a, shift) in shifts.iter().enumerate() {
+            if *shift == [0.0; 3] {
+                continue;
+            }
+            for c in 0..3 {
+                diff[3 * a + c] -= shift[0] * h[0][c] + shift[1] * h[1][c] + shift[2] * h[2][c];
+            }
+        }
+    }
+
     /// Nonzero lattice translations, along the axes
     /// [`Cell::minimum_image`] wraps, that can carry a wrapped
     /// displacement to another image shorter than `cutoff`. Empty when
@@ -793,6 +842,8 @@ struct BandState {
     /// The band's fixed mask, empty when every atom is free. Gradient
     /// components of fixed atoms are zeroed as the surface answers.
     fixed: Vec<bool>,
+    /// The lattice translations of each link of a periodic band.
+    links: Option<LinkShifts>,
 }
 
 impl BandState {
@@ -812,6 +863,7 @@ impl BandState {
             rows: AtomicUsize::new(0),
             work: Mutex::new(BandWork::default()),
             pool: None,
+            links: None,
         }
     }
     /// One surface call, split into image blocks on the image threads.
@@ -954,6 +1006,56 @@ impl ImageWork {
             l_next: zero(),
             l_here: zero(),
         }
+    }
+}
+
+/// The lattice translations that carry each link of a periodic band to
+/// the minimum image, fixed when the band is built or a row is replaced.
+///
+/// A fresh wrap of every link at every assembly is continuous only
+/// while consecutive images stay under half a cell apart for every
+/// atom. Past that the wrapped displacement jumps by a lattice vector,
+/// so the spring and the tangent jump with it and a band that relaxes
+/// toward the cut sits on it: the force flips sign for a displacement
+/// of a few ulp, FIRE's power is never positive, `dt` halves to zero,
+/// and the step reports an unchanged band above the gate. The session
+/// owns the coordinates it moves, and they are continuous, so a link
+/// keeps the translation it started with and only [`BandSession::new`]
+/// and [`BandSession::set_positions`] choose a new one.
+#[derive(Clone, Debug, Default)]
+struct LinkShifts {
+    links: Vec<Vec<[f64; 3]>>,
+}
+
+impl LinkShifts {
+    fn new(cell: &Cell, positions: ArrayView2<f64>) -> Self {
+        let n_links = positions.nrows().saturating_sub(1);
+        let mut shifts = Self {
+            links: vec![Vec::new(); n_links],
+        };
+        for link in 0..n_links {
+            shifts.refresh(cell, positions, link);
+        }
+        shifts
+    }
+
+    /// Wrap link `link` afresh: the translation of its minimum image.
+    fn refresh(&mut self, cell: &Cell, positions: ArrayView2<f64>, link: usize) {
+        let diff = &positions.row(link + 1) - &positions.row(link);
+        self.links[link] = cell.wrap_translations(diff.view());
+    }
+
+    fn link(&self, link: usize) -> Option<&[[f64; 3]]> {
+        self.links.get(link).map(Vec::as_slice)
+    }
+}
+
+/// The displacement of link `link` in `diff`: the translations the band
+/// kept for it, or a fresh minimum image when it keeps none.
+fn wrap_link(cell: &Cell, links: Option<&LinkShifts>, link: usize, diff: ArrayViewMut1<f64>) {
+    match links.and_then(|l| l.link(link)) {
+        Some(shifts) => cell.subtract_translations(diff, shifts),
+        None => cell.minimum_image_view(diff),
     }
 }
 
@@ -1598,6 +1700,7 @@ fn image_force(
     energies: &Array1<f64>,
     gradients: &Array2<f64>,
     metric: Option<(&Exp, Option<&[usize]>)>,
+    links: Option<&LinkShifts>,
 ) -> Result<(Array1<f64>, Option<Array1<f64>>), SaddleError> {
     let dof = endpoint_first.len();
     let n_images = energies.len();
@@ -1614,8 +1717,8 @@ fn image_force(
     let mut pos_diff_next = &pos_next - &pos;
     let mut pos_diff_prev = &pos - &pos_prev;
     if let Some(cell) = &config.cell {
-        cell.minimum_image(&mut pos_diff_next);
-        cell.minimum_image(&mut pos_diff_prev);
+        wrap_link(cell, links, i, pos_diff_next.view_mut());
+        wrap_link(cell, links, i - 1, pos_diff_prev.view_mut());
     }
     zero_fixed(&config.fixed_atoms, &mut pos_diff_next);
     zero_fixed(&config.fixed_atoms, &mut pos_diff_prev);
@@ -1875,6 +1978,7 @@ fn image_force_into(
     gradients: &Array2<f64>,
     w: &mut ImageWork,
     mut out: ArrayViewMut1<f64>,
+    links: Option<&LinkShifts>,
 ) -> Result<(), SaddleError> {
     let dof = endpoint_first.len();
     let n_images = energies.len();
@@ -1910,8 +2014,8 @@ fn image_force_into(
         .and(pos_prev)
         .for_each(|d, &a, &b| *d = a - b);
     if let Some(cell) = &config.cell {
-        cell.minimum_image_view(diff_next.view_mut());
-        cell.minimum_image_view(diff_prev.view_mut());
+        wrap_link(cell, links, i, diff_next.view_mut());
+        wrap_link(cell, links, i - 1, diff_prev.view_mut());
     }
     zero_fixed(&config.fixed_atoms, diff_next);
     zero_fixed(&config.fixed_atoms, diff_prev);
@@ -2054,9 +2158,11 @@ pub fn climbing_image(
         flat.view(),
         energies.view(),
         gradients.view(),
+        None,
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn climb_target(
     config: &BandConfig,
     max_i: usize,
@@ -2065,6 +2171,7 @@ fn climb_target(
     x: ArrayView1<f64>,
     energies: ArrayView1<f64>,
     gradients: ArrayView2<f64>,
+    links: Option<&LinkShifts>,
 ) -> Option<usize> {
     let dof = endpoint_first.len();
     let last = energies.len() - 1;
@@ -2076,7 +2183,13 @@ fn climb_target(
         };
         let mut along = &next - &pos;
         if let Some(cell) = &config.cell {
-            cell.minimum_image(&mut along);
+            if end == 0 {
+                wrap_link(cell, links, 0, along.view_mut());
+            } else {
+                along.mapv_inplace(|v| -v);
+                wrap_link(cell, links, last - 1, along.view_mut());
+                along.mapv_inplace(|v| -v);
+            }
         }
         zero_fixed(&config.fixed_atoms, &mut along);
         let length = along.dot(&along).sqrt();
@@ -2150,6 +2263,7 @@ fn assemble_band_with(
         x,
         energies.view(),
         gradients.view(),
+        state.links.as_ref(),
     );
     let climbing = config.climbing.is_some();
     let armed = climbing && state.armed.load(Ordering::Relaxed);
@@ -2191,6 +2305,7 @@ fn assemble_band_with(
                     energies,
                     gradients,
                     metric_of(i),
+                    state.links.as_ref(),
                 )?;
                 projected.slice_mut(rows).assign(&f);
                 if let Some(driving) = driving.as_mut() {
@@ -2209,6 +2324,7 @@ fn assemble_band_with(
                 gradients,
                 &mut images[i - 1],
                 projected.slice_mut(rows),
+                state.links.as_ref(),
             )?,
         }
         Ok(())
@@ -2556,6 +2672,11 @@ impl BandSession {
         if session.config.has_fixed() {
             session.state.fixed = session.config.fixed_atoms.clone();
             session.pin_fixed();
+        }
+        if let Some(cell) = session.config.cell
+            && session.solid.is_none()
+        {
+            session.state.links = Some(LinkShifts::new(&cell, session.positions.view()));
         }
         if let Some(precon) = session.config.exp_precon {
             session.set_exp_precon(precon)?;
@@ -3003,7 +3124,9 @@ impl BandSession {
     /// survive and the next step evaluates only the interior images. A
     /// moved endpoint drops the endpoint energies (the next evaluation
     /// carries the whole band); a moved interior image drops the last
-    /// evaluation. Optimizer history survives; call
+    /// evaluation. A periodic band keeps the lattice translation of
+    /// every link between steps; a link beside a replaced row takes its
+    /// minimum image afresh. Optimizer history survives; call
     /// [`BandSession::restart`] to drop it as well. With atoms fixed the
     /// new endpoints must agree on each of them, as at
     /// [`BandSession::new`], and the interior images take the first
@@ -3019,6 +3142,7 @@ impl BandSession {
         pin_fixed_rows(&self.state.fixed, &mut positions);
         let n_images = positions.nrows();
         let mut moved = false;
+        let mut replaced = Vec::new();
         for (i, new_row) in positions.outer_iter().enumerate() {
             let mut diff = &new_row - &self.positions.row(i);
             if let Some(cell) = &self.config.cell {
@@ -3028,6 +3152,7 @@ impl BandSession {
                 continue;
             }
             self.positions.row_mut(i).assign(&new_row);
+            replaced.push(i);
             if i == 0 || i == n_images - 1 {
                 self.state.set_endpoints(None);
                 // The interior may be unchanged, so the solver's own
@@ -3040,6 +3165,16 @@ impl BandSession {
             moved = true;
         }
         self.pin_fixed();
+        if let (Some(cell), Some(links)) = (&self.config.cell, self.state.links.as_mut()) {
+            for &row in &replaced {
+                if row > 0 {
+                    links.refresh(cell, self.positions.view(), row - 1);
+                }
+                if row + 1 < n_images {
+                    links.refresh(cell, self.positions.view(), row);
+                }
+            }
+        }
         if moved {
             self.state.drop_last();
             self.refine = min_mode::RefineState::default();
@@ -3792,5 +3927,98 @@ mod tests {
         // Climbing force (-2, 3, 0, 5, 1, 0) minus its mean (1.5, 2, 0).
         assert_force(&projected, &[-3.5, 1.0, 0.0, 3.5, -1.0, 0.0]);
         assert_eq!(state.ci(), Some(1));
+    }
+
+    /// A downhill ramp along `x`: the tangent at the middle image is the
+    /// backward difference, so the spring force follows its sign.
+    struct Ramp;
+
+    impl BandSurface for Ramp {
+        fn eval(
+            &self,
+            positions: ArrayView2<f64>,
+            energies: &mut Array1<f64>,
+            gradients: &mut Array2<f64>,
+        ) -> Result<(), SaddleError> {
+            for r in 0..positions.nrows() {
+                energies[r] = -0.1 * positions[(r, 0)];
+                gradients.row_mut(r).assign(&array![-0.1, 0.0, 0.0]);
+            }
+            Ok(())
+        }
+    }
+
+    fn ramp_session(middle: f64) -> BandSession {
+        let config = BandConfig::default()
+            .with_climbing(None)
+            .with_min_mode(None)
+            .with_saddle_check(None)
+            .with_remove_translation(false)
+            .with_cell(Some(Cell([
+                [10.0, 0.0, 0.0],
+                [0.0, 10.0, 0.0],
+                [0.0, 0.0, 10.0],
+            ])));
+        let positions = array![[0.0, 0.0, 0.0], [middle, 0.0, 0.0], [12.0, 0.0, 0.0]];
+        BandSession::new(config, positions).unwrap()
+    }
+
+    fn middle_force(session: &BandSession, middle: f64) -> f64 {
+        let first = session.positions.row(0).to_owned();
+        let last = session.positions.row(2).to_owned();
+        let x = array![middle, 0.0, 0.0];
+        let (_, projected, _) = assemble_band(
+            &session.config,
+            &session.state,
+            &Ramp,
+            first.view(),
+            last.view(),
+            x.view(),
+        )
+        .unwrap();
+        projected[0]
+    }
+
+    #[test]
+    fn spring_force_is_continuous_across_the_half_cell_displacement() {
+        // The image slides from 5 - d to 5 + d along x in a cell of 10.
+        // A fresh wrap of the displacement to its neighbour flips the
+        // tangent and the spring force there, from -10 to +10, so a band
+        // that relaxes onto the cut never moves again.
+        let d = 1e-6;
+        let session = ramp_session(5.0 - d);
+        let below = middle_force(&session, 5.0 - d);
+        let above = middle_force(&session, 5.0 + d);
+        assert_abs_diff_eq!(below, -10.0, epsilon = 1e-3);
+        assert_abs_diff_eq!(above, -10.0, epsilon = 1e-3);
+    }
+
+    #[test]
+    fn replaced_row_takes_the_minimum_image_afresh() {
+        let d = 1e-6;
+        let mut session = ramp_session(5.0 - d);
+        session
+            .set_positions(array![
+                [0.0, 0.0, 0.0],
+                [5.0 + d, 0.0, 0.0],
+                [12.0, 0.0, 0.0]
+            ])
+            .unwrap();
+        assert_abs_diff_eq!(middle_force(&session, 5.0 + d), 10.0, epsilon = 1e-3);
+    }
+
+    #[test]
+    fn band_wrapped_by_the_host_keeps_its_links() {
+        let d = 1e-6;
+        let mut session = ramp_session(5.0 - d);
+        session
+            .set_positions(array![
+                [0.0, 0.0, 0.0],
+                [5.0 - d + 10.0, 0.0, 0.0],
+                [12.0, 0.0, 0.0]
+            ])
+            .unwrap();
+        assert_abs_diff_eq!(session.positions[(1, 0)], 5.0 - d, epsilon = 1e-12);
+        assert_abs_diff_eq!(middle_force(&session, 5.0 + d), -10.0, epsilon = 1e-3);
     }
 }
