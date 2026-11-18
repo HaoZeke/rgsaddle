@@ -15,14 +15,18 @@
 //! integral of what remains is the free energy of the flat hyperplanes,
 //! `-kT ln ∫ δ((x - X) · t / |t|) exp(-E/kT) dx`, which does not depend on
 //! how the path is parametrized. Sampling here is overdamped Langevin
-//! (Brownian) dynamics in the plane, the paper's Eq. (9). The parallel
-//! piece of the drift and of the noise is removed, and the plane is
-//! restored after every step. Holding the center of mass is optional and
-//! is the `com yes` choice of that fix. The integral of `dF/ds` from the
-//! reactant is the potential of mean force. Block averages of the recorded
-//! samples supply the standard error. The block length is at least twice
-//! the integrated autocorrelation time, so a correlated series is not
-//! treated as independent.
+//! (Brownian) dynamics in the plane, the paper's Eq. (9), with the step of
+//! Leimkuhler and Matthews, Appl. Math. Res. Express 2013, 34 (2013),
+//! doi:10.1093/amrx/abs010, Eq. (3): the noise of a step is the sum of two
+//! consecutive draws, which makes stationary averages second order in the
+//! step and exact on a harmonic plane. The parallel piece of the drift and
+//! of the noise is removed, and the plane is restored after every step.
+//! Holding the center of mass is optional and is the `com yes` choice of
+//! `fix pafi`. The integral of `dF/ds` from the reactant is the potential
+//! of mean force. Block averages of the recorded samples supply the
+//! standard error. The block length is at least twice the integrated
+//! autocorrelation time, so a correlated series is not treated as
+//! independent.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -408,7 +412,7 @@ pub fn average_hyperplane<S: PointSurface>(
         surface,
         plane: &plane,
         drift_scale: config.mobility * config.time_step,
-        sigma: (2.0 * config.mobility * config.thermal * config.time_step).sqrt(),
+        sigma: (0.5 * config.mobility * config.thermal * config.time_step).sqrt(),
     };
     let mut evaluations = 0;
     let basin = match config.max_jump {
@@ -438,15 +442,16 @@ pub fn average_hyperplane<S: PointSurface>(
         }
         Ok(true)
     };
-    let mut x = loop {
+    let (mut x, mut noise) = loop {
         let mut x = geometry.positions.clone();
+        let mut noise = walk.draw(n, &mut rng);
         for _ in 0..config.thermalize {
             let gradient = walk.gradient(&x)?;
-            walk.step(&mut x, gradient, &mut rng);
+            walk.step(&mut x, gradient, &mut noise, &mut rng);
         }
         evaluations += config.thermalize;
         if !left(&x, &mut evaluations)? {
-            break x;
+            break (x, noise);
         }
     };
     let stretch = config.samples.div_ceil(config.blocks);
@@ -454,7 +459,7 @@ pub fn average_hyperplane<S: PointSurface>(
     let mut observations = Vec::with_capacity(config.samples);
     let mut psi_sum = 0.0;
     let mut retained = Vec::new();
-    let mut kept = x.clone();
+    let mut kept = (x.clone(), noise.clone());
     while observations.len() < config.samples {
         let count = stretch.min(config.samples - observations.len());
         let mut values = Vec::with_capacity(count);
@@ -479,18 +484,18 @@ pub fn average_hyperplane<S: PointSurface>(
                         configurations.push(x.clone());
                     }
                 }
-                walk.step(&mut x, gradient, &mut rng);
+                walk.step(&mut x, gradient, &mut noise, &mut rng);
             }
         }
         evaluations += count * config.stride;
         if left(&x, &mut evaluations)? {
-            x = kept.clone();
+            (x, noise) = kept.clone();
             continue;
         }
         observations.extend(values);
         psi_sum += psi;
         retained.extend(configurations);
-        kept = x.clone();
+        kept = (x.clone(), noise.clone());
     }
     let (gradient, error, tau, n_eff) = block_mean(&observations, config.blocks);
     Ok(HyperplaneAverage {
@@ -595,7 +600,7 @@ struct Walk<'a, S> {
     plane: &'a Plane<'a>,
     /// `μ dt`.
     drift_scale: f64,
-    /// `sqrt(2 μ kT dt)`.
+    /// `sqrt(μ kT dt / 2)`, the weight of each of the two draws in a step.
     sigma: f64,
 }
 
@@ -610,16 +615,30 @@ impl<S: PointSurface> Walk<'_, S> {
         Ok(gradient)
     }
 
-    /// One Euler-Maruyama step from `x`, where the gradient is `gradient`.
-    fn step(&self, x: &mut Array1<f64>, gradient: Array1<f64>, rng: &mut Rng) {
-        let mut drift = gradient;
-        let mut noise = Array1::zeros(x.len());
-        for value in noise.iter_mut() {
-            *value = rng.normal();
-        }
-        self.plane.project(&mut drift);
+    /// A standard normal vector in the plane.
+    fn draw(&self, len: usize, rng: &mut Rng) -> Array1<f64> {
+        let mut noise = Array1::from_shape_simple_fn(len, || rng.normal());
         self.plane.project(&mut noise);
-        *x = &*x - &(&drift * self.drift_scale) + &(&noise * self.sigma);
+        noise
+    }
+
+    /// One step of Leimkuhler and Matthews, Appl. Math. Res. Express 2013,
+    /// 34 (2013), doi:10.1093/amrx/abs010, Eq. (3), from `x`, where the
+    /// gradient is `gradient`: the noise is the sum of the draw of the last
+    /// step, `noise`, and a new one, which replaces it. Stationary averages
+    /// are then second order in `dt`, and exact on a harmonic plane.
+    fn step(
+        &self,
+        x: &mut Array1<f64>,
+        gradient: Array1<f64>,
+        noise: &mut Array1<f64>,
+        rng: &mut Rng,
+    ) {
+        let mut drift = gradient;
+        self.plane.project(&mut drift);
+        let fresh = self.draw(x.len(), rng);
+        *x = &*x - &(&drift * self.drift_scale) + &((&*noise + &fresh) * self.sigma);
+        *noise = fresh;
         self.plane.restore(x);
     }
 }

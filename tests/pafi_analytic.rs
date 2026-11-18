@@ -125,6 +125,42 @@ fn transverse_width_shifts_the_free_energy() {
     );
 }
 
+/// On the plane `x = 0` of [`Widening`] the walk is the harmonic mode
+/// `k = 1.5` in `y`, and `dF/ds = ⟨y²⟩ / 4 = kT / (4 k)`. The step is
+/// `μ k dt = 1.2`, where an Euler–Maruyama walk samples `⟨y²⟩` 2.5 times
+/// too wide.
+#[test]
+fn harmonic_plane_is_sampled_exactly_at_a_long_step() {
+    let (thermal, stiffness) = (0.05, 1.5);
+    let frames: Vec<Array1<f64>> = (0..11)
+        .map(|i| Array1::from_vec(vec![-0.5 + i as f64 / 10.0, 0.0]))
+        .collect();
+    let path = ArcPath::from_positions(&frames).expect("path");
+    let geometry = path.geometry(path.arcs()[5]).expect("middle");
+    assert!(geometry.positions[0].abs() < 1e-12);
+    assert!((geometry.tangent[0] - 1.0).abs() < 1e-12);
+    let config = PafiConfig::default()
+        .with_thermal(thermal)
+        .with_mobility(1.0)
+        .with_time_step(1.2 / stiffness)
+        .with_thermalize(50)
+        .with_stride(1)
+        .with_samples(20_000)
+        .with_blocks(20)
+        .with_seed(5)
+        .with_fix_com(false)
+        .with_max_jump(None);
+    let plane = average_hyperplane(&Widening, &geometry, &config).expect("plane");
+    let truth = thermal / (4.0 * stiffness);
+    assert!(plane.error < 0.05 * truth, "error {}", plane.error);
+    assert!(
+        (plane.gradient - truth).abs() < 4.0 * plane.error,
+        "gradient {} truth {truth} error {}",
+        plane.gradient,
+        plane.error
+    );
+}
+
 #[test]
 fn zero_temperature_integral_recovers_the_barrier() {
     let frames: Vec<Array1<f64>> = (0..41)
