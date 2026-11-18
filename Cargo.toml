@@ -93,6 +93,10 @@ required-features = ["ohtst"]
 name = "ohtst_skewed_well"
 required-features = ["ohtst"]
 
+[[example]]
+name = "ohtst_tutorial"
+required-features = ["ohtst"]
+
 [profile.dev.package.faer]
 opt-level = 3
 
