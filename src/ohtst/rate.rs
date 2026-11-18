@@ -98,6 +98,42 @@ impl OhTstRate {
 /// Explicit, separate multiplicities of a rate.
 ///
 /// Non-exhaustive: start from [`RateMultiplicity::default`] and use setters.
+///
+/// [`SymmetryUniqueRegion::from_crystal_operations`](crate::SymmetryUniqueRegion::from_crystal_operations)
+/// returns the two factors already split. The path multiplicity is the
+/// argument of [`Self::with_paths`]; the region's degeneracy is the in-plane
+/// factor.
+///
+/// ```
+/// use ndarray::{Array2, array};
+/// use rgsaddle::{
+///     CrystalSymmetryConfig, CrystalSymmetryOperation, RateMultiplicity, SymmetryUniqueRegion,
+/// };
+///
+/// let reactant = array![[0.0, 0.0, 0.0]];
+/// let saddle = array![[1.0, 0.0, 0.0]];
+/// let identity = CrystalSymmetryOperation::default().with_rotation(Array2::eye(3));
+/// let mirror = CrystalSymmetryOperation::default().with_rotation(array![
+///     [1.0, 0.0, 0.0],
+///     [0.0, -1.0, 0.0],
+///     [0.0, 0.0, 1.0],
+/// ]);
+/// let built = SymmetryUniqueRegion::from_crystal_operations(
+///     reactant.view(),
+///     saddle.view(),
+///     &[0],
+///     &[identity, mirror],
+///     &CrystalSymmetryConfig::default(),
+/// )
+/// .unwrap();
+/// let multiplicity = RateMultiplicity::default()
+///     .with_paths(built.path_multiplicity)
+///     .with_region(&built.region);
+/// assert_eq!(multiplicity.paths, 1);
+/// assert_eq!(multiplicity.in_plane_images, 2);
+/// assert_eq!(built.region_degeneracy, multiplicity.in_plane_images);
+/// assert_eq!(multiplicity.total().unwrap(), 2);
+/// ```
 #[non_exhaustive]
 #[derive(Clone, Debug)]
 pub struct RateMultiplicity {

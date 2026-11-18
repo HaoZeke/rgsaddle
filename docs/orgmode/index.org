@@ -89,6 +89,7 @@ while report.status != BandStatus::Converged {
    explanation/mep
    explanation/one-stencil
    explanation/hyperplane-methods
+   explanation/symmetry-regions
    reference/architecture
    reference/lammps-hyperplane
    reference/bibliography
