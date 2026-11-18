@@ -20,7 +20,10 @@ commit=1661a1d61b2ccbbd33ec4c9656d60947b8b74cc1
 source_url="https://raw.githubusercontent.com/tomswinburne/pafi/${commit}/examples/systems"
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 work=$(mktemp -d)
-trap 'rm -rf "${work:?}"' EXIT
+cleanup() {
+  rm -r -- "${work:?}"
+}
+trap cleanup EXIT
 
 fetch() {
   local system=$1 file=$2 sum=$3
