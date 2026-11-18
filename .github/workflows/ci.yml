@@ -76,9 +76,17 @@ jobs:
           cargo run --release --example ohtst_skewed_well
           cargo run --release --example elastic_field_bench -- 2000
           MD_CHECK=1 cargo run --release --example langevin_nvt
+          cargo run --release --example pafi_tutorial
+          cargo run --release --example ohtst_tutorial
+          cargo run --release --example rgpot_howto
+          cargo run --release --example howto_restart
+          cargo run --release --example howto_parallel
+          cargo run --release --example howto_convergence
           python3 -m pip install -e . --no-build-isolation
           python3 examples/usage.py
           python3 examples/step_controls.py
+          python3 examples/pafi_tutorial.py
+          python3 examples/ohtst_tutorial.py
 
   # A meson parent project takes the headers from this checkout, as a
   # wrap-git subproject or from the installed rgsaddle-headers.pc, and
