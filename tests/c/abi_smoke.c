@@ -838,6 +838,12 @@ int main(void) {
         rgsaddle_band_set_free_end(fb, 1, 99, 1, 0.25, 0, 0.0, 0.001, 2, 1,
                                    1) != RGSADDLE_INVALID_PARAMETER ||
         rgsaddle_band_set_free_end(fb, 1, RGSADDLE_FREE_END_LAST, 1, 0.25, 0,
+                                   0.0, 0.001, 0, 1, 1) !=
+            RGSADDLE_INVALID_PARAMETER ||
+        rgsaddle_band_set_free_end(fb, 1, RGSADDLE_FREE_END_LAST, 1, 0.25, 0,
+                                   0.0, 0.001, 2, 0, 1) !=
+            RGSADDLE_INVALID_PARAMETER ||
+        rgsaddle_band_set_free_end(fb, 1, RGSADDLE_FREE_END_LAST, 1, 0.25, 0,
                                    0.0, 0.001, 2, 1, 1) != RGSADDLE_OK) {
       return fail(RGSADDLE_INVALID_PARAMETER, "free_end setter validation");
     }

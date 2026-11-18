@@ -16,16 +16,18 @@
 //! 2. Its path tangent \(\hat{\tau}_{\mathrm{end}}\) is the unit vector
 //!    along the single adjacent band segment (`x_1 - x_0` for the first
 //!    image, `x_{N-1} - x_{N-2}` for the last image), and its raw
-//!    free-end force combines the perpendicular potential force
+//!    free-end force combines the perpendicular potential force of
+//!    Zhang, Zhang, Ye, and Zheng (2016), Eq. (7),
 //!    \(F^p_{\mathrm{end},\perp} = F^p_{\mathrm{end}} -
 //!    (F^p_{\mathrm{end}} \cdot \hat{\tau}_{\mathrm{end}})
 //!    \hat{\tau}_{\mathrm{end}}\) with the one-sided harmonic spring
 //!    \(F^s_{\mathrm{end}} = k (x_{\mathrm{neighbour}} - x_{\mathrm{end}})\)
-//!    (Zhang, Zhang, Ye, and Zheng 2016).
-//! 3. Both the tangent-space force projection onto
-//!    \(\nabla E(x_{\mathrm{end}})^\perp\) and the Newton retraction of
-//!    each accepted endpoint geometry onto
-//!    \(E(x_{\mathrm{end}}) = E_{\mathrm{target}}\) are delegated to
+//!    used by this implementation. The spring and exact energy-level
+//!    constraint are rgsaddle extensions to Eq. (7).
+//! 3. The force is projected exactly onto
+//!    \(\nabla E(x_{\mathrm{end}})^\perp\). The Newton retraction of each
+//!    accepted endpoint geometry onto
+//!    \(E(x_{\mathrm{end}}) = E_{\mathrm{target}}\) is delegated to
 //!    [`rgmin::Solver`] configured with [`rgmin::LevelSetConstraint`]
 //!    (`rgmin` commit `f3d18706c2b1ab380fd75f62449fdab46d01f5e2`).
 //! 4. When `max_cuts > 0`, once the highest-energy interior image holds
@@ -311,59 +313,23 @@ fn lock_guard<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     }
 }
 
-/// Project `force` onto the tangent hyperplane orthogonal to `grad_end`
-/// using `rgmin::Solver` with `LevelSetConstraint` (`rgmin` commit `f3d1870`),
-/// with no local copy of the level-set projection.
-fn project_onto_level_set_via_rgmin(
+/// Project `force` exactly onto the tangent hyperplane orthogonal to
+/// `grad_end`.
+fn project_onto_level_set(
     grad_end: &Array1<f64>,
     force: &Array1<f64>,
 ) -> Result<Array1<f64>, SaddleError> {
-    let dof = grad_end.len();
     let gn2 = grad_end.dot(grad_end);
     if !(gn2.is_finite() && gn2 > 0.0) {
         return Err(SaddleError::Invalid(
             "free-end terminal image requires a nonzero potential gradient".into(),
         ));
     }
-    let fn2 = force.dot(force);
-    if !(fn2.is_finite()) {
+    if !force.iter().all(|component| component.is_finite()) {
         return Err(SaddleError::NonFinite("free-end force"));
     }
-    if fn2 == 0.0 {
-        return Ok(Array1::zeros(dof));
-    }
-
-    let gn = gn2.sqrt();
-    let f_norm = fn2.sqrt();
-    let k = (force.dot(grad_end) / gn2) + (f_norm + 1.0) / gn;
-    let s_pair = grad_end * k - force;
-    let y_pair = grad_end.clone();
-
-    let control = Control::default()
-        .with_maxiter(usize::MAX)
-        .with_gtol(0.0)
-        .with_istep(1.0)
-        .with_maxmove(None);
-    let mut solver = Solver::new(Method::lbfgs_with_memory(1), control, dof);
-    solver.set_accept(Accept::Step);
-    solver.set_lbfgs_neb_guards(false);
-    solver.set_atom_maxmove(0.0);
-    solver
-        .set_level_set(LevelSetConstraint::new(0.0))
-        .map_err(|e| SaddleError::Solver(e.to_string()))?;
-    if !solver.push_pair(s_pair.view(), y_pair.view()) {
-        return Err(SaddleError::Solver(
-            "rgmin level-set tangent projection rejected the secant pair".into(),
-        ));
-    }
-
-    let mut x = Array1::zeros(dof);
-    let g_copy = grad_end.clone();
-    let oracle = Oracle::unbounded(dof, move |_xv: ArrayView1<f64>| (0.0, g_copy.clone()));
-    solver
-        .step(&oracle, &mut x)
-        .map_err(|e| SaddleError::Solver(e.to_string()))?;
-    Ok(x)
+    let parallel_scale = force.dot(grad_end) / gn2;
+    Ok(force - &(grad_end * parallel_scale))
 }
 
 /// Step `x_end` by `step_dir` (projected onto the level-set tangent space
@@ -505,27 +471,19 @@ fn step_and_retract_endpoint_via_rgmin<S: BandSurface>(
         }
     }
 
-    if !config.fixed_atoms.is_empty() {
-        for (atom, _) in config.fixed_atoms.iter().enumerate().filter(|(_, f)| **f) {
-            for c in 3 * atom..3 * atom + 3 {
-                let _ = c;
-            }
-        }
-    }
     *energy_end = *lock_guard(&cached_e);
     *grad_end = lock_guard(&cached_raw_g).clone();
     Ok(())
 }
 
-/// Published free-end tangent and spring force at `end_idx` before
-/// level-set projection (Zhang, Zhang, Ye, and Zheng, J. Chem. Phys.
-/// 145, 094104 (2016), doi:10.1063/1.4962019).
+/// Zhang et al. Eq. (7) perpendicular endpoint force plus rgsaddle's
+/// one-sided terminal spring, before level-set projection.
 fn raw_free_end_force(
     config: &BandConfig,
-    _side: FreeEndSide,
+    side: FreeEndSide,
     pos_end: ArrayView1<f64>,
     pos_neigh: ArrayView1<f64>,
-    _grad_end: ArrayView1<f64>,
+    grad_end: ArrayView1<f64>,
 ) -> Result<Array1<f64>, SaddleError> {
     let spring_k = match config.spring {
         SpringKind::Uniform { k } => k,
@@ -546,12 +504,28 @@ fn raw_free_end_force(
             "free-end terminal image coincides with its interior neighbour".into(),
         ));
     }
-    let mut raw = inward * spring_k;
+    let (tangent, signed_distance) = match side {
+        FreeEndSide::First => (&inward / dist, dist),
+        FreeEndSide::Last => (-&inward / dist, -dist),
+    };
+    let mut potential = -&grad_end;
+    zero_fixed(&config.fixed_atoms, &mut potential);
+    let potential_parallel = potential.dot(&tangent);
+    let potential_perpendicular = potential - &tangent * potential_parallel;
+    let spring = &tangent * (signed_distance * spring_k);
+    let mut raw = potential_perpendicular + spring;
     zero_fixed(&config.fixed_atoms, &mut raw);
     if config.drops_translation() {
         remove_net_translation(&mut raw);
     }
     Ok(raw)
+}
+
+fn fixed_energy_after_cut(side: FreeEndSide, energies: &Array1<f64>, lo: usize, hi: usize) -> f64 {
+    match side {
+        FreeEndSide::Last => energies[lo],
+        FreeEndSide::First => energies[hi],
+    }
 }
 
 impl BandSession {
@@ -791,7 +765,7 @@ impl BandSession {
             self.positions.row(neigh_idx),
             g_end_free.view(),
         )?;
-        let mut f_end_level = project_onto_level_set_via_rgmin(&g_end_free, &f_end_raw)?;
+        let mut f_end_level = project_onto_level_set(&g_end_free, &f_end_raw)?;
         zero_fixed(&self.config.fixed_atoms, &mut f_end_level);
         if self.config.drops_translation() {
             remove_net_translation(&mut f_end_level);
@@ -1119,10 +1093,7 @@ impl BandSession {
                         self.config.cell.as_ref(),
                     );
                     self.pin_fixed();
-                    let new_fixed_e = match fe_cfg.side {
-                        FreeEndSide::Last => energies[lo],
-                        FreeEndSide::First => energies[hi],
-                    };
+                    let new_fixed_e = fixed_energy_after_cut(fe_cfg.side, &energies, lo, hi);
                     self.free_end_state.fixed_endpoint_energy = Some(new_fixed_e);
                     self.free_end_state.cuts += 1;
                     self.free_end_state.cut_windows.push((lo, hi));
@@ -1149,6 +1120,48 @@ impl BandSession {
         } else {
             BandStatus::Running
         };
+        if self.state.ci().is_some()
+            && (self.config.min_mode.is_some() || self.config.saddle_check.is_some())
+        {
+            let mut check_energies = Array1::zeros(n_images);
+            let mut check_gradients = Array2::zeros((n_images, dof));
+            let mut interior_energies = Array1::zeros(n_images - 2);
+            let mut interior_gradients = Array2::zeros((n_images - 2, dof));
+            self.state.eval_rows(
+                surface,
+                1..n_images - 1,
+                self.positions.slice(s![1..n_images - 1, ..]),
+                &mut interior_energies,
+                &mut interior_gradients,
+            )?;
+            self.state.rows.fetch_add(n_images - 2, Ordering::Relaxed);
+            if !interior_energies.iter().all(|value| value.is_finite())
+                || !interior_gradients.iter().all(|value| value.is_finite())
+            {
+                return Err(SaddleError::NonFinite(
+                    "free-end stationary-point evaluation",
+                ));
+            }
+            if !self.state.fixed.is_empty() {
+                for mut row in interior_gradients.outer_iter_mut() {
+                    zero_fixed(&self.state.fixed, &mut row);
+                }
+            }
+            check_energies
+                .slice_mut(s![1..n_images - 1])
+                .assign(&interior_energies);
+            check_gradients
+                .slice_mut(s![1..n_images - 1, ..])
+                .assign(&interior_gradients);
+            check_energies[fixed_idx] = self
+                .free_end_state
+                .fixed_endpoint_energy
+                .ok_or_else(|| SaddleError::Solver("missing fixed endpoint energy".into()))?;
+            check_energies[end_idx] = e_end;
+            check_gradients.row_mut(end_idx).assign(&g_end);
+            self.cache_free_end_evaluation(check_energies, check_gradients);
+        }
+        self.refine_latch(status)?;
 
         Ok(FreeEndReport {
             status,
@@ -1259,5 +1272,157 @@ impl FeaNebSession {
     #[must_use]
     pub fn into_band_session(self) -> BandSession {
         self.session
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ndarray::{Array1, Array2, array};
+
+    use super::{
+        SAME_ROW_TOL, fixed_energy_after_cut, project_onto_level_set, raw_free_end_force,
+    };
+    use crate::{
+        BandConfig, BandSession, FeaNebSession, FreeEndConfig, FreeEndSide, SaddleError, SpringKind,
+    };
+
+    #[test]
+    fn endpoint_force_matches_analytic_surface_and_eq_7_is_orthogonal() {
+        // E(x, y, z) = 3 x^2 / 2 + 2 y^2, so grad E(1, 1, 0) = (3, 4, 0).
+        let config = BandConfig::default()
+            .with_remove_translation(false)
+            .with_spring(SpringKind::Uniform { k: 2.5 });
+        let end = array![2.0, 1.0, 0.0];
+        let neighbour = array![0.0, 1.0, 0.0];
+        let gradient = array![3.0, 4.0, 0.0];
+        let force = raw_free_end_force(
+            &config,
+            FreeEndSide::Last,
+            end.view(),
+            neighbour.view(),
+            gradient.view(),
+        )
+        .expect("endpoint force");
+
+        // Eq. (7) gives (0, -4, 0); the one-sided spring gives (-5, 0, 0).
+        let expected = array![-5.0, -4.0, 0.0];
+        assert_eq!(force, expected);
+        let tangent = array![1.0, 0.0, 0.0];
+        let spring = array![-5.0, 0.0, 0.0];
+        assert!((&force - &spring).dot(&tangent).abs() < 1e-12);
+
+        let first_end = array![0.0, 1.0, 0.0];
+        let first_neighbour = array![2.0, 1.0, 0.0];
+        let first_force = raw_free_end_force(
+            &config,
+            FreeEndSide::First,
+            first_end.view(),
+            first_neighbour.view(),
+            gradient.view(),
+        )
+        .expect("first endpoint force");
+        assert_eq!(first_force, array![5.0, -4.0, 0.0]);
+
+        assert!(matches!(
+            raw_free_end_force(
+                &config,
+                FreeEndSide::First,
+                first_end.view(),
+                first_end.view(),
+                gradient.view(),
+            ),
+            Err(SaddleError::Invalid(_))
+        ));
+        let tolerance_neighbour = array![SAME_ROW_TOL, 1.0, 0.0];
+        assert!(matches!(
+            raw_free_end_force(
+                &config,
+                FreeEndSide::First,
+                first_end.view(),
+                tolerance_neighbour.view(),
+                gradient.view(),
+            ),
+            Err(SaddleError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn level_set_projection_matches_the_analytic_tangent_component() {
+        let gradient = array![3.0, 4.0, 0.0];
+        let force = array![5.0, -2.0, 1.0];
+        let projected = project_onto_level_set(&gradient, &force).expect("level-set projection");
+        let expected = array![4.16, -3.12, 1.0];
+        for (actual, target) in projected.iter().zip(expected.iter()) {
+            assert!((actual - target).abs() < 1e-12);
+        }
+        assert!(projected.dot(&gradient).abs() < 1e-12);
+
+        assert_eq!(
+            project_onto_level_set(&gradient, &Array1::<f64>::zeros(3)).expect("zero force"),
+            Array1::<f64>::zeros(3)
+        );
+        assert!(matches!(
+            project_onto_level_set(&Array1::zeros(3), &force),
+            Err(SaddleError::Invalid(_))
+        ));
+        assert!(matches!(
+            project_onto_level_set(&array![f64::NAN, 0.0, 0.0], &force),
+            Err(SaddleError::Invalid(_))
+        ));
+        assert!(matches!(
+            project_onto_level_set(&gradient, &array![f64::NAN, 0.0, 0.0]),
+            Err(SaddleError::NonFinite(_))
+        ));
+    }
+
+    #[test]
+    fn host_position_change_and_reset_invalidate_fixed_endpoint_energy() {
+        let positions = Array2::from_shape_fn(
+            (3, 3),
+            |(image, axis)| if axis == 0 { image as f64 } else { 0.0 },
+        );
+        let config = BandConfig::default()
+            .with_free_end(FreeEndConfig::default())
+            .with_min_mode(None)
+            .with_saddle_check(None);
+        let mut session = BandSession::new(config, positions.clone()).expect("session");
+        session.free_end_state.fixed_endpoint_energy = Some(7.0);
+
+        let mut moved = positions;
+        moved[(0, 0)] = -1.0;
+        session.set_positions(moved).expect("replace positions");
+        assert_eq!(session.free_end_state.fixed_endpoint_energy, None);
+        assert_eq!(session.initial_fixed_endpoint_energy(), None);
+
+        session.free_end_state.fixed_endpoint_energy = Some(8.0);
+        session.reset();
+        assert_eq!(session.free_end_state.fixed_endpoint_energy, None);
+
+        let facade_positions = Array2::from_shape_fn(
+            (3, 3),
+            |(image, axis)| if axis == 0 { image as f64 } else { 0.0 },
+        );
+        let facade = FeaNebSession::new(
+            BandConfig::default()
+                .with_min_mode(None)
+                .with_saddle_check(None),
+            FreeEndConfig::default(),
+            facade_positions,
+        )
+        .expect("free-end facade");
+        assert_eq!(facade.initial_fixed_endpoint_energy(), None);
+    }
+
+    #[test]
+    fn cut_keeps_the_energy_of_the_new_fixed_endpoint() {
+        let energies = Array1::from(vec![10.0, 20.0, 30.0, 40.0, 50.0]);
+        assert_eq!(
+            fixed_energy_after_cut(FreeEndSide::Last, &energies, 1, 4),
+            20.0
+        );
+        assert_eq!(
+            fixed_energy_after_cut(FreeEndSide::First, &energies, 0, 3),
+            40.0
+        );
     }
 }
