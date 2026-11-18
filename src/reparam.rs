@@ -86,6 +86,10 @@ pub fn reparametrize(
 /// Knots closer than this fraction of the total arc length are one knot.
 const COINCIDENT: f64 = 1e-12;
 
+/// [`solve_dense`] takes a pivot at or below this fraction of the largest
+/// entry as zero.
+const PIVOT_TOLERANCE: f64 = 1e-14;
+
 fn not_a_knot_equal_arc(positions: &mut Array2<f64>, anchor: Option<usize>, cell: Option<&Cell>) {
     let n = positions.nrows();
     if n < 3 {
@@ -181,6 +185,7 @@ fn distinct_knots(s: &[f64], anchor: Option<usize>, tol: f64) -> Vec<usize> {
 /// Interpolating spline through knots `t` (strictly increasing) and the
 /// rows of `values`: the chord for two knots, the parabola for three,
 /// and the not-a-knot cubic spline for four or more.
+#[derive(Clone, Debug)]
 pub(crate) struct Spline {
     t: Vec<f64>,
     y: Array2<f64>,
@@ -344,6 +349,35 @@ impl Spline {
         t
     }
 
+    /// The knots.
+    pub(crate) fn knots(&self) -> &[f64] {
+        &self.t
+    }
+
+    /// The interpolated rows, one per knot.
+    pub(crate) fn values(&self) -> &Array2<f64> {
+        &self.y
+    }
+
+    /// `S`, `dS/dt` and `d²S/dt²` at `at`.
+    pub(crate) fn derivatives(&self, at: f64) -> [Array1<f64>; 3] {
+        let seg = self.segment(at);
+        let h = self.t[seg + 1] - self.t[seg];
+        let b = (at - self.t[seg]) / h;
+        let a = 1.0 - b;
+        let (bend_a, bend_b) = ((a * a * a - a) * h * h / 6.0, (b * b * b - b) * h * h / 6.0);
+        let (slope_a, slope_b) = (
+            -(3.0 * a * a - 1.0) * h / 6.0,
+            (3.0 * b * b - 1.0) * h / 6.0,
+        );
+        let (y0, y1) = (self.y.row(seg), self.y.row(seg + 1));
+        let (m0, m1) = (self.m.row(seg), self.m.row(seg + 1));
+        let value = &y0 * a + &y1 * b + &m0 * bend_a + &m1 * bend_b;
+        let slope = (&y1 - &y0) / h + &m0 * slope_a + &m1 * slope_b;
+        let second = &m0 * a + &m1 * b;
+        [value, slope, second]
+    }
+
     pub(crate) fn eval(&self, at: f64) -> Array1<f64> {
         let seg = self.segment(at);
         let h = self.t[seg + 1] - self.t[seg];
@@ -406,7 +440,11 @@ fn solve_dense(a: &mut [f64], b: &mut Array2<f64>) -> bool {
         let pivot = (col..k)
             .max_by(|&i, &j| a[i * k + col].abs().total_cmp(&a[j * k + col].abs()))
             .unwrap_or(col);
-        if a[pivot * k + col].abs().partial_cmp(&(1e-14 * scale)) != Some(Ordering::Greater) {
+        if a[pivot * k + col]
+            .abs()
+            .partial_cmp(&(PIVOT_TOLERANCE * scale))
+            != Some(Ordering::Greater)
+        {
             return false;
         }
         if pivot != col {
