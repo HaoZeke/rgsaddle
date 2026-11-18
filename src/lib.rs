@@ -241,8 +241,9 @@ pub use strain_rate::{
 };
 pub use tangent::TangentKind;
 pub use trics::{
-    TricConfig, TricInversionConfig, TricPrimitive, TricSystem,
-    diagnostic_matrix as tric_diagnostic_matrix, interpolate_tric_segment, tric_systems,
+    TRICS_SPLICE_TOLERANCE_ANGSTROM, TricConfig, TricInversionConfig, TricPrimitive, TricSystem,
+    TricsConfig, TricsReport, TricsSegment, diagnostic_matrix as tric_diagnostic_matrix,
+    interpolate_tric_segment, tric_segments, tric_systems, trics_path,
 };
 
 pub mod cell_log;

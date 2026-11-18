@@ -23,6 +23,8 @@ const ANGLE_UNSTABLE_COSINE: f64 = 0.965_925_826_289_068_3;
 const ANGLE_FAILURE_COSINE: f64 = 0.996_194_698_091_745_5;
 const DEFAULT_INVERSION_TOLERANCE: f64 = 0.000_000_01;
 const DEFAULT_INVERSION_MOVE: f64 = 0.1;
+/// Paper convergence threshold for the maximum atom splice mismatch.
+pub const TRICS_SPLICE_TOLERANCE_ANGSTROM: f64 = 0.001_8;
 
 /// Controls for constructing a nonredundant TRIC system.
 ///
@@ -81,6 +83,66 @@ impl Default for TricInversionConfig {
             max_atom_move: DEFAULT_INVERSION_MOVE,
         }
     }
+}
+
+/// Controls for TRICS path construction and splicing.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct TricsConfig {
+    /// Coordinate construction controls.
+    pub coordinates: TricConfig,
+    /// Internal to Cartesian inversion controls.
+    pub inversion: TricInversionConfig,
+    /// Largest diagnostic level considered stable.
+    pub diagnostic_threshold: u8,
+    /// Maximum atom mismatch that ends endpoint splicing.
+    pub splice_tolerance: f64,
+    /// Maximum endpoint splice iterations.
+    pub max_splice_iterations: usize,
+}
+
+with_setters!(TricsConfig {
+    with_coordinates => coordinates: val TricConfig,
+    with_inversion => inversion: val TricInversionConfig,
+    with_diagnostic_threshold => diagnostic_threshold: val u8,
+    with_splice_tolerance => splice_tolerance: val f64,
+    with_max_splice_iterations => max_splice_iterations: val usize,
+});
+
+impl Default for TricsConfig {
+    fn default() -> Self {
+        Self {
+            coordinates: TricConfig::default(),
+            inversion: TricInversionConfig::default(),
+            diagnostic_threshold: 1,
+            splice_tolerance: TRICS_SPLICE_TOLERANCE_ANGSTROM,
+            max_splice_iterations: 1000,
+        }
+    }
+}
+
+/// One overlapping segment selected from the diagnostic matrix.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TricsSegment {
+    /// First image in the segment.
+    pub start: usize,
+    /// Last image in the segment.
+    pub end: usize,
+    /// Path image whose TRIC system interpolates this segment.
+    pub system: usize,
+}
+
+/// A completed TRICS path and its splice metadata.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct TricsReport {
+    /// Interpolated Cartesian images.
+    pub path: Array2<f64>,
+    /// Overlapping diagnostic segments.
+    pub segments: Vec<TricsSegment>,
+    /// Endpoint splice iterations. Zero means one system covered the path.
+    pub splice_iterations: usize,
 }
 
 /// One primitive coordinate used to span a TRIC system.
@@ -290,7 +352,7 @@ impl TricSystem {
             }
             let b = self.wilson_b(positions.view())?;
             let gram = b.dot(&b.t());
-            let multipliers = solve_linear(&gram, &residual)?;
+            let multipliers = solve_metric(&gram, &residual)?;
             let step = cap_atom_step(b.t().dot(&multipliers), config.max_atom_move);
             positions += &step;
             if positions.iter().any(|value| !value.is_finite()) {
@@ -321,6 +383,27 @@ pub fn interpolate_tric_segment(
             "TRIC interpolation needs at least two images".into(),
         ));
     }
+    match interpolate_one_direction(system, left, right, n_images, config) {
+        Ok(path) => Ok(path),
+        Err(forward_error) => {
+            match interpolate_one_direction(system, right, left, n_images, config) {
+                Ok(backward) => Ok(Array2::from_shape_fn(
+                    backward.raw_dim(),
+                    |(row, column)| backward[(n_images - row - 1, column)],
+                )),
+                Err(_) => Err(forward_error),
+            }
+        }
+    }
+}
+
+fn interpolate_one_direction(
+    system: &TricSystem,
+    left: ArrayView1<'_, f64>,
+    right: ArrayView1<'_, f64>,
+    n_images: usize,
+    config: &TricInversionConfig,
+) -> Result<Array2<f64>, SaddleError> {
     let total = system.difference(right, left)?;
     let increment = total / (n_images - 1) as f64;
     let mut path = Array2::zeros((n_images, left.len()));
@@ -375,6 +458,254 @@ pub fn diagnostic_matrix(
         (systems.len(), path.nrows()),
         |(system, image)| systems[system].diagnostic(path.row(image)),
     ))
+}
+
+/// Find overlapping low diagnostic segments through `D`.
+///
+/// This is the discrete car through the maze procedure. Each row
+/// contributes contiguous stable intervals. The selected chain starts
+/// at the first image, ends at the last, and maximizes forward progress
+/// while retaining an overlap with the preceding interval.
+pub fn tric_segments(
+    diagnostic: ndarray::ArrayView2<'_, u8>,
+    threshold: u8,
+) -> Result<Vec<TricsSegment>, SaddleError> {
+    if diagnostic.nrows() == 0 || diagnostic.nrows() != diagnostic.ncols() {
+        return Err(SaddleError::Shape(
+            "the TRIC diagnostic matrix must be nonempty and square".into(),
+        ));
+    }
+    let n = diagnostic.nrows();
+    for system in 0..n {
+        if (0..n).all(|image| diagnostic[(system, image)] <= threshold) {
+            return Ok(vec![TricsSegment {
+                start: 0,
+                end: n - 1,
+                system,
+            }]);
+        }
+    }
+    let intervals = stable_intervals(diagnostic, threshold);
+    let mut selected = Vec::new();
+    let mut covered = 0;
+    while covered + 1 < n {
+        let mut best: Option<(usize, usize, usize)> = None;
+        for &(start, end, system) in &intervals {
+            if start > covered || end <= covered {
+                continue;
+            }
+            let replace = match best {
+                Some((best_start, best_end, _)) => {
+                    end > best_end || (end == best_end && start < best_start)
+                }
+                None => true,
+            };
+            if replace {
+                best = Some((start, end, system));
+            }
+        }
+        let Some((start, end, system)) = best else {
+            return Err(SaddleError::Invalid(
+                "TRICS could not drive through the diagnostic matrix".into(),
+            ));
+        };
+        if selected.is_empty() && start != 0 {
+            return Err(SaddleError::Invalid(
+                "TRICS diagnostic path does not start at the first image".into(),
+            ));
+        }
+        selected.push(TricsSegment { start, end, system });
+        covered = end;
+    }
+    Ok(selected)
+}
+
+/// Refine an initial Cartesian path with TRICS.
+///
+/// The supplied path may be linear, IDPP, or caller generated. One
+/// nonredundant TRIC system is built per image, low diagnostic segments
+/// are interpolated in their own metrics, and overlapping endpoints are
+/// iterated until their maximum atom mismatch reaches the configured
+/// threshold.
+pub fn trics_path(
+    initial: ndarray::ArrayView2<'_, f64>,
+    config: &TricsConfig,
+) -> Result<TricsReport, SaddleError> {
+    check_trics_config(config)?;
+    let systems = tric_systems(initial, &config.coordinates)?;
+    let diagnostic = diagnostic_matrix(&systems, initial)?;
+    let segments = tric_segments(diagnostic.view(), config.diagnostic_threshold)?;
+    if segments.len() == 1 {
+        let segment = segments[0];
+        let path = interpolate_tric_segment(
+            &systems[segment.system],
+            initial.row(0),
+            initial.row(initial.nrows() - 1),
+            initial.nrows(),
+            &config.inversion,
+        )?;
+        return Ok(TricsReport {
+            path,
+            segments,
+            splice_iterations: 0,
+        });
+    }
+    splice_path(initial, &systems, segments, config)
+}
+
+fn stable_intervals(
+    diagnostic: ndarray::ArrayView2<'_, u8>,
+    threshold: u8,
+) -> Vec<(usize, usize, usize)> {
+    let mut intervals = Vec::new();
+    for system in 0..diagnostic.nrows() {
+        let mut image = 0;
+        while image < diagnostic.ncols() {
+            if diagnostic[(system, image)] > threshold {
+                image += 1;
+                continue;
+            }
+            let start = image;
+            while image + 1 < diagnostic.ncols() && diagnostic[(system, image + 1)] <= threshold {
+                image += 1;
+            }
+            intervals.push((start, image, system));
+            image += 1;
+        }
+    }
+    intervals
+}
+
+fn splice_path(
+    initial: ndarray::ArrayView2<'_, f64>,
+    systems: &[TricSystem],
+    segments: Vec<TricsSegment>,
+    config: &TricsConfig,
+) -> Result<TricsReport, SaddleError> {
+    let mut endpoints: Vec<[Array1<f64>; 2]> = segments
+        .iter()
+        .map(|segment| {
+            [
+                initial.row(segment.start).to_owned(),
+                initial.row(segment.end).to_owned(),
+            ]
+        })
+        .collect();
+    let mut interpolated = Vec::new();
+    for iteration in 1..=config.max_splice_iterations {
+        interpolated.clear();
+        for (segment, endpoint) in segments.iter().zip(&endpoints) {
+            interpolated.push(interpolate_tric_segment(
+                &systems[segment.system],
+                endpoint[0].view(),
+                endpoint[1].view(),
+                segment.end - segment.start + 1,
+                &config.inversion,
+            )?);
+        }
+        let mismatch = splice_mismatch(&segments, &interpolated);
+        if mismatch <= config.splice_tolerance {
+            let path = concatenate_segments(initial.nrows(), &segments, &interpolated);
+            return Ok(TricsReport {
+                path,
+                segments,
+                splice_iterations: iteration,
+            });
+        }
+        let previous = endpoints.clone();
+        for pair in 0..segments.len() - 1 {
+            let left = segments[pair];
+            let right = segments[pair + 1];
+            let right_at_left_end = left.end - right.start;
+            let left_at_right_start = right.start - left.start;
+            endpoints[pair][1].assign(&interpolated[pair + 1].row(right_at_left_end));
+            endpoints[pair + 1][0].assign(&interpolated[pair].row(left_at_right_start));
+        }
+        if endpoints.iter().zip(previous).all(|(next, old)| {
+            max_atom_difference(&next[0], &old[0]) <= VECTOR_TOLERANCE
+                && max_atom_difference(&next[1], &old[1]) <= VECTOR_TOLERANCE
+        }) {
+            return Err(SaddleError::Solver(
+                "TRICS splicing stopped without reducing the mismatch".into(),
+            ));
+        }
+    }
+    Err(SaddleError::Solver(
+        "TRICS splicing did not converge".into(),
+    ))
+}
+
+fn splice_mismatch(segments: &[TricsSegment], paths: &[Array2<f64>]) -> f64 {
+    let mut mismatch = 0.0_f64;
+    for pair in 0..segments.len() - 1 {
+        let left = segments[pair];
+        let right = segments[pair + 1];
+        let left_at_right_start = right.start - left.start;
+        let right_at_left_end = left.end - right.start;
+        mismatch = mismatch.max(max_atom_difference(
+            &paths[pair].row(left_at_right_start).to_owned(),
+            &paths[pair + 1].row(0).to_owned(),
+        ));
+        mismatch = mismatch.max(max_atom_difference(
+            &paths[pair].row(paths[pair].nrows() - 1).to_owned(),
+            &paths[pair + 1].row(right_at_left_end).to_owned(),
+        ));
+    }
+    mismatch
+}
+
+fn concatenate_segments(
+    n_images: usize,
+    segments: &[TricsSegment],
+    paths: &[Array2<f64>],
+) -> Array2<f64> {
+    let dof = paths[0].ncols();
+    let mut result = Array2::zeros((n_images, dof));
+    let mut segment = 0;
+    for image in 0..n_images {
+        while segment + 1 < segments.len() {
+            let boundary = (segments[segment + 1].start + segments[segment].end) / 2;
+            if image <= boundary {
+                break;
+            }
+            segment += 1;
+        }
+        result
+            .row_mut(image)
+            .assign(&paths[segment].row(image - segments[segment].start));
+    }
+    result
+}
+
+fn max_atom_difference(left: &Array1<f64>, right: &Array1<f64>) -> f64 {
+    left.iter()
+        .zip(right)
+        .collect::<Vec<_>>()
+        .chunks(3)
+        .map(|atom| {
+            atom.iter()
+                .map(|(left, right)| {
+                    let difference = *left - *right;
+                    difference * difference
+                })
+                .sum::<f64>()
+                .sqrt()
+        })
+        .fold(0.0_f64, f64::max)
+}
+
+fn check_trics_config(config: &TricsConfig) -> Result<(), SaddleError> {
+    check_config(&config.coordinates)?;
+    check_inversion_config(&config.inversion)?;
+    if config.diagnostic_threshold > 3
+        || !(config.splice_tolerance.is_finite() && config.splice_tolerance > 0.0)
+        || config.max_splice_iterations == 0
+    {
+        return Err(SaddleError::Invalid(
+            "TRICS needs a diagnostic from zero to three and positive splice controls".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn check_config(config: &TricConfig) -> Result<(), SaddleError> {
@@ -698,48 +1029,26 @@ fn primitive_wilson_b(
     Ok(matrix)
 }
 
-fn solve_linear(matrix: &Array2<f64>, right: &Array1<f64>) -> Result<Array1<f64>, SaddleError> {
+fn solve_metric(matrix: &Array2<f64>, right: &Array1<f64>) -> Result<Array1<f64>, SaddleError> {
     let n = matrix.nrows();
     if matrix.ncols() != n || right.len() != n {
         return Err(SaddleError::Shape(
             "TRIC linear solve dimensions differ".into(),
         ));
     }
-    let mut a = matrix.clone();
-    let mut b = right.clone();
-    for column in 0..n {
-        let mut pivot = column;
-        for row in column + 1..n {
-            if a[(row, column)].abs() > a[(pivot, column)].abs() {
-                pivot = row;
-            }
+    let (values, vectors) = symmetric_eigen(matrix);
+    let largest = values.iter().copied().fold(0.0_f64, f64::max);
+    let threshold = largest * DEFAULT_RANK_TOLERANCE;
+    let mut solution = Array1::zeros(n);
+    for mode in 0..n {
+        if values[mode] <= threshold {
+            continue;
         }
-        if a[(pivot, column)].abs() <= VECTOR_TOLERANCE {
-            return Err(SaddleError::Solver("TRIC Wilson metric is singular".into()));
-        }
-        if pivot != column {
-            for slot in column..n {
-                a.swap((column, slot), (pivot, slot));
-            }
-            b.swap(column, pivot);
-        }
-        let diagonal = a[(column, column)];
-        for slot in column..n {
-            a[(column, slot)] /= diagonal;
-        }
-        b[column] /= diagonal;
-        for row in 0..n {
-            if row == column {
-                continue;
-            }
-            let factor = a[(row, column)];
-            for slot in column..n {
-                a[(row, slot)] -= factor * a[(column, slot)];
-            }
-            b[row] -= factor * b[column];
-        }
+        let vector = vectors.column(mode);
+        let coefficient = vector.dot(right) / values[mode];
+        solution += &(&vector * coefficient);
     }
-    Ok(b)
+    Ok(solution)
 }
 
 fn cap_atom_step(mut step: Array1<f64>, max_move: f64) -> Array1<f64> {
@@ -1087,5 +1396,76 @@ mod tests {
         assert_eq!(path.row(0), left);
         assert_eq!(path.row(4), right);
         assert!(path.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn one_stable_system_skips_splicing() {
+        let left = array![0.0, 0.0, 0.0, 0.96, 0.0, 0.0, -0.24, 0.93, 0.0];
+        let right = array![0.2, 0.0, 0.0, 1.18, 0.1, 0.0, -0.1, 1.0, 0.1];
+        let mut initial = Array2::zeros((5, left.len()));
+        for image in 0..5 {
+            let fraction = image as f64 / 4.0;
+            initial
+                .row_mut(image)
+                .assign(&(&left * (1.0 - fraction) + &right * fraction));
+        }
+        let config = TricsConfig::default()
+            .with_coordinates(TricConfig::default().with_bonds(Some(vec![(0, 1), (0, 2)])));
+        let report = trics_path(initial.view(), &config).unwrap();
+        assert_eq!(report.segments.len(), 1);
+        assert_eq!(report.splice_iterations, 0);
+        let direct = interpolate_tric_segment(
+            &TricSystem::new(left.view(), &config.coordinates).unwrap(),
+            left.view(),
+            right.view(),
+            5,
+            &config.inversion,
+        )
+        .unwrap();
+        assert!(
+            report
+                .path
+                .iter()
+                .zip(&direct)
+                .all(|(left, right)| (left - right).abs() <= TEST_TOLERANCE)
+        );
+    }
+
+    #[test]
+    fn splice_converges_across_a_linear_bend() {
+        let angles = [50.0_f64, 30.0, 20.0, 10.0, 0.0, -10.0, -20.0, -30.0, -50.0];
+        let mut initial = Array2::zeros((angles.len(), 9));
+        for (image, degrees) in angles.into_iter().enumerate() {
+            let radians = degrees.to_radians();
+            initial.row_mut(image).assign(&array![
+                -1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                radians.cos(),
+                radians.sin(),
+                0.0
+            ]);
+        }
+        let config = TricsConfig::default()
+            .with_coordinates(TricConfig::default().with_bonds(Some(vec![(0, 1), (1, 2)])))
+            .with_inversion(
+                TricInversionConfig::default()
+                    .with_max_iterations(200)
+                    .with_tolerance(0.000_001)
+                    .with_max_atom_move(0.05),
+            )
+            .with_diagnostic_threshold(0)
+            .with_splice_tolerance(0.01);
+        let report = trics_path(initial.view(), &config).unwrap();
+        assert!(report.segments.len() > 1);
+        assert!(report.splice_iterations > 0);
+        assert!(report.path.iter().all(|value| value.is_finite()));
+        for pair in report.path.outer_iter().collect::<Vec<_>>().windows(2) {
+            let step = &pair[1] - &pair[0];
+            assert!(step.dot(&step).sqrt() < 1.0);
+        }
     }
 }
