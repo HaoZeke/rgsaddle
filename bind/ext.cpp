@@ -2110,6 +2110,50 @@ NB_MODULE(_core, m) {
           nb::arg("enabled") = true, nb::arg("reparametrization") = "not-a-knot",
           "Enable or clear the simplified string method on the band (ABI minor 42).")
       .def(
+          "set_free_end",
+          [](PyBand &self, bool enabled, const std::string &side, nb::handle target_energy,
+             std::int64_t max_cuts, double cut_force, double energy_tol, std::int64_t stability,
+             std::int64_t window_offset, bool cubic) {
+            std::int32_t side_code = RGSADDLE_FREE_END_LAST;
+            if (side == "first") {
+              side_code = RGSADDLE_FREE_END_FIRST;
+            } else if (side != "last") {
+              throw nb::value_error("side must be first or last");
+            }
+            const bool has_target = !target_energy.is_none();
+            const double target_val = has_target ? nb::cast<double>(target_energy) : 0.0;
+            const auto status = rgsaddle_band_set_free_end(
+                self.handle, enabled ? 1 : 0, side_code, has_target ? 1 : 0, target_val, max_cuts,
+                cut_force, energy_tol, stability, window_offset, cubic ? 1 : 0);
+            if (status != RGSADDLE_OK) {
+              status_error(status);
+            }
+          },
+          nb::arg("enabled") = true, nb::arg("side") = "last",
+          nb::arg("target_energy") = nb::none(), nb::arg("max_cuts") = 2,
+          nb::arg("cut_force") = 0.0, nb::arg("energy_tol") = 0.001, nb::arg("stability") = 2,
+          nb::arg("window_offset") = 1, nb::arg("cubic") = true,
+          "Enable or clear free-end adaptive NEB on the band (ABI minor 45).")
+      .def(
+          "target_energy_residual",
+          [](const PyBand &self) -> nb::object {
+            double out = 0.0;
+            const auto status = rgsaddle_band_free_end_residual(self.handle, &out);
+            if (status == RGSADDLE_NO_EVALUATION) {
+              return nb::none();
+            }
+            if (status != RGSADDLE_OK) {
+              status_error(status);
+            }
+            return nb::cast(out);
+          },
+          nb::sig("def target_energy_residual(self) -> float | None"),
+          "Signed target-energy residual E(x_end) - E_target from the last free-end step.")
+      .def(
+          "free_end_cuts",
+          [](const PyBand &self) { return rgsaddle_band_free_end_cuts(self.handle); },
+          "Number of adaptive cut-and-remesh refinements performed so far (ABI minor 45).")
+      .def(
           "set_fixed_atoms",
           [](PyBand &self, FlagArray fixed) {
             if (static_cast<std::int64_t>(fixed.shape(0)) != self.n_atoms) {
