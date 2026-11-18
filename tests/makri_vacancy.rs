@@ -32,6 +32,14 @@ const EPS: f64 = 1.0;
 const CUTOFF: f64 = 5.3;
 const CELLS: usize = 3;
 const CU_VACANCY_BARRIER_DIFFERENCE_EV: f64 = 1e-5;
+// The deterministic smoke run measured (iterations, rows) as NEB
+// (18, 59), spline string (37, 227), linear string (149, 899), and
+// climbing spline string (35, 215). These ceilings add 10% and round
+// upward, so they catch a work regression without pinning one machine.
+const CU_NEB_MAX_WORK: (usize, usize) = (20, 65);
+const CU_SPLINE_MAX_WORK: (usize, usize) = (41, 250);
+const CU_LINEAR_MAX_WORK: (usize, usize) = (165, 990);
+const CU_CI_SPLINE_MAX_WORK: (usize, usize) = (39, 240);
 
 fn lattice() -> f64 {
     R0 * 2.0_f64.sqrt()
@@ -398,26 +406,36 @@ fn simplified_string_matches_neb_cu_vacancy_barrier() {
         .copied()
         .fold(f64::NEG_INFINITY, f64::max)
         - e0;
-    let neb_per_image = neb_surface.rows.load(Ordering::Relaxed) as f64 / interior;
+    let neb_rows = neb_surface.rows.load(Ordering::Relaxed);
+    let neb_per_image = neb_rows as f64 / interior;
+    assert!(
+        neb_rep.iteration <= CU_NEB_MAX_WORK.0 && neb_rows <= CU_NEB_MAX_WORK.1,
+        "NEB work ({}, {neb_rows}) exceeded {:?}",
+        neb_rep.iteration,
+        CU_NEB_MAX_WORK
+    );
 
-    for (label, string_cfg, scheme, climbing) in [
+    for (label, string_cfg, scheme, climbing, max_work) in [
         (
             "string-spline",
             StringConfig::spline(),
             Reparametrization::NotAKnot,
             None,
+            CU_SPLINE_MAX_WORK,
         ),
         (
             "string-linear",
             StringConfig::linear(),
             Reparametrization::Linear,
             None,
+            CU_LINEAR_MAX_WORK,
         ),
         (
             "ci-string-spline",
             StringConfig::spline(),
             Reparametrization::NotAKnot,
             Some(CiConfig::after(0.5)),
+            CU_CI_SPLINE_MAX_WORK,
         ),
     ] {
         let cfg = BandConfig::default()
@@ -443,7 +461,8 @@ fn simplified_string_matches_neb_cu_vacancy_barrier() {
             .copied()
             .fold(f64::NEG_INFINITY, f64::max)
             - e0;
-        let per_image = surface.rows.load(Ordering::Relaxed) as f64 / interior;
+        let rows = surface.rows.load(Ordering::Relaxed);
+        let per_image = rows as f64 / interior;
         let mid_grad = morse(session.positions().row(2))
             .1
             .iter()
@@ -456,6 +475,11 @@ fn simplified_string_matches_neb_cu_vacancy_barrier() {
         assert!(
             (barrier - neb_barrier).abs() < CU_VACANCY_BARRIER_DIFFERENCE_EV,
             "{label}: barrier {barrier} vs NEB {neb_barrier}"
+        );
+        assert!(
+            rep.iteration <= max_work.0 && rows <= max_work.1,
+            "{label} work ({}, {rows}) exceeded {max_work:?}",
+            rep.iteration
         );
         assert!(
             mid_grad <= DEFAULT_FORCE_TOL,
