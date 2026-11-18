@@ -134,7 +134,7 @@ The surface writes energy and the Cartesian gradient for one image.
 It also carries the kind (=s=, =u=, or =f=), the Hessian index and the evaluation count.
 That count includes the finite differences that decide a step or an index.
 The Lanczos acceptance does not build a dense Hessian.
-=howto/fortran= wraps this ABI for Fortran with finalizer-backed handles for band, min-mode, PAFI, and OH-TST sessions (=rgsaddle_pafi_*= and =rgsaddle_ohtst_*=, ABI minor 44).
+=howto/fortran= wraps this ABI for Fortran with finalizer-backed handles for band, min-mode, PAFI, and OH-TST sessions (=rgsaddle_pafi_*= and =rgsaddle_ohtst_*=, ABI minor 45).
 Band flag bit 2 is =RGSADDLE_BAND_CI_AFTER=.
 It arms the climbing image under =ci_trigger_force= or =ci_trigger_factor= times the first force.
 Either of the two may be 0.
@@ -153,7 +153,7 @@ The report's =evaluations= field took the place of =reserved= at minor 5.
 =cargo cinstall= installs =include/rgsaddle.h= as written.
 
 * Fortran module (meson ~-Dfortran=enabled~)
-=fortran/rgsaddle.f90= defines the Fortran 2008 module =rgsaddle= on top of =include/rgsaddle.h= at ABI major 1, minor 44 (~RGSADDLE_ABI_MAJOR = 1~, ~RGSADDLE_ABI_MINOR = 44~). Meson installs =librgsaddle_fortran.a=, =include/rgsaddle/fortran/rgsaddle.mod=, =rgsaddle-fortran.pc=, and the relocatable CMake package =rgsaddleFortran= (imported target =rgsaddle::fortran=). =librgsaddle= itself is built by cargo (=--features capi=). Narrative and runnable programs are in @@rst::doc:`howto/fortran <howto/fortran>`@@.
+=fortran/rgsaddle.f90= defines the Fortran 2008 module =rgsaddle= on top of =include/rgsaddle.h= at ABI major 1, minor 45 (~RGSADDLE_ABI_MAJOR = 1~, ~RGSADDLE_ABI_MINOR = 45~). Meson installs =librgsaddle_fortran.a=, =include/rgsaddle/fortran/rgsaddle.mod=, =rgsaddle-fortran.pc=, and the relocatable CMake package =rgsaddleFortran= (imported target =rgsaddle::fortran=). =librgsaddle= itself is built by cargo (=--features capi=). Narrative and runnable programs are in @@rst::doc:`howto/fortran <howto/fortran>`@@.
 
 | Item | Role |
 |------+------|
