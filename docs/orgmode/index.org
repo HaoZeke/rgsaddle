@@ -88,6 +88,7 @@ while report.status != BandStatus::Converged {
    howto/stencil
    howto/formal
    explanation/mep
+   explanation/ohtst-pafi-exact
    explanation/one-stencil
    explanation/hyperplane-methods
    explanation/symmetry-regions

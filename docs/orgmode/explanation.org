@@ -9,6 +9,9 @@ The operation lifting, the split between path multiplicity and in-plane
 region degeneracy, and the nearest-image convention are described in
 @@rst::doc:`crystal operations and symmetry-unique regions <explanation/symmetry-regions>`@@.
 
+* Exact PAFI and OH-TST references
+@@rst::doc:`ohtst-pafi-exact <explanation/ohtst-pafi-exact>`@@ records how the tests compute deterministic quadrature and mean-first-passage references for PAFI and OH-TST validation.
+
 * Index-1 Newton
 =Index1Session= searches an index-1 saddle on a Cartesian energy Hessian. The displacement is Baker's restricted-step partitioned RFO: a 2 by 2 rational-function problem maximizes the lowest mode, a second rational-function problem minimizes the complement, and the Besalu-Bofill scaling is solved so the Cartesian step lies inside the trust sphere. Powell or Bofill updates the Hessian from the gradient difference. The trust radius shrinks when that model predicts the energy change poorly and grows when a step on the sphere agrees with it.
 
