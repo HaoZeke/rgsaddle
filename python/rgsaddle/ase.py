@@ -1119,7 +1119,7 @@ class GrowingString:
         frontier_tol: float = 0.2,
         min_steps_per_node: int = 1,
         max_steps_per_node: int = 0,
-        join_tol: float = 0.0,
+        join_tol: float | None = None,
         climb: bool = True,
         ci_after: float = 0.5,
         ci_after_rel: float = 0.0,
@@ -1139,7 +1139,7 @@ class GrowingString:
         self.frontier_tol = float(frontier_tol)
         self.min_steps_per_node = int(min_steps_per_node)
         self.max_steps_per_node = int(max_steps_per_node)
-        self.join_tol = float(join_tol)
+        self.join_tol = None if join_tol is None else float(join_tol)
         self.climb = bool(climb)
         self.ci_after = float(ci_after)
         self.ci_after_rel = float(ci_after_rel)

@@ -311,9 +311,9 @@ class Band:
         """
 
 class GrowingString:
-    def __init__(self, reactant: Annotated[NDArray[numpy.float64], dict(shape=(None,), order='C', device='cpu', writable=False)], product: Annotated[NDArray[numpy.float64], dict(shape=(None,), order='C', device='cpu', writable=False)], n_images: int = 11, frontier_tol: float = 0.2, min_steps_per_node: int = 1, max_steps_per_node: int = 0, join_tol: float = 0.0, climb: bool = True, ci_after: float = 0.5, ci_after_rel: float = 0.0, method: str = 'fire', memory: int = 20, force_tol: float = 0.001, max_move: float = 0.2, remove_translation: bool = True, min_mode: bool = False, reparametrization: str = 'not-a-knot', cell: object | None = None, fixed: object | None = None) -> None:
+    def __init__(self, reactant: Annotated[NDArray[numpy.float64], dict(shape=(None,), order='C', device='cpu', writable=False)], product: Annotated[NDArray[numpy.float64], dict(shape=(None,), order='C', device='cpu', writable=False)], n_images: int = 11, frontier_tol: float = 0.2, min_steps_per_node: int = 1, max_steps_per_node: int = 0, join_tol: float | None = None, climb: bool = True, ci_after: float = 0.5, ci_after_rel: float = 0.0, method: str = 'fire', memory: int = 20, force_tol: float = 0.001, max_move: float = 0.2, remove_translation: bool = True, min_mode: bool = False, reparametrization: str = 'not-a-knot', cell: object | None = None, fixed: object | None = None) -> None:
         """
-        Growing string session (Peters, Heyden, Bell and Chakraborty 2004, ABI minor 43).
+        Growing string session (Peters, Heyden, Bell and Chakraborty 2004, ABI minor 44).
         """
 
     def step(self, surface: Callable[..., tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]]) -> SessionReport:
@@ -348,7 +348,7 @@ class GrowingString:
 
     def saddle_index(self) -> SaddleIndex:
         """
-        Certificate of the climbing image once joined and converged (ABI minor 43).
+        Certificate of the climbing image once joined and converged (ABI minor 44).
         """
 
 class SellaSaddle:
