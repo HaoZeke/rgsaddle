@@ -1,7 +1,7 @@
 #+TITLE: Use the Fortran bindings
 #+OPTIONS: toc:nil num:nil author:nil
 
-The optional Fortran layer builds a Fortran 2008 module, =rgsaddle=, over =include/rgsaddle.h= (ABI major 1, minor 44) using =iso_c_binding=. See @@rst::doc:`the reference page <../reference>`@@ for the full symbol table of the module.
+The optional Fortran layer builds a Fortran 2008 module, =rgsaddle=, over =include/rgsaddle.h= (ABI major 1, minor 45) using =iso_c_binding=. See @@rst::doc:`the reference page <../reference>`@@ for the full symbol table of the module.
 
 * Build and link
 The feature is off by default in the top-level =meson.build=. Build the Rust C ABI library first, then configure and install the Fortran wrapper with meson:
@@ -285,7 +285,8 @@ program pafi_ohtst_demo
   pcfg%thermalize = 5_c_int64_t
   pcfg%stride = 1_c_int64_t
   pcfg%samples = 200_c_int64_t
-  pcfg%blocks = 5_c_int64_t
+  ! A 1D path gives a deterministic series with 2.2 effective samples.
+  pcfg%blocks = 2_c_int64_t
   pcfg%seed = 3_c_int64_t
   pcfg%fix_com = 0_c_int32_t
   pcfg%retain = 1_c_int64_t
