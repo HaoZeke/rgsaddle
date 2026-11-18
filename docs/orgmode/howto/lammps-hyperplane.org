@@ -8,7 +8,7 @@ compile rgpot or load LAMMPS.
 
 The supported native stack is:
 
-- =OmniPotentRPC/lammpc= at =dc443997= plus the constrained MD API patch
+- =OmniPotentRPC/lammpc= at =0f5c6bb907956e75243eedfae2e44763c726a2f0=
 - =OmniPotentRPC/rgpot= at =97ebba0b=
 - LAMMPS =stable_22Jul2025_update2=, built as a serial shared library
 
