@@ -95,6 +95,7 @@ pub mod ssneb;
 pub mod stencil;
 pub mod strain_rate;
 pub mod tangent;
+pub mod trics;
 
 // `translated_gradient` is crate-private, so the golden-bit test lives in
 // this module under `cfg(test)`. The Kani harnesses are the same module
@@ -239,6 +240,7 @@ pub use strain_rate::{
     split_translational_modes, symmetrize, transform_tensor, vineyard_prefactor,
 };
 pub use tangent::TangentKind;
+pub use trics::{TricConfig, TricPrimitive, TricSystem};
 
 pub mod cell_log;
 pub mod constraints;

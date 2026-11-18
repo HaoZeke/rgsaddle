@@ -1,0 +1,688 @@
+//! Translation rotation internal coordinates for path construction.
+//!
+//! The primitive coordinates follow the TRIC construction of Wang and
+//! Song, J. Chem. Phys. 144, 214108 (2016).  Bonded fragments carry
+//! ordinary distances, angles and dihedrals together with three
+//! translations and three rotations.  Eigenvectors of the primitive
+//! Wilson metric form a nonredundant coordinate system.
+
+use std::cmp::Ordering;
+
+use ndarray::{Array1, Array2, ArrayView1};
+
+use crate::error::SaddleError;
+use crate::internal::{CartAxis, Rotation, Translation};
+
+const DEFAULT_BOND_FACTOR: f64 = 1.35;
+const DEFAULT_RANK_TOLERANCE: f64 = 0.000_000_000_1;
+const DIFFERENCE_STEP: f64 = 0.000_001;
+const VECTOR_TOLERANCE: f64 = 0.000_000_000_001;
+const JACOBI_SWEEPS_PER_DIMENSION: usize = 24;
+
+/// Controls for constructing a nonredundant TRIC system.
+///
+/// The bond graph is inferred from mutual nearest neighbour scales.
+/// Explicit bonds replace that inference when supplied.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct TricConfig {
+    /// Multiplicative threshold used by inferred bonds.
+    pub bond_factor: f64,
+    /// Relative eigenvalue threshold for the primitive Wilson metric.
+    pub rank_tolerance: f64,
+    /// Optional zero based atom pairs defining the bond graph.
+    pub bonds: Option<Vec<(usize, usize)>>,
+}
+
+with_setters!(TricConfig {
+    with_bond_factor => bond_factor: val f64,
+    with_rank_tolerance => rank_tolerance: val f64,
+    with_bonds => bonds: val Option<Vec<(usize, usize)>>,
+});
+
+impl Default for TricConfig {
+    fn default() -> Self {
+        Self {
+            bond_factor: DEFAULT_BOND_FACTOR,
+            rank_tolerance: DEFAULT_RANK_TOLERANCE,
+            bonds: None,
+        }
+    }
+}
+
+/// One primitive coordinate used to span a TRIC system.
+#[derive(Clone, Debug)]
+pub enum TricPrimitive {
+    /// Distance between two atoms.
+    Distance(usize, usize),
+    /// Angle `a-b-c`.
+    Angle(usize, usize, usize),
+    /// Dihedral `a-b-c-d`.
+    Dihedral(usize, usize, usize, usize),
+    /// Mean fragment position along one Cartesian axis.
+    Translation(Translation),
+    /// Fragment orientation relative to the system reference.
+    Rotation(Rotation),
+}
+
+impl TricPrimitive {
+    /// Coordinate value at a packed `3N` Cartesian geometry.
+    pub fn value(&self, positions: ArrayView1<'_, f64>) -> Result<f64, SaddleError> {
+        check_positions(positions)?;
+        match self {
+            Self::Distance(a, b) => distance(positions, *a, *b),
+            Self::Angle(a, b, c) => angle(positions, *a, *b, *c),
+            Self::Dihedral(a, b, c, d) => dihedral(positions, *a, *b, *c, *d),
+            Self::Translation(coordinate) => coordinate.value(positions),
+            Self::Rotation(coordinate) => coordinate.value(positions),
+        }
+    }
+
+    /// Cartesian derivative of this coordinate.
+    pub fn derivative(&self, positions: ArrayView1<'_, f64>) -> Result<Array1<f64>, SaddleError> {
+        check_positions(positions)?;
+        match self {
+            Self::Distance(a, b) => distance_derivative(positions, *a, *b),
+            Self::Angle(a, b, c) => angle_derivative(positions, *a, *b, *c),
+            Self::Translation(coordinate) => coordinate.gradient(positions),
+            Self::Rotation(coordinate) => coordinate.gradient(positions),
+            Self::Dihedral(..) => central_derivative(self, positions),
+        }
+    }
+
+    fn difference(
+        &self,
+        left: ArrayView1<'_, f64>,
+        right: ArrayView1<'_, f64>,
+    ) -> Result<f64, SaddleError> {
+        let mut difference = self.value(left)? - self.value(right)?;
+        if matches!(self, Self::Dihedral(..)) {
+            let period = std::f64::consts::TAU;
+            if difference > std::f64::consts::PI {
+                difference -= period;
+            } else if difference < -std::f64::consts::PI {
+                difference += period;
+            }
+        }
+        Ok(difference)
+    }
+}
+
+/// A nonredundant TRIC basis tied to one reference geometry.
+#[derive(Clone, Debug)]
+pub struct TricSystem {
+    reference: Array1<f64>,
+    primitives: Vec<TricPrimitive>,
+    basis: Array2<f64>,
+}
+
+impl TricSystem {
+    /// Build a TRIC system from a packed `3N` reference geometry.
+    pub fn new(reference: ArrayView1<'_, f64>, config: &TricConfig) -> Result<Self, SaddleError> {
+        check_positions(reference)?;
+        check_config(config)?;
+        let n_atoms = reference.len() / 3;
+        let bonds = match &config.bonds {
+            Some(bonds) => validate_bonds(bonds, n_atoms)?,
+            None => infer_bonds(reference, config.bond_factor)?,
+        };
+        let fragments = fragments(n_atoms, &bonds);
+        let mut primitives = molecular_primitives(&bonds, n_atoms);
+        for fragment in fragments {
+            for axis in CartAxis::ALL {
+                primitives.push(TricPrimitive::Translation(Translation::new(
+                    fragment.clone(),
+                    axis,
+                )?));
+            }
+            if fragment.len() > 1 {
+                let refpos = fragment_positions(reference, &fragment);
+                for axis in CartAxis::ALL {
+                    primitives.push(TricPrimitive::Rotation(Rotation::new(
+                        fragment.clone(),
+                        axis,
+                        refpos.clone(),
+                    )?));
+                }
+            }
+        }
+        let primitive_b = primitive_wilson_b(&primitives, reference)?;
+        let metric = primitive_b.dot(&primitive_b.t());
+        let basis = nonredundant_basis(&metric, config.rank_tolerance);
+        if basis.ncols() == 0 {
+            return Err(SaddleError::Invalid(
+                "TRIC construction found no independent coordinates".into(),
+            ));
+        }
+        Ok(Self {
+            reference: reference.to_owned(),
+            primitives,
+            basis,
+        })
+    }
+
+    /// Reference geometry used to define rotations and delocalization.
+    pub fn reference(&self) -> ArrayView1<'_, f64> {
+        self.reference.view()
+    }
+
+    /// Primitive coordinates before delocalization.
+    pub fn primitives(&self) -> &[TricPrimitive] {
+        &self.primitives
+    }
+
+    /// Primitive to nonredundant transformation, one coordinate per column.
+    pub fn basis(&self) -> &Array2<f64> {
+        &self.basis
+    }
+
+    /// Number of nonredundant coordinates.
+    pub fn dimension(&self) -> usize {
+        self.basis.ncols()
+    }
+
+    /// Nonredundant coordinate difference `q(left) - q(right)`.
+    pub fn difference(
+        &self,
+        left: ArrayView1<'_, f64>,
+        right: ArrayView1<'_, f64>,
+    ) -> Result<Array1<f64>, SaddleError> {
+        check_same_positions(left, right)?;
+        let mut primitive = Array1::zeros(self.primitives.len());
+        for (slot, coordinate) in primitive.iter_mut().zip(&self.primitives) {
+            *slot = coordinate.difference(left, right)?;
+        }
+        Ok(self.basis.t().dot(&primitive))
+    }
+
+    /// Wilson B matrix of the nonredundant coordinates.
+    pub fn wilson_b(&self, positions: ArrayView1<'_, f64>) -> Result<Array2<f64>, SaddleError> {
+        let primitive = primitive_wilson_b(&self.primitives, positions)?;
+        Ok(self.basis.t().dot(&primitive))
+    }
+}
+
+fn check_config(config: &TricConfig) -> Result<(), SaddleError> {
+    if !(config.bond_factor.is_finite() && config.bond_factor > 1.0) {
+        return Err(SaddleError::Invalid(
+            "TRIC bond factor must be finite and greater than one".into(),
+        ));
+    }
+    if !(config.rank_tolerance.is_finite()
+        && config.rank_tolerance > 0.0
+        && config.rank_tolerance < 1.0)
+    {
+        return Err(SaddleError::Invalid(
+            "TRIC rank tolerance must lie between zero and one".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn check_positions(positions: ArrayView1<'_, f64>) -> Result<(), SaddleError> {
+    if positions.is_empty() || !positions.len().is_multiple_of(3) {
+        return Err(SaddleError::Shape(
+            "TRIC coordinates must be a nonempty 3N vector".into(),
+        ));
+    }
+    if positions.iter().any(|value| !value.is_finite()) {
+        return Err(SaddleError::NonFinite("TRIC coordinates"));
+    }
+    Ok(())
+}
+
+fn check_same_positions(
+    left: ArrayView1<'_, f64>,
+    right: ArrayView1<'_, f64>,
+) -> Result<(), SaddleError> {
+    check_positions(left)?;
+    check_positions(right)?;
+    if left.len() != right.len() {
+        return Err(SaddleError::Shape(
+            "TRIC geometries have different dimensions".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn atom(positions: ArrayView1<'_, f64>, index: usize) -> Result<[f64; 3], SaddleError> {
+    let start = 3 * index;
+    if start + 2 >= positions.len() {
+        return Err(SaddleError::Shape(
+            "TRIC atom index exceeds the geometry".into(),
+        ));
+    }
+    Ok([positions[start], positions[start + 1], positions[start + 2]])
+}
+
+fn sub(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
+    [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
+}
+
+fn dot(left: [f64; 3], right: [f64; 3]) -> f64 {
+    left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
+}
+
+fn cross(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
+    [
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0],
+    ]
+}
+
+fn norm(vector: [f64; 3]) -> f64 {
+    dot(vector, vector).sqrt()
+}
+
+fn scale(vector: [f64; 3], factor: f64) -> [f64; 3] {
+    [vector[0] * factor, vector[1] * factor, vector[2] * factor]
+}
+
+fn distance(positions: ArrayView1<'_, f64>, left: usize, right: usize) -> Result<f64, SaddleError> {
+    let length = norm(sub(atom(positions, left)?, atom(positions, right)?));
+    if length > VECTOR_TOLERANCE {
+        Ok(length)
+    } else {
+        Err(SaddleError::Invalid(
+            "TRIC distance has coincident atoms".into(),
+        ))
+    }
+}
+
+fn distance_derivative(
+    positions: ArrayView1<'_, f64>,
+    left: usize,
+    right: usize,
+) -> Result<Array1<f64>, SaddleError> {
+    let vector = sub(atom(positions, left)?, atom(positions, right)?);
+    let unit = scale(vector, 1.0 / norm(vector));
+    let mut derivative = Array1::zeros(positions.len());
+    for axis in 0..3 {
+        derivative[3 * left + axis] = unit[axis];
+        derivative[3 * right + axis] = -unit[axis];
+    }
+    Ok(derivative)
+}
+
+fn angle(
+    positions: ArrayView1<'_, f64>,
+    left: usize,
+    center: usize,
+    right: usize,
+) -> Result<f64, SaddleError> {
+    let u = sub(atom(positions, left)?, atom(positions, center)?);
+    let v = sub(atom(positions, right)?, atom(positions, center)?);
+    let denominator = norm(u) * norm(v);
+    if denominator <= VECTOR_TOLERANCE {
+        return Err(SaddleError::Invalid(
+            "TRIC angle has a zero length leg".into(),
+        ));
+    }
+    let cosine = (dot(u, v) / denominator).max(-1.0).min(1.0);
+    Ok(cosine.acos())
+}
+
+fn angle_derivative(
+    positions: ArrayView1<'_, f64>,
+    left: usize,
+    center: usize,
+    right: usize,
+) -> Result<Array1<f64>, SaddleError> {
+    let u = sub(atom(positions, left)?, atom(positions, center)?);
+    let v = sub(atom(positions, right)?, atom(positions, center)?);
+    let (nu, nv) = (norm(u), norm(v));
+    let cosine = dot(u, v) / (nu * nv);
+    let sine = (1.0 - cosine * cosine).max(0.0).sqrt();
+    if nu <= VECTOR_TOLERANCE || nv <= VECTOR_TOLERANCE || sine <= VECTOR_TOLERANCE {
+        return Err(SaddleError::Invalid(
+            "TRIC angle derivative is singular".into(),
+        ));
+    }
+    let left_gradient = scale(
+        sub(scale(u, cosine / nu), scale(v, 1.0 / nv)),
+        1.0 / (nu * sine),
+    );
+    let right_gradient = scale(
+        sub(scale(v, cosine / nv), scale(u, 1.0 / nu)),
+        1.0 / (nv * sine),
+    );
+    let center_gradient = scale(
+        [
+            left_gradient[0] + right_gradient[0],
+            left_gradient[1] + right_gradient[1],
+            left_gradient[2] + right_gradient[2],
+        ],
+        -1.0,
+    );
+    let mut derivative = Array1::zeros(positions.len());
+    for axis in 0..3 {
+        derivative[3 * left + axis] = left_gradient[axis];
+        derivative[3 * center + axis] = center_gradient[axis];
+        derivative[3 * right + axis] = right_gradient[axis];
+    }
+    Ok(derivative)
+}
+
+fn dihedral(
+    positions: ArrayView1<'_, f64>,
+    a: usize,
+    b: usize,
+    c: usize,
+    d: usize,
+) -> Result<f64, SaddleError> {
+    let b0 = sub(atom(positions, a)?, atom(positions, b)?);
+    let b1 = sub(atom(positions, c)?, atom(positions, b)?);
+    let b2 = sub(atom(positions, d)?, atom(positions, c)?);
+    let b1_norm = norm(b1);
+    if b1_norm <= VECTOR_TOLERANCE {
+        return Err(SaddleError::Invalid(
+            "TRIC dihedral has a zero central bond".into(),
+        ));
+    }
+    let axis = scale(b1, 1.0 / b1_norm);
+    let v = sub(b0, scale(axis, dot(b0, axis)));
+    let w = sub(b2, scale(axis, dot(b2, axis)));
+    if norm(v) <= VECTOR_TOLERANCE || norm(w) <= VECTOR_TOLERANCE {
+        return Err(SaddleError::Invalid(
+            "TRIC dihedral is undefined at a linear angle".into(),
+        ));
+    }
+    Ok(dot(cross(axis, v), w).atan2(dot(v, w)))
+}
+
+fn central_derivative(
+    coordinate: &TricPrimitive,
+    positions: ArrayView1<'_, f64>,
+) -> Result<Array1<f64>, SaddleError> {
+    let mut derivative = Array1::zeros(positions.len());
+    let mut trial = positions.to_owned();
+    for slot in 0..positions.len() {
+        trial[slot] = positions[slot] + DIFFERENCE_STEP;
+        let plus = coordinate.value(trial.view())?;
+        trial[slot] = positions[slot] - DIFFERENCE_STEP;
+        let minus = coordinate.value(trial.view())?;
+        trial[slot] = positions[slot];
+        let mut difference = plus - minus;
+        if matches!(coordinate, TricPrimitive::Dihedral(..)) {
+            if difference > std::f64::consts::PI {
+                difference -= std::f64::consts::TAU;
+            } else if difference < -std::f64::consts::PI {
+                difference += std::f64::consts::TAU;
+            }
+        }
+        derivative[slot] = difference / (2.0 * DIFFERENCE_STEP);
+    }
+    Ok(derivative)
+}
+
+fn primitive_wilson_b(
+    primitives: &[TricPrimitive],
+    positions: ArrayView1<'_, f64>,
+) -> Result<Array2<f64>, SaddleError> {
+    let mut matrix = Array2::zeros((primitives.len(), positions.len()));
+    for (row, primitive) in primitives.iter().enumerate() {
+        matrix
+            .row_mut(row)
+            .assign(&primitive.derivative(positions)?);
+    }
+    Ok(matrix)
+}
+
+fn validate_bonds(
+    bonds: &[(usize, usize)],
+    n_atoms: usize,
+) -> Result<Vec<(usize, usize)>, SaddleError> {
+    let mut checked = Vec::with_capacity(bonds.len());
+    for &(left, right) in bonds {
+        if left == right || left >= n_atoms || right >= n_atoms {
+            return Err(SaddleError::Shape(
+                "TRIC bond contains an invalid atom pair".into(),
+            ));
+        }
+        let pair = (left.min(right), left.max(right));
+        if !checked.contains(&pair) {
+            checked.push(pair);
+        }
+    }
+    checked.sort_unstable();
+    Ok(checked)
+}
+
+fn infer_bonds(
+    positions: ArrayView1<'_, f64>,
+    factor: f64,
+) -> Result<Vec<(usize, usize)>, SaddleError> {
+    let n_atoms = positions.len() / 3;
+    if n_atoms < 2 {
+        return Ok(Vec::new());
+    }
+    let mut distances = Array2::from_elem((n_atoms, n_atoms), f64::INFINITY);
+    let mut nearest = vec![f64::INFINITY; n_atoms];
+    for left in 0..n_atoms {
+        for right in left + 1..n_atoms {
+            let separation = distance(positions, left, right)?;
+            distances[(left, right)] = separation;
+            distances[(right, left)] = separation;
+            nearest[left] = nearest[left].min(separation);
+            nearest[right] = nearest[right].min(separation);
+        }
+    }
+    let mut scale = nearest.clone();
+    scale.sort_by(|left, right| left.partial_cmp(right).unwrap_or(Ordering::Equal));
+    let median = scale[scale.len() / 2];
+    let global_limit = factor * median;
+    let mut bonds = Vec::new();
+    for left in 0..n_atoms {
+        for right in left + 1..n_atoms {
+            let local_limit = factor * (nearest[left] + nearest[right]) * 0.5;
+            if distances[(left, right)] <= local_limit.min(global_limit) {
+                bonds.push((left, right));
+            }
+        }
+    }
+    Ok(bonds)
+}
+
+fn fragments(n_atoms: usize, bonds: &[(usize, usize)]) -> Vec<Vec<usize>> {
+    let mut adjacency = vec![Vec::new(); n_atoms];
+    for &(left, right) in bonds {
+        adjacency[left].push(right);
+        adjacency[right].push(left);
+    }
+    let mut seen = vec![false; n_atoms];
+    let mut result = Vec::new();
+    for start in 0..n_atoms {
+        if seen[start] {
+            continue;
+        }
+        let mut stack = vec![start];
+        let mut fragment = Vec::new();
+        seen[start] = true;
+        while let Some(atom) = stack.pop() {
+            fragment.push(atom);
+            for &next in &adjacency[atom] {
+                if !seen[next] {
+                    seen[next] = true;
+                    stack.push(next);
+                }
+            }
+        }
+        fragment.sort_unstable();
+        result.push(fragment);
+    }
+    result
+}
+
+fn molecular_primitives(bonds: &[(usize, usize)], n_atoms: usize) -> Vec<TricPrimitive> {
+    let mut adjacency = vec![Vec::new(); n_atoms];
+    let mut primitives = Vec::new();
+    for &(left, right) in bonds {
+        adjacency[left].push(right);
+        adjacency[right].push(left);
+        primitives.push(TricPrimitive::Distance(left, right));
+    }
+    for neighbors in &mut adjacency {
+        neighbors.sort_unstable();
+    }
+    for center in 0..n_atoms {
+        for first in 0..adjacency[center].len() {
+            for second in first + 1..adjacency[center].len() {
+                primitives.push(TricPrimitive::Angle(
+                    adjacency[center][first],
+                    center,
+                    adjacency[center][second],
+                ));
+            }
+        }
+    }
+    let mut dihedrals = Vec::new();
+    for &(b, c) in bonds {
+        for &a in &adjacency[b] {
+            if a == c {
+                continue;
+            }
+            for &d in &adjacency[c] {
+                if d == b || d == a {
+                    continue;
+                }
+                let forward = (a, b, c, d);
+                let reverse = (d, c, b, a);
+                let canonical = if forward <= reverse { forward } else { reverse };
+                if !dihedrals.contains(&canonical) {
+                    dihedrals.push(canonical);
+                }
+            }
+        }
+    }
+    dihedrals.sort_unstable();
+    primitives.extend(
+        dihedrals
+            .into_iter()
+            .map(|(a, b, c, d)| TricPrimitive::Dihedral(a, b, c, d)),
+    );
+    primitives
+}
+
+fn fragment_positions(positions: ArrayView1<'_, f64>, fragment: &[usize]) -> Array2<f64> {
+    Array2::from_shape_fn((fragment.len(), 3), |(row, axis)| {
+        positions[3 * fragment[row] + axis]
+    })
+}
+
+fn nonredundant_basis(metric: &Array2<f64>, tolerance: f64) -> Array2<f64> {
+    let (values, vectors) = symmetric_eigen(metric);
+    let largest = values.iter().copied().fold(0.0_f64, f64::max);
+    let mut indices: Vec<usize> = (0..values.len())
+        .filter(|&index| values[index] > largest * tolerance)
+        .collect();
+    indices.sort_by(|&left, &right| {
+        values[right]
+            .partial_cmp(&values[left])
+            .unwrap_or(Ordering::Equal)
+    });
+    Array2::from_shape_fn((metric.nrows(), indices.len()), |(row, column)| {
+        vectors[(row, indices[column])]
+    })
+}
+
+fn symmetric_eigen(matrix: &Array2<f64>) -> (Vec<f64>, Array2<f64>) {
+    let n = matrix.nrows();
+    let mut work = matrix.clone();
+    let mut vectors = Array2::eye(n);
+    for _ in 0..n.saturating_mul(JACOBI_SWEEPS_PER_DIMENSION) {
+        let mut p = 0;
+        let mut q = 0;
+        let mut largest = 0.0_f64;
+        for row in 0..n {
+            for column in row + 1..n {
+                let value = work[(row, column)].abs();
+                if value > largest {
+                    largest = value;
+                    p = row;
+                    q = column;
+                }
+            }
+        }
+        if largest <= VECTOR_TOLERANCE {
+            break;
+        }
+        let app = work[(p, p)];
+        let aqq = work[(q, q)];
+        let apq = work[(p, q)];
+        let angle = 0.5 * (2.0 * apq).atan2(aqq - app);
+        let (sine, cosine) = angle.sin_cos();
+        for row in 0..n {
+            if row == p || row == q {
+                continue;
+            }
+            let arp = work[(row, p)];
+            let arq = work[(row, q)];
+            work[(row, p)] = cosine * arp - sine * arq;
+            work[(p, row)] = work[(row, p)];
+            work[(row, q)] = sine * arp + cosine * arq;
+            work[(q, row)] = work[(row, q)];
+        }
+        work[(p, p)] = cosine * cosine * app - 2.0 * sine * cosine * apq + sine * sine * aqq;
+        work[(q, q)] = sine * sine * app + 2.0 * sine * cosine * apq + cosine * cosine * aqq;
+        work[(p, q)] = 0.0;
+        work[(q, p)] = 0.0;
+        for row in 0..n {
+            let vrp = vectors[(row, p)];
+            let vrq = vectors[(row, q)];
+            vectors[(row, p)] = cosine * vrp - sine * vrq;
+            vectors[(row, q)] = sine * vrp + cosine * vrq;
+        }
+    }
+    ((0..n).map(|index| work[(index, index)]).collect(), vectors)
+}
+
+#[cfg(test)]
+mod tests {
+    use approx::assert_abs_diff_eq;
+    use ndarray::array;
+
+    use super::*;
+
+    const TEST_STEP: f64 = 0.000_000_1;
+    const TEST_TOLERANCE: f64 = 0.000_02;
+
+    #[test]
+    fn primitive_wilson_rows_match_finite_differences() {
+        let positions = array![0.0, 0.0, 0.0, 1.2, 0.1, 0.0, 2.0, 0.9, 0.2, 2.8, 1.0, 1.1];
+        let primitives = [
+            TricPrimitive::Distance(0, 1),
+            TricPrimitive::Angle(0, 1, 2),
+            TricPrimitive::Dihedral(0, 1, 2, 3),
+        ];
+        for primitive in primitives {
+            let derivative = primitive.derivative(positions.view()).unwrap();
+            for slot in 0..positions.len() {
+                let mut plus = positions.clone();
+                let mut minus = positions.clone();
+                plus[slot] += TEST_STEP;
+                minus[slot] -= TEST_STEP;
+                let numerical =
+                    primitive.difference(plus.view(), minus.view()).unwrap() / (2.0 * TEST_STEP);
+                assert_abs_diff_eq!(derivative[slot], numerical, epsilon = TEST_TOLERANCE);
+            }
+        }
+    }
+
+    #[test]
+    fn a_tric_basis_is_nonredundant() {
+        let water = array![0.0, 0.0, 0.0, 0.96, 0.0, 0.0, -0.24, 0.93, 0.0];
+        let config = TricConfig::default().with_bonds(Some(vec![(0, 1), (0, 2)]));
+        let system = TricSystem::new(water.view(), &config).unwrap();
+        assert_eq!(system.dimension(), water.len());
+        let b = system.wilson_b(water.view()).unwrap();
+        assert_eq!(b.dim(), (water.len(), water.len()));
+    }
+
+    #[test]
+    fn inferred_bonds_keep_a_chain_sparse() {
+        let chain = array![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 2.0, 0.2, 0.0];
+        let bonds = infer_bonds(chain.view(), DEFAULT_BOND_FACTOR).unwrap();
+        assert_eq!(bonds, vec![(0, 1), (1, 2)]);
+    }
+}
