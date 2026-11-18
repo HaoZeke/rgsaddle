@@ -15,7 +15,8 @@ crate-type = ["lib", "cdylib", "staticlib"]
 
 [features]
 default = ["faer"]
-capi = []
+# The C header declares the OH-TST handle, so the C ABI builds the ohtst module.
+capi = ["ohtst"]
 par = ["rgmin/par"]
 highs = ["rgmin/highs"]
 ohtst = []
