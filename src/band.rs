@@ -39,6 +39,13 @@ pub(crate) use min_mode::RefinePhase;
 pub use string::{StringConfig, StringSession};
 pub use zoom::ZoomConfig;
 
+fn lock_guard<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
 /// Row-major 3x3 simulation cell: row `i` is lattice vector `a_i`.
 /// Band mechanics need nothing more from periodicity; neighbor lists
 /// (when a surface wants them) are vesin's job, not this crate's.
@@ -3134,6 +3141,7 @@ impl BandSession {
             self.positions.row_mut(i).assign(&new_row);
             if i == 0 || i == n_images - 1 {
                 self.state.set_endpoints(None);
+                self.free_end_state.fixed_endpoint_energy = None;
                 // The interior may be unchanged, so the solver's own
                 // cached force (assembled against the old endpoint)
                 // would answer the next step; drop it, keep the memory.
@@ -3161,6 +3169,7 @@ impl BandSession {
     pub fn reset(&mut self) {
         self.restart();
         self.state.set_endpoints(None);
+        self.free_end_state.fixed_endpoint_energy = None;
         self.state.drop_last();
     }
 
@@ -3256,6 +3265,20 @@ impl BandSession {
             gradients: last.gradients.clone(),
             projected,
         })
+    }
+
+    pub(super) fn cache_free_end_evaluation(&self, energies: Array1<f64>, gradients: Array2<f64>) {
+        let evaluation = BandEval {
+            x: self.interior_flat(),
+            energies,
+            gradients,
+            projected: Array1::zeros(0),
+            stresses: Array2::zeros((0, 0)),
+            band_positions: Array2::zeros((0, 0)),
+            band_cells: Vec::new(),
+        };
+        *lock_guard(&self.state.last) = Some(evaluation);
+        *lock_guard(&self.state.previous) = None;
     }
 
     fn interior_flat(&self) -> Array1<f64> {
