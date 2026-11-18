@@ -90,7 +90,7 @@ set_target_properties(_core PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "$<1:${_core_stage}>")
 
 if(NOT MSVC)
-  target_compile_options(_core PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_options(_core PRIVATE -Wall -Wextra -Wpedantic -Wswitch -Werror=switch)
 endif()
 
 # Windows free-threaded builds define Py_GIL_DISABLED when the

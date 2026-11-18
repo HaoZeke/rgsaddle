@@ -532,8 +532,7 @@ impl SymmetryUniqueRegion {
     /// mirror between equivalent directions.
     ///
     /// Permutations are either supplied or obtained by species-aware
-    /// nearest-image matching. The supplied group must include the identity
-    /// when that element is part of the stabilizer being counted.
+    /// nearest-image matching. The supplied group must include the identity.
     ///
     /// ```
     /// use ndarray::{Array2, array};
@@ -599,6 +598,14 @@ impl SymmetryUniqueRegion {
             if distinct {
                 saddle_images.push(image);
             }
+        }
+        if !operations
+            .iter()
+            .any(|operation| operation_is_identity(operation, config))
+        {
+            return Err(SaddleError::Invalid(
+                "the crystal symmetry group must include the identity".into(),
+            ));
         }
         if reactant_stabilizer == 0 {
             return Err(SaddleError::Invalid(
@@ -930,6 +937,42 @@ fn validate_crystal_input(
         }
     }
     Ok(())
+}
+
+fn operation_is_identity(
+    operation: &CrystalSymmetryOperation,
+    config: &CrystalSymmetryConfig,
+) -> bool {
+    if operation.rotation.dim() != (3, 3) {
+        return false;
+    }
+    let rotation_error = operation
+        .rotation
+        .indexed_iter()
+        .map(|((row, column), value)| {
+            let target = if row == column { 1.0 } else { 0.0 };
+            (value - target).abs()
+        })
+        .fold(0.0_f64, f64::max);
+    if rotation_error > config.orthogonality_tolerance {
+        return false;
+    }
+    if let Some(translation) = &operation.translation
+        && translation
+            .iter()
+            .any(|value| value.abs() > config.matching_tolerance)
+    {
+        return false;
+    }
+    if let Some(permutation) = &operation.permutation
+        && permutation
+            .iter()
+            .enumerate()
+            .any(|(index, target)| *target != index)
+    {
+        return false;
+    }
+    true
 }
 
 fn validate_crystal_operation(

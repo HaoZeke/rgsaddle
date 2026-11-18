@@ -1,5 +1,6 @@
 """Fixed-plane thermodynamic integration through the callback binding."""
 
+import re
 from pathlib import Path
 
 import numpy as np
@@ -68,6 +69,35 @@ def test_binding_docstring_names_the_sampler_contract() -> None:
         assert _flat(DOC) in text
 
 
+_TOP_LEVEL_DEF = re.compile(r"^(?:async\s+def|def|class)\s+([A-Za-z_][A-Za-z0-9_]*)")
+_TOP_LEVEL_ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=]+)?=")
+
+
+def _top_level_names(text: str) -> list[str]:
+    names: list[str] = []
+    for line in text.splitlines():
+        if not line or line[0].isspace() or line.startswith("#"):
+            continue
+        defined = _TOP_LEVEL_DEF.match(line)
+        if defined:
+            names.append(defined.group(1))
+            continue
+        assigned = _TOP_LEVEL_ASSIGN.match(line)
+        if assigned:
+            names.append(assigned.group(1))
+    return names
+
+
+def _duplicate_names(text: str) -> list[str]:
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for name in _top_level_names(text):
+        if name in seen and name not in duplicates:
+            duplicates.append(name)
+        seen.add(name)
+    return duplicates
+
+
 def test_checked_in_stub_matches_stubgen_contract() -> None:
     text = STUB.read_text(encoding="utf-8")
     start = text.index("def hyperplane_thermodynamic_integration")
@@ -78,3 +108,19 @@ def test_checked_in_stub_matches_stubgen_contract() -> None:
     assert "normal: numpy.typing.NDArray[numpy.float64]" in window
     assert _flat(DOC) in _flat(window)
     assert "Fixed-plane lambda TI. sampler(" not in window
+    assert _duplicate_names(text) == []
+
+
+def test_duplicate_stub_symbols_are_rejected() -> None:
+    repeated = (
+        "def hyperplane_thermodynamic_integration():\n"
+        "    pass\n"
+        "\n"
+        "def hyperplane_thermodynamic_integration():\n"
+        "    pass\n"
+    )
+    assert _duplicate_names(repeated) == ["hyperplane_thermodynamic_integration"]
+    constants = (
+        "THERMODYNAMIC_DERIVATIVE: str = 'a'\nTHERMODYNAMIC_DERIVATIVE: str = 'b'\n"
+    )
+    assert _duplicate_names(constants) == ["THERMODYNAMIC_DERIVATIVE"]
