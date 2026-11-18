@@ -206,6 +206,27 @@ int main() {
         return 1;
     }
 
+    std::vector<double> fpos(7 * 3);
+    for (int i = 0; i < 7; ++i) {
+        const double t = static_cast<double>(i) / 6.0;
+        fpos[static_cast<std::size_t>(3 * i)] = -1.0 + 1.6 * t;
+        fpos[static_cast<std::size_t>(3 * i + 1)] = 0.2 * std::sin(3.14159265358979 * t);
+        fpos[static_cast<std::size_t>(3 * i + 2)] = 0.0;
+    }
+    rgsaddle::Band fe_band(cfg, 7, n_atoms, fpos.data());
+    fe_band.set_free_end(true, RGSADDLE_FREE_END_LAST, true, 0.25, 0);
+    rgsaddle::Report fe_rep;
+    for (int i = 0; i < 500; ++i) {
+        fe_rep = fe_band.step(surface, nullptr);
+        if (fe_rep.converged()) {
+            break;
+        }
+    }
+    if (!fe_rep.converged() || std::fabs(fe_band.free_end_residual()) > 1e-5) {
+        std::fprintf(stderr, "C++ free-end band did not converge on level set\n");
+        return 1;
+    }
+
     std::vector<double> pair(static_cast<std::size_t>(n_images * 6));
     for (std::size_t i = 0; i < static_cast<std::size_t>(n_images); ++i) {
         for (std::size_t c = 0; c < 3; ++c) {
