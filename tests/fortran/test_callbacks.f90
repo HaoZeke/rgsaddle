@@ -33,8 +33,9 @@ module rgsaddle_fortran_callback_fixtures
   end type nested_surface_ctx
 
   public :: shifted_surface, null_user_surface, c_shifted_surface, &
-    scaled_pafi_surface, scaled_ohtst_surface, null_user_point_surface, &
-    c_scaled_point_surface, nested_outer_band_surface, &
+    c_null_user_surface, scaled_pafi_surface, scaled_ohtst_surface, &
+    null_user_point_surface, c_scaled_point_surface, &
+    c_null_user_point_surface, nested_outer_band_surface, &
     nested_outer_minmode_surface, nested_outer_pafi_surface, &
     nested_outer_ohtst_surface
 
@@ -166,6 +167,45 @@ contains
     status = RGSADDLE_OK
   end function c_shifted_surface
 
+  recursive integer(c_int) function c_null_user_surface(user, req_ptr) bind(C) result(status)
+    type(c_ptr), value :: user
+    type(c_ptr), value :: req_ptr
+    type(rgsaddle_surface_request_t), pointer :: req
+    real(c_double), pointer :: pos(:), ene(:), grad(:)
+    integer(c_int64_t) :: npos, neval
+    integer :: i
+    real(c_double) :: row(3), g(3), energy
+    if (c_associated(user)) then
+      status = RGSADDLE_INVALID_PARAMETER
+      return
+    end if
+    call c_f_pointer(req_ptr, req)
+    if (.not. associated(req)) then
+      status = RGSADDLE_INVALID_PARAMETER
+      return
+    end if
+    if (req%n_atoms /= 1_c_int64_t .or. req%n_images < 1_c_int64_t) then
+      status = RGSADDLE_INVALID_PARAMETER
+      return
+    end if
+    if (iand(req%flags, RGSADDLE_REQ_ONE_IMAGE) /= 0_c_int64_t) then
+      neval = 1_c_int64_t
+    else
+      neval = req%n_images
+    end if
+    npos = 3_c_int64_t * req%n_atoms * neval
+    call c_f_pointer(req%positions, pos, [int(npos, kind=kind(0))])
+    call c_f_pointer(req%energies, ene, [int(neval, kind=kind(0))])
+    call c_f_pointer(req%gradients, grad, [int(npos, kind=kind(0))])
+    do i = 1, int(neval, kind=kind(0))
+      row = pos(3 * (i - 1) + 1:3 * (i - 1) + 3)
+      call eval_shifted_well(row, [0.0_c_double, 0.0_c_double, 0.0_c_double], 1.0_c_double, energy, g)
+      ene(i) = energy
+      grad(3 * (i - 1) + 1:3 * (i - 1) + 3) = g
+    end do
+    status = RGSADDLE_OK
+  end function c_null_user_surface
+
   recursive integer(c_int) function scaled_pafi_surface(user, n_dof, position, energy, gradient) result(status)
     type(c_ptr), value :: user
     integer(c_int64_t), value :: n_dof
@@ -281,6 +321,37 @@ contains
       status = RGSADDLE_INVALID_PARAMETER
     end if
   end function c_scaled_point_surface
+
+  recursive integer(c_int) function c_null_user_point_surface(user, n_dof, pos_ptr, energy, grad_ptr) &
+      bind(C) result(status)
+    type(c_ptr), value :: user
+    integer(c_int64_t), value :: n_dof
+    type(c_ptr), value :: pos_ptr
+    real(c_double), intent(out) :: energy
+    type(c_ptr), value :: grad_ptr
+    real(c_double), pointer :: pos(:), grad(:)
+    real(c_double) :: x
+    energy = 0.0_c_double
+    if (c_associated(user) .or. n_dof < 1_c_int64_t) then
+      status = RGSADDLE_INVALID_PARAMETER
+      return
+    end if
+    call c_f_pointer(pos_ptr, pos, [int(n_dof, kind=kind(0))])
+    call c_f_pointer(grad_ptr, grad, [int(n_dof, kind=kind(0))])
+    if (n_dof == 1_c_int64_t) then
+      x = pos(1)
+      energy = (1.0_c_double - x * x) ** 2
+      grad(1) = -4.0_c_double * x * (1.0_c_double - x * x)
+      status = RGSADDLE_OK
+    else if (n_dof == 2_c_int64_t) then
+      energy = 0.5_c_double * (-pos(1) * pos(1) + 4.0_c_double * pos(2) * pos(2))
+      grad(1) = -pos(1)
+      grad(2) = 4.0_c_double * pos(2)
+      status = RGSADDLE_OK
+    else
+      status = RGSADDLE_INVALID_PARAMETER
+    end if
+  end function c_null_user_point_surface
 
   recursive integer(c_int) function nested_outer_band_surface(user, n_images, n_atoms, &
       positions, energies, gradients, image) result(status)
@@ -693,7 +764,7 @@ contains
     integer, parameter :: n_images = 9
     type(surface_ctx), target :: ctx, c_ctx
     type(rgsaddle_band_config_t) :: config
-    type(band_handle) :: session, omitted, raw_c
+    type(band_handle) :: session, omitted, raw_c, raw_c_omitted
     type(rgsaddle_report_t) :: report
     real(c_double) :: start(3, n_images), band(3, n_images), zero_start(3, n_images)
     real(c_double) :: t, err
@@ -760,12 +831,21 @@ contains
     status = raw_c%step_c(c_funloc(c_shifted_surface), c_loc(c_ctx), report)
     call check_status("band step_c user", status)
     if (c_ctx%calls < 1_c_int64_t) stop 2
+
+    status = raw_c_omitted%create(config, int(n_images, c_int64_t), 1_c_int64_t, zero_start)
+    call check_status("create band step_c omitted user", status)
+    report%evaluations = 0_c_int32_t
+    status = raw_c_omitted%step_c(c_funloc(c_null_user_surface), out=report)
+    call check_status("band step_c omitted user", status)
+    if (report%evaluations < 1_c_int32_t) stop 2
+    status = raw_c_omitted%step_c(c_funloc(c_null_user_surface))
+    call check_status("band step_c omitted user and out", status)
   end subroutine check_band_user_forwarding
 
   subroutine check_minmode_user_forwarding()
     type(surface_ctx), target :: ctx, c_ctx
     type(rgsaddle_minmode_config_t) :: config
-    type(minmode_handle) :: session, omitted, raw_c
+    type(minmode_handle) :: session, omitted, raw_c, raw_c_omitted
     type(rgsaddle_report_t) :: report
     real(c_double) :: start(3), seed(3), pos(3), zero_start(3)
     procedure(surface_proc), pointer :: cb, null_cb
@@ -822,6 +902,15 @@ contains
     status = raw_c%step_c(c_funloc(c_shifted_surface), c_loc(c_ctx), report)
     call check_status("minmode step_c user", status)
     if (c_ctx%calls < 1_c_int64_t) stop 3
+
+    status = raw_c_omitted%create(config, 1_c_int64_t, zero_start, seed)
+    call check_status("create minmode step_c omitted user", status)
+    report%evaluations = 0_c_int32_t
+    status = raw_c_omitted%step_c(c_funloc(c_null_user_surface), out=report)
+    call check_status("minmode step_c omitted user", status)
+    if (report%evaluations < 1_c_int32_t) stop 3
+    status = raw_c_omitted%step_c(c_funloc(c_null_user_surface))
+    call check_status("minmode step_c omitted user and out", status)
   end subroutine check_minmode_user_forwarding
 
   subroutine check_pafi_user_forwarding()
@@ -829,7 +918,7 @@ contains
     type(point_ctx), target :: ctx, c_ctx
     type(rgsaddle_pafi_config_t) :: config
     type(rgsaddle_pafi_result_t) :: result
-    type(pafi_handle) :: session, omitted, raw_c
+    type(pafi_handle) :: session, omitted, raw_c, raw_c_omitted
     real(c_double) :: frames(n_frames), zero_frames(n_frames)
     procedure(point_surface_proc), pointer :: cb, null_cb
     integer(c_int) :: status
@@ -888,13 +977,21 @@ contains
     status = raw_c%result(result)
     call check_status("pafi run_c result", status)
     if (abs(result%barrier - c_ctx%scale) > 5.0e-2_c_double) stop 4
+
+    status = raw_c_omitted%create(config, int(n_frames, c_int64_t), 1_c_int64_t, zero_frames)
+    call check_status("create pafi run_c omitted user", status)
+    status = raw_c_omitted%run_c(c_funloc(c_null_user_point_surface))
+    call check_status("pafi run_c omitted user", status)
+    status = raw_c_omitted%result(result)
+    call check_status("pafi run_c omitted result", status)
+    if (abs(result%barrier - 1.0_c_double) > 5.0_c_double / 100.0_c_double) stop 4
   end subroutine check_pafi_user_forwarding
 
   subroutine check_ohtst_user_forwarding()
     type(point_ctx), target :: ctx, c_ctx
     type(rgsaddle_ohtst_config_t) :: config
     type(rgsaddle_ohtst_result_t) :: result
-    type(ohtst_handle) :: session, omitted, raw_c
+    type(ohtst_handle) :: session, omitted, raw_c, raw_c_omitted
     real(c_double) :: point(2), zero_point(2), normal(2)
     real(c_double) :: omega_b, eta, kramers, margin
     procedure(point_surface_proc), pointer :: cb, null_cb
@@ -967,6 +1064,14 @@ contains
     call check_status("create ohtst run_c user", status)
     status = raw_c%run_c(c_funloc(c_scaled_point_surface), c_loc(c_ctx))
     call check_status("ohtst run_c user", status)
+
+    status = raw_c_omitted%create(config, 2_c_int64_t, zero_point, normal)
+    call check_status("create ohtst run_c omitted user", status)
+    status = raw_c_omitted%run_c(c_funloc(c_null_user_point_surface))
+    call check_status("ohtst run_c omitted user", status)
+    status = raw_c_omitted%result(result)
+    call check_status("ohtst run_c omitted result", status)
+    if (result%evaluations < 1_c_int64_t) stop 5
   end subroutine check_ohtst_user_forwarding
 
   subroutine check_nested_surface_reentrancy()
