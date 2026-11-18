@@ -119,7 +119,7 @@ and leaves ~docs/orgmode/changelog.org~ as it is.
 Name the fragment ~+<slug>.<type>.org~, or ~<issue>.<type>.org~ for a
 change with an issue number.
 The types are the sections of ~towncrier.toml~: ~breaking~, ~security~,
-~removed~, ~deprecated~, ~added~, ~dev~, ~changed~, ~fixed~ and ~misc~.
+~removed~, ~deprecated~, ~added~, ~doc~, ~dev~, ~changed~, ~fixed~ and ~misc~.
 Write Org markup with one sentence per line.
 A release collects the fragments under a new heading, and ~--draft~
 prints that heading without writing it:

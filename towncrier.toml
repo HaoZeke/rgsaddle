@@ -36,6 +36,11 @@ name = "Added"
 showcontent = true
 
 [[tool.towncrier.type]]
+directory = "doc"
+name = "Documentation"
+showcontent = true
+
+[[tool.towncrier.type]]
 directory = "dev"
 name = "Developer"
 showcontent = true
