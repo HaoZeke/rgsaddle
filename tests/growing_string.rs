@@ -542,3 +542,211 @@ fn fail_on_revert_frontier_tangent_constraint_and_separate_fragment_relaxation()
         assert_eq!(row[5], 5.0);
     }
 }
+
+/// Zero energy and zero gradient everywhere: no node moves, so every
+/// position after a step is set by node placement alone.
+struct FlatSurface;
+
+impl BandSurface for FlatSurface {
+    fn eval(
+        &self,
+        positions: ArrayView2<f64>,
+        energies: &mut Array1<f64>,
+        gradients: &mut Array2<f64>,
+    ) -> Result<(), SaddleError> {
+        energies.fill(0.0);
+        gradients.fill(0.0);
+        assert_eq!(positions.nrows(), energies.len());
+        Ok(())
+    }
+}
+
+fn flat_config(n_images: usize) -> GrowingStringConfig {
+    GrowingStringConfig::default()
+        .with_n_images(n_images)
+        .with_reparametrization(Reparametrization::Linear)
+        .with_remove_translation(false)
+        .with_saddle_check(None)
+        .with_min_mode(None)
+}
+
+/// Endpoints `(0, 0, 0)` and `(9, 0, 0)`: with ten images every node
+/// sits at an integer abscissa, so each placement fraction is visible.
+fn flat_session(config: GrowingStringConfig) -> GrowingStringSession {
+    GrowingStringSession::new(config, array![0.0, 0.0, 0.0], array![9.0, 0.0, 0.0])
+        .expect("flat session")
+}
+
+fn abscissae(rows: ArrayView2<f64>) -> Vec<f64> {
+    rows.outer_iter().map(|row| row[0]).collect()
+}
+
+fn assert_abscissae(actual: Vec<f64>, expected: &[f64], context: &str) {
+    assert_eq!(actual.len(), expected.len(), "{context}: {actual:?}");
+    for (index, (got, want)) in actual.iter().zip(expected).enumerate() {
+        assert!(
+            (got - want).abs() <= 16.0 * f64::EPSILON,
+            "{context}: row {index} is {got}, expected {want}: {actual:?}"
+        );
+    }
+}
+
+fn frontier_gap(session: &GrowingStringSession) -> f64 {
+    let left = session.left_fragment();
+    let right = session.right_fragment();
+    let gap = &right.row(0) - &left.row(left.nrows() - 1);
+    gap.dot(&gap).sqrt()
+}
+
+#[test]
+fn node_placement_fractions_are_exact_on_each_growth_step() {
+    let mut session = flat_session(flat_config(10));
+    assert_abscissae(abscissae(session.left_fragment()), &[0.0, 1.0], "start left");
+    assert_abscissae(abscissae(session.right_fragment()), &[8.0, 9.0], "start right");
+
+    // Gap 1..8 with seven vacant slots left of the eight-slot string: the
+    // left node takes 1/7 of the gap and the right node 6/7 of it.
+    let first = session.step(&FlatSurface).expect("step 1");
+    assert_eq!(first.nodes_added, 2);
+    assert_abscissae(abscissae(session.left_fragment()), &[0.0, 1.0, 2.0], "step 1 left");
+    assert_abscissae(abscissae(session.right_fragment()), &[7.0, 8.0, 9.0], "step 1 right");
+    assert_eq!(session.left_ids(), &[0, 2, 4]);
+    assert_eq!(session.right_ids(), &[5, 3, 1]);
+    assert_eq!((first.left_nodes, first.right_nodes), (3, 3));
+
+    // Gap 2..7 with five vacant slots: 1/5 and 4/5 of the gap.
+    let second = session.step(&FlatSurface).expect("step 2");
+    assert_eq!(second.nodes_added, 2);
+    assert!(!second.joined_this_step);
+    assert_abscissae(
+        abscissae(session.left_fragment()),
+        &[0.0, 1.0, 2.0, 3.0],
+        "step 2 left",
+    );
+    assert_abscissae(
+        abscissae(session.right_fragment()),
+        &[6.0, 7.0, 8.0, 9.0],
+        "step 2 right",
+    );
+    assert_eq!(session.left_ids(), &[0, 2, 4, 6]);
+    assert_eq!(session.right_ids(), &[7, 5, 3, 1]);
+
+    // Gap 3..6 with three vacant slots: 1/3 and 2/3 of the gap; the string
+    // is full, so the step joins.
+    let third = session.step(&FlatSurface).expect("step 3");
+    assert_eq!(third.nodes_added, 2);
+    assert!(third.joined_this_step);
+    assert_abscissae(
+        abscissae(session.positions().view()),
+        &[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+        "joined",
+    );
+    assert_eq!(session.ids(), vec![0, 2, 4, 6, 8, 9, 7, 5, 3, 1]);
+}
+
+#[test]
+fn node_placement_uses_the_spline_curve_for_not_a_knot() {
+    let config = flat_config(10).with_reparametrization(Reparametrization::NotAKnot);
+    let mut session = flat_session(config);
+    session.step(&FlatSurface).expect("step");
+    assert_abscissae(abscissae(session.left_fragment()), &[0.0, 1.0, 2.0], "left");
+    assert_abscissae(abscissae(session.right_fragment()), &[7.0, 8.0, 9.0], "right");
+}
+
+#[test]
+fn join_tol_joins_on_the_gap_left_after_this_steps_additions() {
+    // The gap is 7 before the step adds its two nodes and 5 after them.
+    let config = flat_config(10).with_join_tol(Some(6.0));
+    let mut session = flat_session(config);
+    let report = session.step(&FlatSurface).expect("step");
+
+    assert_eq!(report.nodes_added, 2);
+    assert!(report.joined_this_step, "gap after the additions is 5 <= 6");
+    assert_eq!(report.phase, GrowingStringPhase::Joined);
+    assert_eq!(report.n_images, 10);
+    assert!(session.is_joined());
+    assert_abscissae(
+        abscissae(session.positions().view()),
+        &[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+        "early join",
+    );
+    let ids = session.ids();
+    assert_eq!(ids.len(), 10);
+    assert_eq!(ids[0], 0);
+    assert_eq!(ids[9], 1);
+    let mut sorted = ids.clone();
+    sorted.sort_unstable();
+    assert_eq!(sorted, (0..10).collect::<Vec<_>>());
+    assert_eq!(&ids[..3], &[0, 2, 4], "left fragment ids survive the join");
+    assert_eq!(&ids[7..], &[5, 3, 1], "right fragment ids survive the join");
+}
+
+#[test]
+fn join_tol_fills_the_string_to_n_images_after_an_early_join() {
+    for n_images in [6, 8, 10, 13] {
+        let config = flat_config(n_images).with_join_tol(Some(1000.0));
+        let mut session = flat_session(config);
+        let report = session.step(&FlatSurface).expect("step");
+        assert!(report.joined_this_step, "{n_images} images");
+        assert_eq!(report.n_images, n_images);
+        let positions = session.positions();
+        assert_eq!(positions.nrows(), n_images, "string holds exactly n_images");
+        let spacing = 9.0 / (n_images - 1) as f64;
+        let expected: Vec<f64> = (0..n_images).map(|k| spacing * k as f64).collect();
+        assert_abscissae(abscissae(positions.view()), &expected, "filled string");
+        let mut ids = session.ids();
+        ids.sort_unstable();
+        assert_eq!(ids, (0..n_images as u64).collect::<Vec<_>>());
+    }
+}
+
+#[test]
+fn join_tol_boundary_is_inclusive_and_a_smaller_tolerance_keeps_growing() {
+    let mut probe = flat_session(flat_config(10));
+    probe.step(&FlatSurface).expect("probe step");
+    let gap = frontier_gap(&probe);
+    assert!((gap - 5.0).abs() <= 16.0 * f64::EPSILON, "gap after step 1: {gap}");
+
+    let mut exact = flat_session(flat_config(10).with_join_tol(Some(gap)));
+    let report = exact.step(&FlatSurface).expect("exact step");
+    assert!(report.joined_this_step, "gap == join_tol joins");
+
+    let below = gap * (1.0 - 4.0 * f64::EPSILON);
+    let mut tight = flat_session(flat_config(10).with_join_tol(Some(below)));
+    let report = tight.step(&FlatSurface).expect("tight step");
+    assert!(!report.joined_this_step, "gap > join_tol keeps growing");
+    assert_eq!(report.phase, GrowingStringPhase::Growing);
+    assert_eq!((report.left_nodes, report.right_nodes), (3, 3));
+    assert_eq!(report.n_images, 6);
+
+    let mut zero = flat_session(flat_config(10).with_join_tol(Some(0.0)));
+    let report = zero.step(&FlatSurface).expect("zero step");
+    assert!(!report.joined_this_step, "a zero join_tol never joins a positive gap");
+}
+
+#[test]
+fn join_tol_joins_even_when_no_node_is_added_on_the_step() {
+    // A frontier tolerance no force can meet and a minimum of 100 steps
+    // per node: the step adds nothing, so only the gap can trigger the join.
+    let config = flat_config(10)
+        .with_min_steps_per_node(100)
+        .with_join_tol(Some(8.0));
+    let mut session = flat_session(config);
+    let report = session.step(&FlatSurface).expect("step");
+    assert_eq!(report.nodes_added, 0);
+    assert!(report.joined_this_step, "gap 7 <= 8");
+    assert_eq!(session.positions().nrows(), 10);
+    assert_abscissae(
+        abscissae(session.positions().view()),
+        &[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+        "no-addition join",
+    );
+
+    let config = flat_config(10)
+        .with_min_steps_per_node(100)
+        .with_join_tol(Some(6.0));
+    let mut session = flat_session(config);
+    let report = session.step(&FlatSurface).expect("step");
+    assert!(!report.joined_this_step, "gap 7 > 6 with nothing added");
+    assert_eq!(report.phase, GrowingStringPhase::Growing);
+}
