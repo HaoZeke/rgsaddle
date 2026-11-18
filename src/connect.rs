@@ -328,6 +328,19 @@ pub fn connect(
     right: &[f64],
     settings: &ConnectConfig,
 ) -> Result<ConnectReport, SaddleError> {
+    if left.is_empty() || left.len() != right.len() {
+        return Err(SaddleError::Shape(
+            "connect endpoints must share a nonzero length".into(),
+        ));
+    }
+    if !left.iter().chain(right.iter()).all(|v| v.is_finite()) {
+        return Err(SaddleError::NonFinite("connect endpoints"));
+    }
+    if settings.nsteps == 0 || !(settings.forcetol.is_finite() && settings.forcetol > 0.0) {
+        return Err(SaddleError::Invalid(
+            "connect needs positive nsteps and force tolerance".into(),
+        ));
+    }
     PROFILE.with(|slot| *slot.borrow_mut() = ConnectProfile::default());
     PHASE.with(|slot| slot.set(Phase::Other));
     let mut evaluations = 0usize;
