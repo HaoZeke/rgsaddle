@@ -26,6 +26,99 @@
 //! choice of `fix pafi`. The integral of `dF/ds` from the reactant is the
 //! potential of mean force. Block averages of the equilibrated records
 //! supply the standard error.
+//!
+//! # What goes in
+//!
+//! * A [`PointSurface`] that returns the energy and the Cartesian gradient
+//!   `∇E` (not the force) at a flat coordinate vector. Only
+//!   [`PointSurface::eval`] is used. Energy and length are in whatever
+//!   units the surface uses, and [`PafiConfig::thermal`] and the arc length
+//!   follow them. With [`PafiConfig::fix_com`] the vector is read as
+//!   `x₀, y₀, z₀, x₁, …`, three entries per atom.
+//! * An [`ArcPath`]: ordered frames of the same length, such as the images
+//!   of a converged nudged elastic band, from [`ArcPath::from_positions`],
+//!   or frames with arc lengths of the caller's choosing, from
+//!   [`ArcPath::new`]. The first frame is the reactant and the zero of the
+//!   free energy, so it should be a relaxed minimum. Frames of a periodic
+//!   cell must be unwrapped against the first, because the path is
+//!   interpolated coordinate by coordinate.
+//! * The arc lengths of the hyperplanes to sample, at least two, strictly
+//!   increasing, inside [`ArcPath::bounds`]. [`ArcPath::arcs`] gives one
+//!   plane per frame.
+//! * A [`PafiConfig`].
+//!
+//! # What comes out
+//!
+//! [`pafi_profile`] returns a [`FreeEnergyProfile`], the potential of mean
+//! force `F(s)` from the first plane with its barrier and dividing plane,
+//! and one [`HyperplaneAverage`] per plane with the sampled gradient, its
+//! standard error, `ψ`, the autocorrelation time and the retained
+//! configurations. [`zero_temperature_barrier`] gives the `kT → 0` profile
+//! from the same path without sampling, which is the check that the path
+//! and the surface agree.
+//!
+//! # Example
+//!
+//! A path along the floor of `V = (1 - x²)² + ½ k(x) y²` with
+//! `k = 1.5 + x/2`, from the minimum at `x = -1` to the saddle at `x = 0`.
+//! The transverse stiffness grows along the path, so the free energy
+//! barrier is the potential barrier of 1 plus the transverse entropy
+//! `½ kT ln(k(0) / k(-1))`, here `½ kT ln 1.5`.
+//!
+//! ```
+//! use ndarray::{Array1, ArrayView1};
+//! use rgsaddle::{ArcPath, PafiConfig, PointSurface, SaddleError};
+//! use rgsaddle::{pafi_profile, zero_temperature_barrier};
+//!
+//! struct Widening;
+//!
+//! impl PointSurface for Widening {
+//!     fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+//!         let (x, y) = (x[0], x[1]);
+//!         let stiffness = 1.5 + 0.5 * x;
+//!         let energy = (1.0 - x * x).powi(2) + 0.5 * stiffness * y * y;
+//!         let gradient = Array1::from_vec(vec![
+//!             -4.0 * x * (1.0 - x * x) + 0.25 * y * y,
+//!             stiffness * y,
+//!         ]);
+//!         Ok((energy, gradient))
+//!     }
+//! }
+//!
+//! # fn main() -> Result<(), SaddleError> {
+//! let images: Vec<Array1<f64>> = (0..11)
+//!     .map(|i| Array1::from_vec(vec![-1.0 + i as f64 / 10.0, 0.0]))
+//!     .collect();
+//! let path = ArcPath::from_positions(&images)?;
+//!
+//! let thermal = 0.05;
+//! let config = PafiConfig::default()
+//!     .with_thermal(thermal)
+//!     .with_time_step(0.004)
+//!     .with_thermalize(400)
+//!     .with_stride(8)
+//!     .with_samples(600)
+//!     .with_blocks(6)
+//!     .with_seed(11)
+//!     .with_fix_com(false)
+//!     .with_retain(2);
+//! let (profile, planes) = pafi_profile(&Widening, &path, &path.arcs(), &config)?;
+//!
+//! let truth = 1.0 + 0.5 * thermal * 1.5_f64.ln();
+//! let tolerance = 0.02;
+//! assert!((profile.barrier - truth).abs() < tolerance);
+//! assert_eq!(profile.dividing, profile.arc.len() - 1);
+//! assert_eq!(planes.len(), profile.arc.len());
+//!
+//! let cold = zero_temperature_barrier(&Widening, &path, &path.arcs())?;
+//! assert!((cold.barrier - 1.0).abs() < tolerance);
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! `tests/pafi_analytic.rs` checks the same estimator against
+//! quadrature on a bent valley, on a harmonic plane, and on a plane of two
+//! wells, and `tests/pafi_reference.rs` against the reference code.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -49,19 +142,29 @@ use crate::stats::{EquilibrationReport, Rng, block_mean, equilibrate};
 /// Overdamped hyperplane sampling.
 ///
 /// Non-exhaustive: start from [`PafiConfig::default`] and chain the
-/// `with_*` setters.
+/// `with_*` setters, one per field. [`PafiConfig::thermal`],
+/// [`PafiConfig::mobility`] and [`PafiConfig::time_step`] follow the units
+/// of the surface: `μ dt ∇E` is a length, so `μ dt` is length² per energy.
+/// The setters of the optional fields, [`PafiConfig::target_error`] and
+/// [`PafiConfig::max_jump`], take a bare value or `None`. A run checks its
+/// configuration on entry: `kT`, the mobility and the step must be finite
+/// and positive, the stride positive, [`PafiConfig::blocks`] at least 2,
+/// [`PafiConfig::samples`] at least twice the blocks, and a given
+/// `max_jump` finite and positive.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct PafiConfig {
-    /// `kT` in the energy unit of the surface.
+    /// `kT` in the energy unit of the surface. With energies in eV, it is
+    /// `BOLTZMANN_EV_PER_K * T`.
     pub thermal: f64,
     /// Mobility `μ` in `dx = -μ ∇E dt + sqrt(2 μ kT dt) ξ`.
     pub mobility: f64,
-    /// Overdamped time step.
+    /// Overdamped time step `dt`.
     pub time_step: f64,
     /// Minimum engine warm-up floor before automated equilibration detection.
     pub thermalize: usize,
-    /// Steps between recorded samples.
+    /// Steps between recorded samples. The force is evaluated at every
+    /// step, and the sample is taken from the first of each `stride`.
     pub stride: usize,
     /// Recorded samples. At least twice [`Self::blocks`].
     pub samples: usize,
@@ -69,14 +172,19 @@ pub struct PafiConfig {
     pub blocks: usize,
     /// Seed of the noise.
     pub seed: u64,
-    /// Remove the mean Cartesian drift when the system has at least two atoms.
+    /// Hold the center of mass: remove the mean Cartesian drift from the
+    /// normal, the force and the noise. It takes effect when the vector
+    /// holds at least two atoms, three entries each; otherwise it is
+    /// ignored.
     pub fix_com: bool,
     /// How many recorded configurations to keep, evenly spaced.
     pub retain: usize,
-    /// Stop early when the integrated barrier error is at or below this.
-    /// `None` runs one pass.
+    /// Stop early when [`FreeEnergyProfile::barrier_error`] is at or below
+    /// this. `None` runs one pass.
     pub target_error: Option<f64>,
-    /// Extra sampling passes used to reach [`Self::target_error`].
+    /// Most sampling passes, the first included, used to reach
+    /// [`Self::target_error`]. Without a target there is one pass whatever
+    /// this is, and `1` is also one pass.
     pub max_rounds: usize,
     /// Hard symmetry-unique region and optional additional predicates.
     pub region: Option<Arc<dyn Region>>,
@@ -183,6 +291,9 @@ impl PafiConfig {
 }
 
 /// One frame of a path, with its parameter.
+///
+/// The frames given to [`ArcPath::new`] must share one length, be finite,
+/// and have strictly increasing [`PathFrame::arc`].
 #[derive(Clone, Debug)]
 pub struct PathFrame {
     /// Cartesian coordinates of the frame.
@@ -192,7 +303,11 @@ pub struct PathFrame {
     pub arc: f64,
 }
 
-/// Cubic-spline path through ordered frames.
+/// Cubic-spline path `X(s)` through ordered frames.
+///
+/// [`ArcPath::geometry`] returns the point, tangent and curvature of the
+/// path at any `s`, and [`pafi_profile`] and [`zero_temperature_barrier`]
+/// take the path and the values of `s` to sample.
 ///
 /// Every coordinate is the not-a-knot cubic spline of the frames over
 /// their [`PathFrame::arc`] values: the spline interpolation of NEB images
@@ -206,7 +321,9 @@ pub struct ArcPath {
     spline: Spline,
 }
 
-/// Position and the first two parameter derivatives of a path.
+/// Position and the first two parameter derivatives of a path, from
+/// [`ArcPath::geometry`]. [`average_hyperplane`] takes one of these as the
+/// plane it samples.
 #[derive(Clone, Debug)]
 pub struct PathGeometry {
     /// `X(s)`.
@@ -221,8 +338,18 @@ pub struct PathGeometry {
 }
 
 impl ArcPath {
-    /// Build the path from ordered frames. The parameter must strictly
-    /// increase and neighboring frames must differ.
+    /// Build the path from ordered frames and their parameters.
+    ///
+    /// The parameter is the caller's: chord lengths, as
+    /// [`ArcPath::from_positions`] takes, or any strictly increasing scale
+    /// such as the normalized distance from the first frame. `dF/ds` and the
+    /// arcs passed to [`pafi_profile`] are in that parameter.
+    ///
+    /// Returns [`SaddleError::Invalid`] for fewer than two frames, for a
+    /// parameter that does not strictly increase or is not finite, for
+    /// neighboring frames that are equal, or for a singular spline system;
+    /// and [`SaddleError::Shape`] for empty frames, frames of unequal length,
+    /// or a coordinate that is not finite.
     pub fn new(frames: Vec<PathFrame>) -> Result<Self, SaddleError> {
         if frames.len() < 2 {
             return Err(SaddleError::Invalid(
@@ -280,7 +407,16 @@ impl ArcPath {
         )
     }
 
-    /// Frames in order, reactant first.
+    /// Build the path from frames in order, reactant first, such as the
+    /// images of a nudged elastic band.
+    ///
+    /// The parameter of each frame is the summed length of the straight
+    /// chords from the first, `|x₁ - x₀|` and so on in the whole coordinate
+    /// vector, so `s` has the length unit of the positions and `dF/ds` is an
+    /// energy per length. The curve through the frames is the spline of
+    /// [`ArcPath`], not the chords. Neighboring frames must be finite and
+    /// distinct; otherwise this returns [`SaddleError::Invalid`], and
+    /// [`SaddleError::Shape`] for frames of unequal length.
     pub fn from_positions(positions: &[Array1<f64>]) -> Result<Self, SaddleError> {
         if positions.len() < 2 {
             return Err(SaddleError::Invalid(
@@ -314,18 +450,22 @@ impl ArcPath {
         Self::new(frames)
     }
 
-    /// Arc length of the reactant and of the product.
+    /// Parameter of the first frame and of the last. [`ArcPath::geometry`]
+    /// clamps to this range.
     pub fn bounds(&self) -> (f64, f64) {
         let knots = self.spline.knots();
         (knots[0], knots[knots.len() - 1])
     }
 
-    /// Arc length of every stored frame.
+    /// Parameter of every frame, in order. Passed to [`pafi_profile`] it
+    /// samples one hyperplane through each frame.
     pub fn arcs(&self) -> Vec<f64> {
         self.spline.knots().to_vec()
     }
 
-    /// Spline geometry at `arc`, clamped to the path.
+    /// Spline geometry at `arc`, clamped to [`ArcPath::bounds`]. The
+    /// returned [`PathGeometry::arc`] is the clamped value. A `NaN` or
+    /// infinite `arc` is [`SaddleError::NonFinite`].
     pub fn geometry(&self, arc: f64) -> Result<PathGeometry, SaddleError> {
         if !arc.is_finite() {
             return Err(SaddleError::NonFinite("PAFI arc"));
@@ -343,6 +483,12 @@ impl ArcPath {
 }
 
 /// Mean free-energy gradient on one hyperplane.
+///
+/// `gradient` is the average of `(∇E · t)(1 - ψ)` over the recorded
+/// samples, in energy per unit of the path parameter, and `error` is its
+/// standard error from block means. With more than one pass
+/// ([`PafiConfig::target_error`]) the passes are combined by inverse
+/// variance, `samples` and `n_eff` are summed, and `tau` is the largest.
 #[derive(Clone, Debug)]
 pub struct HyperplaneAverage {
     /// `dF/ds` in energy per arc length.
@@ -379,6 +525,13 @@ pub struct HyperplaneAverage {
 }
 
 /// Potential of mean force from the first plane.
+///
+/// The vectors have one entry per plane, in the order of the arcs given to
+/// [`pafi_profile`]. The integral is the trapezoid rule over the planes, so
+/// planes spaced wider than the scale on which `dF/ds` changes bias it. The
+/// errors add the errors of the planes in quadrature, weighted by the
+/// trapezoid weights, as if the planes were independent. They do not
+/// include the error of the quadrature over the planes.
 #[derive(Clone, Debug)]
 pub struct FreeEnergyProfile {
     /// Arc length of each plane.
@@ -838,7 +991,17 @@ struct Quench {
 
 /// Integrate plane gradients with the trapezoid rule.
 ///
-/// The dividing surface is the maximum of the potential of mean force.
+/// `gradients` and `errors` have one entry for each of `arcs`, which must
+/// strictly increase. `F` is zero at the first arc, the dividing plane is
+/// the first maximum of `F` (the first arc if it never rises), and
+/// [`FreeEnergyProfile::barrier`] is its value there. The errors are the
+/// standard errors of the gradients, finite and not negative. A mismatch in
+/// length is [`SaddleError::Shape`] and the rest [`SaddleError::Invalid`] or
+/// [`SaddleError::NonFinite`]. [`FreeEnergyProfile::samples`] is 0.
+///
+/// [`pafi_profile`] calls this with its plane averages. Call it directly
+/// to integrate gradients that came from somewhere else, such as the
+/// reference code.
 pub fn integrate_profile(
     arcs: &[f64],
     gradients: &[f64],
@@ -879,9 +1042,24 @@ pub fn integrate_profile(
 
 /// Sample every requested arc and integrate.
 ///
+/// `arcs` are values of the path parameter, at least two and strictly
+/// increasing, normally inside [`ArcPath::bounds`] (a value outside is
+/// clamped to it). The planes are sampled in parallel. Plane `k` takes the
+/// seed [`PafiConfig::seed`] `+ k + 1`, so a profile is reproducible and the
+/// planes do not share noise. The returned vector holds one
+/// [`HyperplaneAverage`] per arc, in order.
+///
+/// An error from any plane ends the call: a failed [`PointSurface`]
+/// evaluation, a vanishing tangent, a gradient of the wrong length or not
+/// finite, or [`PafiConfig::max_jump`] rejecting more stretches than there
+/// are blocks.
+///
 /// When [`PafiConfig::target_error`] is set, planes are resampled until the
 /// barrier error is at or below that target or [`PafiConfig::max_rounds`]
-/// is spent. Later rounds are inverse-variance combined with the first.
+/// is spent. Each later round takes between 2 and 8 times
+/// [`PafiConfig::samples`], by the square of the ratio of the barrier error
+/// to the target, with half the thermalization and fresh noise, and is
+/// inverse-variance combined with the sum so far.
 pub fn pafi_profile<S: PointSurface + Sync>(
     surface: &S,
     path: &ArcPath,
@@ -987,11 +1165,21 @@ fn combine(mean_a: f64, error_a: f64, mean_b: f64, error_b: f64) -> (f64, f64) {
 
 /// Integral of `∇E · dX/ds` with the system held on the path.
 ///
+/// Every span between neighboring `arcs` is cut into 64 parts and the
+/// trapezoid rule applied, so the arcs need not be the frames. The returned
+/// profile has 64 planes per span and the last arc, its errors are zero,
+/// and [`FreeEnergyProfile::samples`] is 0. `arcs` must be at least two and
+/// strictly increasing, and the surface needs only [`PointSurface::eval`].
+///
 /// The integral is the energy along the spline, `E(X(s)) - E(X(s0))` up to
 /// the quadrature, and passes through the image energies at the frames.
 /// On a converged minimum-energy path the force in each hyperplane
 /// vanishes, so this is also the zero-temperature limit of the PAFI
-/// integral and reproduces the potential barrier.
+/// integral and reproduces the potential barrier. Compare
+/// [`FreeEnergyProfile::barrier`] of this profile with the highest image
+/// energy less the first before sampling: a path that is not a
+/// minimum-energy path, or a surface that is not the one the images were
+/// relaxed on, shows there.
 pub fn zero_temperature_barrier<S: PointSurface>(
     surface: &S,
     path: &ArcPath,
