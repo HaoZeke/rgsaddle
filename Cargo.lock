@@ -1851,8 +1851,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "rgmin"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3448f6050bc635d3341d5048354f50399f5cfb37bf0c9577f7d6262114e706e1"
+source = "git+https://github.com/OmniPotentRPC/rgmin?rev=f3d18706c2b1ab380fd75f62449fdab46d01f5e2#f3d18706c2b1ab380fd75f62449fdab46d01f5e2"
 dependencies = [
  "dlpk",
  "eindir-core",

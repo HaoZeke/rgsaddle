@@ -42,8 +42,9 @@ readcon-core = { version = "=0.17.1", optional = true }
 readcon-db = { version = "0.2", optional = true }
 # Control::default leaves ftol_rel and noise_floor unset, the 0.5.1
 # behaviour the sessions rely on.
-# rgmin v0.6.0 is consumed from crates.io.
-rgmin = "=0.6.0"
+# rgmin develop commit f3d18706c2b1ab380fd75f62449fdab46d01f5e2 provides
+# LevelSetConstraint for free-end adaptive NEB.
+rgmin = { version = "=0.6.0", git = "https://github.com/OmniPotentRPC/rgmin", rev = "f3d18706c2b1ab380fd75f62449fdab46d01f5e2" }
 eindir-core = { version = "0.6.0", features = ["capi"] }
 ndarray = "0.17"
 faer = { version = "0.24.4", optional = true, default-features = false, features = ["std", "linalg"] }
