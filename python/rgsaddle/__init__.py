@@ -13,6 +13,7 @@ from enum import IntEnum
 from rgsaddle._core import (
     Band as Band,
     ConnectReport as ConnectReport,
+    GrowingString as GrowingString,
     NumericalError as NumericalError,
     SaddleIndex as SaddleIndex,
     SessionReport as SessionReport,
@@ -103,6 +104,7 @@ __all__ = [
     "EigenDevice",
     "ExpandKind",
     "ForceGate",
+    "GrowingString",
     "HessUpdate",
     "IrcKind",
     "MinModeKind",
