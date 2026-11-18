@@ -28,6 +28,10 @@ chemfiles = ["readcon", "readcon-core/chemfiles"]
 # GMP and MPFR stay off the default build. `cargo test --features capi`
 # does not compile this feature.
 verify = ["dep:proptest", "dep:rug"]
+# Reproduction harnesses which drive a canonical potential profile. Kept
+# out of the default graph because the profile schema needs capnp at build
+# time and the full PAFI cases need an external backend such as lammpc.
+pafi-repro = ["dep:capnp", "dep:rgpot-core"]
 # Dense self-adjoint spectra in connect, SQNM, and exact_eigh above
 # dimension 128. On by default.
 # The Kani prove step passes `--no-default-features` so this stays off:
@@ -58,6 +62,8 @@ linkcell = { version = "=0.3.5", git = "https://github.com/d-SEAMS/linkcell", re
 minimage = "=0.1.2"
 proptest = { version = "1.6", optional = true }
 rug = { version = "1.27", optional = true }
+# The reproduction harness constructs rgpot-core's generated schema, whose
+# public Builder types use the Cap'n Proto 0.20 runtime.
 capnp = { version = "0.20", optional = true }
 libloading = { version = "0.8.9", optional = true }
 rgpot-core = { version = "=3.7.0", git = "https://github.com/OmniPotentRPC/rgpot", rev = "97ebba0b062128b7dc4637501c4b70ed4944ae9d", features = ["profile"], optional = true }
