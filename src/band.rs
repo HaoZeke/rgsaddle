@@ -4049,14 +4049,16 @@ impl BandSession {
         gradients: Array2<f64>,
         projected: Array1<f64>,
     ) {
+        let x = self.interior_flat();
+        let assembly_metric = self.expected_metric_at(x.view());
         let evaluation = BandEval {
-            x: self.interior_flat(),
+            x,
             energies,
             gradients,
+            driving: projected.clone(),
             projected,
-            driving: Array1::zeros(0),
             assembly_ci: i64::MIN,
-            assembly_metric: None,
+            assembly_metric,
             stresses: Array2::zeros((0, 0)),
             band_positions: Array2::zeros((0, 0)),
             band_cells: Vec::new(),
