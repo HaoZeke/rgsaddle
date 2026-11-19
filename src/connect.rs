@@ -333,16 +333,17 @@ fn tally(update: impl FnOnce(&mut ConnectProfile)) {
 /// than an error: COMPASS segments stop before taking an SQNM step
 /// while the initial probe and fallback checks still produce a report.
 /// Non-positive or non-finite [`ConnectConfig::forcetol`], non-finite
-/// endpoint coordinates, and invalid endpoint lengths are rejected.
+/// endpoint coordinates, and endpoint slices that do not share a
+/// positive multiple-of-3 length are rejected.
 pub fn connect(
     mut energy_gradient: impl FnMut(&[f64]) -> Result<(f64, Vec<f64>), SaddleError>,
     left: &[f64],
     right: &[f64],
     settings: &ConnectConfig,
 ) -> Result<ConnectReport, SaddleError> {
-    if left.is_empty() || left.len() != right.len() {
+    if left.is_empty() || left.len() != right.len() || !left.len().is_multiple_of(3) {
         return Err(SaddleError::Shape(
-            "connect endpoints must share a nonzero length".into(),
+            "connect endpoints must share a positive multiple of 3 coordinates".into(),
         ));
     }
     if !left.iter().chain(right.iter()).all(|v| v.is_finite()) {
