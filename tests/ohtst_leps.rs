@@ -1,15 +1,22 @@
 #![cfg(feature = "ohtst")]
 
 //! OH-TST on the LEPS plus harmonic oscillator surface of Jóhannesson and
-//! Jónsson, J. Chem. Phys. 115, 9644 (2001), Appendix B, at
-//! `kT = 0.1 E_A` as in their Sec. III B and at lower temperatures.
+//! Jónsson, J. Chem. Phys. 115, 9644 (2001), Appendix B.
 //!
 //! The references are quadrature of the line free energy
 //! `A = -kT ln ∫ exp(-V/kT)` and of the reactant integral behind the
 //! optimal line, with unit masses, computed in each test and independent of
 //! the sampler, and harmonic TST through rgsaddle's dimer and Vineyard
-//! functions. The paper gives its rate constants without units, so they
-//! are not compared here.
+//! functions.
+//!
+//! Sec. III B, printed p. 9651, gives `Q‡/Q^{Z^R} = 0.765 ± 0.005`,
+//! `⟨|v|⟩ = 0.399`, `k_OH-TST = (4.5 ± 0.2)×10^{-7}` and `k_hTST = 4.3×10^{-7}`
+//! beside the prose `k_B T = 0.1 E_A`. Eq. (23) on printed p. 9650 and the
+//! analytic Vineyard rate identify the numerical convention as `k_B T = 0.25`
+//! in the Appendix B energy units with unit mass. The Appendix B barrier is
+//! 3.63395 in those units, so the prose temperature is inconsistent with the
+//! printed rate data. [`section_iii_b_reproduces_the_printed_rates`] records
+//! both the analytic rates and an independent-seed estimate.
 
 use ndarray::{Array1, array};
 use rgsaddle::{
@@ -17,7 +24,7 @@ use rgsaddle::{
     GaussianTransport, Hyperplane, LangevinConfig, MinModeConfig, MinModeSession, MinModeStatus,
     PlaneIntegrator, PlaneOptimizer, PlaneOptimizerConfig, PlanePath, ReversibleWorkConfig,
     ShootingConfig, TransmissionConfig, WorkEstimate, angular_scale_rad_s, basin_density,
-    exact_eigh, ohtst_rate, plane_transmission, reactant_density, reversible_work,
+    exact_eigh, ohtst_rate, plane_transmission, rate_from_parts, reactant_density, reversible_work,
     reversible_work_along, transmission_coefficient, vineyard_prefactor,
 };
 
@@ -27,8 +34,8 @@ include!(concat!(
 ));
 
 use ohtst_surfaces::{
-    LepsHo, descend, descent_path, eigen2, half_plane_integral, hessian, line_draws,
-    line_free_energy, stationary,
+    LepsHo, descend, descent_path, eigen2, half_plane_integral, line_draws, line_free_energy,
+    stationary,
 };
 
 /// Stationary points of the surface and its barrier `E_A`.
@@ -76,7 +83,7 @@ impl Geometry {
 
     /// Angle of the saddle's unstable mode.
     fn saddle_angle(&self) -> f64 {
-        let (_, _, mode) = eigen2(hessian(LepsHo::energy, self.saddle));
+        let (_, _, mode) = eigen2(LepsHo::hessian(self.saddle[0], self.saddle[1]));
         (mode[1] / mode[0]).atan()
     }
 }
@@ -157,7 +164,7 @@ fn line_rate(geometry: &Geometry, kt: f64, point: [f64; 2], theta: f64) -> f64 {
 /// rgsaddle's Vineyard prefactor, in the surface's time unit.
 fn harmonic_rate(geometry: &Geometry, kt: f64) -> f64 {
     let eigenvalues = |at: [f64; 2]| {
-        let h = hessian(LepsHo::energy, at);
+        let h = LepsHo::hessian(at[0], at[1]);
         exact_eigh(ndarray::arr2(&h).view()).unwrap().0
     };
     let (minimum, saddle) = (eigenvalues(geometry.reactant), eigenvalues(geometry.saddle));
@@ -240,7 +247,7 @@ fn leps_dimer_seeds_the_saddle_plane() {
     let (plane, curvature) = dimer_plane();
     let point = plane.point();
     assert!((point[0] - 2.02083).abs() < 5.0e-5 && (point[1] + 0.172881).abs() < 5.0e-5);
-    let (lowest, _, mode) = eigen2(hessian(LepsHo::energy, geometry.saddle));
+    let (lowest, _, mode) = eigen2(LepsHo::hessian(geometry.saddle[0], geometry.saddle[1]));
     assert!((curvature - lowest).abs() < 1.0e-3 * lowest.abs());
     let along = (plane.normal()[0] * mode[0] + plane.normal()[1] * mode[1]).abs();
     assert!(1.0 - along < 1.0e-8, "normal off the mode by {along}");
@@ -690,7 +697,7 @@ fn leps_work_along_the_minimum_energy_path() {
     );
     points.reverse();
     let reactant = points[0];
-    let (_, _, soft) = eigen2(hessian(LepsHo::energy, reactant));
+    let (_, _, soft) = eigen2(LepsHo::hessian(reactant[0], reactant[1]));
     let along = [points[1][0] - reactant[0], points[1][1] - reactant[1]];
     let sign = (soft[0] * along[0] + soft[1] * along[1]).signum();
     let start_normal = array![sign * soft[0], sign * soft[1]];
@@ -734,4 +741,157 @@ fn leps_work_along_the_minimum_energy_path() {
     }
     assert!(work.warnings.is_empty() && rigid.warnings.is_empty());
     assert!(smallest(&rigid) > 0.3 && smallest(&work) > smallest(&rigid));
+}
+
+/// Sec. III B, p. 9651, pairs `⟨|v|⟩ = 0.399` and `Q‡/Q_{Z_R} = 0.765 ± 0.005`
+/// with `k_OH-TST = (4.5 ± 0.2)×10^{-7}`. Eq. (1) on p. 9645 multiplies
+/// `⟨|v⊥|⟩/2` by a ratio of configuration integrals. That product of the
+/// two printed factors is not the printed rate: `ΔA` is in Fig. 8, which
+/// does not give a number that can be read back.
+#[test]
+fn section_iii_b_prefactor_is_not_the_printed_rate() {
+    let half_speed = 0.399_f64 / 2.0;
+    let ratio = 0.765_f64;
+    let prefactor = half_speed * ratio;
+    let published = 4.5_f64 / 10_000_000.0;
+    let uncertainty = 0.2_f64 / 10_000_000.0;
+    assert!(
+        (prefactor - published).abs() > 1000.0 * uncertainty,
+        "{prefactor} against {published} ± {uncertainty}"
+    );
+    let low = ratio - 0.005;
+    let high = ratio + 0.005;
+    assert!((low * half_speed - published).abs() > 1000.0 * uncertainty);
+    assert!((high * half_speed - published).abs() > 1000.0 * uncertainty);
+}
+
+/// Section III B's numerical convention is `k_B T = 0.25` in the energy
+/// units of Appendix B and unit mass. It is the only convention that gives
+/// both its `⟨|v|⟩ = 0.399` through Eq. (23) and its analytic Vineyard rate.
+/// The prose `k_B T = 0.1 E_A` is inconsistent with the Appendix B barrier
+/// `E_A = 3.63395`, for which those values are 0.481 and 4.041e-5.
+///
+/// The paper does not state its trajectory length. We use 16 independent
+/// trajectories of 8000 records for its crossing estimator (Eq. 22) and
+/// 2000 records on each of 17 planes for its trapezoidal reversible work.
+#[test]
+fn section_iii_b_reproduces_the_printed_rates() {
+    /// Two-standard-error allowance (~95% normal coverage) outside the
+    /// published `[4.3, 4.7]e-7` band. Because the estimator's population
+    /// mean sits right at the `4.3e-7` lower edge (noiseless 17-node
+    /// trapezoidal work gives `4.3147e-7`), an unwidened band rejects valid
+    /// multi-seed means roughly half the time as the seed count grows, and
+    /// quadrature combination with `0.2e-7` adds only `O(error^2)` past
+    /// that edge.
+    const SE_COVERAGE: f64 = 2.0;
+    const SEEDS: u64 = 16;
+
+    let geometry = geometry();
+    let printed = [2.02083_f64, -0.172881];
+    let gap = (geometry.saddle[0] - printed[0]).hypot(geometry.saddle[1] - printed[1]);
+    assert!(
+        gap < 5.0e-5,
+        "saddle {:?} against the printed {printed:?}, gap {gap}",
+        geometry.saddle
+    );
+
+    let kt = 0.25;
+    let speed = (2.0 * kt / std::f64::consts::PI).sqrt();
+    let harmonic = harmonic_rate(&geometry, kt);
+    assert!((speed - 0.399).abs() < 5.0e-4, "{speed}");
+    assert!((harmonic - 4.3e-7).abs() < 5.0e-9, "{harmonic}");
+
+    let (offset, theta, _) = optimal_line(&geometry, kt);
+    let start = geometry.reactant_line();
+    let reactant = array![geometry.reactant[0], geometry.reactant[1]];
+    let quadrature = quadrature_rate(&geometry, kt, offset, theta);
+    assert!((quadrature - 4.201e-7).abs() < 2.0e-10, "{quadrature}");
+
+    let (seed_plane, _) = dimer_plane();
+    let mut rates = Vec::new();
+    for seed in 1..=SEEDS {
+        let sampled_optimal = PlaneOptimizer::new(
+            &seed_plane,
+            PlaneOptimizerConfig::default()
+                .with_sampler(sampler(kt, 0.1).with_records(1000).with_seed(seed))
+                .with_max_records(1000),
+        )
+        .unwrap()
+        .run(&LepsHo)
+        .unwrap()
+        .plane;
+        let density = reactant_density(
+            &LepsHo,
+            &start,
+            reactant.view(),
+            std::slice::from_ref(&sampled_optimal),
+            &sampler(kt, 0.1).with_records(8000).with_seed(seed),
+        )
+        .unwrap();
+        let work_config = ReversibleWorkConfig::default()
+            .with_sampler(sampler(kt, 0.1).with_records(2000).with_seed(seed))
+            .with_nodes(17)
+            .with_simpson(false);
+        let mut engine = AnalyticSurfaceSampler::new(&LepsHo, work_config.sampler.clone())
+            .with_start(reactant.clone());
+        let work =
+            reversible_work(&mut engine, &[start.clone(), sampled_optimal], &work_config).unwrap();
+        let estimate = rate_from_parts(
+            kt,
+            density.crossing_density,
+            density.crossing_error,
+            work.integrated_work,
+            work.integrated_error,
+        )
+        .unwrap();
+        rates.push(estimate.rate);
+    }
+    let count = rates.len() as f64;
+    let mean = rates.iter().sum::<f64>() / count;
+    let variance = rates.iter().map(|rate| (rate - mean).powi(2)).sum::<f64>() / (count - 1.0);
+    let spread = variance.sqrt();
+    let error = (variance / count).sqrt();
+    let lowest = rates.iter().copied().fold(f64::INFINITY, f64::min);
+    let highest = rates.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+
+    let prose_kt = 0.1 * geometry.barrier;
+    let prose_speed = (2.0 * prose_kt / std::f64::consts::PI).sqrt();
+    let prose_harmonic = harmonic_rate(&geometry, prose_kt);
+    let (published, published_error) = (4.5e-7_f64, 0.2e-7_f64);
+    let (band_low, band_high) = (published - published_error, published + published_error);
+    eprintln!(
+        "Section III B potential: E_A={}, reactant={:?}, saddle={:?}",
+        geometry.barrier, geometry.reactant, geometry.saddle
+    );
+    eprintln!(
+        "Section III B prose convention: kT=0.1 E_A={prose_kt}, <|v|>={prose_speed}, \
+         k_hTST={prose_harmonic:e}, 0.25 / kT={}",
+        kt / prose_kt
+    );
+    eprintln!(
+        "Section III B printed-rate convention: kT={kt}, <|v|>={speed}, \
+         k_hTST={harmonic:e}, quadrature={quadrature:e}"
+    );
+    for (seed, rate) in (1..=SEEDS).zip(&rates) {
+        eprintln!("Section III B seed {seed}: k_OH-TST={rate:e}");
+    }
+    eprintln!(
+        "Section III B k_OH-TST over {count} seeds: mean={mean:e}, sample sd={spread:e}, \
+         standard error={error:e}, lowest={lowest:e}, highest={highest:e}"
+    );
+    eprintln!(
+        "Section III B against ({published:e} ± {published_error:e}): \
+         mean - published={:e} ({} of the published error, {} standard errors), \
+         mean - lower edge={:e} ({} standard errors), upper edge - mean={:e}",
+        mean - published,
+        (mean - published) / published_error,
+        (mean - published) / error,
+        mean - band_low,
+        (mean - band_low) / error,
+        band_high - mean
+    );
+    assert!(
+        (band_low - SE_COVERAGE * error..=band_high + SE_COVERAGE * error).contains(&mean),
+        "sampled OH-TST {mean:e} ± {error:e}; quadrature {quadrature:e}"
+    );
 }
