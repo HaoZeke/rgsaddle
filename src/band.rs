@@ -3267,12 +3267,17 @@ impl BandSession {
         })
     }
 
-    pub(super) fn cache_free_end_evaluation(&self, energies: Array1<f64>, gradients: Array2<f64>) {
+    pub(super) fn cache_free_end_evaluation(
+        &self,
+        energies: Array1<f64>,
+        gradients: Array2<f64>,
+        projected: Array1<f64>,
+    ) {
         let evaluation = BandEval {
             x: self.interior_flat(),
             energies,
             gradients,
-            projected: Array1::zeros(0),
+            projected,
             stresses: Array2::zeros((0, 0)),
             band_positions: Array2::zeros((0, 0)),
             band_cells: Vec::new(),
