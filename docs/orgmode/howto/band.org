@@ -1,9 +1,85 @@
 #+TITLE: Step a NEB band
 #+OPTIONS: toc:nil num:nil
 
+#+begin_export rst
+:cite:`goswamiEnhancedClimbingImage2026,goswamiReproducibleOrchestration2026,goswamiIdpp2026,henkelmanClimbingImageNudged2000,henkelmanImprovedTangentEstimate2000,smidstrupImprovedInitialGuess2014,schmerwitzImprovedInitializationOptimal2024,packwoodUniversalPreconditioner2016,makriPreconditioningScheme2019,eSimplifiedImprovedString2007,petersGrowingStringMethod2004,zhangFreeEndAdaptive2016,zhuInterfacialPlasticity2007`
+#+end_export
+
 ~BandSession::step~ assembles the tangent, spring and projection forces and advances one host iteration. The fast inertial relaxation engine (~FIRE~) and limited-memory Broyden-Fletcher-Goldfarb-Shanno (~L-BFGS~) methods preserve the endpoints. ~L-BFGS~ computes its direction from the assembled force; summed image energy is not a descent criterion for that force. It also arms eOn's resets: a two-loop step that reaches the per-atom cap or faces away from the force drops the stored pairs and steps along the force, and an empty memory scales that step by 0.01.
 
-Call ~reset~ when the surface changes. The session retains evaluated endpoints and the accepted band while the surface remains valid. A ~Cell~ supplies minimum-image differences for periodic configurations.
+Call ~reset~ when the surface changes. The session retains evaluated endpoints and the accepted band while the surface remains valid. A ~Cell~ (~mic::wrap_difference~) supplies minimum-image differences for periodic configurations.
+
+* Runnable example: NEB, climbing image, OCI-NEB, and IDPP
+
+Orchestration and best practices for nudged elastic band paths follow Goswami, arXiv:2603.14737 (2026), doi:10.48550/arXiv.2603.14737, and the off-path climbing image refinement (OCI-NEB) follows Goswami, Gunde, and Jónsson, Front. Chem. 14, 1807063 (2026), doi:10.3389/fchem.2026.1807063. Image-dependent pair potential (IDPP) path initialization follows Goswami, MethodsX, 103899 (2026), doi:10.1016/j.mex.2026.103899, Smidstrup, Pedersen, Stokbro, and Jónsson, J. Chem. Phys. 140, 214106 (2014), doi:10.1063/1.4878664, and the sequential S-IDPP variant of Schmerwitz, Ásgeirsson, and Jónsson, J. Chem. Theory Comput. 20, 155 (2024), doi:10.1021/acs.jctc.3c01111.
+
+#+begin_src rust
+use ndarray::{Array1, Array2, ArrayView1, ArrayView2, array};
+use rgsaddle::{
+    BandConfig, BandSession, BandStatus, BandSurface, CiConfig, IdppConfig, OcinebConfig,
+    OcinebPhase, OcinebSession, OcinebStatus, PointSurface, SaddleError, SidppConfig, idpp_path,
+    linear_path, sidpp_path,
+};
+
+struct DoubleWell;
+
+impl BandSurface for DoubleWell {
+    fn eval(
+        &self,
+        positions: ArrayView2<f64>,
+        energies: &mut Array1<f64>,
+        gradients: &mut Array2<f64>,
+    ) -> Result<(), SaddleError> {
+        for (i, row) in positions.rows().into_iter().enumerate() {
+            let (x, y, z) = (row[0], row[1], row[2]);
+            energies[i] = (x * x - 1.0).powi(2) + 2.0 * y * y + 2.0 * z * z;
+            gradients[(i, 0)] = 4.0 * x * (x * x - 1.0);
+            gradients[(i, 1)] = 4.0 * y;
+            gradients[(i, 2)] = 4.0 * z;
+        }
+        Ok(())
+    }
+}
+
+impl PointSurface for DoubleWell {
+    fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+        let (px, py, pz) = (x[0], x[1], x[2]);
+        let e = (px * px - 1.0).powi(2) + 2.0 * py * py + 2.0 * z_part(pz);
+        Ok((e, array![4.0 * px * (px * px - 1.0), 4.0 * py, 4.0 * pz]))
+    }
+}
+
+fn z_part(pz: f64) -> f64 {
+    pz * pz
+}
+
+fn main() -> Result<(), SaddleError> {
+    let reactant = array![-1.0, 0.0, 0.0, -1.0, 1.0, 0.0];
+    let product = array![1.0, 0.0, 0.0, 1.0, 1.0, 0.0];
+    let _line: Array2<f64> = linear_path(reactant.view(), product.view(), 5, None)?;
+    let _sidpp: Array2<f64> =
+        sidpp_path(reactant.view(), product.view(), 5, None, &SidppConfig::default())?;
+    let start: Array2<f64> =
+        idpp_path(reactant.view(), product.view(), 5, None, &IdppConfig::default())?;
+
+    let single_ends = array![[-1.0, 0.2, 0.0], [0.0, 0.3, 0.0], [1.0, 0.2, 0.0]];
+    let config = BandConfig::default()
+        .with_climbing(CiConfig::after(0.5))
+        .with_force_tol(1e-3);
+    let mut band = BandSession::new(config, single_ends.clone())?;
+    let report = band.run(&DoubleWell, 200)?;
+    assert_eq!(report.status, BandStatus::Converged);
+
+    let mut ocineb = OcinebSession::new(OcinebConfig::default(), single_ends)?;
+    let oci_report = ocineb.step(&DoubleWell)?;
+    assert!(matches!(
+        oci_report.phase,
+        OcinebPhase::Band | OcinebPhase::Align | OcinebPhase::MinMode
+    ));
+    let _ = (start, OcinebStatus::Running);
+    Ok(())
+}
+#+end_src
 
 The projected force of every image with two or more atoms loses its mean Cartesian part, as in eOn when every atom is free. ~BandConfig::remove_translation~ set to ~false~, or ~RGSADDLE_BAND_KEEP_TRANSLATION~ in the C band config flags, keeps the mean. A band with any fixed atom keeps it without either. An image with one atom keeps its force.
 
@@ -260,4 +336,41 @@ python docs/source/figures/band-scaling/run.py \
     <parent-binary> target/release/examples/band_scaling target/scaling
 uv run --no-project --with matplotlib --with numpy \
     python docs/source/figures/band-scaling/plot.py target/scaling
+#+end_src
+
+* Artificial force induced reaction (AFIR) fragment pull
+
+The ~afir~ module supplies the fragment-pull force of the artificial force induced reaction (AFIR) method of Maeda and Morokuma, J. Chem. Phys. 132, 241102 (2010), doi:10.1063/1.3457903 @@rst::cite:`maedaAfir2010`@@. ~afir_force~ and the fallible ~try_afir_force~ pull two disjoint atom fragments together along the line connecting their centroids with total magnitude ~alpha~; each atom in a fragment receives an equal share ~alpha / len~, and atoms outside both fragments receive zero force. The host adds the returned array to its calculator force before stepping a minimizer or band.
+
+#+begin_src rust
+use rgsaddle::afir::{afir_force, try_afir_force};
+
+let positions = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
+let force = try_afir_force(&positions, &[0], &[1], 1.0)?;
+assert_eq!(force, afir_force(&positions, &[0], &[1], 1.0));
+assert_eq!(force, vec![[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]]);
+#+end_src
+
+* Double-ended connect and stabilized quasi-Newton (SQNM)
+
+~connect~ (~ConnectConfig~, ~ConnectReport~, ~ConnectProfile~) runs a double-ended saddle search between two endpoint geometries. It first relaxes an IDPP initial path (Goswami, MethodsX, 103899 (2026), doi:10.1016/j.mex.2026.103899 @@rst::cite:`goswamiIdpp2026`@@; Smidstrup, Pedersen, Stokbro, and Jónsson, J. Chem. Phys. 140, 214106 (2014), doi:10.1063/1.4878664 @@rst::cite:`smidstrupImprovedInitialGuess2014`@@) and launches a Lanczos minimum-mode climb from the highest interior image along the improved tangent (Goswami, Gunde, and Jónsson, Front. Chem. 14, 1807063 (2026), doi:10.3389/fchem.2026.1807063 @@rst::cite:`goswamiEnhancedClimbingImage2026`@@; Olsen, Kroes, Henkelman, Arnaldsson, and Jónsson, J. Chem. Phys. 121, 9776 (2004), doi:10.1063/1.1809574 @@rst::cite:`olsenComparisonMethodsFinding2004`@@). When that climb does not settle on an index-1 saddle, ~connect~ falls back to the COMPASS two-image constrained walk of Sommer-Jörgensen and Goedecker, J. Chem. Phys. 160, 064110 (2024), doi:10.1063/5.0186903 @@rst::cite:`sommerJorgensenCompass2024`@@, driven by the stabilized quasi-Newton method (SQNM) of Schaefer, Ghasemi, Roy, and Goedecker, J. Chem. Phys. 142, 034112 (2015), doi:10.1063/1.4905665 @@rst::cite:`schaeferStabilizedQuasiNewton2015`@@, with node quenching after splits as in Carr, Trygubenko, and Wales, J. Chem. Phys. 122, 234903 (2005), doi:10.1063/1.1931587 @@rst::cite:`carrFindingPathways2005`@@.
+
+#+begin_src rust
+use rgsaddle::{ConnectConfig, connect};
+
+let left = [-1.0, 0.0, 0.0];
+let right = [1.0, 0.0, 0.0];
+let config = ConnectConfig::default().with_forcetol(1e-3).with_nsteps(200);
+let report = connect(
+    |x| {
+        let (px, py, pz) = (x[0], x[1], x[2]);
+        let e = (px * px - 1.0).powi(2) + 2.0 * py * py + 2.0 * pz * pz;
+        Ok((e, vec![4.0 * px * (px * px - 1.0), 4.0 * py, 4.0 * pz]))
+    },
+    &left,
+    &right,
+    &config,
+)?;
+assert_eq!(report.kind, 's');
+assert!(report.position[0].abs() < 1e-3);
 #+end_src
