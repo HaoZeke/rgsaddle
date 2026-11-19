@@ -659,7 +659,12 @@ impl BerendsenIsotropic {
     }
 }
 
-/// Linear scale of one Berendsen step on a cubic cell.
+/// Isotropic linear scale of one Berendsen barostat step.
+///
+/// The scale does not depend on a cubic cell. Multiply every cell
+/// vector and every Cartesian position by it. On a triclinic cell that
+/// scales the entries off the diagonal as well as the edges, and the
+/// fractional coordinates stay fixed.
 ///
 /// `hydrostatic_tension` is the hydrostatic tension the caller supplies.
 /// It uses the sign of [`finite_difference_cauchy_stress`]: positive in
@@ -674,7 +679,7 @@ impl BerendsenIsotropic {
 /// the cell moves, not the volume at which the tension vanishes. `dt`
 /// and `tau` are the barostat step and the piston time, in the same
 /// unit. A negative tension is compression and the scale is greater
-/// than one. The returned number multiplies each lattice length.
+/// than one.
 ///
 /// [`BerendsenIsotropic::with_max_strain_per_step`] caps the absolute
 /// change of the volume factor in one step. This function is the scale
@@ -692,8 +697,19 @@ impl BerendsenIsotropic {
 ///
 /// let compressed = berendsen_isotropic_scale(-0.1, 1.0, 1.0, 1.0)?;
 /// assert!(compressed > 1.0);
-/// let stretched = berendsen_isotropic_scale(0.1, 1.0, 1.0, 1.0)?;
-/// assert!(stretched < 1.0);
+/// let scale = berendsen_isotropic_scale(0.1, 1.0, 1.0, 1.0)?;
+/// assert!(scale < 1.0);
+/// let mut cell = [[2.0, 0.1, -0.2], [0.0, 1.5, 0.3], [0.0, 0.0, 1.2]];
+/// let mut position = [0.4, -0.2, 0.5];
+/// for row in &mut cell {
+///     for entry in row.iter_mut() {
+///         *entry *= scale;
+///     }
+/// }
+/// for coordinate in &mut position {
+///     *coordinate *= scale;
+/// }
+/// assert!(cell[0][1] < 0.1);
 /// # Ok::<(), rgsaddle::SaddleError>(())
 /// ```
 pub fn berendsen_isotropic_scale(
