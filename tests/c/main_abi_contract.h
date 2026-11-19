@@ -5,7 +5,7 @@
 #include <stddef.h>
 
 _Static_assert(RGSADDLE_ABI_MAJOR == 1u, "main ABI major");
-_Static_assert(RGSADDLE_ABI_MINOR == 45u, "ABI minor");
+_Static_assert(RGSADDLE_ABI_MINOR == 46u, "ABI minor");
 _Static_assert(RGSADDLE_BAND_NO_MIN_MODE == (1ull << 3), "band flag bit 3");
 _Static_assert(RGSADDLE_BAND_SPLINE_REPARAM == (1ull << 4), "band flag bit 4");
 _Static_assert(RGSADDLE_BAND_STRING == (1ull << 5), "band flag bit 5");
@@ -552,5 +552,23 @@ _Static_assert(_Generic(&rgsaddle_band_free_end_residual, abi45_signature_rgsadd
 typedef int64_t (*abi45_signature_rgsaddle_band_free_end_cuts)(
     const RgsaddleBand *band);
 _Static_assert(_Generic(&rgsaddle_band_free_end_cuts, abi45_signature_rgsaddle_band_free_end_cuts: 1, default: 0), "rgsaddle_band_free_end_cuts signature");
+
+_Static_assert(sizeof(rgsaddle_geodesic_config_t) == 96, "geodesic config size");
+
+typedef rgsaddle_status_t (*abi46_signature_rgsaddle_geodesic_config_default)(
+    rgsaddle_geodesic_config_t *out);
+_Static_assert(_Generic(&rgsaddle_geodesic_config_default, abi46_signature_rgsaddle_geodesic_config_default: 1, default: 0), "rgsaddle_geodesic_config_default signature");
+
+typedef rgsaddle_status_t (*abi46_signature_rgsaddle_geodesic_path)(
+    int64_t n_images, int64_t dof, const double *path, int64_t n_coords,
+    rgsaddle_geodesic_chart_fn chart, void *ctx, const rgsaddle_geodesic_config_t *config,
+    double *out, double *length, double *lower, double *upper);
+_Static_assert(_Generic(&rgsaddle_geodesic_path, abi46_signature_rgsaddle_geodesic_path: 1, default: 0), "rgsaddle_geodesic_path signature");
+
+typedef rgsaddle_status_t (*abi46_signature_rgsaddle_geodesic_morse)(
+    int64_t n_images, int64_t n_atoms, const double *reactant, const double *product,
+    const double *radii, const double *cell, const rgsaddle_geodesic_config_t *config, double *out,
+    double *length, double *lower, double *upper);
+_Static_assert(_Generic(&rgsaddle_geodesic_morse, abi46_signature_rgsaddle_geodesic_morse: 1, default: 0), "rgsaddle_geodesic_morse signature");
 
 #endif
