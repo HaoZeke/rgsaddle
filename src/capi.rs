@@ -2221,7 +2221,7 @@ pub unsafe extern "C" fn rgsaddle_trics_path(
         || n_atoms < 1
         || max_inversion_iterations < 1
         || max_splice_iterations < 1
-        || !(0..=3).contains(&diagnostic_threshold)
+        || !(0..=6).contains(&diagnostic_threshold)
     {
         return RGSADDLE_SHAPE;
     }

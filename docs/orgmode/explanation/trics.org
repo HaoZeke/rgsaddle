@@ -47,7 +47,8 @@ an unstable angular primitive, and three or above for imminent failure.
 Distances, translations, and rotations are regular unless their geometry is
 invalid.  Dihedrals use adjacent angle boundaries of 155, 165, and 175
 degrees.  Linear bends use absolute cosine boundaries of 0.8, 0.6, and 0.4.
-Out of plane coordinates use 0.95, 0.98, and 0.99 for each adjacent angle.
+Out of plane coordinates use 0.95, 0.98, and 0.99 for each adjacent angle
+and add the two scores, so their diagnostic can reach six.
 
 Entries at or below =diagnostic_threshold= form an internal coordinate maze.
 The selection prunes dead ends, drives square cars from both the left and

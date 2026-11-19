@@ -1099,7 +1099,7 @@ fn aligned_max_atom_difference(
 fn check_trics_config(config: &TricsConfig) -> Result<(), SaddleError> {
     check_config(&config.coordinates)?;
     check_inversion_config(&config.inversion)?;
-    if config.diagnostic_threshold > 3
+    if config.diagnostic_threshold > 6
         || !(config.splice_tolerance.is_finite() && config.splice_tolerance > 0.0)
         || config.max_splice_iterations == 0
     {
@@ -1296,11 +1296,11 @@ fn angular_diagnostic(positions: ArrayView1<'_, f64>, angles: &[(usize, usize, u
             return 3;
         };
         let cosine = value.cos().abs();
-        let level = if cosine > ANGLE_FAILURE_COSINE {
+        let level = if cosine >= ANGLE_FAILURE_COSINE {
             3
-        } else if cosine > ANGLE_UNSTABLE_COSINE {
+        } else if cosine >= ANGLE_UNSTABLE_COSINE {
             2
-        } else if cosine > ANGLE_WARNING_COSINE {
+        } else if cosine >= ANGLE_WARNING_COSINE {
             1
         } else {
             0
@@ -1451,11 +1451,7 @@ fn out_of_plane_diagnostic(
     };
     let left = level(first);
     let right = level(second);
-    if left > 0 && left == right {
-        left + 1
-    } else {
-        left.max(right)
-    }
+    left + right
 }
 
 fn angle_normal(
@@ -1992,15 +1988,15 @@ mod tests {
         );
         assert_eq!(
             out_of_plane.diagnostic(out_of_plane_geometry(5.0, 5.0).view()),
-            4
+            6
         );
         assert_eq!(
             out_of_plane.diagnostic(out_of_plane_geometry(16.0, 10.0).view()),
-            2
+            3
         );
         assert_eq!(
             out_of_plane.diagnostic(out_of_plane_geometry(16.0, 5.0).view()),
-            3
+            4
         );
     }
 
