@@ -56,6 +56,8 @@ Rows at 0.01, and the CP2K row, miss the common-frame atomic limit. Rows at 1e-3
 
 ## Tersoff
 
+The phase-3 Tersoff barrier (1.596 eV) and the phase-3b barrier (6.5008 eV) come from different paths. Phase 3 used unrelaxed endpoints, and phase 3b relaxes them first. The two numbers must not be compared.
+
 Both endpoints were relaxed with the Sella minimum session at maximum-component tolerance 1e-3 and trust delta 0.2 before the band was built. The session residual and the common-frame residual are both recorded. The cell is fixed, so the stress cannot relax.
 
 reactant: status converged, iterations 169, force calls 507, session max component 6.7105478099927548e-04 eV/A, common-frame max component 0.0010409767899663136 eV/A, max enthalpy stress 0.00429345698994875 eV/A^3, limit 0.010862000000000002, wall not retained.
@@ -63,7 +65,7 @@ product: status converged, iterations 174, force calls 522, session max componen
 
 After that relaxation, rgsaddle FIRE at 1e-3 returns 6/6 and passes force on 6 and stress on 6. At 0.01 it passes force on 0 and stress on 6. The 0.01 frames that miss the atomic limit are stored with the logs as tersoff-rgsaddle-miss/0.01/rep-0 through rep-5, each with final.geom, common.txt, result.txt, and config.txt.
 
-eOn FIRE and L-BFGS reach the iteration cap at both tolerances. Their force-call medians are 14002 and 14002. The two tolerances match because the cap is reached first. CP2K returns a barrier in line with rgsaddle and misses the atomic limit.
+eOn's Tersoff rows diverge. The common-frame barrier is about 2.7e4 to 2.9e4 eV, Fmax is about 1e3 eV/A, and the runs hit the 2000-iteration cap. Those rows are a failure, not a comparison. The force-call medians are 14002 and 14002. The two tolerances match because the cap is reached first. CP2K returns a barrier on this relaxed path and misses the atomic limit.
 
 ## Vacancy
 

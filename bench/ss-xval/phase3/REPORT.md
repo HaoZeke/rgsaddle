@@ -81,6 +81,8 @@ ar-replica: all 24 repeats converged and passed the atomic test, the stress test
 
 tersoff: rgsaddle is the only code that converged. Its barrier is 1.59642 eV and the cell volume is 1281.53 A^3, the fixed cube of side 10.862 A, on all nine images. The saddle force is 1.477e-3 eV/A, which fails 1e-3. The saddle stress is 1.091e-2 eV/A^3 against a limit of 1.086e-2. The cell is not a degree of freedom, so that stress cannot be relaxed. The reactant endpoint itself has an atomic force of 0.502 eV/A. eOn FIRE and L-BFGS reached the iteration cap. The common-frame barriers on the bands they returned are 26835 eV and 24771 eV, with saddle forces near 10^3 eV/A. The runner's force counter stayed at 2. The band builds a separate potential instance for each interior image when the potential keeps a neighbor table, and those instances are not the counter the runner reads. The two calls are the shared endpoint evaluations. CP2K aborted with signal 6 in the neighbor-list distance check during a DIIS line search. One pair reached 0.049 bohr, inside the spline table, and the run stopped with the message that the geometry is wrong or EMAX_SPLINE is too small. All six repeats did this at about 10 s, after the band log had reached optimizer step 46. The input was not changed. Every tersoff image that was returned has perpendicular width 10.862 A, against 6.0 A.
 
+The 1.596 eV barrier uses these unrelaxed endpoints and must not be compared with the phase-3b barrier; the Tersoff section of the phase-3b report states that the endpoints are relaxed first.
+
 ## Minimum width on the first repeat
 
 The nine numbers are the minimum perpendicular width of images 0 through 8, in angstrom, next to 2*rc.

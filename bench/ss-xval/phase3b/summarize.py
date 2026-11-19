@@ -214,6 +214,12 @@ def main():
     lines.append("## Tersoff")
     lines.append("")
     lines.append(
+        "The phase-3 Tersoff barrier (1.596 eV) and the phase-3b barrier (6.5008 eV) come "
+        "from different paths. Phase 3 used unrelaxed endpoints, and phase 3b relaxes them "
+        "first. The two numbers must not be compared."
+    )
+    lines.append("")
+    lines.append(
         "Both endpoints were relaxed with the Sella minimum session at maximum-component "
         "tolerance 1e-3 and trust delta 0.2 before the band was built. The session residual "
         "and the common-frame residual are both recorded. The cell is fixed, so the stress "
@@ -242,11 +248,13 @@ def main():
     )
     lines.append("")
     lines.append(
-        "eOn FIRE and L-BFGS reach the iteration cap at both tolerances. Their force-call "
-        f"medians are {num_text(stat('tersoff','eon','fire','0.01','force_calls')[0])} and "
+        "eOn's Tersoff rows diverge. The common-frame barrier is about 2.7e4 to 2.9e4 eV, "
+        "Fmax is about 1e3 eV/A, and the runs hit the 2000-iteration cap. Those rows are a "
+        "failure, not a comparison. The force-call medians are "
+        f"{num_text(stat('tersoff','eon','fire','0.01','force_calls')[0])} and "
         f"{num_text(stat('tersoff','eon','lbfgs','0.01','force_calls')[0])}. "
         "The two tolerances match because the cap is reached first. "
-        "CP2K returns a barrier in line with rgsaddle and misses the atomic limit."
+        "CP2K returns a barrier on this relaxed path and misses the atomic limit."
     )
 
     lines.append("")
