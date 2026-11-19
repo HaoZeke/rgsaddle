@@ -614,16 +614,71 @@ impl JointChart {
     }
 }
 
+/// Settings for one isotropic Berendsen barostat step.
+///
+/// The step is [`berendsen_isotropic_scale`]. [`Default`] sets no cap on
+/// the volume factor. [`Self::with_max_strain_per_step`] sets one.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct BerendsenIsotropic {
+    /// Largest absolute change of the volume factor accepted in one step.
+    ///
+    /// `None` leaves the factor uncapped. Zero holds the volume. The
+    /// value must be finite, at least zero, and strictly below one, so
+    /// the lower end of the cap stays a positive volume factor.
+    pub max_strain_per_step: Option<f64>,
+}
+
+impl BerendsenIsotropic {
+    /// Cap the absolute change of the volume factor at `max_strain_per_step`.
+    #[must_use]
+    pub const fn with_max_strain_per_step(mut self, max_strain_per_step: f64) -> Self {
+        self.max_strain_per_step = Some(max_strain_per_step);
+        self
+    }
+
+    /// Linear scale for these settings.
+    ///
+    /// See [`berendsen_isotropic_scale`] for the sign, the modulus, and
+    /// the tension the caller supplies.
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Invalid`] when an argument is non-finite, the
+    /// modulus or a time is not positive, `max_strain_per_step` is set
+    /// and is not a finite value in the half open interval from zero
+    /// to one, or the volume factor is not positive.
+    pub fn scale(
+        self,
+        hydrostatic_tension: f64,
+        modulus: f64,
+        dt: f64,
+        tau: f64,
+    ) -> Result<f64, SaddleError> {
+        berendsen_isotropic_scale_with(self, hydrostatic_tension, modulus, dt, tau)
+    }
+}
+
 /// Linear scale of one Berendsen step on a cubic cell.
 ///
-/// `hydrostatic_tension` uses the sign of [`finite_difference_cauchy_stress`]:
-/// positive in tension. `modulus` is the bulk modulus in energy per volume.
-/// It sets how fast the cell moves, not the volume at which the tension
-/// vanishes. `dt` and `tau` are the barostat step and the piston time, in
-/// the same unit. A negative tension is compression and the scale is
-/// greater than one. The kinetic pressure is not part of this function;
-/// add it to the tension first. The returned number multiplies each
-/// lattice length.
+/// `hydrostatic_tension` is the hydrostatic tension the caller supplies.
+/// It uses the sign of [`finite_difference_cauchy_stress`]: positive in
+/// tension, the mean of the diagonal of that stress. This function does
+/// not add the kinetic pressure. The copper `npt_lattice` loop supplies
+/// the potential Cauchy tension and leaves the kinetic term out. A
+/// caller who wants the ideal gas pressure subtracts it from the tension
+/// before the call, because that pressure is a negative contribution to
+/// the tension.
+///
+/// `modulus` is the bulk modulus in energy per volume. It sets how fast
+/// the cell moves, not the volume at which the tension vanishes. `dt`
+/// and `tau` are the barostat step and the piston time, in the same
+/// unit. A negative tension is compression and the scale is greater
+/// than one. The returned number multiplies each lattice length.
+///
+/// [`BerendsenIsotropic::with_max_strain_per_step`] caps the absolute
+/// change of the volume factor in one step. This function is the scale
+/// from [`BerendsenIsotropic::default`], which sets no cap.
 ///
 /// # Errors
 ///
@@ -647,6 +702,16 @@ pub fn berendsen_isotropic_scale(
     dt: f64,
     tau: f64,
 ) -> Result<f64, SaddleError> {
+    BerendsenIsotropic::default().scale(hydrostatic_tension, modulus, dt, tau)
+}
+
+fn berendsen_isotropic_scale_with(
+    config: BerendsenIsotropic,
+    hydrostatic_tension: f64,
+    modulus: f64,
+    dt: f64,
+    tau: f64,
+) -> Result<f64, SaddleError> {
     if !(hydrostatic_tension.is_finite()
         && modulus.is_finite()
         && modulus > 0.0
@@ -660,7 +725,26 @@ pub fn berendsen_isotropic_scale(
                 .into(),
         ));
     }
-    let volume_factor = 1.0 - (dt / tau) * hydrostatic_tension / modulus;
+    if let Some(max_strain) = config.max_strain_per_step
+        && !(max_strain.is_finite() && (0.0..1.0).contains(&max_strain))
+    {
+        return Err(SaddleError::Invalid(
+            "Berendsen max strain per step must be finite, at least zero, and below one".into(),
+        ));
+    }
+    // Compressibility first, then `beta * dt / tau * tension`, so a
+    // caller that stored `beta = 1/modulus` keeps that product order.
+    let compressibility = 1.0 / modulus;
+    let mut volume_factor = 1.0 - compressibility * dt / tau * hydrostatic_tension;
+    if let Some(max_strain) = config.max_strain_per_step {
+        let low = 1.0 - max_strain;
+        let high = 1.0 + max_strain;
+        if volume_factor < low {
+            volume_factor = low;
+        } else if volume_factor > high {
+            volume_factor = high;
+        }
+    }
     if !(volume_factor.is_finite() && volume_factor > 0.0) {
         return Err(SaddleError::Invalid(
             "Berendsen volume factor is not positive".into(),
