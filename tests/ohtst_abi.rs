@@ -84,6 +84,7 @@ fn sample_and_rate_and_mbar_round_trip() {
         )
     };
     assert_eq!(status, RGSADDLE_OK);
+    assert_eq!(report.version.minor, RGSADDLE_ABI_MINOR);
     assert_eq!(report.records, 8);
     assert!(report.evaluations > 0);
     assert!(report.acceptance.is_finite());
@@ -109,6 +110,7 @@ fn sample_and_rate_and_mbar_round_trip() {
     };
     let status = unsafe { rgsaddle_ohtst_rate(&input, &mut out) };
     assert_eq!(status, RGSADDLE_OK);
+    assert_eq!(out.version.minor, RGSADDLE_ABI_MINOR);
     assert!(out.rate > 0.0);
     assert!((out.rate - out.flux).abs() <= out.flux / 1_000_000.0);
 
@@ -304,6 +306,11 @@ fn unknown_flags_and_negative_rate_errors_are_rejected() {
     input.work_error = -0.01;
     let status = unsafe { rgsaddle_ohtst_rate(&input, &mut out) };
     assert_eq!(status, RGSADDLE_INVALID_PARAMETER);
+    input.work_error = 0.0;
+    input.thermal = 1.0;
+    input.work = -1000.0;
+    let status = unsafe { rgsaddle_ohtst_rate(&input, &mut out) };
+    assert_eq!(status, rgsaddle::capi::RGSADDLE_NON_FINITE);
 
     let mut sample = RgsaddleOhtstSampleConfig {
         version: version(),
@@ -518,6 +525,50 @@ fn mbar_state_square_that_does_not_fit_is_rejected() {
         )
     };
     assert_eq!(status, RGSADDLE_SHAPE);
+}
+
+#[test]
+fn optimize_reports_not_converged_when_unconverged() {
+    let mut point = [0.4, 0.0];
+    let mut normal = [1.0, 0.3];
+    let optimize = RgsaddleOhtstOptimizeConfig {
+        version: version(),
+        flags: 0,
+        thermal: 0.25,
+        time_step: 0.05,
+        friction: 1.0,
+        burn_in: 2,
+        stride: 1,
+        records: 8,
+        blocks: 2,
+        seed: 1,
+        max_iterations: 1,
+        max_translation: 0.05,
+        max_rotation: 0.05,
+        translate: 1,
+        rotate: 1,
+        patience: 1,
+    };
+    let mut optimum = RgsaddleOhtstOptimizeReport {
+        version: version(),
+        flags: 0,
+        iterations: 0,
+        evaluations: 0,
+        normal_force: 0.0,
+        normal_force_error: 0.0,
+    };
+    let status = unsafe {
+        rgsaddle_ohtst_optimize(
+            &optimize,
+            2,
+            point.as_mut_ptr(),
+            normal.as_mut_ptr(),
+            Some(well),
+            ptr::null_mut(),
+            &mut optimum,
+        )
+    };
+    assert_eq!(status, rgsaddle::capi::RGSADDLE_SOLVER);
 }
 
 /// `1 << 32` does not fit in a 32-bit `usize`. The cast must fail before

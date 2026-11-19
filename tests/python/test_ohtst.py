@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from rgsaddle import (
+    NumericalError,
     ohtst_mbar,
     ohtst_optimize,
     ohtst_rate,
@@ -27,15 +28,21 @@ def surface(q: np.ndarray) -> tuple[float, np.ndarray]:
 
 
 def test_sample_optimize_work_transmission_and_rate() -> None:
-    point = np.array([0.0, 0.0], dtype=np.float64)
+    point = np.array([0.3, 0.0], dtype=np.float64)
     normal = np.array([1.0, 0.0], dtype=np.float64)
     sample = ohtst_sample(surface, point, normal, 0.25, 0.05, 1.0, 2, 1, 8, 2, 1)
+    expected_force = -0.3 * (0.3 * 0.3 - 1.0)
     assert sample.records == 8
-    assert sample.evaluations > 0
-    assert 0.0 <= sample.acceptance <= 1.0
-    assert math.isfinite(sample.normal_force)
-    assert np.asarray(sample.centroid).shape == (2,)
-    assert np.asarray(sample.grad_normal).shape == (2,)
+    assert sample.evaluations == 11
+    assert sample.acceptance == 1.0
+    assert abs(sample.normal_force - expected_force) < 1.0e-12
+    assert sample.normal_force_error == 0.0
+    centroid = np.asarray(sample.centroid, dtype=np.float64)
+    grad_normal = np.asarray(sample.grad_normal, dtype=np.float64)
+    assert centroid.shape == (2,)
+    assert abs(float(centroid[0]) - 0.3) < 1.0e-12
+    assert grad_normal.shape == (2,)
+    assert abs(float(grad_normal[0])) < 1.0e-12
 
     optimum = ohtst_optimize(
         surface,
@@ -56,30 +63,83 @@ def test_sample_optimize_work_transmission_and_rate() -> None:
         True,
         False,
     )
+    out_point = np.asarray(optimum.point, dtype=np.float64)
     out_normal = np.asarray(optimum.normal, dtype=np.float64)
     assert optimum.evaluations > 0
-    assert abs(float(np.dot(out_normal, out_normal)) - 1.0) < 0.000_001
-    assert math.isfinite(optimum.normal_force)
+    assert abs(float(out_point[0])) < 1.0e-12
+    assert np.allclose(out_normal, np.array([1.0, 0.0], dtype=np.float64), atol=1.0e-12)
+    assert abs(optimum.normal_force) < 1.0e-12
+    assert optimum.normal_force_error == 0.0
 
     points = np.array([[0.0, 0.0], [0.3, 0.0]], dtype=np.float64)
     normals = np.array([[1.0, 0.0], [1.0, 0.0]], dtype=np.float64)
     work = ohtst_work(
         surface, points, normals, 0.25, 0.05, 1.0, 2, 1, 8, 2, 1, 3, 2, None, True, 2
     )
-    assert math.isfinite(work.work)
-    assert math.isfinite(work.mbar_work)
+    expected_work = 0.25 * ((0.3 * 0.3 - 1.0) ** 2 - 1.0)
+    assert abs(work.work - expected_work) < 1.0e-12
+    assert abs(work.integrated_work - expected_work) < 1.0e-12
+    assert abs(work.bar_work - expected_work) < 1.0e-12
+    assert abs(work.mbar_work - expected_work) < 1.0e-12
+    assert work.integrated_error == 0.0
     assert work.evaluations > 0
 
     starts = np.array([[0.0, 0.0], [0.0, 0.2]], dtype=np.float64)
-    kappa = ohtst_transmission(surface, point, normal, starts, 0.25, 0.05, 0.0, 16, 4, 4, 2, 2)
-    assert math.isfinite(kappa.kappa)
-    assert kappa.shots + kappa.unassigned == 4
+    kappa = ohtst_transmission(
+        surface,
+        np.array([0.0, 0.0], dtype=np.float64),
+        normal,
+        starts,
+        0.25,
+        0.05,
+        0.0,
+        16,
+        4,
+        4,
+        2,
+        2,
+    )
+    assert abs(kappa.kappa - 1.0) < 1.0e-12
+    assert kappa.error == 0.0
+    assert kappa.shots == 4
+    assert kappa.unassigned == 0
+    assert kappa.reactive == 4
+    assert kappa.recrossed == 0
     assert kappa.evaluations > 0
 
-    rate = ohtst_rate(0.25, 1.0, 0.0, 0.0, 0.0)
-    assert rate.rate > 0.0
-    assert abs(rate.rate - rate.flux) <= rate.flux / 1_000_000
-    assert abs(rate.log_rate - math.log(rate.rate)) <= 0.000_001
+    rate = ohtst_rate(0.25, 0.8, 0.04, 0.5, 0.02)
+    expected_flux = math.sqrt(0.25 / (2.0 * math.pi))
+    expected_log_rate = math.log(expected_flux) + math.log(0.8) - 0.5 / 0.25
+    expected_log_error = math.hypot(0.04 / 0.8, 0.02 / 0.25)
+    expected_rate = math.exp(expected_log_rate)
+    assert abs(rate.flux - expected_flux) < 1.0e-12
+    assert abs(rate.log_rate - expected_log_rate) < 1.0e-12
+    assert abs(rate.log_rate_error - expected_log_error) < 1.0e-12
+    assert abs(rate.rate - expected_rate) < 1.0e-12
+    assert abs(rate.error - expected_rate * expected_log_error) < 1.0e-12
+
+
+def test_optimize_refuses_to_report_converged_when_unconverged() -> None:
+    with pytest.raises(ValueError, match="did not converge"):
+        ohtst_optimize(
+            surface,
+            np.array([0.4, 0.0], dtype=np.float64),
+            np.array([1.0, 0.3], dtype=np.float64),
+            0.25,
+            0.05,
+            1.0,
+            2,
+            1,
+            8,
+            2,
+            1,
+            1,
+            0.05,
+            0.05,
+            1,
+            True,
+            True,
+        )
 
 
 def test_mbar_pins_the_first_state_at_zero() -> None:
@@ -105,6 +165,15 @@ def test_rate_refuses_a_negative_standard_error() -> None:
         ohtst_rate(0.25, 1.0, -0.1, 0.0, 0.0)
     with pytest.raises(ValueError):
         ohtst_rate(0.25, 1.0, 0.0, 1.0, -0.1)
+
+
+def test_rate_refuses_non_finite_rate_or_error() -> None:
+    with pytest.raises(NumericalError):
+        ohtst_rate(1.0, 1.0, 0.0, -1000.0, 0.0)
+    with pytest.raises(NumericalError):
+        ohtst_rate(1.0, 1.0, 0.1, -1000.0, 0.1)
+    with pytest.raises(NumericalError):
+        ohtst_rate(1.0, 1.0, 0.0, 0.0, 1.0e300)
 
 
 def test_transmission_stops_entering_python_after_a_callback_error() -> None:
