@@ -5,28 +5,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use ndarray::{Array1, ArrayView1, array};
 use rgsaddle::{
     MinModeConfig, MinModeKind, MinModeSession, MinModeStatus, PointSurface, SaddleError,
+    soft_mode_then_full_directions,
 };
-
-/// Directions from one seeding policy.
-struct DirectionPlan {
-    directions: Vec<Array1<f64>>,
-}
-
-/// Parent policy: develop has no soft-subspace seeding, so this arm draws the
-/// same isotropic directions as the random arm (same seed, same count).
-fn soft_mode_then_full_directions<S: PointSurface>(
-    _surface: &S,
-    minimum: ArrayView1<'_, f64>,
-    phase_count: usize,
-    seed: u64,
-) -> Result<DirectionPlan, SaddleError> {
-    let mut rng = SplitMix64::new(seed);
-    let mut directions = Vec::with_capacity(2 * phase_count);
-    for _ in 0..(2 * phase_count) {
-        directions.push(sample_on_sphere(minimum.len(), &mut rng));
-    }
-    Ok(DirectionPlan { directions })
-}
 
 const MB_A: [f64; 4] = [-200.0, -100.0, -170.0, 15.0];
 const MB_AA: [f64; 4] = [-1.0, -1.0, -6.5, 0.7];

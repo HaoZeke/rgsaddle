@@ -259,6 +259,7 @@ pub mod qn;
 pub mod restricted;
 pub mod rfo;
 pub mod samd;
+pub mod seed_direction;
 pub mod sella_min;
 pub mod sella_saddle;
 pub mod vocn;
@@ -313,6 +314,9 @@ pub use rfo::{RationalFunctionOptimization, rfo_stepper};
 pub use samd::{
     SamdConfig, SamdReport, SamdSession, VelocitySofteningConfig, VelocitySofteningReport,
     project_velocity, retract_samd, soften_velocity_on, transport_velocity, verlet_increment,
+};
+pub use seed_direction::{
+    SoftModeDirectionPlan, soft_mode_then_full_directions, spectral_gap_rank,
 };
 
 pub use sella_min::{SellaMinConfig, SellaMinReport, SellaMinSession};
