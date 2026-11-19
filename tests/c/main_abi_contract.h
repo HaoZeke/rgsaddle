@@ -549,4 +549,8 @@ typedef rgsaddle_status_t (*abi45_signature_rgsaddle_band_free_end_residual)(
     const RgsaddleBand *band, double *out);
 _Static_assert(_Generic(&rgsaddle_band_free_end_residual, abi45_signature_rgsaddle_band_free_end_residual: 1, default: 0), "rgsaddle_band_free_end_residual signature");
 
+typedef int64_t (*abi45_signature_rgsaddle_band_free_end_cuts)(
+    const RgsaddleBand *band);
+_Static_assert(_Generic(&rgsaddle_band_free_end_cuts, abi45_signature_rgsaddle_band_free_end_cuts: 1, default: 0), "rgsaddle_band_free_end_cuts signature");
+
 #endif
