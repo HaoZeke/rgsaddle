@@ -662,9 +662,10 @@ pub struct BandReport {
     pub iteration: usize,
     /// Image evaluations the surface performed during this step: the
     /// sum of the row counts over every [`BandSurface::eval`] call.
-    /// A warm step costs `n_images - 2`; the first step after
-    /// [`BandSession::new`] or [`BandSession::reset`] adds the two
-    /// endpoints.
+    /// A warm step costs `n_images - 2`, twice that when the stepper
+    /// ends away from its last trial (FIRE backing up after an uphill
+    /// move); the first step after [`BandSession::new`] or
+    /// [`BandSession::reset`] adds the two endpoints.
     pub surface_rows: usize,
     /// Curvature along the climbing image's lowest mode on a step of
     /// the min-mode refinement; `None` on a band step.
