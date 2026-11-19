@@ -36,7 +36,7 @@ use crate::tangent::TangentKind;
 /// The RGSADDLE ABI MAJOR.
 pub const RGSADDLE_ABI_MAJOR: u32 = 1;
 /// The RGSADDLE ABI MINOR.
-pub const RGSADDLE_ABI_MINOR: u32 = 43;
+pub const RGSADDLE_ABI_MINOR: u32 = 44;
 
 /// A band, min-mode or OCI-NEB config of this minor or newer certifies
 /// the saddle index at convergence by default.
@@ -2191,3 +2191,7 @@ mod solid;
 pub use solid::*;
 mod stencil;
 pub use stencil::*;
+#[cfg(feature = "ohtst")]
+mod ohtst;
+#[cfg(feature = "ohtst")]
+pub use ohtst::*;
