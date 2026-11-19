@@ -184,9 +184,10 @@ int main(void) {
 
   rgsaddle_hyperplane_ti_config_t bad = cfg;
   bad.version.major = 99;
-  if (rgsaddle_hyperplane_thermodynamic_integration(
-          sampler, point, normal, 2, &bad, &res) != RGSADDLE_INVALID_PARAMETER) {
-    return fail(RGSADDLE_INVALID_PARAMETER, "bad major");
+  int32_t bad_major_st = rgsaddle_hyperplane_thermodynamic_integration(
+      sampler, point, normal, 2, &bad, &res);
+  if (bad_major_st != RGSADDLE_ABI_MISMATCH) {
+    return fail(bad_major_st, "bad major");
   }
   bad = cfg;
   bad.nodes = 0;
