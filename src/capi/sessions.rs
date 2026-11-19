@@ -3384,6 +3384,43 @@ pub const RGSADDLE_GROWING_STRING_GROWING: i32 = 0;
 /// Phase discriminant for growing string once joined (ABI minor 44).
 pub const RGSADDLE_GROWING_STRING_JOINED: i32 = 1;
 
+/// The band configuration as laid out before ABI minor 45, kept as the
+/// `band` member of [`RgsaddleGrowingStringConfig`] so that config's
+/// layout does not move. It has no refine members, so a growing string
+/// always steps with its band method.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RgsaddleBandConfigV44 {
+    /// ABI version this value was built against.
+    pub version: RgsaddleVersion,
+    /// Bit flags. The header names each bit.
+    pub flags: u64,
+    /// How the path direction at an interior image is chosen.
+    pub tangent: i32,
+    /// How the springs between images are chosen.
+    pub spring: i32,
+    /// How the true force and the spring are combined.
+    pub projection: i32,
+    /// Which rgmin stepper advances the assembled force.
+    pub method: i32,
+    /// Spring constant of the uniform and Onsager-Machlup springs.
+    pub spring_k: f64,
+    /// Weighted springs: `n_images - 1` constants, else NULL.
+    pub spring_ks: *const f64,
+    /// Climbing trigger as a factor of the first evaluation's force.
+    pub ci_trigger_factor: f64,
+    /// Climbing trigger as an absolute force.
+    pub ci_trigger_force: f64,
+    /// Row-major 3x3 cell for minimum-image differences; NULL for none.
+    pub cell: *const f64,
+    /// Convergence force of the search, in the host's force units.
+    pub force_tol: f64,
+    /// Largest per-atom displacement, in the host's length unit.
+    pub max_move: f64,
+    /// Number of vector pairs a limited-memory stepper stores.
+    pub memory: i64,
+}
+
 #[repr(C)]
 /// Wire configuration for [`rgsaddle_growing_string_create`] (ABI minor 44).
 pub struct RgsaddleGrowingStringConfig {
@@ -3392,7 +3429,7 @@ pub struct RgsaddleGrowingStringConfig {
     /// Bit flags.
     pub flags: u64,
     /// Underlying band configuration.
-    pub band: RgsaddleBandConfig,
+    pub band: RgsaddleBandConfigV44,
     /// Target total image count (`>= 4`).
     pub n_images: i64,
     /// Frontier perpendicular force tolerance for adding a node (finite
@@ -3441,7 +3478,7 @@ pub unsafe extern "C" fn rgsaddle_growing_string_config_default(
             minor: RGSADDLE_ABI_MINOR,
         },
         flags: 0,
-        band: RgsaddleBandConfig {
+        band: RgsaddleBandConfigV44 {
             version: RgsaddleVersion {
                 major: RGSADDLE_ABI_MAJOR,
                 minor: RGSADDLE_ABI_MINOR,
@@ -3494,7 +3531,8 @@ pub unsafe extern "C" fn rgsaddle_growing_string_create(
         return std::ptr::null_mut();
     }
     let dof = (3 * n_atoms) as usize;
-    let Some(parsed) = (unsafe { parse_band_config(&cfg.band, cfg.n_images, dof, None) }) else {
+    let wire = super::BandWire::from_prefix(cfg.band);
+    let Some(parsed) = (unsafe { parse_band_config(&wire, cfg.n_images, dof, None) }) else {
         return std::ptr::null_mut();
     };
     if parsed.method == 2 {

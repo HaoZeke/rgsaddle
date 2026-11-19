@@ -36,7 +36,19 @@ use crate::tangent::TangentKind;
 /// The RGSADDLE ABI MAJOR.
 pub const RGSADDLE_ABI_MAJOR: u32 = 1;
 /// The RGSADDLE ABI MINOR.
-pub const RGSADDLE_ABI_MINOR: u32 = 44;
+pub const RGSADDLE_ABI_MINOR: u32 = 45;
+
+/// Band `refine_method` code 0, ABI minor 45: no refine stepper, eOn's
+/// `None`. The band steps with its `method` alone.
+pub const RGSADDLE_REFINE_NONE: i32 = 0;
+/// Band `refine_method` code 1, ABI minor 45: L-BFGS of the config's
+/// `memory`, 20 for zero, steps every band step whose convergence force
+/// is at or under `refine_threshold`.
+pub const RGSADDLE_REFINE_LBFGS: i32 = 1;
+
+/// The first minor whose band config carries `refine_method` and
+/// `refine_threshold`. An older config is read as no refine stepper.
+pub(crate) const REFINE_MINOR: u32 = 45;
 
 /// A band, min-mode or OCI-NEB config of this minor or newer certifies
 /// the saddle index at convergence by default.
@@ -72,7 +84,12 @@ pub const RGSADDLE_BAND_STRING: u64 = 32;
 pub(crate) const BAND_STRING_MINOR: u32 = 44;
 
 /// The trust-region reparametrization a band config asks for.
-pub(crate) fn rtr_reparametrization(cfg: &RgsaddleBandConfig) -> crate::Reparametrization {
+///
+/// `cfg` is the layout from before the refine members, which every
+/// minor carries.
+pub(crate) fn rtr_reparametrization(
+    cfg: &sessions::RgsaddleBandConfigV44,
+) -> crate::Reparametrization {
     if cfg.version.minor >= 38 && cfg.flags & RGSADDLE_BAND_SPLINE_REPARAM != 0 {
         crate::Reparametrization::NotAKnot
     } else {
@@ -81,7 +98,10 @@ pub(crate) fn rtr_reparametrization(cfg: &RgsaddleBandConfig) -> crate::Reparame
 }
 
 /// The simplified string configuration a band config asks for.
-pub(crate) fn string_config(cfg: &RgsaddleBandConfig) -> Option<crate::StringConfig> {
+///
+/// `cfg` is the layout from before the refine members, which every
+/// minor carries.
+pub(crate) fn string_config(cfg: &sessions::RgsaddleBandConfigV44) -> Option<crate::StringConfig> {
     if cfg.version.minor >= BAND_STRING_MINOR && cfg.flags & RGSADDLE_BAND_STRING != 0 {
         Some(crate::StringConfig::default().with_reparametrization(rtr_reparametrization(cfg)))
     } else {
@@ -198,6 +218,22 @@ pub struct RgsaddleBandConfig {
     pub max_move: f64,
     /// Number of vector pairs a limited-memory stepper stores.
     pub memory: i64,
+    /// ABI minor 45: the convergence force, in the host's force units,
+    /// at or under which a band step uses `refine_method`. It mirrors
+    /// the `threshold` of eOn's `[Refine]` section. Zero is the default,
+    /// 0.5 as in eOn, and the library converts no units. A negative or
+    /// NaN value is refused when `refine_method` is set, and the member
+    /// is ignored otherwise. Read only when the config minor is 45 or
+    /// newer.
+    pub refine_threshold: f64,
+    /// ABI minor 45: the optimizer of the steps at or under
+    /// `refine_threshold`, an `rgsaddle_refine_method_t`. It mirrors the
+    /// `opt_method` of eOn's `[Refine]` section. Zero is no refine
+    /// stepper, eOn's `None`, and a zeroed config steps with the band
+    /// method alone. Read only when the config minor is 45 or newer.
+    pub refine_method: i32,
+    /// Reserved; set to zero.
+    pub reserved: i32,
 }
 
 #[repr(C)]
@@ -463,6 +499,102 @@ fn method_of(v: i32, memory: i64) -> Method {
     }
 }
 
+/// The refine members appended at ABI minor 45. Sixteen bytes: one
+/// `f64` and two `i32`s, with no padding before `refine_method`.
+#[repr(C)]
+struct BandRefineTail {
+    refine_threshold: f64,
+    refine_method: i32,
+    reserved: i32,
+}
+
+/// A band config copied out of the allocation the caller owns.
+///
+/// `prefix` is always the layout from before the refine members.
+/// `refine_threshold` and `refine_method` are zero and
+/// `RGSADDLE_REFINE_NONE` unless the minor is [`REFINE_MINOR`] or
+/// newer, in which case they are the appended members.
+pub(super) struct BandWire {
+    prefix: sessions::RgsaddleBandConfigV44,
+    refine_threshold: f64,
+    refine_method: i32,
+}
+
+const _: () = assert!(
+    std::mem::size_of::<sessions::RgsaddleBandConfigV44>()
+        == std::mem::offset_of!(RgsaddleBandConfig, refine_threshold)
+);
+const _: () = assert!(
+    std::mem::size_of::<RgsaddleBandConfig>()
+        == std::mem::size_of::<sessions::RgsaddleBandConfigV44>()
+            + std::mem::size_of::<BandRefineTail>()
+);
+
+impl BandWire {
+    /// A band that has no refine members of its own. The growing string
+    /// config embeds the older layout, so its later members must not be
+    /// read as `refine_threshold` and `refine_method`.
+    pub(super) fn from_prefix(prefix: sessions::RgsaddleBandConfigV44) -> Self {
+        Self {
+            prefix,
+            refine_threshold: 0.0,
+            refine_method: RGSADDLE_REFINE_NONE,
+        }
+    }
+}
+
+/// Copy a C band config without forming a reference to the enlarged
+/// struct.
+///
+/// # Safety
+/// `config` is non-null. When its version minor is below
+/// [`REFINE_MINOR`] it addresses a [`sessions::RgsaddleBandConfigV44`]
+/// and nothing past that layout is read. Otherwise it addresses a
+/// [`RgsaddleBandConfig`].
+unsafe fn read_band_wire(config: *const RgsaddleBandConfig) -> BandWire {
+    let prefix =
+        unsafe { std::ptr::read_unaligned(config.cast::<sessions::RgsaddleBandConfigV44>()) };
+    if prefix.version.minor < REFINE_MINOR {
+        return BandWire::from_prefix(prefix);
+    }
+    let tail = unsafe {
+        let bytes = config.cast::<u8>();
+        let tail_ptr = bytes
+            .add(std::mem::offset_of!(RgsaddleBandConfig, refine_threshold))
+            .cast::<BandRefineTail>();
+        std::ptr::read_unaligned(tail_ptr)
+    };
+    BandWire {
+        prefix,
+        refine_threshold: tail.refine_threshold,
+        refine_method: tail.refine_method,
+    }
+}
+
+/// Applies the refine stepper a C band config asks for. A config older
+/// than minor 45 has no such members and steps with the band method
+/// alone, as does `RGSADDLE_REFINE_NONE`. A zero threshold keeps the
+/// Rust default, eOn's. A refine method this library does not know, and
+/// a negative or NaN threshold, are refused.
+fn with_refine_of(config: BandConfig, wire: &BandWire) -> Option<BandConfig> {
+    if wire.prefix.version.minor < REFINE_MINOR {
+        return Some(config);
+    }
+    let method = match wire.refine_method {
+        RGSADDLE_REFINE_NONE => return Some(config),
+        RGSADDLE_REFINE_LBFGS => method_of(1, wire.prefix.memory),
+        _ => return None,
+    };
+    let config = config.with_refine_method(Some(method));
+    if wire.refine_threshold == 0.0 {
+        return Some(config);
+    }
+    if wire.refine_threshold.is_nan() || wire.refine_threshold < 0.0 {
+        return None;
+    }
+    Some(config.with_refine_threshold(wire.refine_threshold))
+}
+
 fn stamp_report(out: &mut RgsaddleReport) {
     out.version = RgsaddleVersion {
         major: RGSADDLE_ABI_MAJOR,
@@ -576,6 +708,9 @@ pub extern "C" fn rgsaddle_status_name(status: i32) -> *const c_char {
 ///     force_tol: 1e-3,
 ///     max_move: 0.1,
 ///     memory: 0,
+///     refine_threshold: 0.0,
+///     refine_method: 0, // RGSADDLE_REFINE_NONE
+///     reserved: 0,
 /// };
 /// let mut positions = Vec::new();
 /// for i in 0..7 {
@@ -661,11 +796,12 @@ pub(super) struct ParsedBand {
 /// `spring_ks` and `cell`, when non-null, must point at the lengths
 /// the band config documents.
 pub(super) unsafe fn parse_band_config(
-    cfg: &RgsaddleBandConfig,
+    wire: &BandWire,
     n_images: i64,
     dof: usize,
     solid: Option<SolidState>,
 ) -> Option<ParsedBand> {
+    let cfg = &wire.prefix;
     if cfg.version.major != RGSADDLE_ABI_MAJOR || n_images < 3 || dof == 0 {
         return None;
     }
@@ -690,47 +826,47 @@ pub(super) unsafe fn parse_band_config(
             [c[6], c[7], c[8]],
         ]))
     };
+    let config = BandConfig::default()
+        .with_tangent(if cfg.tangent == 0 {
+            TangentKind::Simple
+        } else {
+            TangentKind::Improved
+        })
+        .with_spring(spring)
+        .with_projection(match cfg.projection {
+            0 => ProjectionKind::PlainElasticBand,
+            2 => ProjectionKind::DoublyNudged,
+            _ => ProjectionKind::Neb,
+        })
+        .with_climbing(
+            (cfg.ci_trigger_factor > 0.0 || cfg.flags & RGSADDLE_BAND_CI_AFTER != 0).then_some(
+                CiConfig::default()
+                    .with_trigger_factor(cfg.ci_trigger_factor)
+                    .with_trigger_force(cfg.ci_trigger_force),
+            ),
+        )
+        .with_cell(cell)
+        .with_force_tol(cfg.force_tol)
+        .with_max_move(cfg.max_move)
+        .with_remove_translation(cfg.flags & RGSADDLE_BAND_KEEP_TRANSLATION == 0)
+        .with_method(method_of(cfg.method, cfg.memory))
+        .with_solid(solid)
+        .with_quickmin(cfg.method == 3)
+        .with_quickmin_options(rgmin::QuickMinOptions::rgmin())
+        .with_time_step(1.0)
+        .with_autoneb(None)
+        .with_min_mode(
+            (cfg.flags & RGSADDLE_BAND_NO_MIN_MODE == 0).then(crate::band::MinModeRefine::default),
+        )
+        // Installed after creation through rgsaddle_band_set_exp_precon.
+        .with_exp_precon(None)
+        .with_zoom(None)
+        .with_saddle_check(
+            (cfg.version.minor >= SADDLE_INDEX_MINOR).then(SaddleIndexCheck::default),
+        )
+        .with_string(string_config(cfg));
     Some(ParsedBand {
-        config: BandConfig::default()
-            .with_tangent(if cfg.tangent == 0 {
-                TangentKind::Simple
-            } else {
-                TangentKind::Improved
-            })
-            .with_spring(spring)
-            .with_projection(match cfg.projection {
-                0 => ProjectionKind::PlainElasticBand,
-                2 => ProjectionKind::DoublyNudged,
-                _ => ProjectionKind::Neb,
-            })
-            .with_climbing(
-                (cfg.ci_trigger_factor > 0.0 || cfg.flags & RGSADDLE_BAND_CI_AFTER != 0).then_some(
-                    CiConfig::default()
-                        .with_trigger_factor(cfg.ci_trigger_factor)
-                        .with_trigger_force(cfg.ci_trigger_force),
-                ),
-            )
-            .with_cell(cell)
-            .with_force_tol(cfg.force_tol)
-            .with_max_move(cfg.max_move)
-            .with_remove_translation(cfg.flags & RGSADDLE_BAND_KEEP_TRANSLATION == 0)
-            .with_method(method_of(cfg.method, cfg.memory))
-            .with_solid(solid)
-            .with_quickmin(cfg.method == 3)
-            .with_quickmin_options(rgmin::QuickMinOptions::rgmin())
-            .with_time_step(1.0)
-            .with_autoneb(None)
-            .with_min_mode(
-                (cfg.flags & RGSADDLE_BAND_NO_MIN_MODE == 0)
-                    .then(crate::band::MinModeRefine::default),
-            )
-            // Installed after creation through rgsaddle_band_set_exp_precon.
-            .with_exp_precon(None)
-            .with_zoom(None)
-            .with_saddle_check(
-                (cfg.version.minor >= SADDLE_INDEX_MINOR).then(SaddleIndexCheck::default),
-            )
-            .with_string(string_config(cfg)),
+        config: with_refine_of(config, wire)?,
         per_image: cfg.flags & RGSADDLE_BAND_PER_IMAGE != 0,
         method: cfg.method,
     })
@@ -746,7 +882,8 @@ unsafe fn band_from_parts(
     if config.is_null() || positions.is_null() || n_images < 3 || n_atoms < 1 {
         return std::ptr::null_mut();
     }
-    let cfg = unsafe { &*config };
+    let wire = unsafe { read_band_wire(config) };
+    let cfg = &wire.prefix;
     if cfg.version.major != RGSADDLE_ABI_MAJOR {
         return std::ptr::null_mut();
     }
@@ -757,7 +894,7 @@ unsafe fn band_from_parts(
         Ok(a) => a,
         Err(_) => return std::ptr::null_mut(),
     };
-    let Some(parsed) = (unsafe { parse_band_config(cfg, n_images, dof, solid) }) else {
+    let Some(parsed) = (unsafe { parse_band_config(&wire, n_images, dof, solid) }) else {
         return std::ptr::null_mut();
     };
     let per_image = parsed.per_image;
@@ -899,11 +1036,11 @@ unsafe fn project_band(
     {
         return RGSADDLE_SHAPE;
     }
-    let cfg = unsafe { &*config };
+    let wire = unsafe { read_band_wire(config) };
     let dof = (3 * n_atoms) as usize;
     let rows = n_images as usize;
     let total = dof * rows;
-    let Some(mut parsed) = (unsafe { parse_band_config(cfg, n_images, dof, None) }) else {
+    let Some(mut parsed) = (unsafe { parse_band_config(&wire, n_images, dof, None) }) else {
         return RGSADDLE_INVALID_PARAMETER;
     };
     if let Some(fixed) = fixed {
@@ -2211,3 +2348,129 @@ mod solid;
 pub use solid::*;
 mod stencil;
 pub use stencil::*;
+
+#[cfg(test)]
+mod short_band_config {
+    use super::*;
+    use std::alloc::{Layout, alloc_zeroed, dealloc};
+    use std::mem::{align_of, offset_of};
+
+    #[test]
+    fn old_minor_band_config_is_the_prefix_only() {
+        let old = offset_of!(RgsaddleBandConfig, refine_threshold);
+        let layout = Layout::from_size_align(old, align_of::<RgsaddleBandConfig>()).unwrap();
+        let ptr = unsafe { alloc_zeroed(layout) };
+        assert!(!ptr.is_null());
+        unsafe {
+            let prefix = &mut *ptr.cast::<super::sessions::RgsaddleBandConfigV44>();
+            prefix.version = RgsaddleVersion {
+                major: RGSADDLE_ABI_MAJOR,
+                minor: 44,
+            };
+            prefix.tangent = 1;
+            prefix.spring = 0;
+            prefix.projection = 1;
+            prefix.method = 0;
+            prefix.spring_k = 5.0;
+            prefix.ci_trigger_factor = 0.5;
+            prefix.force_tol = 1e-3;
+            prefix.max_move = 0.5;
+            let config = ptr.cast::<RgsaddleBandConfig>();
+            let positions = [-1.0, 0.0, 0.0, 0.0, 0.2, 0.0, 1.0, 0.0, 0.0];
+            let band = rgsaddle_band_create(config, 3, 1, positions.as_ptr());
+            assert!(!band.is_null(), "create");
+            rgsaddle_band_free(band);
+
+            let mut cells = [0.0; 27];
+            for image in 0..3 {
+                cells[image * 9] = 4.0;
+                cells[image * 9 + 4] = 4.0;
+                cells[image * 9 + 8] = 4.0;
+            }
+            let solid = rgsaddle_band_create_solid(
+                config,
+                3,
+                1,
+                positions.as_ptr(),
+                cells.as_ptr(),
+                0.0,
+                1.0,
+            );
+            assert!(!solid.is_null(), "create_solid");
+            rgsaddle_band_free(solid);
+
+            let energies = [0.0; 3];
+            let gradients = [0.0; 9];
+            let mut forces = [0.0; 9];
+            let mut ci = -2_i64;
+            let projected = rgsaddle_band_project(
+                config,
+                3,
+                1,
+                positions.as_ptr(),
+                energies.as_ptr(),
+                gradients.as_ptr(),
+                forces.as_mut_ptr(),
+                &mut ci,
+            );
+            assert_eq!(projected, RGSADDLE_OK, "project");
+            let fixed = [0_u8];
+            let projected_fixed = rgsaddle_band_project_fixed(
+                config,
+                3,
+                1,
+                positions.as_ptr(),
+                energies.as_ptr(),
+                gradients.as_ptr(),
+                fixed.as_ptr(),
+                forces.as_mut_ptr(),
+                &mut ci,
+            );
+            assert_eq!(projected_fixed, RGSADDLE_OK, "project_fixed");
+
+            let minmode = RgsaddleMinModeConfig {
+                version: RgsaddleVersion {
+                    major: RGSADDLE_ABI_MAJOR,
+                    minor: 44,
+                },
+                flags: 0,
+                kind: 0,
+                method: 0,
+                dr: 1e-3,
+                rotation_tol: 1e-4,
+                max_rotations: 10,
+                krylov_dim: 4,
+                force_tol: 1e-3,
+                max_move: 0.2,
+                rotation_angle_tol: 0.0,
+                difference: 0,
+                reserved: 0,
+            };
+            let ocineb_cfg = super::ocineb::RgsaddleOcinebConfig {
+                version: RgsaddleVersion {
+                    major: RGSADDLE_ABI_MAJOR,
+                    minor: 44,
+                },
+                flags: 0,
+                trigger_factor: 0.5,
+                trigger_force: 0.0,
+                angle_tol: 0.85,
+                stability_count: 1,
+                max_mmf_steps: 10,
+                restore_unhelpful: 0,
+                reserved: 0,
+            };
+            let session = super::ocineb::rgsaddle_ocineb_create(
+                config,
+                &minmode,
+                &ocineb_cfg,
+                3,
+                1,
+                positions.as_ptr(),
+            );
+            assert!(!session.is_null(), "ocineb");
+            super::ocineb::rgsaddle_ocineb_free(session);
+            dealloc(ptr, layout);
+        }
+    }
+}

@@ -108,14 +108,14 @@ pub unsafe extern "C" fn rgsaddle_ocineb_create(
     if n_images < 3 || n_atoms < 1 {
         return std::ptr::null_mut();
     }
-    let band = unsafe { &*band };
+    let wire = unsafe { super::read_band_wire(band) };
     let minmode = unsafe { &*minmode };
     let config = unsafe { &*config };
     if config.version.major != RGSADDLE_ABI_MAJOR {
         return std::ptr::null_mut();
     }
     let dof = (3 * n_atoms) as usize;
-    let Some(parsed) = (unsafe { parse_band_config(band, n_images, dof, None) }) else {
+    let Some(parsed) = (unsafe { parse_band_config(&wire, n_images, dof, None) }) else {
         return std::ptr::null_mut();
     };
     let Some(minmode_config) = minmode_config_from(minmode) else {
@@ -146,7 +146,7 @@ pub unsafe extern "C" fn rgsaddle_ocineb_create(
             .set_rtr(Some(
                 crate::rtr::RtrConfig::default()
                     .with_radius_max(max_move * ((n_images - 2) as f64).sqrt())
-                    .with_reparametrization(super::rtr_reparametrization(band)),
+                    .with_reparametrization(super::rtr_reparametrization(&wire.prefix)),
             ))
             .is_err()
     {

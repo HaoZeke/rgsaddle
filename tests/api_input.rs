@@ -105,6 +105,9 @@ fn the_c_projection_uses_the_same_climbing_rule() {
         force_tol: 1e-3,
         max_move: 0.2,
         memory: 0,
+        refine_threshold: 0.0,
+        refine_method: 0,
+        reserved: 0,
     };
     let mut forces = [0.0; 9];
     let mut ci = 7_i64;

@@ -5,7 +5,7 @@
 #include <stddef.h>
 
 _Static_assert(RGSADDLE_ABI_MAJOR == 1u, "main ABI major");
-_Static_assert(RGSADDLE_ABI_MINOR == 44u, "ABI minor");
+_Static_assert(RGSADDLE_ABI_MINOR == 45u, "ABI minor");
 _Static_assert(RGSADDLE_BAND_NO_MIN_MODE == (1ull << 3), "band flag bit 3");
 _Static_assert(RGSADDLE_BAND_SPLINE_REPARAM == (1ull << 4), "band flag bit 4");
 _Static_assert(RGSADDLE_BAND_STRING == (1ull << 5), "band flag bit 5");
@@ -66,7 +66,14 @@ typedef struct {
   double max_move;
   int64_t memory;
 } abi15_rgsaddle_band_config_t;
-_Static_assert(sizeof(rgsaddle_band_config_t) == sizeof(abi15_rgsaddle_band_config_t), "rgsaddle_band_config_t size");
+/* Minor 45 appends refine_threshold, refine_method and a reserved word.
+ * A caller stamped older reads no further than its own struct, so the
+ * 1.5 members keep their offsets. */
+_Static_assert(sizeof(rgsaddle_band_config_t) == sizeof(abi15_rgsaddle_band_config_t) + 16, "rgsaddle_band_config_t size");
+_Static_assert(offsetof(rgsaddle_band_config_t, refine_threshold) == sizeof(abi15_rgsaddle_band_config_t), "rgsaddle_band_config_t.refine_threshold");
+_Static_assert(offsetof(rgsaddle_band_config_t, refine_method) == sizeof(abi15_rgsaddle_band_config_t) + 8, "rgsaddle_band_config_t.refine_method");
+_Static_assert(RGSADDLE_REFINE_NONE == 0, "rgsaddle_refine_method_t NONE");
+_Static_assert(RGSADDLE_REFINE_LBFGS == 1, "rgsaddle_refine_method_t LBFGS");
 _Static_assert(_Alignof(rgsaddle_band_config_t) == _Alignof(abi15_rgsaddle_band_config_t), "rgsaddle_band_config_t alignment");
 _Static_assert(offsetof(rgsaddle_band_config_t, version) == offsetof(abi15_rgsaddle_band_config_t, version), "rgsaddle_band_config_t.version");
 _Static_assert(offsetof(rgsaddle_band_config_t, flags) == offsetof(abi15_rgsaddle_band_config_t, flags), "rgsaddle_band_config_t.flags");
@@ -529,6 +536,9 @@ typedef RgsaddleGrowingString *(*abi44_signature_rgsaddle_growing_string_create)
     const rgsaddle_growing_string_config_t *config, int64_t n_atoms, const double *reactant,
     const double *product);
 _Static_assert(_Generic(&rgsaddle_growing_string_create, abi44_signature_rgsaddle_growing_string_create: 1, default: 0), "rgsaddle_growing_string_create signature");
+_Static_assert(sizeof(rgsaddle_band_config_v44_t) == sizeof(abi15_rgsaddle_band_config_t), "rgsaddle_band_config_v44_t size");
+_Static_assert(offsetof(rgsaddle_band_config_v44_t, memory) == offsetof(abi15_rgsaddle_band_config_t, memory), "rgsaddle_band_config_v44_t.memory");
+_Static_assert(offsetof(rgsaddle_growing_string_config_t, n_images) == offsetof(rgsaddle_growing_string_config_t, band) + sizeof(abi15_rgsaddle_band_config_t), "rgsaddle_growing_string_config_t.n_images");
 
 typedef rgsaddle_status_t (*abi44_signature_rgsaddle_growing_string_step)(
     RgsaddleGrowingString *session, rgsaddle_surface_fn surface, void *user,
