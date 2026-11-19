@@ -1006,6 +1006,14 @@ impl<E: HyperplaneSampler> Climb<'_, E> {
     fn try_gauge(&mut self, x: &mut Array1<f64>) -> Result<(), SaddleError> {
         let mut trial = match self.trial.take() {
             Some(trial) if trial.x == *x => trial,
+            None if self.current.as_ref().is_some_and(|current| current.x == *x) => {
+                self.accepted_step = Some(AcceptedStep {
+                    translation: 0.0,
+                    rotation: 0.0,
+                });
+                self.tested = false;
+                return Ok(());
+            }
             _ => {
                 return Err(SaddleError::Solver(
                     "the trust region accepted a plane that was not sampled".into(),

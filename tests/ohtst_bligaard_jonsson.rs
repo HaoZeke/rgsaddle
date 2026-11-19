@@ -17,8 +17,8 @@
 use ndarray::array;
 use rgsaddle::{
     AnalyticSurfaceDynamics, AnalyticSurfaceSampler, Hyperplane, LangevinConfig, PlaneOptimizer,
-    PlaneOptimizerConfig, ReversibleWorkConfig, TransmissionConfig, reversible_work,
-    transmission_coefficient,
+    PlaneOptimizerConfig, PlaneOptimizerStatus, ReversibleWorkConfig, TransmissionConfig,
+    reversible_work, transmission_coefficient,
 };
 
 include!(concat!(
@@ -119,16 +119,20 @@ fn eckart_sampler(kt: f64, time_step: f64) -> LangevinConfig {
         .with_seed(7)
 }
 
-/// Turn a line about the saddle from `start` degrees to a maximum of its
-/// free energy. Returns the angle and its error from the last sample's
-/// torque error and the quadrature curvature.
-fn eckart_turn(kt: f64, start: f64, time_step: f64, curvature: f64) -> (f64, f64) {
-    let config = PlaneOptimizerConfig::default()
+fn eckart_optimizer(kt: f64, time_step: f64) -> PlaneOptimizerConfig {
+    PlaneOptimizerConfig::default()
         .with_sampler(eckart_sampler(kt, time_step))
         .with_translate(false)
         .with_max_rotation(0.05)
         .with_max_records(16_000)
-        .with_max_iterations(60);
+        .with_max_iterations(60)
+}
+
+/// Turn a line about the saddle from `start` degrees to a maximum of its
+/// free energy. Returns the angle and its error from the last sample's
+/// torque error and the quadrature curvature.
+fn eckart_turn(kt: f64, start: f64, time_step: f64, curvature: f64) -> (f64, f64) {
+    let config = eckart_optimizer(kt, time_step).with_tolerance(1.0e-6);
     let optimum = PlaneOptimizer::new(&eckart_line(start), config)
         .unwrap()
         .run(&EckartHo)
@@ -273,6 +277,22 @@ fn eckart_optimizer_finds_both_maxima() {
         (turned - low).abs() < 4.0 * error,
         "{turned}° ± {error}° against {low}°"
     );
+}
+
+/// The sampled torque of a capped sample falls to zero, and the norm test
+/// cannot certify a zero torque. With `tolerance` zero the run ends at the
+/// iteration cap, not in an error and not as converged.
+#[test]
+fn eckart_capped_sample_without_tolerance_ends_at_the_iteration_cap() {
+    let cold_kt = 0.01 * ECKART_V0;
+    let kt = 0.3 * ECKART_V0;
+    for (kt, start, time_step) in [(cold_kt, 4.0, 8.0), (kt, 60.0, 1.0), (kt, 4.0, 8.0)] {
+        let optimum = PlaneOptimizer::new(&eckart_line(start), eckart_optimizer(kt, time_step))
+            .unwrap()
+            .run(&EckartHo)
+            .unwrap();
+        assert_eq!(optimum.status, PlaneOptimizerStatus::MaxIterations);
+    }
 }
 
 /// The reversible work between the two maxima at `T = 0.3 E_a/k_B` against
