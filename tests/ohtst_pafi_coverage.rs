@@ -184,7 +184,9 @@ fn ti_harmonic_expansion_surface_sampler_and_restricted_ti() {
         .with_friction(1.0);
     let mut surf_sampler =
         ThermodynamicSurfaceSampler::new(&Quartic2D, reference.clone(), dynamics).unwrap();
-    assert!(surf_sampler.energy(q.view()).unwrap().is_some());
+    let full_e = surf_sampler.energy(q.view()).unwrap().expect("full energy");
+    assert!((full_e - 0.13125).abs() < 1e-12, "full_e={full_e}");
+    assert!(((full_e - e_exp) - 0.00625).abs() < 1e-8);
     assert!(
         surf_sampler
             .constrained_directions(&plane)
@@ -209,25 +211,73 @@ fn ti_harmonic_expansion_surface_sampler_and_restricted_ti() {
         ThermodynamicSurfaceSampler::new(&Quartic2D, bad_ref, LangevinConfig::default()).is_err()
     );
 
-    // ExactGaussianPlaneSampler + ThermodynamicSampler + restricted_thermodynamic_integration.
-    let model = QuadraticModel::new(array![0.0, 0.0], array![[1.0, 0.0], [0.0, 1.0]])
-        .with_center(array![0.0, 0.0])
-        .with_energy(0.0)
-        .with_gradient(array![0.0, 0.0])
-        .with_hessian(array![[1.0, 0.0], [0.0, 1.0]]);
+    // Shifted QuadraticModel setters affect evaluated energy and constrained Gaussian mean.
+    let shifted = QuadraticModel::new(array![0.0, 0.0], array![[1.0, 0.0], [0.0, 1.0]])
+        .with_center(array![1.0, -0.5])
+        .with_energy(0.3)
+        .with_gradient(array![0.2, -0.6])
+        .with_hessian(array![[2.0, 0.0], [0.0, 3.0]]);
+    let mut shifted_gauss = ExactGaussianPlaneSampler::new(shifted).unwrap();
+    // At q = [0.0, 0.5], dq = [-1.0, 1.0]: 0.3 + (0.2*(-1) + -0.6*1) + 0.5*(2*1 + 3*1) = 2.0.
+    assert!((shifted_gauss.energy(q.view()).unwrap().unwrap() - 2.0).abs() < 1e-12);
+
+    // ExactGaussianPlaneSampler + restricted_thermodynamic_integration matches analytic moment
+    // E_0[0.1 * y^4] = 0.1 * 3 * (0.4)^2 = 0.048 on x = 0.
+    let harmonic = QuadraticModel::new(array![0.0, 0.0], array![[1.0, 0.0], [0.0, 1.0]]);
     let deriv = ThermodynamicDerivative::new(&Quartic2D, reference.clone())
         .with_reference(reference.clone());
-    let mut gauss = ExactGaussianPlaneSampler::new(model)
+    let mut gauss = ExactGaussianPlaneSampler::new(harmonic.clone())
         .unwrap()
         .with_observable(THERMODYNAMIC_DERIVATIVE, &deriv);
-    assert!(gauss.energy(q.view()).unwrap().is_some());
+    assert!((gauss.energy(q.view()).unwrap().unwrap() - 0.125).abs() < 1e-12);
     let r_est = restricted_thermodynamic_integration(&mut gauss, &plane, &ti_cfg).unwrap();
-    assert!(r_est.free_energy.is_finite());
+    assert!(
+        (r_est.free_energy - 0.048).abs() < 4.0 * r_est.error + 0.015,
+        "got {} +- {}",
+        r_est.free_energy,
+        r_est.error
+    );
 
+    // Bare ExactGaussianPlaneSampler omits THERMODYNAMIC_DERIVATIVE until ThermodynamicSampler
+    // attaches V_full - V_harmonic = 0.1 * y^4 and strips temporary positions when unrequested.
+    let mut bare = ExactGaussianPlaneSampler::new(harmonic).unwrap();
+    let bare_ens = bare
+        .sample_hyperplane(
+            &plane,
+            &HyperplaneSampleBudget::default()
+                .with_thermal(0.4)
+                .with_seed(2)
+                .with_samples(4)
+                .with_observable(THERMODYNAMIC_DERIVATIVE),
+        )
+        .unwrap();
+    assert!(
+        bare_ens
+            .observations
+            .iter()
+            .all(|o| !o.observables.contains_key(THERMODYNAMIC_DERIVATIVE))
+    );
     let deriv2 = ThermodynamicDerivative::new(&Quartic2D, reference);
-    let mut wrapped = ThermodynamicSampler::new(gauss, deriv2);
-    let _inner_ref = wrapped.inner();
-    assert!(wrapped.inner_mut().energy(q.view()).unwrap().is_some());
+    let mut wrapped = ThermodynamicSampler::new(bare, deriv2);
+    let ens_with_pos = wrapped
+        .sample_hyperplane(
+            &plane,
+            &HyperplaneSampleBudget::default()
+                .with_thermal(0.4)
+                .with_seed(2)
+                .with_samples(8)
+                .with_positions(true)
+                .with_observable(THERMODYNAMIC_DERIVATIVE),
+        )
+        .unwrap();
+    for obs in &ens_with_pos.observations {
+        let pos = obs.position.as_ref().expect("position retained");
+        let dv = obs.observables[THERMODYNAMIC_DERIVATIVE];
+        assert!(
+            (dv - 0.1 * pos[1].powi(4)).abs() < 1e-6,
+            "dv={dv} pos={pos}"
+        );
+    }
     let budget_no_pos = HyperplaneSampleBudget::default()
         .with_thermal(0.4)
         .with_seed(2)
@@ -239,11 +289,14 @@ fn ti_harmonic_expansion_surface_sampler_and_restricted_ti() {
     let ens = wrapped.sample_hyperplane(&plane, &budget_no_pos).unwrap();
     assert_eq!(ens.observations.len(), 16);
     assert!(ens.observations.iter().all(|o| o.position.is_none()));
-    assert!(
-        ens.observations
-            .iter()
-            .all(|o| o.observables.contains_key(THERMODYNAMIC_DERIVATIVE))
-    );
+    for (no_pos, with_pos) in ens.observations.iter().zip(&ens_with_pos.observations) {
+        assert!(
+            (no_pos.observables[THERMODYNAMIC_DERIVATIVE]
+                - with_pos.observables[THERMODYNAMIC_DERIVATIVE])
+                .abs()
+                < 1e-12
+        );
+    }
 
     // Config validation errors.
     assert!(
@@ -389,9 +442,18 @@ fn rate_multiplicity_work_bar_mbar_optimizer_and_plane_wrappers() {
     let path = PlanePath::legs(&[p_react.clone(), p_sad.clone()]).unwrap();
     let mut sampler = AnalyticSurfaceSampler::new(&SkewedWell, sampler_cfg.clone());
     let work = reversible_work_along(&mut sampler, &path, &work_cfg).unwrap();
-    assert!(work.bar_work.is_some());
-    assert!(work.mbar_work.is_some());
-    assert!(work.work > 0.2);
+    let bar_w = work.bar_work.expect("BAR work");
+    let mbar_w = work.mbar_work.expect("MBAR work");
+    assert!((work.work - mbar_w).abs() < 1e-12);
+    assert!((work.error - work.mbar_error.expect("MBAR error")).abs() < 1e-12);
+    assert!(mbar_w > 0.2 && bar_w > 0.2 && work.integrated_work > 0.2);
+    assert!((mbar_w - bar_w).abs() < 0.15, "mbar={mbar_w} bar={bar_w}");
+    assert!(
+        (mbar_w - work.integrated_work).abs() < 0.2,
+        "mbar={mbar_w} ti={}",
+        work.integrated_work
+    );
+    assert_eq!(work.overlap.as_ref().expect("MBAR overlap").dim(), (5, 5));
 
     let wall = Hyperplane::new(array![0.0, 0.0], array![1.0, 0.0]).unwrap();
     let rdens = reactant_density(
@@ -417,7 +479,7 @@ fn rate_multiplicity_work_bar_mbar_optimizer_and_plane_wrappers() {
         .with_max_records(200)
         .with_norm_test(0.5)
         .with_max_translation(0.1)
-        .with_max_rotation(0.1)
+        .with_max_rotation(0.35)
         .with_metric(PlaneMetric::Harmonic(HarmonicReference::new(array![
             0.0, 0.0
         ])))
@@ -429,12 +491,37 @@ fn rate_multiplicity_work_bar_mbar_optimizer_and_plane_wrappers() {
         .with_confidence(2.0)
         .with_tolerance(1e-3)
         .with_patience(2)
-        .with_max_iterations(4);
-    let opt = PlaneOptimizer::new(&p_sad, opt_cfg.clone()).unwrap();
-    assert_eq!(opt.plane(), &p_sad);
-    assert!(!opt.config().translate);
+        .with_max_iterations(8);
+    let p_tilted = Hyperplane::new(array![0.0, 0.0], array![0.98, 0.199]).unwrap();
+    let opt = PlaneOptimizer::new(&p_tilted, opt_cfg.clone()).unwrap();
     let optimum = opt.run(&SkewedWell).unwrap();
     assert!((optimum.plane.normal().dot(&optimum.plane.normal()) - 1.0).abs() < 1e-12);
+    let point_shift = optimum.plane.point().to_owned() - p_tilted.point();
+    assert!(
+        point_shift.dot(&point_shift) < 1e-12,
+        "translate=false must keep plane point fixed, got {:?}",
+        optimum.plane.point()
+    );
+    let a_seed = ohtst_surfaces::line_free_energy(
+        SkewedWell::energy,
+        [0.0, 0.0],
+        [p_tilted.normal()[0], p_tilted.normal()[1]],
+        0.15,
+        1.0,
+        3.0,
+    );
+    let a_opt = ohtst_surfaces::line_free_energy(
+        SkewedWell::energy,
+        [0.0, 0.0],
+        [optimum.plane.normal()[0], optimum.plane.normal()[1]],
+        0.15,
+        1.0,
+        3.0,
+    );
+    assert!(
+        a_opt > a_seed,
+        "rotate=true should raise plane free energy ({a_opt} vs {a_seed})"
+    );
     let opt_fail = PlaneOptimizer::new(&p_sad, opt_cfg).unwrap();
     assert!(opt_fail.run(&FailingPlaneSurface).is_err());
 
