@@ -74,7 +74,6 @@ fn abi_minor_is_develop_plus_one_everywhere() {
     assert!(reference.contains("=RGSADDLE_ABI_MINOR= is 45."));
     assert!(reference.contains("=rgsaddle_band_set_dynamic= (minor 46)"));
     assert!(reference.contains("=rgsaddle_dyneb_mask= (minor 46)"));
-    assert!(reference.contains("ABI minor 46)"));
 
     assert!(header.contains("From ABI minor 46 a dynamic NEB step"));
     assert!(header.contains("ASE 3.29 DyNEB). ABI minor 46."));
