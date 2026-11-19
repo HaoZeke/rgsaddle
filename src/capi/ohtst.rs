@@ -1,4 +1,4 @@
-//! OH-TST entry points, ABI minor 44.
+//! OH-TST entry points, ABI minor 46.
 //!
 //! A point surface is one configuration of length `n`, not an image of
 //! `3 N` atoms. Sampling, plane optimisation, reversible work (with MBAR),
@@ -29,7 +29,7 @@ use super::{
 
 /// Minor at which these entry points appeared. A config stamped earlier
 /// is refused.
-const OHTST_MINOR: u32 = 44;
+const OHTST_MINOR: u32 = 46;
 
 /// Thermodynamic integration.
 const ESTIMATE_INTEGRATION: i32 = 0;
