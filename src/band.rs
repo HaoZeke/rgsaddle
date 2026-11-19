@@ -23,18 +23,18 @@ use crate::tangent::TangentKind;
 use crate::tangent::compute_tangent;
 
 mod climb;
-mod growing_string;
 mod dynamic;
+mod growing_string;
 mod min_mode;
 mod pair_model;
 mod saddle_check;
 mod string;
 mod zoom;
+pub use dynamic::DynamicNeb;
+pub(crate) use dynamic::dynamic_mask;
 pub use growing_string::{
     GrowingStringConfig, GrowingStringPhase, GrowingStringReport, GrowingStringSession,
 };
-pub use dynamic::DynamicNeb;
-pub(crate) use dynamic::dynamic_mask;
 pub use min_mode::MinModeRefine;
 pub(crate) use min_mode::RefinePhase;
 pub use string::{StringConfig, StringSession};
