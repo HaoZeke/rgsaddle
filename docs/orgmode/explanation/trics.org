@@ -75,10 +75,10 @@ Cartesian update is
 The largest atom move is bounded by =TricInversionConfig::max_atom_move=.
 An update that increases the residual is rejected and retried at half
 damping.  Accepted updates increase damping by a factor of 1.2 up to one.
-Five consecutive rejected updates return the best available geometry.  A
-linear Cartesian endpoint correction removes accumulated inversion drift.
-The implementation tries the reverse direction when forward inversion does
-not converge.
+Five consecutive rejected updates return the best available geometry.
+Following the reference implementation, the aligned Cartesian endpoint must
+be within 0.01 Angstrom.  The implementation tries the reverse direction and
+alternate stable coordinate systems when a candidate does not converge.
 
 * Splicing and concatenation
 Write \(\chi_s(x_a,x_b,t_a,t_b;t)\) for interpolation at \(t\) in segment

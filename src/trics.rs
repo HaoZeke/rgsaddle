@@ -34,6 +34,7 @@ const SPLICE_DAMPING_MINIMUM: f64 = 0.2;
 const SPLICE_DAMPING_RESET_STREAK: usize = 3;
 const MINIMUM_SPLICE_LENGTH: usize = 2;
 const MAXIMUM_SPLICE_LENGTH: usize = 6;
+const INTERPOLATION_ENDPOINT_TOLERANCE: f64 = 0.01;
 const DEFAULT_INVERSION_TOLERANCE: f64 = 0.000_000_01;
 const DEFAULT_INVERSION_MOVE: f64 = 0.1;
 /// Paper convergence threshold for the maximum atom splice mismatch.
@@ -468,11 +469,10 @@ fn interpolate_one_direction(
         current = system.back_transform(current.view(), increment.view(), config)?;
         path.row_mut(image).assign(&current);
     }
-    let endpoint_correction = &right - &current;
-    for image in 1..n_images {
-        let fraction = image as f64 / (n_images - 1) as f64;
-        let corrected = &path.row(image) + &endpoint_correction * fraction;
-        path.row_mut(image).assign(&corrected);
+    if aligned_max_atom_difference(current.view(), right)? > INTERPOLATION_ENDPOINT_TOLERANCE {
+        return Err(SaddleError::Solver(
+            "TRIC interpolation did not reach its aligned endpoint".into(),
+        ));
     }
     path.row_mut(n_images - 1).assign(&right);
     Ok(path)
@@ -576,18 +576,36 @@ pub fn trics_path(
     let segments = tric_segments(diagnostic.view(), config.diagnostic_threshold)?;
     if segments.len() == 1 {
         let segment = segments[0];
-        let path = interpolate_tric_segment(
-            &systems[segment.system],
-            initial.row(0),
-            initial.row(initial.nrows() - 1),
-            initial.nrows(),
-            &config.inversion,
-        )?;
-        return Ok(TricsReport {
-            path,
-            segments,
-            splice_iterations: 0,
-        });
+        let mut candidates = vec![segment.system];
+        candidates.extend((0..systems.len()).filter(|&system| {
+            system != segment.system
+                && (0..initial.nrows())
+                    .all(|image| diagnostic[(system, image)] <= config.diagnostic_threshold)
+        }));
+        let mut first_error = None;
+        for system in candidates {
+            match interpolate_tric_segment(
+                &systems[system],
+                initial.row(0),
+                initial.row(initial.nrows() - 1),
+                initial.nrows(),
+                &config.inversion,
+            ) {
+                Ok(path) => {
+                    return Ok(TricsReport {
+                        path,
+                        segments: vec![TricsSegment { system, ..segment }],
+                        splice_iterations: 0,
+                    });
+                }
+                Err(error) if first_error.is_none() => first_error = Some(error),
+                Err(_) => {}
+            }
+        }
+        return Err(first_error.map_or_else(
+            || SaddleError::Solver("TRICS found no stable coordinate system".into()),
+            |error| error,
+        ));
     }
     splice_path(initial, &systems, segments, config)
 }
@@ -1012,6 +1030,72 @@ fn max_atom_difference(left: &Array1<f64>, right: &Array1<f64>) -> f64 {
         .fold(0.0_f64, f64::max)
 }
 
+fn aligned_max_atom_difference(
+    moving: ArrayView1<'_, f64>,
+    target: ArrayView1<'_, f64>,
+) -> Result<f64, SaddleError> {
+    check_same_positions(moving, target)?;
+    let n_atoms = moving.len() / 3;
+    if n_atoms < 2 {
+        return Ok(max_atom_difference(&moving.to_owned(), &target.to_owned()));
+    }
+    let indices: Vec<_> = (0..n_atoms).collect();
+    let reference = fragment_positions(target, &indices);
+    let quaternion = Rotation::new(indices, CartAxis::X, reference.clone())?.quaternion(moving)?;
+    let [w, x, y, z] = quaternion;
+    let rotation = [
+        [
+            1.0 - 2.0 * (y * y + z * z),
+            2.0 * (x * y - z * w),
+            2.0 * (x * z + y * w),
+        ],
+        [
+            2.0 * (x * y + z * w),
+            1.0 - 2.0 * (x * x + z * z),
+            2.0 * (y * z - x * w),
+        ],
+        [
+            2.0 * (x * z - y * w),
+            2.0 * (y * z + x * w),
+            1.0 - 2.0 * (x * x + y * y),
+        ],
+    ];
+    let moving_positions = fragment_positions(moving, &(0..n_atoms).collect::<Vec<_>>());
+    let moving_center = [
+        moving_positions.column(0).sum() / n_atoms as f64,
+        moving_positions.column(1).sum() / n_atoms as f64,
+        moving_positions.column(2).sum() / n_atoms as f64,
+    ];
+    let target_center = [
+        reference.column(0).sum() / n_atoms as f64,
+        reference.column(1).sum() / n_atoms as f64,
+        reference.column(2).sum() / n_atoms as f64,
+    ];
+    let mut maximum = 0.0_f64;
+    for atom_index in 0..n_atoms {
+        let centered = [
+            moving_positions[(atom_index, 0)] - moving_center[0],
+            moving_positions[(atom_index, 1)] - moving_center[1],
+            moving_positions[(atom_index, 2)] - moving_center[2],
+        ];
+        let aligned = [
+            dot(rotation[0], centered) + target_center[0],
+            dot(rotation[1], centered) + target_center[1],
+            dot(rotation[2], centered) + target_center[2],
+        ];
+        let difference = sub(
+            aligned,
+            [
+                reference[(atom_index, 0)],
+                reference[(atom_index, 1)],
+                reference[(atom_index, 2)],
+            ],
+        );
+        maximum = maximum.max(norm(difference));
+    }
+    Ok(maximum)
+}
+
 fn check_trics_config(config: &TricsConfig) -> Result<(), SaddleError> {
     check_config(&config.coordinates)?;
     check_inversion_config(&config.inversion)?;
@@ -1367,8 +1451,8 @@ fn out_of_plane_diagnostic(
     };
     let left = level(first);
     let right = level(second);
-    if left > 0 && right > 0 {
-        left.max(right) + 1
+    if left > 0 && left == right {
+        left + 1
     } else {
         left.max(right)
     }
@@ -1614,15 +1698,43 @@ fn molecular_primitives(
                 [neighbors[2], neighbors[0], neighbors[1]],
                 [neighbors[2], neighbors[1], neighbors[0]],
             ];
+            let mut candidates = Vec::new();
             for [b, c, d] in permutations {
+                let first_cosine = angle(reference, center, b, c)?.cos().abs();
+                let second_cosine = angle(reference, b, c, d)?.cos().abs();
+                if first_cosine > LINEAR_ANGLE_COSINE || second_cosine > LINEAR_ANGLE_COSINE {
+                    continue;
+                }
                 let normals = angle_normal(reference, center, b, c).and_then(|first| {
                     angle_normal(reference, b, c, d).map(|second| (first, second))
                 });
                 if let Ok((first, second)) = normals {
                     if dot(first, second).abs() >= OUT_OF_PLANE_COSINE {
-                        primitives.push(TricPrimitive::OutOfPlane(center, b, c, d));
-                        break;
+                        let span =
+                            distance(reference, center, b)?.max(distance(reference, center, c)?);
+                        candidates.push((b, c, d, span));
                     }
+                }
+            }
+            if let Some(maximum) = candidates
+                .iter()
+                .map(|candidate| candidate.3)
+                .max_by(f64::total_cmp)
+            {
+                if let Some(&(b, c, d, _)) = candidates
+                    .iter()
+                    .find(|candidate| candidate.3 >= 0.8 * maximum)
+                {
+                    primitives.retain(|primitive| {
+                        !matches!(
+                            primitive,
+                            TricPrimitive::Angle(left, middle, right)
+                                if *middle == center
+                                    && ((*left == b && *right == c)
+                                        || (*left == c && *right == b))
+                        )
+                    });
+                    primitives.push(TricPrimitive::OutOfPlane(center, b, c, d));
                 }
             }
         }
@@ -1882,6 +1994,48 @@ mod tests {
             out_of_plane.diagnostic(out_of_plane_geometry(5.0, 5.0).view()),
             4
         );
+        assert_eq!(
+            out_of_plane.diagnostic(out_of_plane_geometry(16.0, 10.0).view()),
+            2
+        );
+        assert_eq!(
+            out_of_plane.diagnostic(out_of_plane_geometry(16.0, 5.0).view()),
+            3
+        );
+    }
+
+    #[test]
+    fn out_of_plane_replaces_one_trigonal_angle() {
+        let trigonal = array![
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            -0.5,
+            0.866_025_403_784,
+            0.0,
+            -0.5,
+            -0.866_025_403_784,
+            0.0
+        ];
+        let primitives =
+            molecular_primitives(&[(0, 1), (0, 2), (0, 3)], 4, trigonal.view()).unwrap();
+        assert_eq!(
+            primitives
+                .iter()
+                .filter(|primitive| matches!(primitive, TricPrimitive::Angle(..)))
+                .count(),
+            2
+        );
+        assert_eq!(
+            primitives
+                .iter()
+                .filter(|primitive| matches!(primitive, TricPrimitive::OutOfPlane(..)))
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -1915,6 +2069,15 @@ mod tests {
         update_splice_endpoints(&[left, right], &mut endpoints, 2, 1.0);
         assert_eq!(endpoints[0][1], array![11.0, 0.0, 0.0]);
         assert_eq!(endpoints[1][0], array![3.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn aligned_endpoint_error_removes_rigid_motion() {
+        let target = array![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let moving = array![2.0, -1.0, 0.5, 2.0, 0.0, 0.5, 1.0, -1.0, 0.5];
+        assert!(
+            aligned_max_atom_difference(moving.view(), target.view()).unwrap() < TEST_TOLERANCE
+        );
     }
 
     #[test]
