@@ -41,7 +41,7 @@ use ndarray::{Array1, ArrayView1, Axis, s};
 
 use super::climb::ModelClimb;
 use super::pair_model::rigid_basis;
-use super::{BandReport, BandSession, BandStatus, BandSurface, Cell, zero_fixed};
+use super::{BandReport, BandSession, BandStatus, BandSurface, Cell, wrap_link, zero_fixed};
 use crate::error::SaddleError;
 use crate::minmode::{
     FiniteDifference, MinModeConfig, MinModeKind, MinModeSession, ModeEstimate, PointSurface,
@@ -878,8 +878,9 @@ impl BandSession {
         let mut next = &self.positions.row(image + 1) - &pos;
         let mut prev = &pos - &self.positions.row(image - 1);
         if let Some(cell) = &self.config.cell {
-            cell.minimum_image(&mut next);
-            cell.minimum_image(&mut prev);
+            let links = self.state.links.as_ref();
+            wrap_link(cell, links, image, next.view_mut());
+            wrap_link(cell, links, image - 1, prev.view_mut());
         }
         zero_fixed(&self.config.fixed_atoms, &mut next);
         zero_fixed(&self.config.fixed_atoms, &mut prev);

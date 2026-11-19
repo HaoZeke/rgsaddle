@@ -335,6 +335,7 @@ fn assemble_string_with(
         x,
         energies.view(),
         gradients.view(),
+        None,
     );
     let climbing = config.climbing.is_some();
     let armed = climbing && state.armed.load(Ordering::Relaxed);

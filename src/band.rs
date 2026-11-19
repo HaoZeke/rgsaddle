@@ -44,6 +44,10 @@ pub use zoom::ZoomConfig;
 pub struct Cell(pub [[f64; 3]; 3]);
 
 impl Cell {
+    fn as_minimage(&self) -> Option<minimage::Cell> {
+        minimage::Cell::from_ase(self.0).ok()
+    }
+
     /// Inverse of the row matrix, or `None` for a singular cell.
     fn inverse(&self) -> Option<[[f64; 3]; 3]> {
         let h = &self.0;
@@ -825,6 +829,8 @@ struct BandState {
     fixed: Vec<bool>,
     /// Stable per-image identities when tracking across growth or remeshing.
     ids: Vec<crate::stencil::ImageId>,
+    /// Lattice shifts of neighbouring links in a periodic atomic band.
+    links: Option<LinkShifts>,
 }
 
 impl BandState {
@@ -845,6 +851,7 @@ impl BandState {
             rows: AtomicUsize::new(0),
             work: Mutex::new(BandWork::default()),
             pool: None,
+            links: None,
         }
     }
     /// One surface call, split into image blocks on the image threads.
@@ -996,6 +1003,70 @@ impl ImageWork {
             l_here: zero(),
         }
     }
+}
+
+/// Lattice shifts that map each link to its minimum image at the time
+/// the session chooses that link.
+#[derive(Clone, Debug, Default)]
+struct LinkShifts {
+    shifts: Vec<Array1<f64>>,
+}
+
+impl LinkShifts {
+    fn new(cell: &Cell, positions: ArrayView2<f64>) -> Self {
+        let count = positions.nrows().saturating_sub(1);
+        let mut links = Self {
+            shifts: vec![Array1::zeros(positions.ncols()); count],
+        };
+        for link in 0..count {
+            links.refresh(cell, positions, link);
+        }
+        links
+    }
+
+    fn refresh(&mut self, cell: &Cell, positions: ArrayView2<f64>, link: usize) {
+        let raw = &positions.row(link + 1) - &positions.row(link);
+        let mut shift = Array1::zeros(raw.len());
+        if let Some(mini) = cell.as_minimage() {
+            for atom in 0..raw.len() / 3 {
+                let base = 3 * atom;
+                let dr = [raw[base], raw[base + 1], raw[base + 2]];
+                let wrapped = mini.displacement_euclidean([0.0, 0.0, 0.0], dr);
+                shift[base] = dr[0] - wrapped[0];
+                shift[base + 1] = dr[1] - wrapped[1];
+                shift[base + 2] = dr[2] - wrapped[2];
+            }
+        } else {
+            let mut wrapped = raw.to_owned();
+            cell.minimum_image(&mut wrapped);
+            shift = &raw - &wrapped;
+        }
+        self.shifts[link] = shift;
+    }
+
+    fn apply(&self, link: usize, mut diff: ArrayViewMut1<'_, f64>) -> bool {
+        match self.shifts.get(link) {
+            Some(shift) => {
+                Zip::from(&mut diff).and(shift).for_each(|d, &s| *d -= s);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+fn wrap_link(
+    cell: &Cell,
+    links: Option<&LinkShifts>,
+    link: usize,
+    mut diff: ArrayViewMut1<'_, f64>,
+) {
+    if let Some(known) = links
+        && known.apply(link, diff.view_mut())
+    {
+        return;
+    }
+    cell.minimum_image_view(diff);
 }
 
 /// Storage that one band evaluation and assembly hand to the next.
@@ -1641,6 +1712,7 @@ fn image_force(
     energies: &Array1<f64>,
     gradients: &Array2<f64>,
     metric: Option<(&Exp, Option<&[usize]>)>,
+    links: Option<&LinkShifts>,
 ) -> Result<(Array1<f64>, Option<Array1<f64>>), SaddleError> {
     let dof = endpoint_first.len();
     let n_images = energies.len();
@@ -1657,8 +1729,8 @@ fn image_force(
     let mut pos_diff_next = &pos_next - &pos;
     let mut pos_diff_prev = &pos - &pos_prev;
     if let Some(cell) = &config.cell {
-        cell.minimum_image(&mut pos_diff_next);
-        cell.minimum_image(&mut pos_diff_prev);
+        wrap_link(cell, links, i, pos_diff_next.view_mut());
+        wrap_link(cell, links, i - 1, pos_diff_prev.view_mut());
     }
     zero_fixed(&config.fixed_atoms, &mut pos_diff_next);
     zero_fixed(&config.fixed_atoms, &mut pos_diff_prev);
@@ -1918,6 +1990,7 @@ fn image_force_into(
     gradients: &Array2<f64>,
     w: &mut ImageWork,
     mut out: ArrayViewMut1<f64>,
+    links: Option<&LinkShifts>,
 ) -> Result<(), SaddleError> {
     let dof = endpoint_first.len();
     let n_images = energies.len();
@@ -1953,8 +2026,8 @@ fn image_force_into(
         .and(pos_prev)
         .for_each(|d, &a, &b| *d = a - b);
     if let Some(cell) = &config.cell {
-        cell.minimum_image_view(diff_next.view_mut());
-        cell.minimum_image_view(diff_prev.view_mut());
+        wrap_link(cell, links, i, diff_next.view_mut());
+        wrap_link(cell, links, i - 1, diff_prev.view_mut());
     }
     zero_fixed(&config.fixed_atoms, diff_next);
     zero_fixed(&config.fixed_atoms, diff_prev);
@@ -2097,9 +2170,11 @@ pub fn climbing_image(
         flat.view(),
         energies.view(),
         gradients.view(),
+        None,
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn climb_target(
     config: &BandConfig,
     max_i: usize,
@@ -2108,6 +2183,7 @@ fn climb_target(
     x: ArrayView1<f64>,
     energies: ArrayView1<f64>,
     gradients: ArrayView2<f64>,
+    links: Option<&LinkShifts>,
 ) -> Option<usize> {
     let dof = endpoint_first.len();
     let last = energies.len() - 1;
@@ -2119,7 +2195,13 @@ fn climb_target(
         };
         let mut along = &next - &pos;
         if let Some(cell) = &config.cell {
-            cell.minimum_image(&mut along);
+            if end == 0 {
+                wrap_link(cell, links, 0, along.view_mut());
+            } else {
+                along.mapv_inplace(|value| -value);
+                wrap_link(cell, links, last - 1, along.view_mut());
+                along.mapv_inplace(|value| -value);
+            }
         }
         zero_fixed(&config.fixed_atoms, &mut along);
         let length = along.dot(&along).sqrt();
@@ -2193,6 +2275,7 @@ fn assemble_band_with(
         x,
         energies.view(),
         gradients.view(),
+        state.links.as_ref(),
     );
     let climbing = config.climbing.is_some();
     let armed = climbing && state.armed.load(Ordering::Relaxed);
@@ -2234,6 +2317,7 @@ fn assemble_band_with(
                     energies,
                     gradients,
                     metric_of(i),
+                    state.links.as_ref(),
                 )?;
                 projected.slice_mut(rows).assign(&f);
                 if let Some(driving) = driving.as_mut() {
@@ -2252,6 +2336,7 @@ fn assemble_band_with(
                 gradients,
                 &mut images[i - 1],
                 projected.slice_mut(rows),
+                state.links.as_ref(),
             )?,
         }
         Ok(())
@@ -2606,6 +2691,11 @@ impl BandSession {
         if session.config.has_fixed() {
             session.state.fixed = session.config.fixed_atoms.clone();
             session.pin_fixed();
+        }
+        if let Some(cell) = session.config.cell
+            && session.solid.is_none()
+        {
+            session.state.links = Some(LinkShifts::new(&cell, session.positions.view()));
         }
         if let Some(precon) = session.config.exp_precon {
             session.set_exp_precon(precon)?;
@@ -3107,6 +3197,7 @@ impl BandSession {
         pin_fixed_rows(&self.state.fixed, &mut positions);
         let n_images = positions.nrows();
         let mut moved = false;
+        let mut replaced = Vec::new();
         for (i, new_row) in positions.outer_iter().enumerate() {
             let mut diff = &new_row - &self.positions.row(i);
             if let Some(cell) = &self.config.cell {
@@ -3116,6 +3207,7 @@ impl BandSession {
                 continue;
             }
             self.positions.row_mut(i).assign(&new_row);
+            replaced.push(i);
             if i == 0 || i == n_images - 1 {
                 self.state.set_endpoints(None);
                 // The interior may be unchanged, so the solver's own
@@ -3128,6 +3220,16 @@ impl BandSession {
             moved = true;
         }
         self.pin_fixed();
+        if let (Some(cell), Some(links)) = (&self.config.cell, self.state.links.as_mut()) {
+            for row in replaced {
+                if row > 0 {
+                    links.refresh(cell, self.positions.view(), row - 1);
+                }
+                if row + 1 < n_images {
+                    links.refresh(cell, self.positions.view(), row);
+                }
+            }
+        }
         if moved {
             self.state.drop_last();
             self.refine = min_mode::RefineState::default();
@@ -3885,5 +3987,101 @@ mod tests {
         // Climbing force (-2, 3, 0, 5, 1, 0) minus its mean (1.5, 2, 0).
         assert_force(&projected, &[-3.5, 1.0, 0.0, 3.5, -1.0, 0.0]);
         assert_eq!(state.ci(), Some(1));
+    }
+
+    struct Ramp;
+
+    impl BandSurface for Ramp {
+        fn eval(
+            &self,
+            positions: ArrayView2<f64>,
+            energies: &mut Array1<f64>,
+            gradients: &mut Array2<f64>,
+        ) -> Result<(), SaddleError> {
+            for r in 0..positions.nrows() {
+                energies[r] = -0.1 * positions[(r, 0)];
+                gradients.row_mut(r).assign(&array![-0.1, 0.0, 0.0]);
+            }
+            Ok(())
+        }
+    }
+
+    fn ramp_session(cell: Cell, middle: [f64; 3], end: [f64; 3]) -> BandSession {
+        let config = BandConfig::default()
+            .with_climbing(None)
+            .with_min_mode(None)
+            .with_saddle_check(None)
+            .with_remove_translation(false)
+            .with_cell(Some(cell));
+        let positions = array![
+            [0.0, 0.0, 0.0],
+            [middle[0], middle[1], middle[2]],
+            [end[0], end[1], end[2]]
+        ];
+        BandSession::new(config, positions).expect("ramp band session")
+    }
+
+    fn middle_force(session: &BandSession, middle: [f64; 3]) -> f64 {
+        let first = session.positions.row(0).to_owned();
+        let last = session.positions.row(2).to_owned();
+        let x = array![middle[0], middle[1], middle[2]];
+        let (_, projected, _) = assemble_band(
+            &session.config,
+            &session.state,
+            &Ramp,
+            first.view(),
+            last.view(),
+            x.view(),
+        )
+        .expect("assemble ramp");
+        projected[0]
+    }
+
+    #[test]
+    fn spring_force_is_continuous_across_the_half_cell_displacement() {
+        let delta = 0.000001;
+        let cell = Cell([[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]]);
+        let session = ramp_session(cell, [5.0 - delta, 0.0, 0.0], [12.0, 0.0, 0.0]);
+        let below = middle_force(&session, [5.0 - delta, 0.0, 0.0]);
+        let above = middle_force(&session, [5.0 + delta, 0.0, 0.0]);
+        assert_abs_diff_eq!(below, -10.0, epsilon = 0.001);
+        assert_abs_diff_eq!(above, -10.0, epsilon = 0.001);
+    }
+
+    #[test]
+    fn band_wrapped_by_the_host_keeps_its_links() {
+        let delta = 0.000001;
+        let cell = Cell([[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]]);
+        let mut session = ramp_session(cell, [5.0 - delta, 0.0, 0.0], [12.0, 0.0, 0.0]);
+        session
+            .set_positions(array![
+                [0.0, 0.0, 0.0],
+                [5.0 - delta + 10.0, 0.0, 0.0],
+                [12.0, 0.0, 0.0]
+            ])
+            .expect("wrap-host handoff");
+        assert_abs_diff_eq!(
+            session.positions[(1, 0)],
+            5.0 - delta,
+            epsilon = 0.000000000001
+        );
+        assert_abs_diff_eq!(
+            middle_force(&session, [5.0 + delta, 0.0, 0.0]),
+            -10.0,
+            epsilon = 0.001
+        );
+    }
+
+    #[test]
+    fn triclinic_link_uses_euclidean_minimum_image() {
+        let cell = Cell([[10.0, 0.0, 0.0], [6.0, 9.0, 0.0], [2.0, 3.0, 8.0]]);
+        let middle = [-5.19587932, -2.75867889, 2.40440167];
+        let end = [2.0, -2.75867889, 2.40440167];
+        let session = ramp_session(cell, middle, end);
+        let shift = middle_force(&session, middle);
+        assert!(
+            shift < 0.0,
+            "force should follow the Euclidean image: {shift}"
+        );
     }
 }
