@@ -43,14 +43,17 @@
 //!    `window_offset` images on each side of the peak, the same local
 //!    cut Zhang, Zhang, Ye, and Zheng use (one image on each side in
 //!    their driver). A cut that would place the peak on an end, or that
-//!    would remove no image, is not counted. The free terminal image is
-//!    already on \(E(x_{\mathrm{end}}) = E_{\mathrm{target}}\), and that
-//!    position is written back after the remesh.
+//!    would remove no image, is not counted. Images outside the window
+//!    are dropped. The remesh follows the window and, when the free
+//!    terminal image lies outside it, the leg from the window to that
+//!    image, so the free end stays an endpoint and the spacing stays
+//!    even. A refused endpoint curvature pair is a stalled step and
+//!    does not move the endpoint.
 
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 
-use ndarray::{Array1, Array2, ArrayView1, s};
+use ndarray::{Array1, Array2, ArrayView1, ArrayView2, s};
 use rgmin::{Accept, Control, LevelSetConstraint, Method, Oracle, Solver};
 
 use super::zoom::resample;
@@ -330,6 +333,23 @@ fn lock_guard<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     }
 }
 
+/// Keep the curvature pair that makes the next level-set step the
+/// tangent projection of the endpoint direction. A pair `push_pair`
+/// drops, including one it reports as stored while `pair_count` stays
+/// at zero, is a stalled step.
+fn accept_endpoint_pair(
+    solver: &mut Solver,
+    step: ArrayView1<f64>,
+    slope: ArrayView1<f64>,
+) -> Result<(), SaddleError> {
+    if solver.push_pair(step, slope) && solver.pair_count() > 0 {
+        return Ok(());
+    }
+    Err(SaddleError::Stalled(
+        "free-end endpoint step skipped: the curvature pair was refused".into(),
+    ))
+}
+
 /// Project `force` exactly onto the tangent hyperplane orthogonal to
 /// `grad_end`.
 fn project_onto_level_set(
@@ -476,15 +496,14 @@ fn step_and_retract_endpoint_via_rgmin<S: BandSurface>(
             let s_pair = &g_now * k - dir;
             let y_pair = g_now;
             solver.forget();
-            if solver.push_pair(s_pair.view(), y_pair.view()) {
-                let oracle = Oracle::unbounded(dof, &eval_point);
-                let res = solver.step(&oracle, x_end);
-                drop(oracle);
-                if let Some(err) = lock_guard(&surface_err).take() {
-                    return Err(err);
-                }
-                res.map_err(|e| SaddleError::Solver(e.to_string()))?;
+            accept_endpoint_pair(&mut solver, s_pair.view(), y_pair.view())?;
+            let oracle = Oracle::unbounded(dof, &eval_point);
+            let res = solver.step(&oracle, x_end);
+            drop(oracle);
+            if let Some(err) = lock_guard(&surface_err).take() {
+                return Err(err);
             }
+            res.map_err(|e| SaddleError::Solver(e.to_string()))?;
         }
     }
 
@@ -566,6 +585,26 @@ fn peak_window(n_images: usize, max_i: usize, offset: usize) -> Option<(usize, u
         return None;
     }
     Some((lo, hi))
+}
+
+/// Window rows for a cut, with the free end kept when the window does
+/// not already contain it. `resample` then spaces that polyline evenly
+/// and leaves both of its ends in place.
+fn cut_path(positions: ArrayView2<f64>, lo: usize, hi: usize, end_idx: usize) -> Array2<f64> {
+    let window = positions.slice(s![lo..=hi, ..]);
+    if end_idx == lo || end_idx == hi {
+        return window.to_owned();
+    }
+    let span = hi - lo + 1;
+    let mut rows = Array2::zeros((span + 1, positions.ncols()));
+    if end_idx > hi {
+        rows.slice_mut(s![..span, ..]).assign(&window);
+        rows.row_mut(span).assign(&positions.row(end_idx));
+    } else {
+        rows.row_mut(0).assign(&positions.row(end_idx));
+        rows.slice_mut(s![1.., ..]).assign(&window);
+    }
+    rows
 }
 
 impl BandSession {
@@ -703,6 +742,8 @@ impl BandSession {
 
     /// Advance a free-end adaptive NEB session by one step and return the
     /// detailed [`FreeEndReport`] including `target_energy_residual`.
+    /// When climbing is on, a latched minimum-mode refinement runs first,
+    /// the same way [`BandSession::step`] does.
     pub fn step_free_end<S: BandSurface>(
         &mut self,
         surface: &S,
@@ -712,6 +753,12 @@ impl BandSession {
                 "BandSession::step_free_end requires BandConfig::free_end to be set".into(),
             ));
         };
+        if let Some(mut band) = self.climbing_refine_step(surface)? {
+            if band.status == BandStatus::Converged {
+                self.saddle_check(surface, &mut band)?;
+            }
+            return Ok(self.free_end_report_from_band(band));
+        }
         let mut rep = self.step_free_end_inner(surface, fe_cfg)?;
         if rep.status == BandStatus::Converged {
             let mut band_rep = BandReport {
@@ -1192,22 +1239,20 @@ impl BandSession {
                 && ediff > fe_cfg.energy_tol
                 && let Some((lo, hi)) = peak_window(n_images, max_i, fe_cfg.window_offset)
             {
-                // The free end is already on the target energy. The
-                // window drops that image, so put it back after the
-                // remesh. A Newton retraction from the window edge
-                // stalls when the edge is far from the level set.
-                let anchor = x_end.clone();
-                let window_slice = self.positions.slice(s![lo..=hi, ..]).to_owned();
+                // The free end stays an endpoint of the remeshed chain.
+                // When the window does not contain it, the leg from the
+                // window to that image is part of the polyline, so the
+                // equal-arc images do not bunch inside the window.
+                self.positions.row_mut(end_idx).assign(&x_end);
+                let path = cut_path(self.positions.view(), lo, hi, end_idx);
                 self.positions = resample(
-                    window_slice.view(),
+                    path.view(),
                     n_images,
                     fe_cfg.cubic,
                     self.config.cell.as_ref(),
                 );
                 self.pin_fixed();
-                self.positions.row_mut(end_idx).assign(&anchor);
-                self.pin_fixed();
-                x_end.assign(&anchor);
+                x_end.assign(&self.positions.row(end_idx));
                 self.free_end_state.cuts += 1;
                 self.free_end_state.cut_windows.push((lo, hi));
                 self.free_end_state.prev_peak = None;
@@ -1262,6 +1307,35 @@ impl BandSession {
             surface_rows: self.state.rows.load(Ordering::Relaxed),
             saddle_index: None,
         })
+    }
+
+    fn free_end_report_from_band(&self, band: BandReport) -> FreeEndReport {
+        let state = &self.free_end_state;
+        let (target_energy, endpoint_energy, residual, endpoint_force) =
+            if let (Some(target), Some(energy), Some(residual), Some(force)) = (
+                state.resolved_target,
+                state.last_endpoint_energy,
+                state.last_residual,
+                state.last_endpoint_force,
+            ) {
+                (target, energy, residual, force)
+            } else {
+                (0.0, 0.0, 0.0, band.max_force)
+            };
+        FreeEndReport {
+            status: band.status,
+            max_force: band.max_force,
+            endpoint_force,
+            target_energy,
+            endpoint_energy,
+            target_energy_residual: residual,
+            cuts: self.free_end_state.cuts,
+            cut_this_step: false,
+            ci_index: band.ci_index,
+            iteration: band.iteration,
+            surface_rows: band.surface_rows,
+            saddle_index: band.saddle_index,
+        }
     }
 }
 
@@ -1362,11 +1436,11 @@ impl FeaNebSession {
 
 #[cfg(test)]
 mod tests {
-    use ndarray::{Array1, Array2, array};
+    use ndarray::{Array1, Array2, ArrayView2, array};
 
     use super::{
-        SAME_ROW_TOL, assembled_free_end_force, eq7_endpoint_force, peak_window,
-        project_onto_level_set,
+        SAME_ROW_TOL, accept_endpoint_pair, assembled_free_end_force, eq7_endpoint_force,
+        peak_window, project_onto_level_set,
     };
     use crate::{
         BandConfig, BandSession, FeaNebSession, FreeEndConfig, FreeEndSide, SaddleError, SpringKind,
@@ -1571,5 +1645,94 @@ mod tests {
         assert_eq!(peak_window(3, 1, 1), None);
         assert_eq!(peak_window(5, 0, 1), None);
         assert_eq!(peak_window(5, 4, 1), None);
+    }
+
+    #[test]
+    fn refused_curvature_pair_is_reported_for_both_sides() {
+        use rgmin::{Accept, Control, LevelSetConstraint, Method, Solver};
+        for side in [FreeEndSide::First, FreeEndSide::Last] {
+            let mut solver = Solver::new(
+                Method::lbfgs_with_memory(1),
+                Control::default()
+                    .with_maxiter(usize::MAX)
+                    .with_gtol(0.0)
+                    .with_istep(1.0),
+                3,
+            );
+            solver.set_accept(Accept::Step);
+            solver.set_lbfgs_neb_guards(false);
+            solver
+                .set_level_set(LevelSetConstraint::new(0.0))
+                .expect("level set");
+            solver.forget();
+            let step = array![1.0, 0.0, 0.0];
+            let slope = array![-1.0, 0.0, 0.0];
+            let err = accept_endpoint_pair(&mut solver, step.view(), slope.view())
+                .expect_err("refused curvature pair");
+            assert!(
+                matches!(err, SaddleError::Stalled(_)),
+                "{side:?} reported {err}"
+            );
+            assert_eq!(solver.pair_count(), 0, "{side:?}");
+            solver.forget();
+            let rise = array![1.0, 0.0, 0.0];
+            accept_endpoint_pair(&mut solver, rise.view(), rise.view())
+                .expect("kept curvature pair");
+            assert!(solver.pair_count() > 0, "{side:?}");
+        }
+    }
+
+    #[test]
+    fn step_free_end_runs_min_mode_refinement_on_both_sides() {
+        use crate::{BandSurface, CiConfig};
+
+        /// `E = (x^2 - 1)^2 + 4 (y - 0.3 x)^2`. The interior peak sits
+        /// above both ends, and the images start off the valley, so the
+        /// band force stays above the tolerance while climbing arms.
+        struct Barrier;
+        impl BandSurface for Barrier {
+            fn eval(
+                &self,
+                positions: ArrayView2<f64>,
+                energies: &mut Array1<f64>,
+                gradients: &mut Array2<f64>,
+            ) -> Result<(), SaddleError> {
+                for (i, row) in positions.outer_iter().enumerate() {
+                    let (x, y) = (row[0], row[1]);
+                    let delta = x * x - 1.0;
+                    let off = y - 0.3 * x;
+                    energies[i] = delta * delta + 4.0 * off * off;
+                    gradients[(i, 0)] = 4.0 * x * delta - 2.4 * off;
+                    gradients[(i, 1)] = 8.0 * off;
+                    gradients[(i, 2)] = 0.0;
+                }
+                Ok(())
+            }
+        }
+
+        let mut misses = Vec::new();
+        for side in [FreeEndSide::First, FreeEndSide::Last] {
+            let positions = Array2::from_shape_fn((5, 3), |(image, axis)| match axis {
+                0 => -1.2 + 0.6 * image as f64,
+                _ => 0.0,
+            });
+            let config = BandConfig::default()
+                .with_free_end(FreeEndConfig::default().with_side(side).with_max_cuts(0))
+                .with_climbing(Some(CiConfig::always()))
+                .with_saddle_check(None)
+                .with_remove_translation(false);
+            let mut session = BandSession::new(config, positions).expect("session");
+            let mut saw_refine = false;
+            for _ in 0..4 {
+                session.step_free_end(&Barrier).expect("free-end step");
+                saw_refine |= session.refine_last().is_some();
+            }
+            if !saw_refine {
+                misses.push(format!(
+                    "{side:?} step_free_end never ran min-mode refinement"
+                ));
+            }
+        }
+        assert!(misses.is_empty(), "{misses:#?}");
     }
 }
