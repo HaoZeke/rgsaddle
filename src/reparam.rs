@@ -86,6 +86,22 @@ pub fn reparametrize(
 /// Knots closer than this fraction of the total arc length are one knot.
 const COINCIDENT: f64 = 1e-12;
 
+/// [`solve_dense`] takes a pivot at or below this fraction of the largest
+/// entry as zero.
+const PIVOT_TOLERANCE: f64 = 1e-14;
+
+/// A target arc this close to an end of the curve, as a fraction of the
+/// total arc length, is that end, and one further out is refused.
+const ARC_END_TOLERANCE: f64 = 1e-9;
+
+/// [`Spline::at_arc`] stops when the arc at the iterate is within this
+/// fraction of the total arc length of the target.
+const ARC_MISS_TOLERANCE: f64 = 1e-14;
+
+/// [`Spline::at_arc`] stops when its bracket is narrower than this fraction
+/// of the parameter span.
+const PARAMETER_BRACKET_TOLERANCE: f64 = 1e-15;
+
 fn not_a_knot_equal_arc(positions: &mut Array2<f64>, anchor: Option<usize>, cell: Option<&Cell>) {
     let n = positions.nrows();
     if n < 3 {
@@ -125,36 +141,38 @@ fn not_a_knot_equal_arc(positions: &mut Array2<f64>, anchor: Option<usize>, cell
     if !(length.is_finite() && length > 0.0) {
         return;
     }
-    let mut place = |j: usize, target: f64| {
-        let p = spline.eval(spline.at_arc(&arc, target));
-        let mut difference = &p - &original.row(j);
-        if let Some(cell) = cell {
-            cell.minimum_image(&mut difference);
-        }
-        positions
-            .row_mut(j)
-            .assign(&(&original.row(j) + &difference));
-    };
+    let mut targets: Vec<(usize, f64)> = Vec::with_capacity(n);
     let split = anchor.and_then(|a| kept.iter().position(|&i| i == a).map(|k| (a, arc[k])));
     match split {
         Some((a, at)) => {
             let left = at / a as f64;
-            for j in 1..a {
-                place(j, j as f64 * left);
-            }
+            targets.extend((1..a).map(|j| (j, j as f64 * left)));
             let right = (length - at) / (n - 1 - a) as f64;
-            for j in a + 1..n - 1 {
-                place(j, at + (j - a) as f64 * right);
-            }
+            targets.extend((a + 1..n - 1).map(|j| (j, at + (j - a) as f64 * right)));
         }
         None => {
             let h = length / (n - 1) as f64;
-            for j in 1..n - 1 {
-                if Some(j) != anchor {
-                    place(j, j as f64 * h);
-                }
-            }
+            targets.extend(
+                (1..n - 1)
+                    .filter(|&j| Some(j) != anchor)
+                    .map(|j| (j, j as f64 * h)),
+            );
         }
+    }
+    // A target the curve cannot reach leaves every image where it was.
+    let mut placed = Vec::with_capacity(targets.len());
+    for (j, target) in targets {
+        let Some(at) = spline.at_arc(&arc, target) else {
+            return;
+        };
+        let mut difference = &spline.eval(at) - &original.row(j);
+        if let Some(cell) = cell {
+            cell.minimum_image(&mut difference);
+        }
+        placed.push((j, &original.row(j) + &difference));
+    }
+    for (j, row) in placed {
+        positions.row_mut(j).assign(&row);
     }
 }
 
@@ -181,6 +199,7 @@ fn distinct_knots(s: &[f64], anchor: Option<usize>, tol: f64) -> Vec<usize> {
 /// Interpolating spline through knots `t` (strictly increasing) and the
 /// rows of `values`: the chord for two knots, the parabola for three,
 /// and the not-a-knot cubic spline for four or more.
+#[derive(Clone, Debug)]
 pub(crate) struct Spline {
     t: Vec<f64>,
     y: Array2<f64>,
@@ -308,8 +327,31 @@ impl Spline {
     /// The parameter at which the spline's arc length is `target`, from
     /// the knot arcs `arc`: Newton on the arc, kept inside a bisection
     /// bracket of the segment.
-    pub(crate) fn at_arc(&self, arc: &[f64], target: f64) -> f64 {
+    ///
+    /// A target within [`ARC_END_TOLERANCE`] of an end of the curve, or
+    /// beyond it by no more than that, is that end's knot. A target further
+    /// out, or one that is not finite, has no parameter and gives `None`,
+    /// as does a set of knot arcs that does not rise.
+    pub(crate) fn at_arc(&self, arc: &[f64], target: f64) -> Option<f64> {
         let k = self.t.len();
+        if arc.len() != k {
+            return None;
+        }
+        let (first, length) = (arc[0], arc[k - 1]);
+        let ordered = arc.windows(2).all(|pair| pair[0] <= pair[1]);
+        if !(ordered && length.is_finite() && length > first && target.is_finite()) {
+            return None;
+        }
+        let slack = ARC_END_TOLERANCE * (length - first);
+        if target < first - slack || target > length + slack {
+            return None;
+        }
+        if target <= first {
+            return Some(self.t[0]);
+        }
+        if target >= length {
+            return Some(self.t[k - 1]);
+        }
         let mut seg = 0;
         while seg + 2 < k && arc[seg + 1] < target {
             seg += 1;
@@ -317,12 +359,12 @@ impl Spline {
         let (mut lo, mut hi) = (self.t[seg], self.t[seg + 1]);
         let span = arc[seg + 1] - arc[seg];
         if span.partial_cmp(&0.0) != Some(Ordering::Greater) {
-            return lo;
+            return Some(lo);
         }
-        let mut t = lo + (hi - lo) * ((target - arc[seg]) / span).clamp(0.0, 1.0);
+        let mut t = lo + (hi - lo) * ((target - arc[seg]) / span);
         for _ in 0..60 {
             let miss = arc[seg] + self.arc_between(seg, self.t[seg], t) - target;
-            if miss.abs() <= 1e-14 * arc[k - 1] {
+            if miss.abs() <= ARC_MISS_TOLERANCE * length {
                 break;
             }
             if miss > 0.0 {
@@ -337,11 +379,41 @@ impl Spline {
             } else {
                 0.5 * (lo + hi)
             };
-            if hi - lo <= 1e-15 * (self.t[k - 1] - self.t[0]) {
+            if hi - lo <= PARAMETER_BRACKET_TOLERANCE * (self.t[k - 1] - self.t[0]) {
                 break;
             }
         }
-        t
+        Some(t)
+    }
+
+    /// The knots.
+    pub(crate) fn knots(&self) -> &[f64] {
+        &self.t
+    }
+
+    /// The interpolated rows, one per knot.
+    pub(crate) fn values(&self) -> &Array2<f64> {
+        &self.y
+    }
+
+    /// `S`, `dS/dt`, `d²S/dt²` and the one-sided `d³S/dt³` at `at`.
+    pub(crate) fn derivatives(&self, at: f64) -> [Array1<f64>; 4] {
+        let seg = self.segment(at);
+        let h = self.t[seg + 1] - self.t[seg];
+        let b = (at - self.t[seg]) / h;
+        let a = 1.0 - b;
+        let (bend_a, bend_b) = ((a * a * a - a) * h * h / 6.0, (b * b * b - b) * h * h / 6.0);
+        let (slope_a, slope_b) = (
+            -(3.0 * a * a - 1.0) * h / 6.0,
+            (3.0 * b * b - 1.0) * h / 6.0,
+        );
+        let (y0, y1) = (self.y.row(seg), self.y.row(seg + 1));
+        let (m0, m1) = (self.m.row(seg), self.m.row(seg + 1));
+        let value = &y0 * a + &y1 * b + &m0 * bend_a + &m1 * bend_b;
+        let slope = (&y1 - &y0) / h + &m0 * slope_a + &m1 * slope_b;
+        let second = &m0 * a + &m1 * b;
+        let third = (&m1 - &m0) / h;
+        [value, slope, second, third]
     }
 
     pub(crate) fn eval(&self, at: f64) -> Array1<f64> {
@@ -406,7 +478,11 @@ fn solve_dense(a: &mut [f64], b: &mut Array2<f64>) -> bool {
         let pivot = (col..k)
             .max_by(|&i, &j| a[i * k + col].abs().total_cmp(&a[j * k + col].abs()))
             .unwrap_or(col);
-        if a[pivot * k + col].abs().partial_cmp(&(1e-14 * scale)) != Some(Ordering::Greater) {
+        if a[pivot * k + col]
+            .abs()
+            .partial_cmp(&(PIVOT_TOLERANCE * scale))
+            != Some(Ordering::Greater)
+        {
             return false;
         }
         if pivot != col {
@@ -559,5 +635,85 @@ mod tests {
         let s = [0.0, 0.0, 1.0, 1.0, 2.0, 2.0];
         assert_eq!(distinct_knots(&s, None, 1e-12), vec![0, 2, 5]);
         assert_eq!(distinct_knots(&s, Some(3), 1e-12), vec![0, 3, 5]);
+    }
+
+    fn curve() -> (Spline, Vec<f64>) {
+        let knots = [0.0, 0.4, 1.1, 1.5, 2.0];
+        let mut values = Array2::zeros((knots.len(), 3));
+        for (row, &t) in knots.iter().enumerate() {
+            values.row_mut(row).assign(&Array1::from(cubic(t).to_vec()));
+        }
+        let spline = Spline::fit(&knots, &values).unwrap();
+        let arc = spline.knot_arcs();
+        (spline, arc)
+    }
+
+    #[test]
+    fn a_target_on_the_curve_is_found_by_its_arc() {
+        let (spline, arc) = curve();
+        let length = arc[arc.len() - 1];
+        for step in 1..20 {
+            let target = length * step as f64 / 20.0;
+            let at = spline.at_arc(&arc, target).unwrap();
+            assert!((spline.knots()[0]..=spline.knots()[4]).contains(&at));
+            let reached = arc_to(&spline, &arc, at);
+            assert_abs_diff_eq!(reached, target, epsilon = 1e-12 * length);
+        }
+    }
+
+    fn arc_to(spline: &Spline, arc: &[f64], at: f64) -> f64 {
+        let seg = spline.segment(at);
+        arc[seg] + spline.arc_between(seg, spline.knots()[seg], at)
+    }
+
+    #[test]
+    fn the_ends_of_the_curve_are_its_end_knots() {
+        let (spline, arc) = curve();
+        let length = arc[arc.len() - 1];
+        let (first, last) = (spline.knots()[0], spline.knots()[4]);
+        assert_eq!(spline.at_arc(&arc, 0.0), Some(first));
+        assert_eq!(spline.at_arc(&arc, length), Some(last));
+        let inside = 0.5 * ARC_END_TOLERANCE * length;
+        assert_eq!(spline.at_arc(&arc, -inside), Some(first));
+        assert_eq!(spline.at_arc(&arc, length + inside), Some(last));
+    }
+
+    #[test]
+    fn a_target_past_an_end_has_no_parameter() {
+        let (spline, arc) = curve();
+        let length = arc[arc.len() - 1];
+        let outside = 2.0 * ARC_END_TOLERANCE * length;
+        assert_eq!(spline.at_arc(&arc, -outside), None);
+        assert_eq!(spline.at_arc(&arc, length + outside), None);
+        assert_eq!(spline.at_arc(&arc, -length), None);
+        assert_eq!(spline.at_arc(&arc, 3.0 * length), None);
+        assert_eq!(spline.at_arc(&arc, f64::NAN), None);
+        assert_eq!(spline.at_arc(&arc, f64::INFINITY), None);
+    }
+
+    #[test]
+    fn a_curve_without_length_has_no_parameter() {
+        let (spline, _) = curve();
+        let flat = vec![1.0; spline.knots().len()];
+        assert_eq!(spline.at_arc(&flat, 1.0), None);
+        let broken = vec![0.0, 1.0, f64::NAN, 2.0, 3.0];
+        assert_eq!(spline.at_arc(&broken, 1.5), None);
+    }
+
+    #[test]
+    fn images_stay_when_the_curve_cannot_be_walked() {
+        let mut positions = Array2::from_elem((5, 2), 1.5);
+        let before = positions.clone();
+        not_a_knot_equal_arc(&mut positions, None, None);
+        assert_eq!(positions, before);
+        positions[[2, 0]] = f64::NAN;
+        let before = positions.clone();
+        not_a_knot_equal_arc(&mut positions, None, None);
+        assert!(
+            positions
+                .iter()
+                .zip(before.iter())
+                .all(|(a, b)| a.to_bits() == b.to_bits())
+        );
     }
 }

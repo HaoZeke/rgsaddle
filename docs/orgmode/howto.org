@@ -45,11 +45,26 @@ Defaults: improved tangent, uniform spring =k = 5=, NEB projection, climbing ima
 * Defect-pair hop rates
 =howto/defect-pair-rates= is =defect_pair_rates=: a solid-state dimer and an index check for every hop in a caller-supplied catalogue, a fixed climbing-image band through the saddle, a PAFI free-energy barrier, and a Bennett–Chandler transmission coefficient. The rate is =κ ν exp(-ΔF/kT)=. The document is =rgsaddle.defect_pair_rates=. Copper is only in the tests.
 
+* Free-energy profile along a path
+=howto/pafi= is projected average force integration (PAFI; Swinburne and Marinica, Phys. Rev. Lett. 120, 135503 (2018)): the free energy along a path such as converged NEB images, from =dF/ds = ⟨(∇E · n)(1 - ψ)⟩= averaged on the hyperplanes normal to the path. The input is a =PointSurface=, an =ArcPath= from the images (=ArcPath::from_positions=) and the arcs of the planes; the output is a =FreeEnergyProfile= with the barrier and its standard error, and one =HyperplaneAverage= per plane with =tau= and =n_eff=. =zero_temperature_barrier= is the check that the path and the surface agree. The page also says how the warm-up floor and the automated equilibration test treat each plane.
+
 * Optimal hyperplane rates
 =howto/oh-tst= is optimal hyperplanar TST: a plane seeded from a converged dimer and climbed to the maximum of its free energy, a reactant normalization from parallel planes through the minimum, and the reversible work between them by integration with a BAR check. The rate is =sqrt(kT/2π) (Z_H/Z_R) exp(-ΔA/kT)= in mass-weighted coordinates. Only Hessian actions are used. The plane optimizer takes any =rgmin= manifold; the product manifold of point and normal is to come from rgmin.
 
 * Sample hyperplanes with LAMMPS
 =howto/lammps-hyperplane= configures =LammpsHyperplaneSampler= through rgpot's pinned =PotentialConfig= profile. lammpc keeps one in-process LAMMPS instance for the ensemble and applies the plane to position, velocity, and force on every BAOAB step. The =lammps= Cargo feature is opt-in.
+
+* Use an rgpot potential
+=howto/rgpot= wraps =rgpot-pair=, the zero-dependency half of the sibling rgpot project, as a =PointSurface= and runs a relaxation, a dimer search and a PAFI barrier check over it: nothing downstream of =PointSurface= distinguishes an rgpot potential from an analytic one.
+
+* Restart PAFI or OH-TST sampling
+=howto/pafi-ohtst-restarting= covers =PafiConfig::target_error= and =max_rounds=, which run extra sampling rounds automatically inside =pafi_profile=, and =sample_plane='s =start= argument with =PlaneSample::last=, which lets a host extend an OH-TST chain by hand with no repeated burn-in.
+
+* Parallel sampling for PAFI and OH-TST
+=howto/pafi-ohtst-parallel-sampling=: =pafi_profile= already samples every plane in parallel on rayon's global pool. OH-TST's own calls sample one plane at a time, since each node starts from the one before, but independent calls over several temperatures or several hops parallelize at the host's level with =rayon::par_iter=, bit-identical to running them one at a time.
+
+* Checking PAFI and OH-TST convergence
+=howto/pafi-ohtst-checking-convergence= reads =tau= and =n_eff= on a PAFI or OH-TST sample, the equipartition virial check on an OH-TST plane, and =ReversibleWorkConfig::min_overlap= and =ReversibleWork::warnings=, against a run that has not settled and one that has.
 
 * Strain response of a hop
 =howto/strain-rate= is =StrainResponse=: the elastic dipoles of one minimum and one saddle, the symmetry images of that hop, and =barrier(ε)=. The line is trusted inside a radius, a quadratic error bound, or a curvature-softening bound. Past that bound =refine= runs a fixed-cell solid dimer and caches the explicit barrier. On the Mishin copper dumbbell that refine does not reproduce the explicit barrier, and the trusted line does not reproduce the rate. The measured calls are in the same page.
