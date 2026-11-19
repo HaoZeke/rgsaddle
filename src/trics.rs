@@ -18,13 +18,22 @@ use crate::error::SaddleError;
 use crate::internal::{CartAxis, Rotation, Translation};
 
 const DEFAULT_BOND_FACTOR: f64 = 1.35;
-const DEFAULT_RANK_TOLERANCE: f64 = 0.000_000_000_1;
+const DEFAULT_RANK_TOLERANCE: f64 = 0.000_001;
 const DIFFERENCE_STEP: f64 = 0.000_001;
 const VECTOR_TOLERANCE: f64 = 0.000_000_000_001;
 const JACOBI_SWEEPS_PER_DIMENSION: usize = 24;
 const ANGLE_WARNING_COSINE: f64 = 0.906_307_787_036_649_9;
 const ANGLE_UNSTABLE_COSINE: f64 = 0.965_925_826_289_068_3;
 const ANGLE_FAILURE_COSINE: f64 = 0.996_194_698_091_745_5;
+const LINEAR_ANGLE_COSINE: f64 = 0.95;
+const OUT_OF_PLANE_COSINE: f64 = 0.95;
+const INVERSION_DAMPING_GROWTH: f64 = 1.2;
+const INVERSION_REJECTION_LIMIT: usize = 5;
+const SPLICE_DAMPING_REDUCTION: f64 = 0.8;
+const SPLICE_DAMPING_MINIMUM: f64 = 0.2;
+const SPLICE_DAMPING_RESET_STREAK: usize = 3;
+const MINIMUM_SPLICE_LENGTH: usize = 2;
+const MAXIMUM_SPLICE_LENGTH: usize = 6;
 const DEFAULT_INVERSION_TOLERANCE: f64 = 0.000_000_01;
 const DEFAULT_INVERSION_MOVE: f64 = 0.1;
 /// Paper convergence threshold for the maximum atom splice mismatch.
@@ -39,7 +48,7 @@ pub const TRICS_SPLICE_TOLERANCE_ANGSTROM: f64 = 0.001_8;
 pub struct TricConfig {
     /// Multiplicative threshold used by inferred bonds.
     pub bond_factor: f64,
-    /// Relative eigenvalue threshold for the primitive Wilson metric.
+    /// Absolute eigenvalue threshold for the primitive Wilson metric.
     pub rank_tolerance: f64,
     /// Optional zero based atom pairs defining the bond graph.
     pub bonds: Option<Vec<(usize, usize)>>,
@@ -164,6 +173,10 @@ pub enum TricPrimitive {
     Translation(Translation),
     /// Fragment orientation relative to the system reference.
     Rotation(Rotation),
+    /// Radius of gyration scaled fragment rotation.
+    ScaledRotation(Rotation, f64),
+    /// Out of plane coordinate `a-b-c-d`.
+    OutOfPlane(usize, usize, usize, usize),
 }
 
 impl TricPrimitive {
@@ -177,6 +190,8 @@ impl TricPrimitive {
             Self::Dihedral(a, b, c, d) => dihedral(positions, *a, *b, *c, *d),
             Self::Translation(coordinate) => coordinate.value(positions),
             Self::Rotation(coordinate) => coordinate.value(positions),
+            Self::ScaledRotation(coordinate, factor) => Ok(coordinate.value(positions)? * factor),
+            Self::OutOfPlane(a, b, c, d) => out_of_plane(positions, *a, *b, *c, *d),
         }
     }
 
@@ -188,11 +203,16 @@ impl TricPrimitive {
             Self::Angle(a, b, c) => angle_derivative(positions, *a, *b, *c),
             Self::Translation(coordinate) => coordinate.gradient(positions),
             Self::Rotation(coordinate) => coordinate.gradient(positions),
-            Self::Dihedral(..) | Self::LinearBend(..) => central_derivative(self, positions),
+            Self::ScaledRotation(coordinate, factor) => {
+                Ok(coordinate.gradient(positions)? * *factor)
+            }
+            Self::Dihedral(..) | Self::LinearBend(..) | Self::OutOfPlane(..) => {
+                central_derivative(self, positions)
+            }
         }
     }
 
-    /// Numerical stability level from zero through three.
+    /// Numerical stability level from zero through four.
     ///
     /// Zero is regular. One warns that an angular primitive is close
     /// to linear, two marks it unstable under small perturbations, and
@@ -204,11 +224,12 @@ impl TricPrimitive {
                 angular_diagnostic(positions, &[(*a, *b, *c), (*b, *c, *d)])
             }
             Self::LinearBend(a, b, c, _) => linear_angular_diagnostic(positions, *a, *b, *c),
+            Self::OutOfPlane(a, b, c, d) => out_of_plane_diagnostic(positions, *a, *b, *c, *d),
             Self::Distance(a, b) => match distance(positions, *a, *b) {
                 Ok(_) => 0,
                 Err(_) => 3,
             },
-            Self::Translation(_) | Self::Rotation(_) => 0,
+            Self::Translation(_) | Self::Rotation(_) | Self::ScaledRotation(..) => 0,
         }
     }
 
@@ -218,7 +239,7 @@ impl TricPrimitive {
         right: ArrayView1<'_, f64>,
     ) -> Result<f64, SaddleError> {
         let mut difference = self.value(left)? - self.value(right)?;
-        if matches!(self, Self::Dihedral(..)) {
+        if matches!(self, Self::Dihedral(..) | Self::OutOfPlane(..)) {
             let period = std::f64::consts::TAU;
             if difference > std::f64::consts::PI {
                 difference -= period;
@@ -236,6 +257,7 @@ pub struct TricSystem {
     reference: Array1<f64>,
     primitives: Vec<TricPrimitive>,
     basis: Array2<f64>,
+    rank_tolerance: f64,
 }
 
 impl TricSystem {
@@ -259,12 +281,12 @@ impl TricSystem {
             }
             if fragment.len() > 1 {
                 let refpos = fragment_positions(reference, &fragment);
+                let rotation_scale = radius_of_gyration(&refpos);
                 for axis in CartAxis::ALL {
-                    primitives.push(TricPrimitive::Rotation(Rotation::new(
-                        fragment.clone(),
-                        axis,
-                        refpos.clone(),
-                    )?));
+                    primitives.push(TricPrimitive::ScaledRotation(
+                        Rotation::new(fragment.clone(), axis, refpos.clone())?,
+                        rotation_scale,
+                    ));
                 }
             }
         }
@@ -280,6 +302,7 @@ impl TricSystem {
             reference: reference.to_owned(),
             primitives,
             basis,
+            rank_tolerance: config.rank_tolerance,
         })
     }
 
@@ -347,25 +370,53 @@ impl TricSystem {
             ));
         }
         let mut positions = start.to_owned();
+        let mut remaining = displacement.to_owned();
+        let initial_error = remaining.dot(&remaining).sqrt();
+        let mut best_error = initial_error;
+        let mut damping = 1.0;
+        let mut rejected = 0;
+        let mut first_trial = None;
         for _ in 0..config.max_iterations {
-            let actual = self.difference(positions.view(), start)?;
-            let residual = &displacement - &actual;
-            let residual_norm = residual.dot(&residual).sqrt();
-            if residual_norm <= config.tolerance {
-                return Ok(positions);
-            }
             let b = self.wilson_b(positions.view())?;
             let gram = b.dot(&b.t());
-            let multipliers = solve_metric(&gram, &residual)?;
-            let step = cap_atom_step(b.t().dot(&multipliers), config.max_atom_move);
-            positions += &step;
-            if positions.iter().any(|value| !value.is_finite()) {
+            let multipliers = solve_metric(&gram, &remaining, self.rank_tolerance)?;
+            let mut step = cap_atom_step(b.t().dot(&multipliers), config.max_atom_move);
+            step *= damping;
+            let trial = &positions + &step;
+            if trial.iter().any(|value| !value.is_finite()) {
                 return Err(SaddleError::NonFinite("TRIC back transformation"));
             }
+            if first_trial.is_none() {
+                first_trial = Some(trial.clone());
+            }
+            let actual = self.difference(trial.view(), positions.view())?;
+            let next_remaining = &remaining - &actual;
+            let error = next_remaining.dot(&next_remaining).sqrt();
+            if error > best_error {
+                damping *= 0.5;
+                rejected += 1;
+                if rejected >= INVERSION_REJECTION_LIMIT {
+                    return Ok(if best_error < initial_error {
+                        positions
+                    } else {
+                        match first_trial {
+                            Some(trial) => trial,
+                            None => positions,
+                        }
+                    });
+                }
+                continue;
+            }
+            positions = trial;
+            remaining = next_remaining;
+            best_error = error;
+            rejected = 0;
+            damping = (damping * INVERSION_DAMPING_GROWTH).min(1.0);
+            if error <= config.tolerance || max_atom_norm(&step) <= config.tolerance {
+                return Ok(positions);
+            }
         }
-        Err(SaddleError::Solver(
-            "TRIC back transformation did not converge".into(),
-        ))
+        Ok(positions)
     }
 }
 
@@ -413,9 +464,15 @@ fn interpolate_one_direction(
     let mut path = Array2::zeros((n_images, left.len()));
     path.row_mut(0).assign(&left);
     let mut current = left.to_owned();
-    for image in 1..n_images - 1 {
+    for image in 1..n_images {
         current = system.back_transform(current.view(), increment.view(), config)?;
         path.row_mut(image).assign(&current);
+    }
+    let endpoint_correction = &right - &current;
+    for image in 1..n_images {
+        let fraction = image as f64 / (n_images - 1) as f64;
+        let corrected = &path.row(image) + &endpoint_correction * fraction;
+        path.row_mut(image).assign(&corrected);
     }
     path.row_mut(n_images - 1).assign(&right);
     Ok(path)
@@ -489,39 +546,17 @@ pub fn tric_segments(
             }]);
         }
     }
-    let intervals = stable_intervals(diagnostic, threshold);
-    let mut selected = Vec::new();
-    let mut covered = 0;
-    while covered + 1 < n {
-        let mut best: Option<(usize, usize, usize)> = None;
-        for &(start, end, system) in &intervals {
-            if start > covered || end <= covered {
-                continue;
-            }
-            let replace = match best {
-                Some((best_start, best_end, _)) => {
-                    end > best_end || (end == best_end && start < best_start)
-                }
-                None => true,
-            };
-            if replace {
-                best = Some((start, end, system));
-            }
-        }
-        let Some((start, end, system)) = best else {
-            return Err(SaddleError::Invalid(
-                "TRICS could not drive through the diagnostic matrix".into(),
-            ));
-        };
-        if selected.is_empty() && start != 0 {
-            return Err(SaddleError::Invalid(
-                "TRICS diagnostic path does not start at the first image".into(),
-            ));
-        }
-        selected.push(TricsSegment { start, end, system });
-        covered = end;
-    }
-    Ok(selected)
+    let maze_segments = maze_path(diagnostic, threshold)?;
+    let splice_length = splice_length(n);
+    let segments = fill_splice_segments(&maze_segments, splice_length, n);
+    Ok(segments
+        .into_iter()
+        .map(|(start, end)| TricsSegment {
+            start,
+            end,
+            system: best_system(diagnostic, start, end),
+        })
+        .collect())
 }
 
 /// Refine an initial Cartesian path with TRICS.
@@ -557,33 +592,259 @@ pub fn trics_path(
     splice_path(initial, &systems, segments, config)
 }
 
-fn stable_intervals(
+fn maze_path(
     diagnostic: ndarray::ArrayView2<'_, u8>,
     threshold: u8,
-) -> Vec<(usize, usize, usize)> {
-    let mut intervals = Vec::new();
-    for system in 0..diagnostic.nrows() {
-        let mut image = 0;
-        while image < diagnostic.ncols() {
-            if diagnostic[(system, image)] > threshold {
-                image += 1;
-                continue;
+) -> Result<Vec<(usize, usize)>, SaddleError> {
+    let n = diagnostic.nrows();
+    let mut okay = Array2::from_shape_fn((n, n), |index| diagnostic[index] <= threshold);
+    if !okay[(0, 0)] || !okay[(n - 1, n - 1)] {
+        return Err(SaddleError::Invalid(
+            "TRICS could not enter or leave the diagnostic maze".into(),
+        ));
+    }
+    for _ in 0..n * n {
+        let previous = okay.clone();
+        for system in 0..n {
+            for image in 0..n {
+                if (system == 0 && image == 0) || (system == n - 1 && image == n - 1) {
+                    continue;
+                }
+                let blocked = if system == n - 1 {
+                    !previous[(system, image + 1)]
+                } else if system == 0 {
+                    !previous[(system, image - 1)]
+                } else {
+                    image < n - 1
+                        && !previous[(system + 1, image)]
+                        && !previous[(system, image + 1)]
+                        || image > 0
+                            && !previous[(system - 1, image)]
+                            && !previous[(system, image - 1)]
+                };
+                if blocked {
+                    okay[(system, image)] = false;
+                }
             }
-            let start = image;
-            while image + 1 < diagnostic.ncols() && diagnostic[(system, image + 1)] <= threshold {
-                image += 1;
-            }
-            intervals.push((start, image, system));
-            image += 1;
+        }
+        if okay == previous {
+            break;
         }
     }
-    intervals
+
+    let mut candidates: Vec<Option<Vec<(usize, usize)>>> = vec![None; n / 2];
+    for (size, candidate) in candidates.iter_mut().enumerate() {
+        for start in 0..n {
+            if let Some(segments) = drive_maze(&okay, start, size, false) {
+                keep_maze_candidate(candidate, segments);
+            }
+        }
+        for start in (0..n).rev() {
+            if let Some(segments) = drive_maze(&okay, start, size, true) {
+                keep_maze_candidate(candidate, segments);
+            }
+        }
+    }
+    let minimum = candidates
+        .iter()
+        .filter_map(|candidate| candidate.as_ref().map(Vec::len))
+        .min()
+        .ok_or_else(|| SaddleError::Invalid("TRICS diagnostic maze has no path".into()))?;
+    candidates
+        .into_iter()
+        .rev()
+        .flatten()
+        .find(|segments| segments.len() == minimum)
+        .ok_or_else(|| SaddleError::Invalid("TRICS diagnostic maze has no path".into()))
+}
+
+fn drive_maze(
+    okay: &Array2<bool>,
+    start_system: usize,
+    size: usize,
+    reverse: bool,
+) -> Option<Vec<(usize, usize)>> {
+    let n = okay.nrows();
+    let mut system = start_system;
+    let mut image = if reverse { n - 1 } else { 0 };
+    if !okay[(system, image)] {
+        return None;
+    }
+    let mut last = image;
+    let mut along_images = true;
+    let mut segments = Vec::new();
+    for _ in 0..=2 * n {
+        if (!reverse && image == n - 1) || (reverse && image == 0) {
+            segments.push(if reverse { (0, last) } else { (last, n - 1) });
+            if reverse {
+                segments.reverse();
+            }
+            return Some(segments);
+        }
+        if !maze_square_is_open(okay, system, image, size) {
+            return None;
+        }
+        if along_images {
+            let next_image = if reverse {
+                image.checked_sub(1)
+            } else {
+                image.checked_add(1).filter(|next| *next < n)
+            }?;
+            if maze_square_is_open(okay, system, next_image, size) {
+                image = next_image;
+            } else {
+                along_images = false;
+                segments.push(if reverse {
+                    (image, last)
+                } else {
+                    (last, image)
+                });
+                last = next_image;
+                system = if reverse {
+                    system.checked_sub(1)?
+                } else {
+                    system.checked_add(1).filter(|next| *next < n)?
+                };
+            }
+        } else {
+            let next_system = if reverse {
+                system.checked_sub(1)
+            } else {
+                system.checked_add(1).filter(|next| *next < n)
+            };
+            if let Some(next) = next_system {
+                if maze_square_is_open(okay, next, image, size) {
+                    system = next;
+                    continue;
+                }
+            }
+            along_images = true;
+            image = if reverse {
+                image.checked_sub(1)?
+            } else {
+                image.checked_add(1).filter(|next| *next < n)?
+            };
+        }
+    }
+    None
+}
+
+fn maze_square_is_open(okay: &Array2<bool>, system: usize, image: usize, size: usize) -> bool {
+    let row_start = system.saturating_sub(size);
+    let row_end = (system + size + 1).min(okay.nrows());
+    let column_start = image.saturating_sub(size);
+    let column_end = (image + size + 1).min(okay.ncols());
+    (row_start..row_end).all(|row| (column_start..column_end).all(|column| okay[(row, column)]))
+}
+
+fn keep_maze_candidate(current: &mut Option<Vec<(usize, usize)>>, candidate: Vec<(usize, usize)>) {
+    let replace = match current {
+        Some(existing) if candidate.len() > existing.len() => false,
+        Some(existing) => {
+            let shortest = candidate
+                .iter()
+                .map(|(start, end)| end - start)
+                .min()
+                .map_or(0, |length| length);
+            let existing_shortest = existing
+                .iter()
+                .map(|(start, end)| end - start)
+                .min()
+                .map_or(0, |length| length);
+            shortest > existing_shortest
+        }
+        None => true,
+    };
+    if replace {
+        *current = Some(candidate);
+    }
+}
+
+fn splice_length(n_images: usize) -> usize {
+    let rounded = ((n_images as f64) / 10.0).round() as usize;
+    let even = rounded + rounded % 2;
+    match (
+        even.cmp(&MINIMUM_SPLICE_LENGTH),
+        even.cmp(&MAXIMUM_SPLICE_LENGTH),
+    ) {
+        (Ordering::Less, _) => MINIMUM_SPLICE_LENGTH,
+        (_, Ordering::Greater) => MAXIMUM_SPLICE_LENGTH,
+        _ => even,
+    }
+}
+
+fn merge_segment_pair(segments: &[(usize, usize)], merge_index: usize) -> Vec<(usize, usize)> {
+    let mut merged = Vec::with_capacity(segments.len() - 1);
+    for (index, &segment) in segments.iter().enumerate() {
+        if index == merge_index {
+            merged.push((segment.0, segments[index + 1].1));
+        } else if index != merge_index + 1 {
+            merged.push(segment);
+        }
+    }
+    merged
+}
+
+fn fill_splice_segments(
+    segments: &[(usize, usize)],
+    splice_length: usize,
+    n_images: usize,
+) -> Vec<(usize, usize)> {
+    let mut filled = segments.to_vec();
+    while filled.len() > 1
+        && filled
+            .iter()
+            .map(|(start, end)| end - start)
+            .min()
+            .is_some_and(|length| length < splice_length)
+    {
+        let merge_index = (0..filled.len() - 1)
+            .min_by_key(|&index| {
+                merge_segment_pair(&filled, index)
+                    .iter()
+                    .map(|(start, end)| end - start)
+                    .max()
+                    .map_or(0, |length| length)
+            })
+            .map_or(0, |index| index);
+        filled = merge_segment_pair(&filled, merge_index);
+    }
+    let half = splice_length / 2;
+    let mut spliced: Vec<_> = filled
+        .iter()
+        .map(|&(start, end)| (start.saturating_sub(half), (end + half).min(n_images - 1)))
+        .collect();
+    if spliced.len() > 1 && spliced[1].0 == 0 {
+        spliced.remove(0);
+        filled.remove(0);
+        filled[0].0 = 0;
+    }
+    if spliced.len() > 1 && spliced[spliced.len() - 2].1 == n_images - 1 {
+        spliced.pop();
+        filled.pop();
+        let last = filled.len() - 1;
+        filled[last].1 = n_images - 1;
+    }
+    spliced
+}
+
+fn best_system(diagnostic: ndarray::ArrayView2<'_, u8>, start: usize, end: usize) -> usize {
+    let midpoint = (start + end) / 2;
+    (start..=end)
+        .min_by_key(|&system| {
+            let level = (start..=end)
+                .map(|image| diagnostic[(system, image)])
+                .max()
+                .map_or(u8::MAX, |value| value);
+            (level, system.abs_diff(midpoint))
+        })
+        .map_or(start, |system| system)
 }
 
 fn splice_path(
     initial: ndarray::ArrayView2<'_, f64>,
     systems: &[TricSystem],
-    segments: Vec<TricsSegment>,
+    mut segments: Vec<TricsSegment>,
     config: &TricsConfig,
 ) -> Result<TricsReport, SaddleError> {
     let mut endpoints: Vec<[Array1<f64>; 2]> = segments
@@ -595,19 +856,61 @@ fn splice_path(
             ]
         })
         .collect();
+    let segment_candidates: Vec<Vec<usize>> = segments
+        .iter()
+        .enumerate()
+        .map(|(index, segment)| {
+            let midpoint = (segment.start + segment.end) / 2;
+            let mut candidates: Vec<_> = (segment.start..=segment.end).collect();
+            candidates.sort_by_key(|&system| {
+                let level = (segment.start..=segment.end)
+                    .map(|image| systems[system].diagnostic(initial.row(image)))
+                    .max()
+                    .map_or(u8::MAX, |value| value);
+                let endpoint_priority = if index == 0 && system == segment.start
+                    || index + 1 == segments.len() && system == segment.end
+                {
+                    0
+                } else {
+                    1
+                };
+                (endpoint_priority, level, system.abs_diff(midpoint))
+            });
+            candidates
+        })
+        .collect();
     let mut interpolated = Vec::new();
+    let splice_length = splice_length(initial.nrows());
+    let mut damping = 1.0;
+    let mut last_mismatch = f64::INFINITY;
+    let mut decrease_streak = 0;
     for iteration in 1..=config.max_splice_iterations {
         interpolated.clear();
-        for (segment, endpoint) in segments.iter().zip(&endpoints) {
-            interpolated.push(interpolate_tric_segment(
-                &systems[segment.system],
-                endpoint[0].view(),
-                endpoint[1].view(),
-                segment.end - segment.start + 1,
-                &config.inversion,
-            )?);
+        for index in 0..segments.len() {
+            let segment = segments[index];
+            let endpoint = &endpoints[index];
+            let mut result = None;
+            for &system in &segment_candidates[index] {
+                if let Ok(path) = interpolate_tric_segment(
+                    &systems[system],
+                    endpoint[0].view(),
+                    endpoint[1].view(),
+                    segment.end - segment.start + 1,
+                    &config.inversion,
+                ) {
+                    result = Some((system, path));
+                    break;
+                }
+            }
+            let Some((system, path)) = result else {
+                return Err(SaddleError::Solver(
+                    "TRICS could not interpolate a selected segment".into(),
+                ));
+            };
+            segments[index].system = system;
+            interpolated.push(path);
         }
-        let mismatch = splice_mismatch(&segments, &interpolated);
+        let mismatch = splice_mismatch(&interpolated, splice_length);
         if mismatch <= config.splice_tolerance {
             let path = concatenate_segments(initial.nrows(), &segments, &interpolated);
             return Ok(TricsReport {
@@ -616,46 +919,57 @@ fn splice_path(
                 splice_iterations: iteration,
             });
         }
-        let previous = endpoints.clone();
-        for pair in 0..segments.len() - 1 {
-            let left = segments[pair];
-            let right = segments[pair + 1];
-            let right_at_left_end = left.end - right.start;
-            let left_at_right_start = right.start - left.start;
-            endpoints[pair][1].assign(&interpolated[pair + 1].row(right_at_left_end));
-            endpoints[pair + 1][0].assign(&interpolated[pair].row(left_at_right_start));
+        if mismatch < last_mismatch {
+            decrease_streak += 1;
+            if decrease_streak >= SPLICE_DAMPING_RESET_STREAK && damping < 1.0 {
+                damping = 1.0;
+            }
+        } else {
+            decrease_streak = 0;
+            damping = (damping * SPLICE_DAMPING_REDUCTION).max(SPLICE_DAMPING_MINIMUM);
         }
-        if endpoints.iter().zip(previous).all(|(next, old)| {
-            max_atom_difference(&next[0], &old[0]) <= VECTOR_TOLERANCE
-                && max_atom_difference(&next[1], &old[1]) <= VECTOR_TOLERANCE
-        }) {
-            return Err(SaddleError::Solver(
-                "TRICS splicing stopped without reducing the mismatch".into(),
-            ));
-        }
+        last_mismatch = mismatch;
+        update_splice_endpoints(&interpolated, &mut endpoints, splice_length, damping);
     }
     Err(SaddleError::Solver(
         "TRICS splicing did not converge".into(),
     ))
 }
 
-fn splice_mismatch(segments: &[TricsSegment], paths: &[Array2<f64>]) -> f64 {
+fn splice_mismatch(paths: &[Array2<f64>], splice_length: usize) -> f64 {
     let mut mismatch = 0.0_f64;
-    for pair in 0..segments.len() - 1 {
-        let left = segments[pair];
-        let right = segments[pair + 1];
-        let left_at_right_start = right.start - left.start;
-        let right_at_left_end = left.end - right.start;
+    for pair in 0..paths.len() - 1 {
+        let left_end = paths[pair].nrows() - 1;
+        let left_start = left_end + 1 - splice_length;
         mismatch = mismatch.max(max_atom_difference(
-            &paths[pair].row(left_at_right_start).to_owned(),
+            &paths[pair].row(left_start).to_owned(),
             &paths[pair + 1].row(0).to_owned(),
         ));
         mismatch = mismatch.max(max_atom_difference(
-            &paths[pair].row(paths[pair].nrows() - 1).to_owned(),
-            &paths[pair + 1].row(right_at_left_end).to_owned(),
+            &paths[pair].row(left_end).to_owned(),
+            &paths[pair + 1].row(splice_length - 1).to_owned(),
         ));
     }
     mismatch
+}
+
+fn update_splice_endpoints(
+    paths: &[Array2<f64>],
+    endpoints: &mut [[Array1<f64>; 2]],
+    splice_length: usize,
+    damping: f64,
+) {
+    for pair in 0..paths.len() - 1 {
+        let left_end = paths[pair].nrows() - 1;
+        let left_start = left_end + 1 - splice_length;
+        let right_end = splice_length - 1;
+        let new_left_end = &paths[pair + 1].row(right_end) * damping
+            + &paths[pair].row(left_end) * (1.0 - damping);
+        let new_right_start =
+            &paths[pair].row(left_start) * damping + &paths[pair + 1].row(0) * (1.0 - damping);
+        endpoints[pair][1].assign(&new_left_end);
+        endpoints[pair + 1][0].assign(&new_right_start);
+    }
 }
 
 fn concatenate_segments(
@@ -898,11 +1212,11 @@ fn angular_diagnostic(positions: ArrayView1<'_, f64>, angles: &[(usize, usize, u
             return 3;
         };
         let cosine = value.cos().abs();
-        let level = if cosine >= ANGLE_FAILURE_COSINE {
+        let level = if cosine > ANGLE_FAILURE_COSINE {
             3
-        } else if cosine >= ANGLE_UNSTABLE_COSINE {
+        } else if cosine > ANGLE_UNSTABLE_COSINE {
             2
-        } else if cosine >= ANGLE_WARNING_COSINE {
+        } else if cosine > ANGLE_WARNING_COSINE {
             1
         } else {
             0
@@ -1000,6 +1314,83 @@ fn dihedral(
     Ok(dot(cross(axis, v), w).atan2(dot(v, w)))
 }
 
+fn out_of_plane(
+    positions: ArrayView1<'_, f64>,
+    a: usize,
+    b: usize,
+    c: usize,
+    d: usize,
+) -> Result<f64, SaddleError> {
+    let first = sub(atom(positions, b)?, atom(positions, a)?);
+    let middle = sub(atom(positions, c)?, atom(positions, b)?);
+    let last = sub(atom(positions, d)?, atom(positions, c)?);
+    let normal_last = cross(middle, last);
+    let normal_first = cross(first, middle);
+    if norm(middle) <= VECTOR_TOLERANCE
+        || norm(normal_last) <= VECTOR_TOLERANCE
+        || norm(normal_first) <= VECTOR_TOLERANCE
+    {
+        return Err(SaddleError::Invalid(
+            "TRIC out of plane coordinate is singular".into(),
+        ));
+    }
+    let numerator = dot(first, normal_last) * norm(middle);
+    let denominator = dot(normal_last, normal_first);
+    Ok(numerator.atan2(denominator))
+}
+
+fn out_of_plane_diagnostic(
+    positions: ArrayView1<'_, f64>,
+    a: usize,
+    b: usize,
+    c: usize,
+    d: usize,
+) -> u8 {
+    let first = match angle(positions, a, b, c) {
+        Ok(value) => value.cos().abs(),
+        Err(_) => f64::INFINITY,
+    };
+    let second = match angle(positions, b, c, d) {
+        Ok(value) => value.cos().abs(),
+        Err(_) => f64::INFINITY,
+    };
+    let level = |cosine: f64| {
+        if cosine > 0.99 {
+            3
+        } else if cosine > 0.98 {
+            2
+        } else if cosine > 0.95 {
+            1
+        } else {
+            0
+        }
+    };
+    let left = level(first);
+    let right = level(second);
+    if left > 0 && right > 0 {
+        left.max(right) + 1
+    } else {
+        left.max(right)
+    }
+}
+
+fn angle_normal(
+    positions: ArrayView1<'_, f64>,
+    a: usize,
+    b: usize,
+    c: usize,
+) -> Result<[f64; 3], SaddleError> {
+    let normal = cross(
+        sub(atom(positions, a)?, atom(positions, b)?),
+        sub(atom(positions, c)?, atom(positions, b)?),
+    );
+    let length = norm(normal);
+    if length <= VECTOR_TOLERANCE {
+        return Err(SaddleError::Invalid("TRIC angle normal is singular".into()));
+    }
+    Ok(scale(normal, 1.0 / length))
+}
+
 fn central_derivative(
     coordinate: &TricPrimitive,
     positions: ArrayView1<'_, f64>,
@@ -1013,7 +1404,10 @@ fn central_derivative(
         let minus = coordinate.value(trial.view())?;
         trial[slot] = positions[slot];
         let mut difference = plus - minus;
-        if matches!(coordinate, TricPrimitive::Dihedral(..)) {
+        if matches!(
+            coordinate,
+            TricPrimitive::Dihedral(..) | TricPrimitive::OutOfPlane(..)
+        ) {
             if difference > std::f64::consts::PI {
                 difference -= std::f64::consts::TAU;
             } else if difference < -std::f64::consts::PI {
@@ -1038,7 +1432,11 @@ fn primitive_wilson_b(
     Ok(matrix)
 }
 
-fn solve_metric(matrix: &Array2<f64>, right: &Array1<f64>) -> Result<Array1<f64>, SaddleError> {
+fn solve_metric(
+    matrix: &Array2<f64>,
+    right: &Array1<f64>,
+    tolerance: f64,
+) -> Result<Array1<f64>, SaddleError> {
     let n = matrix.nrows();
     if matrix.ncols() != n || right.len() != n {
         return Err(SaddleError::Shape(
@@ -1046,11 +1444,9 @@ fn solve_metric(matrix: &Array2<f64>, right: &Array1<f64>) -> Result<Array1<f64>
         ));
     }
     let (values, vectors) = symmetric_eigen(matrix);
-    let largest = values.iter().copied().fold(0.0_f64, f64::max);
-    let threshold = largest * DEFAULT_RANK_TOLERANCE;
     let mut solution = Array1::zeros(n);
     for (mode, &value) in values.iter().enumerate() {
-        if value <= threshold {
+        if value.abs() <= tolerance {
             continue;
         }
         let vector = vectors.column(mode);
@@ -1061,19 +1457,22 @@ fn solve_metric(matrix: &Array2<f64>, right: &Array1<f64>) -> Result<Array1<f64>
 }
 
 fn cap_atom_step(mut step: Array1<f64>, max_move: f64) -> Array1<f64> {
-    let largest = step
-        .as_slice()
+    let largest = max_atom_norm(&step);
+    if largest > max_move {
+        step *= max_move / largest;
+    }
+    step
+}
+
+fn max_atom_norm(step: &Array1<f64>) -> f64 {
+    step.as_slice()
         .map(|values| {
             values
                 .chunks(3)
                 .map(|atom| atom.iter().map(|value| value * value).sum::<f64>().sqrt())
                 .fold(0.0_f64, f64::max)
         })
-        .map_or(0.0, |value| value);
-    if largest > max_move {
-        step *= max_move / largest;
-    }
-    step
+        .map_or(0.0, |value| value)
 }
 
 fn validate_bonds(
@@ -1185,7 +1584,7 @@ fn molecular_primitives(
                 let left = neighbors[first];
                 let right = neighbors[second];
                 let value = angle(reference, left, center, right)?;
-                if value.cos().abs() >= ANGLE_FAILURE_COSINE {
+                if value.cos().abs() >= LINEAR_ANGLE_COSINE {
                     let bond = sub(atom(reference, left)?, atom(reference, center)?);
                     let axis = scale(bond, 1.0 / norm(bond));
                     let (first_direction, second_direction) = perpendicular_directions(axis);
@@ -1203,6 +1602,27 @@ fn molecular_primitives(
                     ));
                 } else {
                     primitives.push(TricPrimitive::Angle(left, center, right));
+                }
+            }
+        }
+        if neighbors.len() == 3 {
+            let permutations = [
+                [neighbors[0], neighbors[1], neighbors[2]],
+                [neighbors[0], neighbors[2], neighbors[1]],
+                [neighbors[1], neighbors[0], neighbors[2]],
+                [neighbors[1], neighbors[2], neighbors[0]],
+                [neighbors[2], neighbors[0], neighbors[1]],
+                [neighbors[2], neighbors[1], neighbors[0]],
+            ];
+            for [b, c, d] in permutations {
+                let normals = angle_normal(reference, center, b, c).and_then(|first| {
+                    angle_normal(reference, b, c, d).map(|second| (first, second))
+                });
+                if let Ok((first, second)) = normals {
+                    if dot(first, second).abs() >= OUT_OF_PLANE_COSINE {
+                        primitives.push(TricPrimitive::OutOfPlane(center, b, c, d));
+                        break;
+                    }
                 }
             }
         }
@@ -1241,11 +1661,28 @@ fn fragment_positions(positions: ArrayView1<'_, f64>, fragment: &[usize]) -> Arr
     })
 }
 
+fn radius_of_gyration(positions: &Array2<f64>) -> f64 {
+    let count = positions.nrows() as f64;
+    let centroid = [
+        positions.column(0).sum() / count,
+        positions.column(1).sum() / count,
+        positions.column(2).sum() / count,
+    ];
+    let squared = positions
+        .outer_iter()
+        .map(|row| {
+            (row[0] - centroid[0]) * (row[0] - centroid[0])
+                + (row[1] - centroid[1]) * (row[1] - centroid[1])
+                + (row[2] - centroid[2]) * (row[2] - centroid[2])
+        })
+        .sum::<f64>();
+    (squared / count).sqrt()
+}
+
 fn nonredundant_basis(metric: &Array2<f64>, tolerance: f64) -> Array2<f64> {
     let (values, vectors) = symmetric_eigen(metric);
-    let largest = values.iter().copied().fold(0.0_f64, f64::max);
     let mut indices: Vec<usize> = (0..values.len())
-        .filter(|&index| values[index] > largest * tolerance)
+        .filter(|&index| values[index].abs() > tolerance)
         .collect();
     indices.sort_by(
         |&left, &right| match values[right].partial_cmp(&values[left]) {
@@ -1326,6 +1763,7 @@ mod tests {
             TricPrimitive::Distance(0, 1),
             TricPrimitive::Angle(0, 1, 2),
             TricPrimitive::Dihedral(0, 1, 2, 3),
+            TricPrimitive::OutOfPlane(0, 1, 2, 3),
         ];
         for primitive in primitives {
             let derivative = primitive.derivative(positions.view()).unwrap();
@@ -1368,6 +1806,115 @@ mod tests {
         let diagnostic = diagnostic_matrix(&systems, path.view()).unwrap();
         assert_eq!(diagnostic[(0, 0)], 0);
         assert_eq!(diagnostic[(0, 1)], 3);
+    }
+
+    #[test]
+    fn diagnostics_follow_the_reference_boundaries() {
+        let geometry = |degrees: f64| {
+            let radians = degrees.to_radians();
+            array![
+                radians.cos(),
+                radians.sin(),
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                1.0 - radians.cos(),
+                radians.sin(),
+                0.1
+            ]
+        };
+        let dihedral = TricPrimitive::Dihedral(0, 1, 2, 3);
+        assert_eq!(dihedral.diagnostic(geometry(154.9).view()), 0);
+        assert_eq!(dihedral.diagnostic(geometry(155.1).view()), 1);
+        assert_eq!(dihedral.diagnostic(geometry(165.1).view()), 2);
+        assert_eq!(dihedral.diagnostic(geometry(175.1).view()), 3);
+
+        let linear = TricPrimitive::LinearBend(0, 1, 2, [0.0, 1.0, 0.0]);
+        let linear_geometry = |cosine: f64| {
+            let sine = (1.0 - cosine * cosine).sqrt();
+            array![cosine, sine, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+        };
+        assert_eq!(linear.diagnostic(linear_geometry(0.81).view()), 0);
+        assert_eq!(linear.diagnostic(linear_geometry(0.79).view()), 1);
+        assert_eq!(linear.diagnostic(linear_geometry(0.59).view()), 2);
+        assert_eq!(linear.diagnostic(linear_geometry(0.39).view()), 3);
+
+        let out_of_plane = TricPrimitive::OutOfPlane(0, 1, 2, 3);
+        let out_of_plane_geometry = |first: f64, second: f64| {
+            let first = first.to_radians();
+            let second = second.to_radians();
+            array![
+                first.cos(),
+                first.sin(),
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                1.0 - second.cos(),
+                second.sin(),
+                0.0
+            ]
+        };
+        assert_eq!(
+            out_of_plane.diagnostic(out_of_plane_geometry(20.0, 90.0).view()),
+            0
+        );
+        assert_eq!(
+            out_of_plane.diagnostic(out_of_plane_geometry(16.0, 90.0).view()),
+            1
+        );
+        assert_eq!(
+            out_of_plane.diagnostic(out_of_plane_geometry(10.0, 90.0).view()),
+            2
+        );
+        assert_eq!(
+            out_of_plane.diagnostic(out_of_plane_geometry(5.0, 90.0).view()),
+            3
+        );
+        assert_eq!(
+            out_of_plane.diagnostic(out_of_plane_geometry(5.0, 5.0).view()),
+            4
+        );
+    }
+
+    #[test]
+    fn maze_segments_receive_the_reference_overlap() {
+        let segments = fill_splice_segments(&[(0, 4), (5, 9), (10, 14)], 2, 15);
+        assert_eq!(segments, vec![(0, 5), (4, 10), (9, 14)]);
+        assert_eq!(segments[0].1 - segments[1].0 + 1, 2);
+        assert_eq!(segments[1].1 - segments[2].0 + 1, 2);
+    }
+
+    #[test]
+    fn splice_endpoint_update_uses_opposite_overlap_ends() {
+        let left = array![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0]
+        ];
+        let right = array![
+            [10.0, 0.0, 0.0],
+            [11.0, 0.0, 0.0],
+            [12.0, 0.0, 0.0],
+            [13.0, 0.0, 0.0],
+            [14.0, 0.0, 0.0]
+        ];
+        let mut endpoints = vec![
+            [left.row(0).to_owned(), left.row(4).to_owned()],
+            [right.row(0).to_owned(), right.row(4).to_owned()],
+        ];
+        update_splice_endpoints(&[left, right], &mut endpoints, 2, 1.0);
+        assert_eq!(endpoints[0][1], array![11.0, 0.0, 0.0]);
+        assert_eq!(endpoints[1][0], array![3.0, 0.0, 0.0]);
     }
 
     #[test]
@@ -1442,7 +1989,10 @@ mod tests {
 
     #[test]
     fn splice_converges_across_a_linear_bend() {
-        let angles = [50.0_f64, 30.0, 20.0, 10.0, 0.0, -10.0, -20.0, -30.0, -50.0];
+        let angles = [
+            60.0_f64, 55.0, 50.0, 45.0, 15.0, 10.0, 5.0, 0.0, -5.0, -10.0, -15.0, -45.0, -50.0,
+            -55.0, -60.0,
+        ];
         let mut initial = Array2::zeros((angles.len(), 9));
         for (image, degrees) in angles.into_iter().enumerate() {
             let radians = degrees.to_radians();
@@ -1466,7 +2016,7 @@ mod tests {
                     .with_tolerance(0.000_001)
                     .with_max_atom_move(0.05),
             )
-            .with_diagnostic_threshold(0)
+            .with_diagnostic_threshold(1)
             .with_splice_tolerance(0.01);
         let report = trics_path(initial.view(), &config).unwrap();
         assert!(report.segments.len() > 1);
