@@ -561,8 +561,9 @@ _Static_assert(_Generic(&rgsaddle_geodesic_config_default, abi46_signature_rgsad
 
 typedef rgsaddle_status_t (*abi46_signature_rgsaddle_geodesic_path)(
     int64_t n_images, int64_t dof, const double *path, int64_t n_coords,
-    rgsaddle_geodesic_chart_fn chart, void *ctx, const rgsaddle_geodesic_config_t *config,
-    double *out, double *length, double *lower, double *upper);
+    rgsaddle_geodesic_chart_fn chart, void *ctx, const double *cell,
+    const rgsaddle_geodesic_config_t *config, double *out, double *length, double *lower,
+    double *upper);
 _Static_assert(_Generic(&rgsaddle_geodesic_path, abi46_signature_rgsaddle_geodesic_path: 1, default: 0), "rgsaddle_geodesic_path signature");
 
 typedef rgsaddle_status_t (*abi46_signature_rgsaddle_geodesic_morse)(
