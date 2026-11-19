@@ -44,8 +44,9 @@ pub use zoom::ZoomConfig;
 pub struct Cell(pub [[f64; 3]; 3]);
 
 impl Cell {
-    fn as_minimage(&self) -> Option<minimage::Cell> {
-        minimage::Cell::from_ase(self.0).ok()
+    fn as_minimage(&self) -> Result<minimage::PartialCell, minimage::Error> {
+        let periodic = std::array::from_fn(|i| self.0[i].iter().any(|component| *component != 0.0));
+        minimage::PartialCell::from_ase(self.0, periodic)
     }
 
     /// Inverse of the row matrix, or `None` for a singular cell.
@@ -79,50 +80,27 @@ impl Cell {
         ])
     }
 
-    /// Wrap every per-atom 3-vector in `diff` to its nearest lattice
-    /// image: fractional components `s = d H^-1` are shifted by
-    /// `round(s)` and mapped back, `d - round(s) H`. A diagonal cell
-    /// reduces to the per-axis wrap. For a strongly skewed triclinic
-    /// cell the fractional wrap is the image inside the reduced unit
-    /// cell, which is the minimum image whenever the displacement is
-    /// shorter than half the shortest cell height. Axes with a zero
-    /// row (a slab's vacuum direction, a molecule) are left unwrapped.
+    /// Wrap every per-atom 3-vector in `diff` to its nearest Euclidean
+    /// lattice image. A zero row is an open direction, so slabs and
+    /// wires wrap only their periodic lattice.
     pub fn minimum_image(&self, diff: &mut Array1<f64>) {
         self.minimum_image_view(diff.view_mut());
     }
 
     /// [`Cell::minimum_image`] on borrowed storage.
     pub(crate) fn minimum_image_view(&self, mut diff: ArrayViewMut1<f64>) {
-        let h = &self.0;
-        let periodic: [bool; 3] = std::array::from_fn(|i| h[i].iter().any(|v| *v != 0.0));
-        if periodic.iter().all(|p| *p)
-            && let Some(inv) = self.inverse()
-        {
-            for a in 0..diff.len() / 3 {
-                let d = [diff[3 * a], diff[3 * a + 1], diff[3 * a + 2]];
-                let mut shift = [0.0; 3];
-                for (i, si) in shift.iter_mut().enumerate() {
-                    let s = d[0] * inv[0][i] + d[1] * inv[1][i] + d[2] * inv[2][i];
-                    *si = s.round();
-                }
-                for c in 0..3 {
-                    diff[3 * a + c] =
-                        d[c] - (shift[0] * h[0][c] + shift[1] * h[1][c] + shift[2] * h[2][c]);
-                }
-            }
-            return;
-        }
-        // Partially periodic or singular: wrap only along axes whose
-        // lattice vector is the coordinate axis itself.
+        let mini = self
+            .as_minimage()
+            .expect("minimum image needs a finite, independent periodic cell");
         for a in 0..diff.len() / 3 {
-            for c in 0..3 {
-                let l = h[c][c];
-                let axis_aligned = (0..3).all(|k| k == c || h[c][k] == 0.0);
-                if periodic[c] && axis_aligned && l > 0.0 {
-                    let x = diff[3 * a + c];
-                    diff[3 * a + c] = x - l * (x / l).round();
-                }
-            }
+            let base = 3 * a;
+            let wrapped = mini.displacement_euclidean(
+                [0.0, 0.0, 0.0],
+                [diff[base], diff[base + 1], diff[base + 2]],
+            );
+            diff[base] = wrapped[0];
+            diff[base + 1] = wrapped[1];
+            diff[base + 2] = wrapped[2];
         }
     }
 
@@ -1027,19 +1005,16 @@ impl LinkShifts {
     fn refresh(&mut self, cell: &Cell, positions: ArrayView2<f64>, link: usize) {
         let raw = &positions.row(link + 1) - &positions.row(link);
         let mut shift = Array1::zeros(raw.len());
-        if let Some(mini) = cell.as_minimage() {
-            for atom in 0..raw.len() / 3 {
-                let base = 3 * atom;
-                let dr = [raw[base], raw[base + 1], raw[base + 2]];
-                let wrapped = mini.displacement_euclidean([0.0, 0.0, 0.0], dr);
-                shift[base] = dr[0] - wrapped[0];
-                shift[base + 1] = dr[1] - wrapped[1];
-                shift[base + 2] = dr[2] - wrapped[2];
-            }
-        } else {
-            let mut wrapped = raw.to_owned();
-            cell.minimum_image(&mut wrapped);
-            shift = &raw - &wrapped;
+        let mini = cell
+            .as_minimage()
+            .expect("link shifts need a validated periodic cell");
+        for atom in 0..raw.len() / 3 {
+            let base = 3 * atom;
+            let dr = [raw[base], raw[base + 1], raw[base + 2]];
+            let wrapped = mini.displacement_euclidean([0.0, 0.0, 0.0], dr);
+            shift[base] = dr[0] - wrapped[0];
+            shift[base + 1] = dr[1] - wrapped[1];
+            shift[base + 2] = dr[2] - wrapped[2];
         }
         self.shifts[link] = shift;
     }
@@ -2644,6 +2619,10 @@ impl BandSession {
         if !initial.iter().all(|v| v.is_finite()) {
             return Err(SaddleError::NonFinite("band positions"));
         }
+        if let Some(cell) = &config.cell {
+            cell.as_minimage()
+                .map_err(|error| SaddleError::Invalid(format!("invalid periodic cell: {error}")))?;
+        }
         check_fixed(&config, initial.view())?;
         let method = if config.quickmin {
             Method::QuickMin
@@ -2749,6 +2728,24 @@ impl BandSession {
     /// Give every interior image the first image's fixed coordinates.
     pub(crate) fn pin_fixed(&mut self) {
         pin_fixed_rows(&self.state.fixed, &mut self.positions);
+    }
+
+    pub(crate) fn refresh_links(&mut self) {
+        if let (Some(cell), Some(links)) = (&self.config.cell, self.state.links.as_mut()) {
+            *links = LinkShifts::new(cell, self.positions.view());
+        }
+    }
+
+    pub(crate) fn refresh_links_at(&mut self, image: usize) {
+        let n_images = self.positions.nrows();
+        if let (Some(cell), Some(links)) = (&self.config.cell, self.state.links.as_mut()) {
+            if image > 0 {
+                links.refresh(cell, self.positions.view(), image - 1);
+            }
+            if image + 1 < n_images {
+                links.refresh(cell, self.positions.view(), image);
+            }
+        }
     }
 
     /// Install the per-image exponential metric on the band solver, or
@@ -3220,15 +3217,8 @@ impl BandSession {
             moved = true;
         }
         self.pin_fixed();
-        if let (Some(cell), Some(links)) = (&self.config.cell, self.state.links.as_mut()) {
-            for row in replaced {
-                if row > 0 {
-                    links.refresh(cell, self.positions.view(), row - 1);
-                }
-                if row + 1 < n_images {
-                    links.refresh(cell, self.positions.view(), row);
-                }
-            }
+        for row in replaced {
+            self.refresh_links_at(row);
         }
         if moved {
             self.state.drop_last();
@@ -3685,6 +3675,7 @@ impl BandSession {
         )?;
         self.positions.assign(&trial);
         self.pin_fixed();
+        self.refresh_links();
         self.iteration += 1;
         let max_force = self.state.last_max_force();
         let status = if max_force <= self.config.force_tol {
@@ -3764,6 +3755,73 @@ mod tests {
         assert_abs_diff_eq!(d[0], -1.0, epsilon = 1e-12);
         assert_abs_diff_eq!(d[1], 2.0, epsilon = 1e-12);
         assert_abs_diff_eq!(d[2], 12.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn skewed_slab_wraps_in_plane_and_keeps_the_open_component() {
+        let r3 = 3.0_f64.sqrt();
+        let cell = Cell([[4.0, 0.0, 0.0], [2.0, 2.0 * r3, 0.0], [0.0; 3]]);
+        let mut d = array![2.1, 2.0 * r3 + 0.2, 12.0];
+        cell.minimum_image(&mut d);
+        assert_abs_diff_eq!(d[0], 0.1, epsilon = 1e-12);
+        assert_abs_diff_eq!(d[1], 0.2, epsilon = 1e-12);
+        assert_abs_diff_eq!(d[2], 12.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn skewed_half_tie_matches_the_stored_link_convention() {
+        let cell = Cell([[4.0, 0.0, 0.0], [3.0, 4.0, 0.0], [1.0, 2.0, 8.0]]);
+        let inverse = cell.inverse().expect("invertible cell");
+        let mut disagreement = None;
+        for sa in [-0.5, 0.0, 0.5] {
+            for sb in [-0.5, 0.0, 0.5] {
+                for sc in [-0.5, 0.0, 0.5] {
+                    let raw = Array1::from_iter(
+                        (0..3).map(|c| sa * cell.0[0][c] + sb * cell.0[1][c] + sc * cell.0[2][c]),
+                    );
+                    let mut fractional = raw.clone();
+                    let shift: [f64; 3] = std::array::from_fn(|i| {
+                        (raw[0] * inverse[0][i] + raw[1] * inverse[1][i] + raw[2] * inverse[2][i])
+                            .round()
+                    });
+                    for c in 0..3 {
+                        fractional[c] -= shift[0] * cell.0[0][c]
+                            + shift[1] * cell.0[1][c]
+                            + shift[2] * cell.0[2][c];
+                    }
+                    let mut direct = raw.clone();
+                    cell.minimum_image(&mut direct);
+                    if direct
+                        .iter()
+                        .zip(&fractional)
+                        .any(|(a, b)| (a - b).abs() > 1e-12)
+                    {
+                        disagreement = Some((raw, direct));
+                    }
+                }
+            }
+        }
+        let (raw, direct) = disagreement.expect("a skewed half tie differs from fractional round");
+        let mut positions = Array2::zeros((2, 3));
+        positions.row_mut(1).assign(&raw);
+        let links = LinkShifts::new(&cell, positions.view());
+        let mut stored = raw;
+        assert!(links.apply(0, stored.view_mut()));
+        assert_eq!(direct, stored);
+    }
+
+    #[test]
+    fn band_session_rejects_non_finite_and_singular_cells() {
+        let positions = array![[0.0, 0.0, 0.0], [0.1, 0.0, 0.0], [0.2, 0.0, 0.0]];
+        let cells = [
+            Cell([[f64::NAN, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
+            Cell([[f64::INFINITY, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
+            Cell([[1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, 1.0]]),
+        ];
+        for cell in cells {
+            let config = BandConfig::default().with_cell(Some(cell));
+            assert!(BandSession::new(config, positions.clone()).is_err());
+        }
     }
 
     #[test]
@@ -4069,6 +4127,36 @@ mod tests {
             middle_force(&session, [5.0 + delta, 0.0, 0.0]),
             -10.0,
             epsilon = 0.001
+        );
+    }
+
+    #[test]
+    fn replaced_row_takes_the_minimum_image_afresh() {
+        let cell = Cell([[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]]);
+        let mut session = ramp_session(cell, [4.9, 0.0, 0.0], [12.0, 0.0, 0.0]);
+        session
+            .set_positions(array![[0.0, 0.0, 0.0], [-4.9, 0.0, 0.0], [12.0, 0.0, 0.0]])
+            .expect("replace middle image");
+        let expected = LinkShifts::new(&cell, session.positions.view());
+        assert_eq!(
+            session.state.links.as_ref().expect("periodic links").shifts,
+            expected.shifts
+        );
+    }
+
+    #[test]
+    fn rtr_position_replacement_refreshes_periodic_links() {
+        let cell = Cell([[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]]);
+        let mut session = ramp_session(cell, [4.9, 0.0, 0.0], [12.0, 0.0, 0.0]);
+        session
+            .set_rtr(Some(crate::rtr::RtrConfig::default()))
+            .expect("RTR configuration");
+        session.state.links = Some(LinkShifts::default());
+        session.step(&Ramp).expect("RTR step");
+        let expected = LinkShifts::new(&cell, session.positions.view());
+        assert_eq!(
+            session.state.links.as_ref().expect("periodic links").shifts,
+            expected.shifts
         );
     }
 

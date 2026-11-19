@@ -854,6 +854,7 @@ impl BandSession {
     pub(super) fn put_image(&mut self, image: usize, point: &Point, projected: ArrayView1<f64>) {
         self.positions.row_mut(image).assign(&point.x);
         self.pin_fixed();
+        self.refresh_links_at(image);
         let x = self.interior_flat();
         let dof = self.positions.ncols();
         let mut slot = self.state.last.lock().unwrap_or_else(|e| e.into_inner());
@@ -944,4 +945,33 @@ pub(super) fn one_row<S: BandSurface + ?Sized>(
     let mut gradients = ndarray::Array2::zeros((1, x.len()));
     surface.eval(row, &mut energies, &mut gradients)?;
     Ok((energies[0], gradients.row(0).to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::band::{BandConfig, LinkShifts};
+    use ndarray::array;
+
+    #[test]
+    fn finish_refine_replacement_refreshes_periodic_links() {
+        let cell = Cell([[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]]);
+        let config = BandConfig::default().with_cell(Some(cell));
+        let positions = array![[0.0, 0.0, 0.0], [4.9, 0.0, 0.0], [12.0, 0.0, 0.0]];
+        let mut session = BandSession::new(config, positions).expect("periodic refine session");
+        session.state.links = Some(LinkShifts {
+            shifts: vec![Array1::zeros(3); 2],
+        });
+        let point = Point {
+            x: array![-4.9, 0.0, 0.0],
+            energy: 0.0,
+            gradient: Array1::zeros(3),
+        };
+        session.put_image(1, &point, Array1::zeros(3).view());
+        let expected = LinkShifts::new(&cell, session.positions.view());
+        assert_eq!(
+            session.state.links.as_ref().expect("periodic links").shifts,
+            expected.shifts
+        );
+    }
 }
