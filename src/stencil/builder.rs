@@ -21,6 +21,7 @@ use crate::minmode::{
     ArtNConfig, FiniteDifference, MinModeConfig, MinModeKind, MinModeSession, MinModeStatus,
     convex_displacement, translated_gradient,
 };
+
 /// Error text returned for every band preset: [`BandBuilder::build`],
 /// [`PointBuilder::build`] and the C and Python bindings all report it.
 pub const BAND_PRESET_SEAM: &str = "band presets are not implemented";
@@ -30,38 +31,38 @@ pub const BAND_PRESET_SEAM: &str = "band presets are not implemented";
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Preset {
-    /// The Min.
+    /// Local minimization.
     Min,
-    /// The Dimer.
+    /// Dimer minimum-mode following.
     Dimer,
-    /// The Lanczos.
+    /// Lanczos minimum-mode following.
     Lanczos,
-    /// The Art.
+    /// Activation-relaxation technique.
     Art,
-    /// The EigenFollow.
+    /// Eigenvector following.
     EigenFollow,
-    /// The Neb.
+    /// Nudged elastic band; not implemented by this builder.
     Neb,
-    /// The Dneb.
+    /// Doubly nudged elastic band; not implemented by this builder.
     Dneb,
-    /// The CiNeb.
+    /// Climbing-image NEB; not implemented by this builder.
     CiNeb,
-    /// The EnergyWeightedNeb.
+    /// Energy-weighted NEB; not implemented by this builder.
     EnergyWeightedNeb,
-    /// The ZoomNeb.
+    /// Zoom-NEB; not implemented by this builder.
     ZoomNeb,
-    /// The AutoNeb.
+    /// AutoNEB; not implemented by this builder.
     AutoNeb,
-    /// The OciNeb.
+    /// Off-path climbing-image NEB; not implemented by this builder.
     OciNeb,
-    /// The Idpp.
+    /// IDPP path construction; not implemented by this builder.
     Idpp,
-    /// The SIdpp.
+    /// Sequential IDPP path construction; not implemented by this builder.
     SIdpp,
 }
 
 impl Preset {
-    /// Name.
+    /// Stable lowercase name used by the C and Python bindings.
     pub fn name(self) -> &'static str {
         match self {
             Self::Min => "min",
@@ -81,7 +82,7 @@ impl Preset {
         }
     }
 
-    /// From name.
+    /// Parse one of the exact names returned by [`Self::name`].
     pub fn from_name(name: &str) -> Option<Self> {
         Some(match name {
             "min" => Self::Min,
@@ -102,7 +103,7 @@ impl Preset {
         })
     }
 
-    /// To abi.
+    /// Stable C ABI ordinal.
     pub fn to_abi(self) -> i32 {
         match self {
             Self::Min => 0,
@@ -122,7 +123,7 @@ impl Preset {
         }
     }
 
-    /// From abi.
+    /// Convert a C ABI ordinal, or return `None` when it is unknown.
     pub fn from_abi(value: i32) -> Option<Self> {
         Some(match value {
             0 => Self::Min,
@@ -143,7 +144,7 @@ impl Preset {
         })
     }
 
-    /// Is point.
+    /// Whether this preset operates on one geometry.
     pub fn is_point(self) -> bool {
         matches!(
             self,
@@ -155,25 +156,26 @@ impl Preset {
 /// What happens to the true force along the tangent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Climb {
-    /// The Descend.
+    /// Follow the unmodified force downhill.
     Descend,
-    /// The Reflect.
+    /// Reflect the force along the selected direction, `f - 2 (f . v) v`.
     Reflect,
-    /// The Ascend.
+    /// Climb the selected direction: the reversed force component along
+    /// it, `-(f . v) v`.
     Ascend,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-/// The StencilStatus.
+/// Progress of a point-stencil search.
 pub enum StencilStatus {
-    /// The Running.
+    /// More host-controlled steps are required.
     Running,
-    /// The Converged.
+    /// The force met the configured tolerance.
     Converged,
 }
 
 #[derive(Clone, Copy, Debug)]
-/// The StencilReport.
+/// Result of one point-stencil step.
 pub struct StencilReport {
     /// Whether this step is still running or has converged.
     pub status: StencilStatus,
@@ -464,7 +466,10 @@ impl PointBuilder {
         self
     }
 
-    /// Climb.
+    /// Validate a force policy against the preset.
+    ///
+    /// The preset still chooses its own policy; this option does not
+    /// override the force assembled by the resulting point engine.
     pub fn climb(mut self, climb: Climb) -> Self {
         self.climb = Some(climb);
         self
