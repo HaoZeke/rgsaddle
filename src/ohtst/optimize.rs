@@ -1087,8 +1087,7 @@ impl<E: HyperplaneSampler> Climb<'_, E> {
             self.current = Some(again);
             blocks = self.blocks();
         }
-        let growth_blocked =
-            self.config.max_records <= self.config.sampler.records && self.needs_growth(&blocks);
+        let growth_blocked = self.records >= self.config.max_records && self.needs_growth(&blocks);
         let (rotation_curvature, translation_curvature) = self.model.curvatures();
         let propagated = |error: f64, curvature: f64| {
             if !growth_blocked && curvature.is_finite() && curvature > 0.0 {
@@ -1678,6 +1677,30 @@ mod tests {
             .run(&NoisyZeroMean)
             .unwrap();
         assert_ne!(optimum.status, PlaneOptimizerStatus::Converged);
+    }
+
+    #[test]
+    fn grown_sample_at_the_cap_does_not_report_converged() {
+        let start = Hyperplane::new(array![0.25, 0.0], array![1.0, 0.2]).unwrap();
+        let sampling = LangevinConfig::default()
+            .with_thermal(0.2)
+            .with_time_step(0.1)
+            .with_burn_in(10)
+            .with_stride(1)
+            .with_records(8)
+            .with_blocks(2)
+            .with_seed(4);
+        let config = PlaneOptimizerConfig::default()
+            .with_sampler(sampling)
+            .with_max_records(16)
+            .with_max_iterations(100);
+        let optimum = PlaneOptimizer::new(&start, config)
+            .unwrap()
+            .run(&NoisyZeroMean)
+            .unwrap();
+        assert_eq!(optimum.sample.records, 16);
+        assert_eq!(optimum.status, PlaneOptimizerStatus::MaxIterations);
+        assert_eq!(optimum.iterations, 100);
     }
 
     #[test]
