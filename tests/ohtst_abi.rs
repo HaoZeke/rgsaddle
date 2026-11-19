@@ -571,6 +571,58 @@ fn optimize_reports_not_converged_when_unconverged() {
     assert_eq!(status, rgsaddle::capi::RGSADDLE_SOLVER);
 }
 
+/// The first record count is only where the sample starts. The optimizer
+/// keeps its default ceiling, so a plane that needs more than eight
+/// records still converges.
+#[test]
+fn optimize_grows_the_sample_past_the_first_record_count() {
+    let mut point = [0.4, 0.0];
+    let mut normal = [1.0, 0.3];
+    let optimize = RgsaddleOhtstOptimizeConfig {
+        version: version(),
+        flags: 0,
+        thermal: 0.25,
+        time_step: 0.05,
+        friction: 1.0,
+        burn_in: 2,
+        stride: 1,
+        records: 8,
+        blocks: 2,
+        seed: 6,
+        max_iterations: 100,
+        max_translation: 0.05,
+        max_rotation: 0.05,
+        translate: 1,
+        rotate: 1,
+        patience: 1,
+    };
+    let mut optimum = RgsaddleOhtstOptimizeReport {
+        version: version(),
+        flags: 0,
+        iterations: 0,
+        evaluations: 0,
+        normal_force: 0.0,
+        normal_force_error: 0.0,
+    };
+    let status = unsafe {
+        rgsaddle_ohtst_optimize(
+            &optimize,
+            2,
+            point.as_mut_ptr(),
+            normal.as_mut_ptr(),
+            Some(well),
+            ptr::null_mut(),
+            &mut optimum,
+        )
+    };
+    if status != RGSADDLE_OK {
+        let text = unsafe { std::ffi::CStr::from_ptr(rgsaddle::capi::rgsaddle_last_error()) };
+        panic!("{status}: {}", text.to_string_lossy());
+    }
+    assert!(optimum.iterations > 0);
+    assert!(optimum.evaluations > 0);
+}
+
 /// `1 << 32` does not fit in a 32-bit `usize`. The cast must fail before
 /// any allocation.
 #[cfg(target_pointer_width = "32")]
