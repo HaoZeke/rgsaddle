@@ -132,11 +132,9 @@ impl IdppInterpolation {
     fn new(cell: Option<Cell>, config: IdppConfig) -> Result<Self, SaddleError> {
         crate::idpp::check_config(&config)?;
         let pair_cell = match cell {
-            Some(Cell([a, b, c])) => Some(
-                crate::mic::Cell::from_vectors(a, b, c, [0.0; 3]).map_err(|err| {
-                    SaddleError::Invalid(format!("AutoNEB IDPP insertion cell: {err}"))
-                })?,
-            ),
+            Some(Cell(rows)) => Some(crate::mic::Cell::from_ase(rows).map_err(|err| {
+                SaddleError::Invalid(format!("AutoNEB IDPP insertion cell: {err}"))
+            })?),
             None => None,
         };
         Ok(Self {
