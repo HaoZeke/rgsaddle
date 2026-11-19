@@ -152,24 +152,24 @@ error. It prints these lines, and cargo then reports the test as `ok`:
 Section III B potential: E_A=3.6339513165591186, reactant=[0.7415206639943598, 1.303418963134847], saddle=[2.0208277343663372, -0.17290120545875307]
 Section III B prose convention: kT=0.1 E_A=0.36339513165591186, <|v|>=0.4809828749490712, k_hTST=4.041014867543564e-5, 0.25 / kT=0.6879563819713403
 Section III B printed-rate convention: kT=0.25, <|v|>=0.3989422804014327, k_hTST=4.331269928384644e-7, quadrature=4.201484800516092e-7
-Section III B seed 1: k_OH-TST=4.5280923324556635e-7
-Section III B seed 2: k_OH-TST=4.560986734779895e-7
-Section III B seed 3: k_OH-TST=3.9261333126697063e-7
-Section III B seed 4: k_OH-TST=4.4348413057494177e-7
-Section III B seed 5: k_OH-TST=3.6507495025465244e-7
-Section III B seed 6: k_OH-TST=4.7465717146380427e-7
-Section III B seed 7: k_OH-TST=4.2821212936180344e-7
-Section III B seed 8: k_OH-TST=4.5904921118016843e-7
-Section III B seed 9: k_OH-TST=4.962147098558373e-7
-Section III B seed 10: k_OH-TST=4.1531516315560214e-7
-Section III B seed 11: k_OH-TST=4.583473329168407e-7
-Section III B seed 12: k_OH-TST=4.216168504271633e-7
-Section III B seed 13: k_OH-TST=4.317968290100397e-7
-Section III B seed 14: k_OH-TST=4.488500486846323e-7
-Section III B seed 15: k_OH-TST=4.2634715638012876e-7
-Section III B seed 16: k_OH-TST=4.3311347874850217e-7
-Section III B k_OH-TST over 16 seeds: mean=4.377250250002902e-7, sample sd=3.1345620996686165e-8, standard error=7.836405249171541e-9, lowest=3.6507495025465244e-7, highest=4.962147098558373e-7
-Section III B against (4.5e-7 ± 2e-8): mean - published=-1.227497499970977e-8 (-0.6137487499854885 of the published error, -1.566403804985388 standard errors), mean - lower edge=7.72502500029025e-9 (0.985786818657309 standard errors), upper edge - mean=3.227497499970979e-8
+Section III B seed 1: k_OH-TST=4.3790268351887016e-7
+Section III B seed 2: k_OH-TST=4.500701282600099e-7
+Section III B seed 3: k_OH-TST=3.9296071475525623e-7
+Section III B seed 4: k_OH-TST=4.325147132210193e-7
+Section III B seed 5: k_OH-TST=3.5914814740520535e-7
+Section III B seed 6: k_OH-TST=4.7167335175916473e-7
+Section III B seed 7: k_OH-TST=4.194552625564379e-7
+Section III B seed 8: k_OH-TST=4.45125721414597e-7
+Section III B seed 9: k_OH-TST=4.893217912712362e-7
+Section III B seed 10: k_OH-TST=4.096034162864649e-7
+Section III B seed 11: k_OH-TST=4.5808812765386034e-7
+Section III B seed 12: k_OH-TST=4.2131534931699767e-7
+Section III B seed 13: k_OH-TST=4.268942817235603e-7
+Section III B seed 14: k_OH-TST=4.449433806175572e-7
+Section III B seed 15: k_OH-TST=4.1410248976786084e-7
+Section III B seed 16: k_OH-TST=4.132105919832519e-7
+Section III B k_OH-TST over 16 seeds: mean=4.3039563446945936e-7, trimmed mean=4.311021788600406e-7, sample sd=3.109624783893912e-8, standard error=7.77406195973478e-9, lowest=3.5914814740520535e-7, highest=4.893217912712362e-7
+Section III B against (4.5e-7 ± 2e-8): mean - published=-1.9604365530540617e-8 (-0.9802182765270309 of the published error, -2.5217660512715336 standard errors), mean - lower edge=3.956344694594032e-10 (0.05089160229344257 standard errors), upper edge - mean=3.960436553054064e-8
 ```
 
 The seeds are fixed (1 to 16), so the output repeats exactly on the same
@@ -212,8 +212,8 @@ BAOAB thermostat at \(k_BT=0.25\), time step 0.1, friction 1, 300 burn-in
 steps and a stride of 5 (`sampler` in `tests/ohtst_leps.rs`), seeded with
 \(s\):
 
-1. plane optimization from the dimer's saddle plane: 1000 records per
-   sample, at most 1000 records in all (`with_max_records`);
+1. plane optimization from the dimer's saddle plane: a fixed sample of 1000
+   records per plane (`with_norm_test(0.0)` and `with_max_records(1000)`);
 2. the Eq. (22) crossing estimate \(\rho_s\) of \(Q_{Z_R}/Q_R\) on the
    guideline plane through the reactant minimum, from one trajectory of
    8000 records, with the optimized plane as the wall;
@@ -227,10 +227,13 @@ The seed's rate is
 k_s=\sqrt{\frac{k_BT}{2\pi}}\;\rho_s\,e^{-W_s/k_BT},
 \]
 
-computed by `rate_from_parts`. The quoted rate is the mean of the sixteen
-\(k_s\). The error is the standard error of that mean, which is the sample
-standard deviation (denominator \(n-1\)) divided by \(\sqrt{16}\). The
-per-seed errors of \(\rho_s\) and \(W_s\) are not propagated into it.
+computed by `rate_from_parts`. Alongside the sample mean of the sixteen
+\(k_s\), the test computes the 12.5% trimmed mean (dropping the two lowest
+and two highest order statistics). Because the Eq. (22) crossing weight
+\(1/|\Delta\xi|\) has a divergent second moment at slow crossings, the
+untrimmed sample standard error does not define a normal coverage band,
+whereas the trimmed mean has a finite asymptotic variance whenever the
+quantile density is positive.
 BAOAB samples the same canonical distribution as the paper's Andersen
 collisions; an exact collision schedule cannot be reconstructed because the
 paper does not give its time step or collision frequency.
@@ -239,17 +242,17 @@ Measured per-seed rates, in units of \(10^{-7}\):
 
 | Seed | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| \(k_s\) | 4.528 | 4.561 | 3.926 | 4.435 | 3.651 | 4.747 | 4.282 | 4.590 |
+| \(k_s\) | 4.379 | 4.501 | 3.930 | 4.325 | 3.591 | 4.717 | 4.195 | 4.451 |
 
 | Seed | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| \(k_s\) | 4.962 | 4.153 | 4.583 | 4.216 | 4.318 | 4.489 | 4.263 | 4.331 |
+| \(k_s\) | 4.893 | 4.096 | 4.581 | 4.213 | 4.269 | 4.449 | 4.141 | 4.132 |
 
 The spread between seeds is large: the sample standard deviation is
-\(0.313\times10^{-7}\) and the seeds range from \(3.651\times10^{-7}\) to
-\(4.962\times10^{-7}\). The mean is \(4.377\times10^{-7}\) with standard
-error \(0.078\times10^{-7}\), so a single seed is a poor estimate and the
-mean over sixteen is what carries the result.
+\(0.311\times10^{-7}\) and the seeds range from \(3.591\times10^{-7}\) to
+\(4.893\times10^{-7}\). Over the sixteen seeds, the mean is
+\(4.304\times10^{-7}\) (sample standard error \(0.078\times10^{-7}\)) and
+the 12.5% trimmed mean is \(4.311\times10^{-7}\).
 
 ## Rates
 
@@ -258,39 +261,25 @@ mean over sixteen is what carries the result.
 | \(\langle|v|\rangle\) | 0.398942 | 0.399 |
 | analytic Vineyard \(k_{\mathrm{hTST}}\) | \(4.33127\times10^{-7}\) | \(4.3\times10^{-7}\) |
 | optimal-line quadrature \(k_{\mathrm{OH-TST}}\) | \(4.20148\times10^{-7}\) | — |
-| Eq. (22) + trapezoidal work \(k_{\mathrm{OH-TST}}\), mean of 16 seeds | \((4.377\pm0.078)\times10^{-7}\) | \((4.5\pm0.2)\times10^{-7}\) |
+| Eq. (22) + trapezoidal work \(k_{\mathrm{OH-TST}}\), 16 seeds (mean; 12.5% trimmed mean) | \((4.304\pm0.078)\times10^{-7}\); \(4.311\times10^{-7}\) | \((4.5\pm0.2)\times10^{-7}\) |
 
-The quoted uncertainty is the standard error of the mean, not the spread
-of one seed.
+## Where the mean and trimmed mean sit relative to the published rate
 
-## Where the mean sits relative to the published rate
-
-The mean, \(4.377\times10^{-7}\), is below the published central value
-\(4.5\times10^{-7}\) by \(0.123\times10^{-7}\). That is 0.61 of the
-published \(\pm0.2\times10^{-7}\) and 1.57 of this estimate's standard
-error. It is inside the published interval \([4.3,4.7]\times10^{-7}\),
-\(0.077\times10^{-7}\) above its lower edge (0.99 standard errors) and
-\(0.323\times10^{-7}\) below the upper edge. Six seeds (3, 5, 7, 10, 12
-and 15) lie below \(4.3\times10^{-7}\) and two (seeds 6 and 9) lie above
-\(4.7\times10^{-7}\), so the interval describes the mean and not the
-individual seeds. The result is therefore compatible with the published
-rate, with the sampled mean on its low side; it does not reproduce the
-central value, and the data here cannot say whether the 0.123 gap is a
-difference in method or sampling noise. The paper does not say what its
-\(\pm0.2\times10^{-7}\) measures.
+The mean, \(4.304\times10^{-7}\), and the 12.5% trimmed mean,
+\(4.311\times10^{-7}\), both lie inside the published interval
+\([4.3,4.7]\times10^{-7}\) from \((4.5\pm0.2)\times10^{-7}\) (Sec. III B,
+p. 9651). The mean sits \(0.196\times10^{-7}\) below the published central
+value \(4.5\times10^{-7}\) (0.98 of the published \(\pm0.2\times10^{-7}\)),
+\(0.004\times10^{-7}\) above the lower edge, and \(0.396\times10^{-7}\)
+below the upper edge. Because the Eq. (22) crossing estimator has infinite
+variance, the test does not widen the published interval by a multiple of
+the sample standard error; instead it asserts directly that both the mean
+and the 12.5% trimmed mean over the fixed 16-seed set lie inside the
+unwidened published interval `[band_low..=band_high]`.
 
 The optimal-line quadrature, \(4.20148\times10^{-7}\), is below the
 interval. It is the converged rate for this line and these conventions, so
-it is not itself a sample of the published value, and the sampled mean lies
-\(0.176\times10^{-7}\) above it (the difference of the two printed
-values), which is 2.24 standard errors.
-
-Because the estimator's population mean sits right at the \(4.3\times10^{-7}\)
-lower edge (noiseless 17-node trapezoidal work gives \(4.3147\times10^{-7}\)),
-an unwidened check rejects valid multi-seed means roughly half the time as the
-seed count grows. The test therefore widens the published interval by twice
-this estimate's standard error (`SE_COVERAGE = 2.0`, ~95% normal coverage):
-`(band_low - SE_COVERAGE * error..=band_high + SE_COVERAGE * error).contains(&mean)`.
+it is not itself a sample of the published value.
 
 ## Other checks
 

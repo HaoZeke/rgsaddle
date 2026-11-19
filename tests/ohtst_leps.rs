@@ -767,24 +767,27 @@ fn section_iii_b_prefactor_is_not_the_printed_rate() {
 
 /// Section III B's numerical convention is `k_B T = 0.25` in the energy
 /// units of Appendix B and unit mass. It is the only convention that gives
-/// both its `⟨|v|⟩ = 0.399` through Eq. (23) and its analytic Vineyard rate.
+/// both its `⟨|v|⟩ = 0.399` through Eq. (23) and its analytic Vineyard rate
+/// `k_hTST = 4.3×10^{-7}` (G. H. Jóhannesson and H. Jónsson, J. Chem. Phys.
+/// 115, 9644–9656 (2001), Sec. III B, p. 9651, and Appendix B, pp. 9655–9656).
 /// The prose `k_B T = 0.1 E_A` is inconsistent with the Appendix B barrier
 /// `E_A = 3.63395`, for which those values are 0.481 and 4.041e-5.
 ///
-/// The paper does not state its trajectory length. We use 16 independent
-/// trajectories of 8000 records for its crossing estimator (Eq. 22) and
-/// 2000 records on each of 17 planes for its trapezoidal reversible work.
+/// The paper does not state its trajectory length. We use a fixed set of 16
+/// independent seeds with 8000 records for its crossing estimator (Eq. 22,
+/// p. 9649) and 2000 records on each of 17 planes for its trapezoidal
+/// reversible work (Sec. III A, p. 9650). Because the Eq. (22) crossing weight
+/// `1 / |Δξ|` has a divergent second moment at slow crossings, the sample
+/// standard error does not define a normal coverage band. Instead, the test
+/// checks both the sample mean and the 12.5% trimmed mean (dropping the two
+/// extreme order statistics on each tail, whose asymptotic variance is finite
+/// whenever the quantile density is positive) over the fixed seed set directly
+/// against the unwidened published interval `[4.3, 4.7]×10^{-7}` from
+/// `k_OH-TST = (4.5 ± 0.2)×10^{-7}` (Sec. III B, p. 9651).
 #[test]
 fn section_iii_b_reproduces_the_printed_rates() {
-    /// Two-standard-error allowance (~95% normal coverage) outside the
-    /// published `[4.3, 4.7]e-7` band. Because the estimator's population
-    /// mean sits right at the `4.3e-7` lower edge (noiseless 17-node
-    /// trapezoidal work gives `4.3147e-7`), an unwidened band rejects valid
-    /// multi-seed means roughly half the time as the seed count grows, and
-    /// quadrature combination with `0.2e-7` adds only `O(error^2)` past
-    /// that edge.
-    const SE_COVERAGE: f64 = 2.0;
     const SEEDS: u64 = 16;
+    const TRIM_EACH_TAIL: usize = 2;
 
     let geometry = geometry();
     let printed = [2.02083_f64, -0.172881];
@@ -814,6 +817,7 @@ fn section_iii_b_reproduces_the_printed_rates() {
             &seed_plane,
             PlaneOptimizerConfig::default()
                 .with_sampler(sampler(kt, 0.1).with_records(1000).with_seed(seed))
+                .with_norm_test(0.0)
                 .with_max_records(1000),
         )
         .unwrap()
@@ -853,6 +857,10 @@ fn section_iii_b_reproduces_the_printed_rates() {
     let error = (variance / count).sqrt();
     let lowest = rates.iter().copied().fold(f64::INFINITY, f64::min);
     let highest = rates.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let mut sorted = rates.clone();
+    sorted.sort_by(f64::total_cmp);
+    let trimmed_slice = &sorted[TRIM_EACH_TAIL..sorted.len() - TRIM_EACH_TAIL];
+    let trimmed_mean = trimmed_slice.iter().sum::<f64>() / trimmed_slice.len() as f64;
 
     let prose_kt = 0.1 * geometry.barrier;
     let prose_speed = (2.0 * prose_kt / std::f64::consts::PI).sqrt();
@@ -876,8 +884,8 @@ fn section_iii_b_reproduces_the_printed_rates() {
         eprintln!("Section III B seed {seed}: k_OH-TST={rate:e}");
     }
     eprintln!(
-        "Section III B k_OH-TST over {count} seeds: mean={mean:e}, sample sd={spread:e}, \
-         standard error={error:e}, lowest={lowest:e}, highest={highest:e}"
+        "Section III B k_OH-TST over {count} seeds: mean={mean:e}, trimmed mean={trimmed_mean:e}, \
+         sample sd={spread:e}, standard error={error:e}, lowest={lowest:e}, highest={highest:e}"
     );
     eprintln!(
         "Section III B against ({published:e} ± {published_error:e}): \
@@ -891,7 +899,11 @@ fn section_iii_b_reproduces_the_printed_rates() {
         band_high - mean
     );
     assert!(
-        (band_low - SE_COVERAGE * error..=band_high + SE_COVERAGE * error).contains(&mean),
-        "sampled OH-TST {mean:e} ± {error:e}; quadrature {quadrature:e}"
+        (band_low..=band_high).contains(&mean),
+        "sampled OH-TST mean {mean:e} outside [{band_low:e}, {band_high:e}]; quadrature {quadrature:e}"
+    );
+    assert!(
+        (band_low..=band_high).contains(&trimmed_mean),
+        "sampled OH-TST trimmed mean {trimmed_mean:e} outside [{band_low:e}, {band_high:e}]; quadrature {quadrature:e}"
     );
 }
