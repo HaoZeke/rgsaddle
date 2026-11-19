@@ -80,10 +80,32 @@ impl BandSurface for DoubleWell {
         gradients: &mut Array2<f64>,
     ) -> Result<(), SaddleError> {
         for (i, row) in positions.outer_iter().enumerate() {
-            let (e, g) = PointSurface::eval(self, row)?;
+            let (mut e, g) = PointSurface::eval(self, row.slice(ndarray::s![..3]))?;
+            gradients[(i, 0)] = g[0];
+            gradients[(i, 1)] = g[1];
+            gradients[(i, 2)] = g[2];
+            for k in 3..row.len() {
+                let target = if k == 3 { 3.0 } else { 0.0 };
+                let d = row[k] - target;
+                e += 2.0 * d * d;
+                gradients[(i, k)] = 4.0 * d;
+            }
             energies[i] = e;
-            gradients.row_mut(i).assign(&g);
         }
+        Ok(())
+    }
+
+    fn eval_cells(
+        &self,
+        positions: ArrayView2<f64>,
+        cells: &[Cell],
+        energies: &mut Array1<f64>,
+        gradients: &mut Array2<f64>,
+        stresses: &mut Array2<f64>,
+    ) -> Result<(), SaddleError> {
+        assert_eq!(cells.len(), positions.nrows());
+        BandSurface::eval(self, positions, energies, gradients)?;
+        stresses.fill(0.0);
         Ok(())
     }
 }
@@ -134,12 +156,82 @@ fn connect_falls_back_through_compass_and_sqnm_when_idpp_hits_well() {
     assert_eq!(r2.kind, 's');
     assert_eq!(r2.hessian_index, 1);
 
-    // Invalid connect inputs fail cleanly.
-    assert!(connect(two_barrier_toy, &left, &[2.0, 0.0], &cfg).is_err());
-    assert!(connect(two_barrier_toy, &[], &[], &cfg).is_err());
-    assert!(connect(two_barrier_toy, &[f64::NAN, 0.0, 0.0], &right, &cfg).is_err());
-    let zero_budget = ConnectConfig::optbench(0);
-    assert!(connect(two_barrier_toy, &left, &right, &zero_budget).is_err());
+    // Invalid connect inputs fail with specific variants before any surface callback.
+    let calls = std::cell::Cell::new(0usize);
+    let counting = |x: &[f64]| -> Result<(f64, Vec<f64>), SaddleError> {
+        calls.set(calls.get() + 1);
+        Ok((x.iter().map(|v| 0.5 * v * v).sum(), x.to_vec()))
+    };
+    assert!(matches!(
+        connect(counting, &left, &[2.0, 0.0], &cfg),
+        Err(SaddleError::Shape(_))
+    ));
+    assert_eq!(calls.get(), 0);
+    assert!(matches!(
+        connect(counting, &[], &[], &cfg),
+        Err(SaddleError::Shape(_))
+    ));
+    assert_eq!(calls.get(), 0);
+    assert!(matches!(
+        connect(counting, &[-2.0, 0.0], &[2.0, 0.0], &cfg),
+        Err(SaddleError::Shape(_))
+    ));
+    assert_eq!(calls.get(), 0);
+    assert!(matches!(
+        connect(
+            counting,
+            &[-2.0, 0.0, 0.0, 1.0],
+            &[2.0, 0.0, 0.0, 1.0],
+            &cfg
+        ),
+        Err(SaddleError::Shape(_))
+    ));
+    assert_eq!(calls.get(), 0);
+    assert!(matches!(
+        connect(counting, &[f64::NAN, 0.0, 0.0], &right, &cfg),
+        Err(SaddleError::NonFinite(_))
+    ));
+    assert_eq!(calls.get(), 0);
+    assert!(matches!(
+        connect(counting, &left, &[2.0, f64::INFINITY, 0.0], &cfg),
+        Err(SaddleError::NonFinite(_))
+    ));
+    assert_eq!(calls.get(), 0);
+    for bad_tol in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        assert!(matches!(
+            connect(counting, &left, &right, &cfg.clone().with_forcetol(bad_tol)),
+            Err(SaddleError::Invalid(_))
+        ));
+        assert_eq!(calls.get(), 0);
+    }
+}
+
+#[test]
+fn connect_zero_steps_returns_ok() {
+    let left = [-2.0, 0.0, 0.0];
+    let right = [2.0, 0.0, 0.0];
+    let zero_optbench = ConnectConfig::optbench(0);
+    let report =
+        connect(two_barrier_toy, &left, &right, &zero_optbench).expect("optbench(0) returns Ok");
+    assert_eq!(report.position.len(), left.len());
+    assert!(report.position.iter().all(|v| v.is_finite()));
+    assert!(report.energy.is_finite());
+    assert!(report.force_norm.is_finite());
+    assert!(matches!(report.kind, 's' | 'u' | 'f'));
+    assert!(report.evaluations > 0);
+
+    let zero_nsteps = ConnectConfig::default()
+        .with_band_images(1)
+        .with_nsteps(0)
+        .with_minimize_nsteps(0)
+        .with_n_loops(2);
+    let capped =
+        connect(two_barrier_toy, &left, &right, &zero_nsteps).expect("nsteps == 0 returns Ok");
+    assert_eq!(capped.position.len(), left.len());
+    assert!(capped.position.iter().all(|v| v.is_finite()));
+    assert!(capped.energy.is_finite());
+    assert!(capped.force_norm.is_finite());
+    assert!(matches!(capped.kind, 's' | 'u' | 'f'));
 }
 
 #[test]
@@ -175,11 +267,42 @@ fn autoneb_idpp_full_band_and_threads_converge_on_muller_brown() {
     assert!((saddle[1] - 0.2930).abs() < 0.05, "y={}", saddle[1]);
     assert!(!autoneb.cuts().is_empty());
     assert!(!autoneb.samples().is_empty());
+    let full_stage = autoneb
+        .stages()
+        .iter()
+        .find(|s| s.stage == rgsaddle::autoneb::AutoNebStage::FullBand)
+        .expect("FullBand stage");
+    assert!(full_stage.calls >= 5);
     assert!(
-        autoneb
+        report.max_force <= 0.05,
+        "FullBand converged under band.force_tol, got {}",
+        report.max_force
+    );
+
+    let window_only = band.clone().with_autoneb(
+        band.autoneb
+            .clone()
+            .unwrap()
+            .with_full_band(false)
+            .with_record_samples(false),
+    );
+    let mut an_window = AutoNeb::new(window_only, initial.clone()).unwrap();
+    an_window.run(&MullerBrown).unwrap();
+    assert!(
+        !an_window
             .stages()
             .iter()
-            .any(|s| format!("{:?}", s.stage).contains("FullBand"))
+            .any(|s| s.stage == rgsaddle::autoneb::AutoNebStage::FullBand)
+    );
+    let interior_shift: f64 = (1..6)
+        .map(|i| {
+            let d = &autoneb.positions().row(i) - &an_window.positions().row(i);
+            d.dot(&d).sqrt()
+        })
+        .sum();
+    assert!(
+        interior_shift > 1e-4,
+        "FullBand relaxation must move non-window interior images, shift={interior_shift}"
     );
     // Second run is refused.
     assert!(autoneb.run(&MullerBrown).is_err());
@@ -257,14 +380,69 @@ fn neb_variants_and_ocineb_controls_cover_all_projections_and_springs() {
     let r_peb = sess_peb.step(&MullerBrown).unwrap();
     assert!(r_peb.max_force.is_finite());
 
-    // SolidState::with_cells stores per-image cells and exp_precon accessor returns installed precon.
+    // SolidState::with_cells supplies per-image cells that evolve under pressure while
+    // rejecting incompatible ExpBandPrecon; ExpBandPrecon estimates positive mu on first step.
     let cell = Cell([[20.0, 0.0, 0.0], [0.0, 20.0, 0.0], [0.0, 0.0, 20.0]]);
-    let solid = SolidState::new(Vec::new()).with_cells(vec![cell; 7]);
-    let cfg_cells = BandConfig::default()
-        .with_solid(Some(solid))
-        .with_cell(Some(cell))
-        .with_exp_precon(Some(ExpBandPrecon::default()));
-    assert!(cfg_cells.exp_precon.is_some());
+    assert!(matches!(
+        BandSession::new(
+            BandConfig::default().with_solid(Some(SolidState::new(Vec::new()))),
+            path.clone(),
+        ),
+        Err(SaddleError::Shape(_))
+    ));
+    let solid = SolidState::new(Vec::new())
+        .with_cells(vec![cell; 7])
+        .with_pressure(0.05);
+    assert!(matches!(
+        BandSession::new(
+            BandConfig::default()
+                .with_solid(Some(solid.clone()))
+                .with_exp_precon(Some(ExpBandPrecon::default())),
+            path.clone(),
+        ),
+        Err(SaddleError::Invalid(_))
+    ));
+    let mut solid_sess = BandSession::new(
+        BandConfig::default()
+            .with_solid(Some(solid))
+            .with_climbing(None)
+            .with_max_move(0.05),
+        path.clone(),
+    )
+    .unwrap();
+    solid_sess.step(&DoubleWell).unwrap();
+    let stepped_cells = solid_sess.image_cells().expect("solid cells");
+    assert!(stepped_cells[3].0[0][0] < 20.0);
+    assert!((stepped_cells[0].0[0][0] - 20.0).abs() < 1e-12);
+    assert!((stepped_cells[6].0[0][0] - 20.0).abs() < 1e-12);
+
+    let two_atom_path = linear_path(
+        array![-1.0, 0.2, 0.0, 3.0, 0.0, 0.0].view(),
+        array![1.0, 0.2, 0.0, 3.0, 0.0, 0.0].view(),
+        5,
+        None,
+    )
+    .unwrap();
+    let mut exp_sess = BandSession::new(
+        BandConfig::default()
+            .with_method(Method::lbfgs_with_memory(10))
+            .with_remove_translation(false)
+            .with_climbing(CiConfig::always())
+            .with_min_mode(None)
+            .with_exp_precon(Some(ExpBandPrecon::default()))
+            .with_force_tol(1e-3)
+            .with_max_move(0.1),
+        two_atom_path,
+    )
+    .unwrap();
+    assert!(exp_sess.exp_scale().is_none());
+    exp_sess.step(&DoubleWell).unwrap();
+    let mu = exp_sess.exp_scale().expect("estimated mu after first step");
+    assert!(mu.is_finite() && mu > 0.0);
+    let exp_rep = exp_sess.run(&DoubleWell, 400).unwrap();
+    assert_eq!(exp_rep.status, BandStatus::Converged);
+    let exp_x = exp_sess.positions()[(2, 0)];
+    assert!(exp_x.abs() < 1e-3, "saddle x={exp_x}");
 
     // OcinebSession accessors, Lanczos, refresh, climb_alignment fallback, and saddle check.
     let oci_cfg = OcinebConfig::default()

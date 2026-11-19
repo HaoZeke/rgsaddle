@@ -7,7 +7,7 @@ set -euo pipefail
 
 export RUSTDOCFLAGS="-D warnings"
 
-feature_sets=("" "capi" "readcon" "readcon,readcon-db" "capi,verify")
+feature_sets=("" "capi" "capi,ohtst" "readcon" "readcon,readcon-db" "capi,verify")
 
 for features in "${feature_sets[@]}"; do
   echo "== rustdoc features: ${features:-default}"
@@ -18,6 +18,6 @@ for features in "${feature_sets[@]}"; do
   fi
 done
 
-echo "== rustdoc private items, features: capi,readcon,readcon-db,verify"
+echo "== rustdoc private items, features: capi,ohtst,readcon,readcon-db,verify"
 cargo doc --locked --no-deps --document-private-items \
-  --features capi,readcon,readcon-db,verify
+  --features capi,ohtst,readcon,readcon-db,verify

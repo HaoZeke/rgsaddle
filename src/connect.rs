@@ -97,7 +97,9 @@ pub struct ConnectConfig {
     pub trusted_force_difference: f64,
     /// The saddle cosp.
     pub saddle_cosp: f64,
-    /// The nsteps.
+    /// SQNM step cap per COMPASS segment, and upper cap on the initial
+    /// Lanczos climb (which still probes at least one step). Zero is
+    /// permitted and returns `Ok` without taking COMPASS segment steps.
     pub nsteps: usize,
     /// The minimize fmax.
     pub minimize_fmax: f64,
@@ -166,7 +168,10 @@ impl Default for ConnectConfig {
 
 impl ConnectConfig {
     /// Optbench LJ38 settings: force tolerance 0.001, history 10,
-    /// trust radius 0.05, and quenched split nodes.
+    /// trust radius 0.05, and quenched split nodes. `cap` sets
+    /// [`Self::nsteps`], [`Self::minimize_nsteps`], and
+    /// [`Self::n_loops`]; `0` is valid and returns `Ok` without taking
+    /// endpoint-quench or COMPASS loop steps.
     pub fn optbench(cap: usize) -> Self {
         Self {
             alpha0: 0.001,
@@ -322,23 +327,31 @@ fn tally(update: impl FnOnce(&mut ConnectProfile)) {
 /// an index other than 1 on the chain is replaced by the highest
 /// index-1 saddle on a segment between a quenched endpoint and a
 /// minimum reached by stepping off the unwanted mode.
+///
+/// A zero [`ConnectConfig::nsteps`] budget (including
+/// [`ConnectConfig::optbench`]`(0)`) is valid and returns `Ok` rather
+/// than an error: COMPASS segments stop before taking an SQNM step
+/// while the initial probe and fallback checks still produce a report.
+/// Non-positive or non-finite [`ConnectConfig::forcetol`], non-finite
+/// endpoint coordinates, and endpoint slices that do not share a
+/// positive multiple-of-3 length are rejected.
 pub fn connect(
     mut energy_gradient: impl FnMut(&[f64]) -> Result<(f64, Vec<f64>), SaddleError>,
     left: &[f64],
     right: &[f64],
     settings: &ConnectConfig,
 ) -> Result<ConnectReport, SaddleError> {
-    if left.is_empty() || left.len() != right.len() {
+    if left.is_empty() || left.len() != right.len() || !left.len().is_multiple_of(3) {
         return Err(SaddleError::Shape(
-            "connect endpoints must share a nonzero length".into(),
+            "connect endpoints must share a positive multiple of 3 coordinates".into(),
         ));
     }
     if !left.iter().chain(right.iter()).all(|v| v.is_finite()) {
         return Err(SaddleError::NonFinite("connect endpoints"));
     }
-    if settings.nsteps == 0 || !(settings.forcetol.is_finite() && settings.forcetol > 0.0) {
+    if !(settings.forcetol.is_finite() && settings.forcetol > 0.0) {
         return Err(SaddleError::Invalid(
-            "connect needs positive nsteps and force tolerance".into(),
+            "connect needs a positive finite force tolerance".into(),
         ));
     }
     PROFILE.with(|slot| *slot.borrow_mut() = ConnectProfile::default());
