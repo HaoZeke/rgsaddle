@@ -32,10 +32,18 @@ jobs:
         run: cargo test --features capi --verbose
       - name: Clippy
         run: cargo clippy --features capi -- -D warnings
+      - name: Build the C ABI library (capi,ohtst)
+        run: cargo build --features capi,ohtst --verbose
+      - name: Test (capi,ohtst)
+        run: cargo test --features capi,ohtst --verbose
+      - name: Clippy (capi,ohtst)
+        run: cargo clippy --all-targets --features capi,ohtst -- -D warnings
       - name: Format
         run: cargo fmt --check
       - name: Public items are documented
         run: cargo rustdoc --features capi -- -D missing_docs
+      - name: Public items are documented (capi,ohtst)
+        run: cargo rustdoc --features capi,ohtst -- -D missing_docs
       # Every CI feature set, then private items, with every rustdoc
       # warning denied: broken, private and redundant links, bare URLs
       # and unclosed HTML.
