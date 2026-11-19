@@ -26,10 +26,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       # The C ABI smoke test links the cdylib from target/debug. cargo test
       # builds the library for the test harness only, so build it first.
+      # Build it with `ohtst` too, because tests/hyperplane_abi.rs needs
+      # those symbols. A second cdylib with other features would leave the
+      # tests two candidates to find.
       - name: Build the C ABI library
-        run: cargo build --features capi --verbose
+        run: cargo build --features capi,ohtst --verbose
       - name: Test
         run: cargo test --features capi --verbose
+      # src/ohtst, tests/ohtst_leps.rs and the other ohtst tests compile
+      # only with `ohtst`, and tests/ohtst_abi.rs needs `capi` as well.
+      - name: Test with OH-TST
+        run: cargo test --features capi,ohtst --verbose
       - name: Clippy
         run: cargo clippy --features capi -- -D warnings
       - name: Build the C ABI library (capi,ohtst)
