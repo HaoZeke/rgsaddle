@@ -4135,7 +4135,7 @@ mod tests {
         let cell = Cell([[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]]);
         let mut session = ramp_session(cell, [4.9, 0.0, 0.0], [12.0, 0.0, 0.0]);
         session
-            .set_positions(array![[0.0, 0.0, 0.0], [-4.9, 0.0, 0.0], [12.0, 0.0, 0.0]])
+            .set_positions(array![[0.0, 0.0, 0.0], [5.1, 0.0, 0.0], [12.0, 0.0, 0.0]])
             .expect("replace middle image");
         let expected = LinkShifts::new(&cell, session.positions.view());
         assert_eq!(
