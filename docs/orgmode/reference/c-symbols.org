@@ -185,3 +185,9 @@ The narrative for a session is the C and C++ how-to, not this list.
 - =rgsaddle_band_set_free_end=. Purpose: Enable, replace, or clear the free-end adaptive NEB (FEA-NEB) of Zhang, Zhang, Ye, and Zheng, J. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_band_free_end_residual=. Purpose: Read the signed target-energy residual `E(x_end) - E_target` from the most recent free-end step into `out`, ABI minor 45. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_band_free_end_cuts=. Purpose: Number of adaptive cut-and-remesh refinements performed so far on a free-end band, or 0 for NULL, ABI minor 45. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_ohtst_sample=. Purpose: Sample the plane through point with the given normal. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_ohtst_optimize=. Purpose: Climb the plane free energy from point and normal, and write the optimum back. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_ohtst_mbar=. Purpose: Solve MBAR. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_ohtst_work=. Purpose: Reversible work through n_planes planes stored row-major. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_ohtst_transmission=. Purpose: Transmission coefficient of the plane, from n_starts configurations stored row-major. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_ohtst_rate=. Purpose: OH-TST rate from a reactant density and the reversible work off its plane. Parameters: the declaration. Units: the caller's.
