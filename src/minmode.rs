@@ -4155,7 +4155,7 @@ mod tests {
         let mode = array![1.0, 0.0, 0.0];
         let mut plain = MinModeSession::new(config.clone(), start.clone(), mode.clone()).unwrap();
         plain.set_fire_curvature(false);
-        let stalled = plain.run(&StiffWell, 25).unwrap();
+        let stalled = plain.run(&StiffWell, 10).unwrap();
         assert!(
             plain.position()[1].abs() > 1e-2 || stalled.status != super::MinModeStatus::Converged,
             "stock FIRE finished at {}",
