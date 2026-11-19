@@ -80,6 +80,9 @@ fn band_forces_with_gate<S: BandSurface + ?Sized>(
             "a band needs at least 3 images of 3N coordinates; got {n_images} x {dof}"
         )));
     }
+    if let Some(cell) = &config.cell {
+        cell.check()?;
+    }
     crate::band::check_fixed(config, positions)?;
     let mut energies = Array1::zeros(n_images);
     let mut gradients = Array2::zeros((n_images, dof));

@@ -20,8 +20,8 @@ use rgmin::{Exp, Method, Oracle};
 
 use super::{
     BandConfig, BandMetrics, BandReport, BandSession, BandState, BandStatus, BandSurface,
-    build_solver, climb_target, evaluate_band, max_abs, metric_force, min_mode, pin_fixed_rows,
-    remove_net_translation, zero_fixed,
+    LinkShifts, build_solver, climb_target, evaluate_band, max_abs, metric_force, min_mode,
+    pin_fixed_rows, remove_net_translation, wrap_link, zero_fixed,
 };
 use crate::error::SaddleError;
 use crate::reparam::{Reparametrization, reparametrize};
@@ -168,6 +168,7 @@ fn string_image_force(
     x: ArrayView1<f64>,
     energies: &Array1<f64>,
     gradients: &Array2<f64>,
+    links: Option<&LinkShifts>,
     metric: Option<(&Exp, Option<&[usize]>)>,
 ) -> Result<(Array1<f64>, Option<Array1<f64>>), SaddleError> {
     let dof = endpoint_first.len();
@@ -230,8 +231,8 @@ fn string_image_force(
     let mut diff_next = &pos_next - &pos;
     let mut diff_prev = &pos - &pos_prev;
     if let Some(cell) = &config.cell {
-        cell.minimum_image(&mut diff_next);
-        cell.minimum_image(&mut diff_prev);
+        wrap_link(cell, links, i, diff_next.view_mut());
+        wrap_link(cell, links, i - 1, diff_prev.view_mut());
     }
     zero_fixed(&config.fixed_atoms, &mut diff_next);
     zero_fixed(&config.fixed_atoms, &mut diff_prev);
@@ -327,6 +328,7 @@ fn assemble_string_with(
             max_i = i;
         }
     }
+    let links = state.links.as_ref();
     let target = climb_target(
         config,
         max_i,
@@ -335,7 +337,7 @@ fn assemble_string_with(
         x,
         energies.view(),
         gradients.view(),
-        None,
+        links,
     );
     let climbing = config.climbing.is_some();
     let armed = climbing && state.armed.load(Ordering::Relaxed);
@@ -363,6 +365,7 @@ fn assemble_string_with(
             x,
             energies,
             gradients,
+            links,
             metric_of(i),
         )?;
         evol.slice_mut(rows).assign(&f);
@@ -741,6 +744,7 @@ impl BandSession {
 
         self.positions.assign(&trial.band);
         self.pin_fixed();
+        self.refresh_links();
         self.iteration += 1;
 
         let under_tolerance = max_component <= self.config.force_tol;
@@ -901,5 +905,92 @@ impl StringSession {
 
     pub(crate) fn seed_endpoint_energies(&mut self, energies: [f64; 2]) -> Result<(), SaddleError> {
         self.session.seed_endpoint_energies(energies)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::Ordering;
+
+    use ndarray::{Array2, ArrayView2, array};
+
+    use super::*;
+    use crate::band::{Cell, CiConfig};
+
+    struct Peak;
+
+    impl BandSurface for Peak {
+        fn eval(
+            &self,
+            positions: ArrayView2<f64>,
+            energies: &mut ndarray::Array1<f64>,
+            gradients: &mut Array2<f64>,
+        ) -> Result<(), SaddleError> {
+            for i in 0..positions.nrows() {
+                // The interior sits at y = 1, so a later call that
+                // evaluates only that image still reports the peak.
+                energies[i] = positions[(i, 1)];
+                gradients.row_mut(i).fill(0.0);
+                gradients[(i, 0)] = -1.0;
+                gradients[(i, 1)] = 0.5;
+            }
+            Ok(())
+        }
+    }
+
+    fn crossing_session(middle: f64) -> BandSession {
+        let cell = Cell([[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]]);
+        let config = BandConfig::default()
+            .with_string(StringConfig::linear())
+            .with_climbing(CiConfig::always())
+            .with_min_mode(None)
+            .with_saddle_check(None)
+            .with_remove_translation(false)
+            .with_cell(Some(cell));
+        let positions = array![[0.0, 0.0, 0.0], [middle, 1.0, 0.0], [10.0, 0.0, 0.0]];
+        let session = BandSession::new(config, positions).expect("periodic string");
+        session.state.armed.store(true, Ordering::Relaxed);
+        session
+    }
+
+    #[test]
+    fn string_climb_stays_on_the_established_image_across_a_periodic_cut() {
+        let delta = 0.000001;
+        let session = crossing_session(5.0 - delta);
+        let first = session.positions.row(0).to_owned();
+        let last = session.positions.row(2).to_owned();
+        let force_at = |x0: f64| {
+            let x = array![x0, 1.0, 0.0];
+            let (_, evol, _, _) = assemble_string_with(
+                &session.config,
+                &session.state,
+                &Peak,
+                first.view(),
+                last.view(),
+                x.view(),
+                None,
+            )
+            .expect("string force");
+            evol[0]
+        };
+        let below = force_at(5.0 - delta);
+        let above = force_at(5.0 + delta);
+        assert!(
+            (below - above).abs() < 0.001,
+            "periodic cut flipped the string tangent: {below} vs {above}"
+        );
+    }
+
+    #[test]
+    fn string_step_refreshes_links_after_replacing_the_band() {
+        let mut session = crossing_session(4.9);
+        session.state.links = Some(super::super::LinkShifts::default());
+        session.step(&Peak).expect("string step");
+        let cell = session.config.cell.expect("periodic cell");
+        let expected = super::super::LinkShifts::new(&cell, session.positions.view());
+        assert_eq!(
+            session.state.links.as_ref().expect("periodic links").shifts,
+            expected.shifts
+        );
     }
 }

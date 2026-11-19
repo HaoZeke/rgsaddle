@@ -917,6 +917,9 @@ impl AutoNeb {
         initial: Array2<f64>,
         interpolation: impl ImageInterpolation + 'static,
     ) -> Result<Self, SaddleError> {
+        if let Some(cell) = &config.cell {
+            cell.check()?;
+        }
         let tuning = config.autoneb.clone().unwrap_or_default();
         tuning.validate(&config)?;
         check_initial(&initial, tuning.n_max)?;

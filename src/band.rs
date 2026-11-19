@@ -50,6 +50,9 @@ impl Cell {
     }
 
     /// Inverse of the row matrix, or `None` for a singular cell.
+    ///
+    /// Only the stored link convention test needs this comparison.
+    #[cfg(test)]
     fn inverse(&self) -> Option<[[f64; 3]; 3]> {
         let h = &self.0;
         let c00 = h[1][1] * h[2][2] - h[1][2] * h[2][1];
@@ -88,10 +91,13 @@ impl Cell {
     }
 
     /// [`Cell::minimum_image`] on borrowed storage.
+    ///
+    /// A cell that [`Cell::check`] rejected leaves `diff` unchanged.
+    /// Callers that build a session check first and return the error.
     pub(crate) fn minimum_image_view(&self, mut diff: ArrayViewMut1<f64>) {
-        let mini = self
-            .as_minimage()
-            .expect("minimum image needs a finite, independent periodic cell");
+        let Ok(mini) = self.as_minimage() else {
+            return;
+        };
         for a in 0..diff.len() / 3 {
             let base = 3 * a;
             let wrapped = mini.displacement_euclidean(
@@ -104,36 +110,57 @@ impl Cell {
         }
     }
 
+    /// Reject a nonfinite or linearly dependent periodic cell.
+    pub(crate) fn check(&self) -> Result<(), SaddleError> {
+        self.as_minimage()
+            .map(|_| ())
+            .map_err(|error| SaddleError::Invalid(format!("invalid periodic cell: {error}")))
+    }
+
     /// Nonzero lattice translations, along the axes
     /// [`Cell::minimum_image`] wraps, that can carry a wrapped
     /// displacement to another image shorter than `cutoff`. Empty when
     /// every wrapped axis has a cell height of more than twice the
     /// cutoff, where the minimum image is the only image in range.
+    ///
+    /// Heights and shifts come from the linkcell cell of the periodic
+    /// rows, so a skewed slab uses the same triclinic lattice as a full
+    /// cell. An open row takes no images.
     pub(crate) fn image_translations(&self, cutoff: f64) -> Vec<[f64; 3]> {
         // Bounds the enumeration on a cell far thinner than the cutoff.
-        const MAX_REACH: f64 = 16.0;
-        let h = &self.0;
-        let periodic: [bool; 3] = std::array::from_fn(|i| h[i].iter().any(|v| *v != 0.0));
-        // A wrapped displacement has a fractional component of at most
-        // 1/2 along each wrapped axis, so the image n steps away along
-        // it is at least (|n| - 1/2) heights long.
-        let reach = |height: f64| (cutoff / height + 0.5).floor().clamp(0.0, MAX_REACH) as i64;
+        const MAX_REACH: i64 = 16;
+        if !(cutoff.is_finite() && cutoff > 0.0) {
+            return Vec::new();
+        }
+        let periodic = std::array::from_fn(|i| self.0[i].iter().any(|component| *component != 0.0));
+        if periodic.iter().all(|axis| !*axis) {
+            return Vec::new();
+        }
+        let Ok(cell) = linkcell::cell_for_pbc(self.0, [0.0; 3], periodic) else {
+            return Vec::new();
+        };
+        let widths = cell.widths();
         let mut range = [0_i64; 3];
-        if periodic.iter().all(|p| *p)
-            && let Some(inv) = self.inverse()
-        {
-            for (i, slot) in range.iter_mut().enumerate() {
-                let norm = (inv[0][i].powi(2) + inv[1][i].powi(2) + inv[2][i].powi(2)).sqrt();
-                *slot = reach(1.0 / norm);
+        for axis in 0..3 {
+            if !periodic[axis] {
+                continue;
             }
-        } else {
-            for (c, slot) in range.iter_mut().enumerate() {
-                let l = h[c][c];
-                let axis_aligned = (0..3).all(|k| k == c || h[c][k] == 0.0);
-                if periodic[c] && axis_aligned && l > 0.0 {
-                    *slot = reach(l);
-                }
+            let height = widths[axis];
+            if !(height.is_finite() && height > 0.0) {
+                continue;
             }
+            // A wrapped displacement reaches at most half a height past
+            // the lattice plane, so image n is in range while
+            // (|n| - 1/2) * height is shorter than the cutoff.
+            let raw = (cutoff / height + 0.5).floor();
+            if !(raw.is_finite() && raw > 0.0) {
+                continue;
+            }
+            range[axis] = if raw > MAX_REACH as f64 {
+                MAX_REACH
+            } else {
+                raw as i64
+            };
         }
         let mut out = Vec::new();
         for n0 in -range[0]..=range[0] {
@@ -142,10 +169,7 @@ impl Cell {
                     if (n0, n1, n2) == (0, 0, 0) {
                         continue;
                     }
-                    let n = [n0 as f64, n1 as f64, n2 as f64];
-                    out.push(std::array::from_fn(|c| {
-                        n[0] * h[0][c] + n[1] * h[1][c] + n[2] * h[2][c]
-                    }));
+                    out.push(cell.lattice_shift(n0 as i32, n1 as i32, n2 as i32));
                 }
             }
         }
@@ -1005,9 +1029,9 @@ impl LinkShifts {
     fn refresh(&mut self, cell: &Cell, positions: ArrayView2<f64>, link: usize) {
         let raw = &positions.row(link + 1) - &positions.row(link);
         let mut shift = Array1::zeros(raw.len());
-        let mini = cell
-            .as_minimage()
-            .expect("link shifts need a validated periodic cell");
+        let Ok(mini) = cell.as_minimage() else {
+            return;
+        };
         for atom in 0..raw.len() / 3 {
             let base = 3 * atom;
             let dr = [raw[base], raw[base + 1], raw[base + 2]];
@@ -2620,8 +2644,7 @@ impl BandSession {
             return Err(SaddleError::NonFinite("band positions"));
         }
         if let Some(cell) = &config.cell {
-            cell.as_minimage()
-                .map_err(|error| SaddleError::Invalid(format!("invalid periodic cell: {error}")))?;
+            cell.check()?;
         }
         check_fixed(&config, initial.view())?;
         let method = if config.quickmin {
@@ -3834,6 +3857,12 @@ mod tests {
         assert!(steps.iter().all(|t| t[2] == 0.0));
         let thin = Cell([[1e-3, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]]);
         assert_eq!(thin.image_translations(4.0).len(), 32);
+        let skewed = Cell([[5.0, 0.0, 0.0], [4.0, 1.0, 0.0], [0.0, 0.0, 0.0]]);
+        let shear = skewed.image_translations(3.0);
+        assert!(
+            shear.iter().any(|step| step[1].abs() > 0.5),
+            "skewed slab kept only axis aligned images: {shear:?}"
+        );
         // Every image of a wrapped displacement within the cutoff is the
         // wrapped one or one of the translations from it.
         let r3 = 3.0_f64.sqrt();

@@ -655,6 +655,7 @@ impl GrowingStringSession {
         let dof = reactant.len();
         let mut chord = &product - &reactant;
         if let Some(cell) = &config.band.cell {
+            cell.check()?;
             cell.minimum_image(&mut chord);
         }
         zero_fixed(&config.band.fixed_atoms, &mut chord);

@@ -1,7 +1,12 @@
 A periodic atomic band now keeps each neighbour-link image shift
 continuous between steps using =minimage='s Euclidean displacement
 instead of rewrapping the link from scratch on every assembly.
-Slabs and wires use the same rank-aware convention, and position
-replacement by zoom, RTR, or min-mode refinement refreshes the shifts.
-This avoids force sign flips at half-cell cuts and keeps host-wrapped
-handoffs and skewed links on the same physical image.
+The simplified string method uses the same stored shifts, including
+after a step replaces the band. Slabs and wires, including a skewed
+slab, take their image translations from =linkcell= 0.4.2 and
+=minimage= 0.2.3. A nonfinite or dependent cell is rejected by the
+band, trust-region force assembly, growing string, and AutoNEB
+constructors. Position replacement by zoom, RTR, or min-mode
+refinement still refreshes the shifts. This avoids force sign flips
+at half cell cuts and keeps host-wrapped handoffs and skewed links
+on the same physical image.
