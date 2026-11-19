@@ -263,6 +263,94 @@ class MinMode:
         Replace the saddle check. enabled=False turns it off. escape_attempts above 0 pushes a converged point of index two or more by escape_push, the largest per-atom displacement, doubled on each later attempt, along its extra negative modes and searches again.
         """
 
+class Band:
+    def __init__(self, positions: Annotated[NDArray[numpy.float64], dict(shape=(None, None), order='C', device='cpu', writable=False)], k: float = 5.0, climb: bool = True, ci_after: float = 0.5, ci_after_rel: float = 0.0, projection: str = 'neb', tangent: str = 'improved', method: str = 'fire', memory: int = 20, force_tol: float = 0.001, max_move: float = 0.2, time_step: float = 1.0, remove_translation: bool = True, min_mode: bool = False, string: bool = False, reparametrization: str = 'not-a-knot', cell: object | None = None, fixed: object | None = None) -> None:
+        """
+        Stepping band session for NEB and the simplified string method (E, Ren and Vanden-Eijnden 2007). positions is (n_images >= 3, 3N). string=True evolves interior images under the full potential force and reparametrizes to equal arc length on 'not-a-knot' (or 'spline') or 'linear', anchoring an armed climbing image.
+        """
+
+    def step(self, surface: Callable[..., tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]]) -> SessionReport:
+        """
+        One band or simplified-string step. surface(x) receives (rows, 3N) and returns (energies, gradients).
+        """
+
+    def run(self, surface: Callable[..., tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]], max_steps: int = 1000) -> SessionReport:
+        """Loop step until convergence or max_steps."""
+
+    def positions(self) -> NDArray[numpy.float64]:
+        """Copy of the current band positions, shaped (n_images, 3N)."""
+
+    def set_positions(self, positions: Annotated[NDArray[numpy.float64], dict(shape=(None, None), order='C', device='cpu', writable=False)]) -> None:
+        """Replace the band positions; unchanged rows keep cached evaluations."""
+
+    def evaluation(self) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]:
+        """Cached (energies, gradients, projected) at the current band."""
+
+    def set_string(self, enabled: bool = True, reparametrization: str = 'not-a-knot') -> None:
+        """
+        Enable or clear the simplified string method on the band (ABI minor 44).
+        """
+
+    def set_fixed_atoms(self, fixed: Annotated[NDArray[numpy.uint8], dict(shape=(None,), order='C', device='cpu', writable=False)]) -> None:
+        """Replace the per-atom fixed mask (1 fixed, 0 free)."""
+
+    def saddle_index(self) -> SaddleIndex:
+        """
+        Certificate of the climbing image at its current position (ABI minor 40).
+        """
+
+    def set_saddle_check(self, enabled: bool = True, escape_attempts: int = 0, escape_push: float = 0.1, lowest: int = 4, max_actions: int = 100, dr: float = 0.001, residual_tol: float = 0.01, negative_tol: float = 0.001) -> None:
+        """Replace the climbing image's saddle check; enabled=False turns it off."""
+
+    def reset(self) -> None:
+        """Drop optimizer history, climbing state, and all cached surface values."""
+
+    def restart(self) -> None:
+        """
+        Drop optimizer history and climbing state, keeping cached surface values.
+        """
+
+class GrowingString:
+    def __init__(self, reactant: Annotated[NDArray[numpy.float64], dict(shape=(None,), order='C', device='cpu', writable=False)], product: Annotated[NDArray[numpy.float64], dict(shape=(None,), order='C', device='cpu', writable=False)], n_images: int = 11, frontier_tol: float = 0.2, min_steps_per_node: int = 1, max_steps_per_node: int = 0, join_tol: float | None = None, climb: bool = True, ci_after: float = 0.5, ci_after_rel: float = 0.0, method: str = 'fire', memory: int = 20, force_tol: float = 0.001, max_move: float = 0.2, remove_translation: bool = True, min_mode: bool = False, reparametrization: str = 'not-a-knot', cell: object | None = None, fixed: object | None = None) -> None:
+        """
+        Growing string session (Peters, Heyden, Bell and Chakraborty 2004, ABI minor 44).
+        """
+
+    def step(self, surface: Callable[..., tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]]) -> SessionReport:
+        """One growing-string or joined simplified-string step."""
+
+    def run(self, surface: Callable[..., tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]], max_steps: int = 1000) -> SessionReport:
+        """Loop step until the fragments join and converge, or until max_steps."""
+
+    def n_images(self) -> int:
+        """
+        Active image count (left_nodes + right_nodes while growing, n_images once joined).
+        """
+
+    def nodes_added(self) -> int:
+        """
+        Nodes the last step grew on the reactant and product fragments (0, 1, or 2).
+        """
+
+    def joined(self) -> bool:
+        """
+        True once the reactant and product fragments have joined into a StringSession.
+        """
+
+    def positions(self) -> NDArray[numpy.float64]:
+        """Copy of the active positions, shaped (active_images, 3N)."""
+
+    def ids(self) -> NDArray[numpy.uint64]:
+        """Stable uint64 image IDs of the active rows."""
+
+    def set_fixed_atoms(self, fixed: Annotated[NDArray[numpy.uint8], dict(shape=(None,), order='C', device='cpu', writable=False)]) -> None:
+        """Replace the per-atom fixed mask (1 fixed, 0 free)."""
+
+    def saddle_index(self) -> SaddleIndex:
+        """
+        Certificate of the climbing image once joined and converged (ABI minor 44).
+        """
+
 class SellaSaddle:
     def __init__(self, x: Annotated[NDArray[numpy.float64], dict(shape=(None,), order='C', device='cpu', writable=False)], masses: Annotated[NDArray[numpy.float64], dict(shape=(None,), order='C', device='cpu', writable=False)], order: int = 1, delta: float = 0.1, force_tol: float = 0.001) -> None:
         """

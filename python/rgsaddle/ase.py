@@ -466,7 +466,7 @@ class NEB:
         else:
             raise ValueError(
                 "method must be improvedtangent, aseneb, eb, or dneb; "
-                "spline and string are not implemented"
+                "use SimplifiedString for the simplified string method"
             )
         self.method = chosen
         self._adapter = SurfaceAdapter(images, allow_shared_calculator=allow_shared_calculator)
@@ -790,3 +790,468 @@ class Sella:
         for function, interval, args, kwargs in self._observers:
             host.attach(function, interval, *args, **kwargs)
         return bool(host.run(fmax=fmax, steps=steps))
+
+
+def _periodic_cell(images: list[Any]) -> Float64 | None:
+    if not images:
+        return None
+    pbc = np.asarray(images[0].pbc, dtype=bool)
+    if not pbc.any():
+        return None
+    raw = np.asarray(images[0].cell.array, dtype=np.float64).copy()
+    for axis in range(3):
+        if not pbc[axis]:
+            raw[axis, :] = 0.0
+    return np.ascontiguousarray(raw, dtype=np.float64)
+
+
+class _StringView:
+    """ASE optimizable view of a SimplifiedString band."""
+
+    def __init__(self, string: SimplifiedString) -> None:
+        self._string = string
+
+    def get_x(self) -> Float64:
+        return np.ascontiguousarray(self._string.get_positions(), dtype=np.float64).reshape(-1)
+
+    def set_x(self, x: Float64) -> None:
+        self._string.set_positions(np.asarray(x, dtype=np.float64))
+
+    def get_gradient(self) -> Float64:
+        if self._string._projected is not None:
+            return -np.ascontiguousarray(self._string._projected, dtype=np.float64).reshape(-1)
+        return -np.ascontiguousarray(self._string.get_forces(), dtype=np.float64).reshape(-1)
+
+    def get_value(self) -> float:
+        return float(self._string.get_potential_energy())
+
+    def ndofs(self) -> int:
+        return int(self.get_x().shape[0])
+
+    def gradient_norm(self, gradient: Float64) -> float:
+        if gradient.size == 0:
+            return 0.0
+        return float(np.max(np.abs(np.asarray(gradient, dtype=np.float64))))
+
+    def converged(self, gradient: Float64, fmax: float) -> bool:
+        if self._string._report is not None:
+            return bool(self._string._report.status == 1)
+        if not self._string._driving:
+            return self.gradient_norm(gradient) < fmax
+        return False
+
+    def iterimages(self) -> list[Any]:
+        return list(self._string.images)
+
+
+class SimplifiedString:
+    """Simplified string method over a list of ASE ``Atoms``.
+
+    E, Ren, and Vanden-Eijnden, J. Chem. Phys. 126, 164103 (2007),
+    doi:10.1063/1.2720838. Interior images evolve under the full
+    potential force (no spring, no tangent projection) through an rgmin
+    stepper and are placed at equal arc length after each step on the
+    not-a-knot cubic spline (``reparametrization='not-a-knot'``, the
+    default) or on the polyline (``'linear'``). With ``climb=True`` the
+    climbing image reflects the potential force along the tangent and
+    stays anchored during reparametrization.
+
+    ``run(fmax, steps)`` drives the Rust :class:`rgsaddle.Band` session
+    under an ASE ``Optimizer`` loop so ``logfile``, ``trajectory``, and
+    attached observers run per step.
+    """
+
+    def __init__(
+        self,
+        images: list[Any],
+        *,
+        climb: bool = False,
+        ci_after: float = 0.5,
+        ci_after_rel: float = 0.0,
+        reparametrization: str = "not-a-knot",
+        method: str = "fire",
+        memory: int = 20,
+        max_move: float = 0.2,
+        time_step: float = 1.0,
+        remove_rotation_and_translation: bool = False,
+        min_mode: bool = False,
+        allow_shared_calculator: bool = False,
+    ) -> None:
+        if len(images) < 3:
+            raise ValueError("a string needs two endpoints and at least one interior image")
+        if reparametrization not in ("linear", "not-a-knot", "spline"):
+            raise ValueError("reparametrization must be linear, not-a-knot, or spline")
+        self.images = images
+        self.climb = bool(climb)
+        self.ci_after = float(ci_after)
+        self.ci_after_rel = float(ci_after_rel)
+        self.reparametrization = reparametrization
+        self.method = method
+        self.memory = int(memory)
+        self.max_move = float(max_move)
+        self.time_step = float(time_step)
+        self.remove_rotation_and_translation = bool(remove_rotation_and_translation)
+        self.min_mode = bool(min_mode)
+        self._adapter = SurfaceAdapter(images, allow_shared_calculator=allow_shared_calculator)
+        self.energies: Float64 | None = None
+        self.emax = float("nan")
+        self.ci: int | None = None
+        self._band: Any = None
+        self._report: Any = None
+        self._projected: Float64 | None = None
+        self._driving = False
+        self._observers: list[tuple[Any, int, tuple[Any, ...], dict[str, Any]]] = []
+
+    def __len__(self) -> int:
+        if len(self.images) < 2:
+            return 0
+        return (len(self.images) - 2) * len(self.images[0])
+
+    def __ase_optimizable__(self) -> _StringView:
+        return _StringView(self)
+
+    def attach(self, function: Any, interval: int = 1, *args: Any, **kwargs: Any) -> None:
+        self._observers.append((function, interval, args, kwargs))
+
+    def interpolate(
+        self, method: str = "linear", mic: bool = False, apply_constraint: bool = True
+    ) -> None:
+        """Place the interior images on the straight line between the ends."""
+        del apply_constraint
+        if method != "linear":
+            raise ValueError("interpolate linearly here; idpp_path builds an IDPP start in Rust")
+        if mic:
+            raise ValueError("unwrap the images first; interpolation here is Cartesian")
+        start = np.asarray(self.images[0].get_positions(), dtype=np.float64)
+        end = np.asarray(self.images[-1].get_positions(), dtype=np.float64)
+        fixed = _fixed_atoms(self.images)
+        last = len(self.images) - 1
+        for index, image in enumerate(self.images[1:-1], start=1):
+            weight = index / last
+            row = (1.0 - weight) * start + weight * end
+            if fixed is not None:
+                row[fixed == 1] = start[fixed == 1]
+            image.set_positions(row, apply_constraint=False)
+        self._band = None
+        self._report = None
+        self._projected = None
+
+    def get_positions(self) -> Float64:
+        blocks = [
+            np.asarray(image.get_positions(), dtype=np.float64) for image in self.images[1:-1]
+        ]
+        if not blocks:
+            return np.zeros((0, 3), dtype=np.float64)
+        return np.concatenate(blocks, axis=0)
+
+    def set_positions(self, positions: Any) -> None:
+        from rgsaddle._core import reparametrize
+
+        natoms = len(self.images[0])
+        array = np.asarray(positions, dtype=np.float64).reshape((-1, 3))
+        expect = (len(self.images) - 2) * natoms
+        if len(array) != expect:
+            raise ValueError(f"positions: expected {expect} atoms, got {len(array)}")
+        whole = _image_positions(self.images)
+        whole[1:-1] = array.reshape((len(self.images) - 2, natoms * 3))
+        placed = reparametrize(
+            whole,
+            scheme=self.reparametrization,
+            anchor=self.ci,
+            cell=_periodic_cell(self.images),
+        )
+        fixed = _fixed_atoms(self.images)
+        first = np.asarray(self.images[0].get_positions(), dtype=np.float64)
+        for index, image in enumerate(self.images[1:-1], start=1):
+            coords = np.asarray(placed[index], dtype=np.float64).reshape((natoms, 3)).copy()
+            if fixed is not None:
+                coords[fixed == 1] = first[fixed == 1]
+            image.set_positions(coords, apply_constraint=False)
+        self._band = None
+        self._report = None
+        self._projected = None
+
+    def get_potential_energy(self) -> float:
+        if self.energies is None:
+            self.get_forces()
+        return float(self.emax)
+
+    def get_forces(self) -> Float64:
+        from rgsaddle._core import project_band
+
+        positions = _image_positions(self.images)
+        ids = np.arange(positions.shape[0], dtype=np.int64)
+        energies, gradients = self._adapter(ids, positions)
+        flat, ci = project_band(
+            positions,
+            np.ascontiguousarray(energies, dtype=np.float64),
+            np.ascontiguousarray(gradients, dtype=np.float64),
+            k=0.0,
+            climb=self.climb,
+            projection="string",
+            tangent="improved",
+            remove_translation=self.remove_rotation_and_translation,
+            fixed=_fixed_atoms(self.images),
+        )
+        count = len(self.images)
+        natoms = len(self.images[0])
+        forces = np.asarray(flat, dtype=np.float64).reshape(count, natoms, 3)
+        self.energies = np.asarray(energies, dtype=np.float64).reshape(-1)
+        interior = self.energies[1:-1]
+        self.emax = float(np.max(interior)) if interior.size else float("nan")
+        self.ci = None if int(ci) < 0 else int(ci)
+        return np.ascontiguousarray(forces[1:-1].reshape(-1, 3), dtype=np.float64)
+
+    def _surface(self, x: Float64) -> tuple[Float64, Float64]:
+        rows = int(x.shape[0])
+        count = len(self.images)
+        if rows == count:
+            ids = np.arange(count, dtype=np.int64)
+        elif rows == count - 2:
+            ids = np.arange(1, count - 1, dtype=np.int64)
+        elif rows == 1:
+            target = 1 if self.ci is None else self.ci
+            ids = np.array([target], dtype=np.int64)
+        else:
+            raise ValueError(f"unexpected band request row count {rows} for {count} images")
+        return self._adapter(ids, np.ascontiguousarray(x, dtype=np.float64))
+
+    def _ensure(self, force_tol: float) -> Any:
+        if self._band is None:
+            from rgsaddle._core import Band
+
+            self._band = Band(
+                _image_positions(self.images),
+                climb=self.climb,
+                ci_after=self.ci_after,
+                ci_after_rel=self.ci_after_rel,
+                method=self.method,
+                memory=self.memory,
+                force_tol=force_tol,
+                max_move=self.max_move,
+                time_step=self.time_step,
+                remove_translation=self.remove_rotation_and_translation,
+                min_mode=self.min_mode,
+                string=True,
+                reparametrization=self.reparametrization,
+                cell=_periodic_cell(self.images),
+                fixed=_fixed_atoms(self.images),
+            )
+            if not self.climb:
+                self._band.set_saddle_check(enabled=False)
+        return self._band
+
+    def run(
+        self,
+        fmax: float = 0.05,
+        steps: int | None = None,
+        *,
+        logfile: Any = None,
+        trajectory: Any = None,
+    ) -> bool:
+        from ase.optimize.optimize import DEFAULT_MAX_STEPS, Optimizer
+
+        opt = self
+        self._band = None
+        self._report = None
+        self._driving = True
+
+        class StringDriver(Optimizer):
+            def initialize(self) -> None:
+                return None
+
+            def read(self) -> None:
+                return None
+
+            def step(self) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
+                band = opt._ensure(fmax)
+                report = band.step(opt._surface)
+                natoms = len(opt.images[0])
+                updated = np.asarray(band.positions(), dtype=np.float64).reshape(
+                    len(opt.images), natoms, 3
+                )
+                for idx in range(1, len(opt.images) - 1):
+                    opt.images[idx].set_positions(updated[idx], apply_constraint=False)
+                energies, _, projected = band.evaluation()
+                opt.energies = np.asarray(energies, dtype=np.float64).reshape(-1)
+                interior = opt.energies[1:-1]
+                opt.emax = float(np.max(interior)) if interior.size else float("nan")
+                opt.ci = None if int(report.ci_index) < 0 else int(report.ci_index)
+                opt._projected = np.asarray(projected, dtype=np.float64).reshape(-1, 3)
+                opt._report = report
+
+        if steps is None:
+            steps = DEFAULT_MAX_STEPS
+        try:
+            target: Any = self
+            driver = StringDriver(target, logfile=logfile, trajectory=trajectory)
+            host: Any = driver
+            for function, interval, args, kwargs in self._observers:
+                host.attach(function, interval, *args, **kwargs)
+            return bool(host.run(fmax=fmax, steps=steps))
+        finally:
+            self._driving = False
+
+    def saddle_index(self, **options: Any) -> SaddleIndex:
+        """Saddle index of the climbing image, seeded with its tangent."""
+        if self.ci is None:
+            self.get_forces()
+        if self.ci is None:
+            raise ValueError("no interior image climbs")
+        positions = _image_positions(self.images)
+        tangent = positions[self.ci + 1] - positions[self.ci - 1]
+        return saddle_index(self.images[self.ci], tangent, **options)
+
+
+class GrowingString:
+    """Growing string method over a list of ASE ``Atoms``.
+
+    Peters, Heyden, Bell, and Chakraborty, J. Chem. Phys. 120, 7877
+    (2004), doi:10.1063/1.1691018, handing off upon join to the
+    simplified string method of E, Ren, and Vanden-Eijnden, J. Chem.
+    Phys. 126, 164103 (2007), doi:10.1063/1.2720838.
+    """
+
+    def __init__(
+        self,
+        images: list[Any],
+        *,
+        frontier_tol: float = 0.2,
+        min_steps_per_node: int = 1,
+        max_steps_per_node: int = 0,
+        join_tol: float | None = None,
+        climb: bool = True,
+        ci_after: float = 0.5,
+        ci_after_rel: float = 0.0,
+        reparametrization: str = "not-a-knot",
+        method: str = "fire",
+        memory: int = 20,
+        max_move: float = 0.2,
+        remove_rotation_and_translation: bool = False,
+        min_mode: bool = False,
+        allow_shared_calculator: bool = False,
+    ) -> None:
+        if len(images) < 4:
+            raise ValueError("a growing string needs at least four image slots")
+        if reparametrization not in ("linear", "not-a-knot", "spline"):
+            raise ValueError("reparametrization must be linear, not-a-knot, or spline")
+        self.images = images
+        self.frontier_tol = float(frontier_tol)
+        self.min_steps_per_node = int(min_steps_per_node)
+        self.max_steps_per_node = int(max_steps_per_node)
+        self.join_tol = None if join_tol is None else float(join_tol)
+        self.climb = bool(climb)
+        self.ci_after = float(ci_after)
+        self.ci_after_rel = float(ci_after_rel)
+        self.reparametrization = reparametrization
+        self.method = method
+        self.memory = int(memory)
+        self.max_move = float(max_move)
+        self.remove_rotation_and_translation = bool(remove_rotation_and_translation)
+        self.min_mode = bool(min_mode)
+        self._adapter = SurfaceAdapter(images, allow_shared_calculator=allow_shared_calculator)
+        self.ci: int | None = None
+        self._session: Any = None
+        self._report: Any = None
+        self._endpoints: tuple[Float64, Float64] | None = None
+        self._observers: list[tuple[Any, int, tuple[Any, ...], dict[str, Any]]] = []
+
+    def attach(self, function: Any, interval: int = 1, *args: Any, **kwargs: Any) -> None:
+        self._observers.append((function, interval, args, kwargs))
+
+    def _restore_endpoints(self) -> None:
+        # Image ids run 0..n-1, so the adapter evaluates the last list slot
+        # as an interior node. The endpoints must not keep that geometry.
+        if self._endpoints is None:
+            return
+        reactant, product = self._endpoints
+        self.images[0].set_positions(reactant, apply_constraint=False)
+        self.images[-1].set_positions(product, apply_constraint=False)
+
+    def _surface(self, x: Float64) -> tuple[Float64, Float64]:
+        assert self._session is not None
+        rows = int(x.shape[0])
+        active_ids = np.asarray(self._session.ids(), dtype=np.int64)
+        if rows == int(active_ids.shape[0]):
+            ids = active_ids
+        elif rows == int(active_ids.shape[0]) - 2:
+            ids = active_ids[1:-1]
+        elif rows == 1:
+            target = 1 if self.ci is None else int(active_ids[self.ci])
+            ids = np.array([target], dtype=np.int64)
+        else:
+            ids = np.arange(rows, dtype=np.int64)
+        return self._adapter(
+            np.ascontiguousarray(ids, dtype=np.int64),
+            np.ascontiguousarray(x, dtype=np.float64),
+        )
+
+    def _ensure(self, force_tol: float) -> Any:
+        if self._session is None:
+            from rgsaddle._core import GrowingString as CoreGrowingString
+
+            reactant = np.ascontiguousarray(
+                self.images[0].get_positions(), dtype=np.float64
+            ).reshape(-1)
+            product = np.ascontiguousarray(
+                self.images[-1].get_positions(), dtype=np.float64
+            ).reshape(-1)
+            self._endpoints = (
+                np.array(self.images[0].get_positions(), dtype=np.float64, copy=True),
+                np.array(self.images[-1].get_positions(), dtype=np.float64, copy=True),
+            )
+            self._session = CoreGrowingString(
+                reactant,
+                product,
+                n_images=len(self.images),
+                frontier_tol=self.frontier_tol,
+                min_steps_per_node=self.min_steps_per_node,
+                max_steps_per_node=self.max_steps_per_node,
+                join_tol=self.join_tol,
+                climb=self.climb,
+                ci_after=self.ci_after,
+                ci_after_rel=self.ci_after_rel,
+                method=self.method,
+                memory=self.memory,
+                force_tol=force_tol,
+                max_move=self.max_move,
+                remove_translation=self.remove_rotation_and_translation,
+                min_mode=self.min_mode,
+                reparametrization=self.reparametrization,
+                cell=_periodic_cell(self.images),
+                fixed=_fixed_atoms(self.images),
+            )
+        return self._session
+
+    def run(
+        self,
+        fmax: float = 0.05,
+        steps: int = 500,
+    ) -> bool:
+        session = self._ensure(fmax)
+        natoms = len(self.images[0])
+        try:
+            for _ in range(steps):
+                report = session.step(self._surface)
+                self._restore_endpoints()
+                self._report = report
+                self.ci = None if int(report.ci_index) < 0 else int(report.ci_index)
+                if session.joined():
+                    updated = np.asarray(session.positions(), dtype=np.float64).reshape(
+                        len(self.images), natoms, 3
+                    )
+                    for idx in range(1, len(self.images) - 1):
+                        self.images[idx].set_positions(updated[idx], apply_constraint=False)
+                for function, interval, args, kwargs in self._observers:
+                    if int(report.iteration) % max(int(interval), 1) == 0:
+                        function(*args, **kwargs)
+                if int(report.status) == 1:
+                    return True
+            return False
+        finally:
+            self._restore_endpoints()
+
+    def saddle_index(self) -> SaddleIndex:
+        if self._session is None:
+            raise ValueError("growing string has not run")
+        return self._session.saddle_index()

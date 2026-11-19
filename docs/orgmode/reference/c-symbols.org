@@ -141,6 +141,7 @@ The narrative for a session is the C and C++ how-to, not this list.
 - =rgsaddle_band_set_exp_precon=. Purpose: Per-image exponential metric (Packwood et al. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_band_set_fixed_atoms=. Purpose: Per-atom fixed mask shared by every image, ABI minor 39. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_band_set_zoom=. Purpose: Zoom-NEB, eOn's zoom_* keys. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_band_set_string=. Purpose: Select the simplified string method on the band, ABI minor 44. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_last_error=. Purpose: Declared in include/rgsaddle.h. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_stencil_config_new=. Purpose: Declared in include/rgsaddle.h. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_stencil_config_set_f64=. Purpose: Declared in include/rgsaddle.h. Parameters: the declaration. Units: the caller's.
@@ -170,3 +171,14 @@ The narrative for a session is the C and C++ how-to, not this list.
 - =rgsaddle_ocineb_set_saddle_check=. Purpose: rgsaddle_band_set_saddle_check for an OCI-NEB session. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_ocineb_saddle_index=. Purpose: rgsaddle_band_saddle_index for an OCI-NEB session. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_saddle_index=. Purpose: Certify one point, ABI minor 40. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_growing_string_config_default=. Purpose: Fill out with the default growing-string controls (n_images 11, frontier_tol 0.2, min_steps_per_node 1, not-a-knot spline), ABI minor 44. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_growing_string_create=. Purpose: Open a growing string session between reactant and product (3 * n_atoms values each), ABI minor 44. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_growing_string_step=. Purpose: Advance a growing string session by one step (or one simplified-string step once joined), ABI minor 44. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_growing_string_n_images=. Purpose: Active image count of a growing string session (left_nodes + right_nodes while growing, n_images once joined), or 0 for NULL, ABI minor 44. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_growing_string_nodes_added=. Purpose: Nodes the last rgsaddle_growing_string_step grew on the reactant and product fragments (0, 1, or 2), or 0 for NULL and before the first step, ABI minor 44. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_growing_string_phase=. Purpose: Phase of a growing string session (RGSADDLE_GROWING_STRING_GROWING or RGSADDLE_GROWING_STRING_JOINED), or RGSADDLE_NULL_SESSION for NULL, ABI minor 44. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_growing_string_positions=. Purpose: Copy the active positions (rgsaddle_growing_string_n_images(session) * 3 * n_atoms values) into out, ABI minor 44. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_growing_string_ids=. Purpose: Copy the stable image identifiers (rgsaddle_growing_string_n_images(session) uint64_t values) into out, ABI minor 44. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_growing_string_set_fixed_atoms=. Purpose: Replace the per-atom fixed mask (n_atoms bytes, 1 fixed and 0 free) on a growing string session, ABI minor 44. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_growing_string_saddle_index=. Purpose: Read the saddle-index certificate of a joined growing string session, ABI minor 44. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_growing_string_free=. Purpose: Free a growing string session, ABI minor 44. Parameters: the declaration. Units: the caller's.

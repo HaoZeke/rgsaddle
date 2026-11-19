@@ -216,16 +216,29 @@ impl<T: Surface + ?Sized> BandSurface for T {
         energies: &mut Array1<f64>,
         gradients: &mut Array2<f64>,
     ) -> Result<(), SaddleError> {
-        if energies.len() != positions.nrows() || gradients.dim() != positions.dim() {
+        let ids: Vec<ImageId> = (0..positions.nrows() as ImageId).collect();
+        self.eval_with_ids(&ids, positions, energies, gradients)
+    }
+
+    fn eval_with_ids(
+        &self,
+        ids: &[ImageId],
+        positions: ArrayView2<f64>,
+        energies: &mut Array1<f64>,
+        gradients: &mut Array2<f64>,
+    ) -> Result<(), SaddleError> {
+        if ids.len() != positions.nrows()
+            || energies.len() != positions.nrows()
+            || gradients.dim() != positions.dim()
+        {
             return Err(SaddleError::Shape(
                 "band surface rows do not match the positions".into(),
             ));
         }
-        let ids: Vec<ImageId> = (0..positions.nrows() as ImageId).collect();
         let slice = energies
             .as_slice_mut()
             .ok_or_else(|| SaddleError::Shape("band energies are not contiguous".into()))?;
-        Surface::eval(self, &ids, positions, slice, gradients.view_mut())?;
+        Surface::eval(self, ids, positions, slice, gradients.view_mut())?;
         Ok(())
     }
 

@@ -151,6 +151,61 @@ int main() {
         }
     }
 
+    rgsaddle::Band str_band(cfg, n_images, n_atoms, pos.data());
+    str_band.set_string(true, RGSADDLE_REPARAM_NOT_A_KNOT);
+    rgsaddle::Report str_rep;
+    for (int i = 0; i < 500; ++i) {
+        str_rep = str_band.step(surface, nullptr);
+        if (str_rep.converged()) {
+            break;
+        }
+    }
+    auto str_pos = str_band.positions();
+    if (!str_rep.converged() || str_rep.ci_index < 1 ||
+        std::fabs(str_pos[static_cast<std::size_t>(str_rep.ci_index * 3)]) > 0.01) {
+        std::fprintf(stderr, "C++ string band did not converge to the saddle\n");
+        return 1;
+    }
+
+    auto gcfg = rgsaddle::growing_string_config();
+    gcfg.n_images = 7;
+    gcfg.frontier_tol = 0.5;
+    gcfg.band.force_tol = 0.001;
+    gcfg.band.max_move = 0.1;
+    const double greact[3] = {-1.0, 0.2, 0.0};
+    const double gprod[3] = {1.0, 0.2, 0.0};
+    rgsaddle::GrowingString gstr(gcfg, n_atoms, greact, gprod);
+    if (gstr.joined() || gstr.n_images() != 4) {
+        std::fprintf(stderr, "C++ growing string initial state invalid\n");
+        return 1;
+    }
+    rgsaddle::Report grep;
+    std::int64_t grown = 0;
+    for (int i = 0; i < 500; ++i) {
+        grep = gstr.step(surface, nullptr);
+        if (grep.rotations != 0) {
+            std::fprintf(stderr, "C++ growing string step reported rotations\n");
+            return 1;
+        }
+        grown += gstr.nodes_added();
+        if (grep.converged()) {
+            break;
+        }
+    }
+    if (grown != 3) {
+        std::fprintf(stderr, "C++ growing string grew %lld nodes, expected 3\n",
+                     static_cast<long long>(grown));
+        return 1;
+    }
+    auto gpos = gstr.positions();
+    auto gids = gstr.ids();
+    if (!grep.converged() || !gstr.joined() || gstr.n_images() != 7 ||
+        gids.size() != 7 || gids[0] != 0 || gids[6] != 1 || grep.ci_index < 1 ||
+        std::fabs(gpos[static_cast<std::size_t>(grep.ci_index * 3)]) > 0.02) {
+        std::fprintf(stderr, "C++ growing string did not converge to the saddle\n");
+        return 1;
+    }
+
     std::vector<double> pair(static_cast<std::size_t>(n_images * 6));
     for (std::size_t i = 0; i < static_cast<std::size_t>(n_images); ++i) {
         for (std::size_t c = 0; c < 3; ++c) {

@@ -321,7 +321,26 @@ impl ImageEvalPool {
         energies: &mut Array1<f64>,
         gradients: &mut Array2<f64>,
     ) -> Result<(), SaddleError> {
-        eval_checked(surface, positions, energies, gradients, Some(self))
+        eval_checked(surface, None, positions, energies, gradients, Some(self))
+    }
+
+    /// Evaluate `positions` tagged with `ids` on this pool.
+    pub(crate) fn eval_with_ids<S: BandSurface + ?Sized>(
+        &self,
+        surface: &S,
+        ids: &[crate::stencil::ImageId],
+        positions: ArrayView2<f64>,
+        energies: &mut Array1<f64>,
+        gradients: &mut Array2<f64>,
+    ) -> Result<(), SaddleError> {
+        eval_checked(
+            surface,
+            Some(ids),
+            positions,
+            energies,
+            gradients,
+            Some(self),
+        )
     }
 }
 
@@ -354,11 +373,12 @@ pub(crate) fn eval_images<S: BandSurface + ?Sized>(
         let pool = ImageEvalPool::new(threads)?;
         return pool.eval(surface, positions, energies, gradients);
     }
-    eval_checked(surface, positions, energies, gradients, None)
+    eval_checked(surface, None, positions, energies, gradients, None)
 }
 
 fn eval_checked<S: BandSurface + ?Sized>(
     surface: &S,
+    ids: Option<&[crate::stencil::ImageId]>,
     positions: ArrayView2<f64>,
     energies: &mut Array1<f64>,
     gradients: &mut Array2<f64>,
@@ -374,16 +394,33 @@ fn eval_checked<S: BandSurface + ?Sized>(
             gradients.ncols()
         )));
     }
+    if let Some(ids) = ids
+        && ids.len() != n
+    {
+        return Err(SaddleError::Shape(format!(
+            "image evaluation needs one id per image; got {n} positions and {} ids",
+            ids.len()
+        )));
+    }
     if n == 0 {
         return Ok(());
     }
-    let threads = pool.map(|pool| pool.threads).unwrap_or(1);
+    let threads = match pool {
+        Some(pool) => pool.threads,
+        None => 1,
+    };
     let ranks = threads.min(n);
     if ranks == 1 || pool.is_none() {
-        return surface.eval(positions, energies, gradients);
+        return match ids {
+            Some(ids) => surface.eval_with_ids(ids, positions, energies, gradients),
+            None => surface.eval(positions, energies, gradients),
+        };
     }
     let pool = pool.expect("pool");
-    let mut held = pool.blocks.lock().unwrap_or_else(|err| err.into_inner());
+    let mut held = match pool.blocks.lock() {
+        Ok(guard) => guard,
+        Err(poison) => poison.into_inner(),
+    };
     held.resize_with(ranks, RankBlock::default);
     let blocks = &mut held[..ranks];
     for (rank, block) in blocks.iter_mut().enumerate() {
@@ -404,7 +441,15 @@ fn eval_checked<S: BandSurface + ?Sized>(
         use rayon::prelude::*;
         blocks.par_iter_mut().for_each(|block| {
             let view = positions.slice(ndarray::s![block.rows.clone(), ..]);
-            block.result = Some(surface.eval(view, &mut block.energies, &mut block.gradients));
+            block.result = Some(match ids {
+                Some(ids) => surface.eval_with_ids(
+                    &ids[block.rows.clone()],
+                    view,
+                    &mut block.energies,
+                    &mut block.gradients,
+                ),
+                None => surface.eval(view, &mut block.energies, &mut block.gradients),
+            });
         });
     });
     for block in blocks.iter_mut() {
@@ -617,6 +662,12 @@ impl AutoNebTuning {
         if band.solid.is_some() {
             return Err(SaddleError::Invalid(
                 "AutoNEB does not carry the solid-state block".into(),
+            ));
+        }
+        if band.string.is_some() {
+            return Err(SaddleError::Invalid(
+                "AutoNEB windows relax with rescaled springs; the simplified string method has no springs"
+                    .into(),
             ));
         }
         match &band.spring {

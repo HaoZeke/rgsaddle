@@ -1,7 +1,7 @@
 #+TITLE: Use the C and C++ interfaces
 #+OPTIONS: toc:nil num:nil
 
-~include/rgsaddle.h~ declares the C application binary interface (ABI), major 1, minor 43. It preserves the main band, minimum-mode and index-1 layouts and adds intrinsic reaction coordinate (IRC), Sella, constraint and geometry controls. Include this header rather than duplicating its structures. Check ~rgsaddle_abi_stamp~ before constructing a session. A meson project takes the headers from the top-level ~meson.build~; see @@rst::doc:`the meson how-to <meson>`@@.
+~include/rgsaddle.h~ declares the C application binary interface (ABI), major 1, minor 44. It preserves the main band, minimum-mode and index-1 layouts and adds intrinsic reaction coordinate (IRC), Sella, constraint and geometry controls. Include this header rather than duplicating its structures. Check ~rgsaddle_abi_stamp~ before constructing a session. A meson project takes the headers from the top-level ~meson.build~; see @@rst::doc:`the meson how-to <meson>`@@.
 
 A surface callback returns ~rgsaddle_status_t~ and receives one ~rgsaddle_surface_request_t~. Positions and gradients are image-major Cartesian triples. The host supplies the energy and gradient arrays for every requested image; the library performs no Message Passing Interface (MPI) communication.
 From ABI minor 42, ~RGSADDLE_NOT_EQUILIBRATED~ and ~RGSADDLE_INSUFFICIENT_EFFECTIVE_SAMPLES~ report constrained-ensemble tails that fail the drift or effective-sample guards.
@@ -103,3 +103,17 @@ Its ~certified~ is 1 while a certificate holds for the current point, the climbi
 A host that loads the library at run time checks ~rgsaddle_abi_version()~ for at least minor 40 before resolving these symbols.
 The C++ ~Band~, ~MinMode~ and ~Ocineb~ wrappers have ~set_saddle_check~ and ~saddle_index~, ~rgsaddle::saddle_check()~ returns the defaults and ~rgsaddle::saddle_index~ certifies one point.
 Python's ~MinMode~ reports the index in ~SessionReport.saddle_index~ and has ~saddle_index~ and ~set_saddle_check~, ~rgsaddle.saddle_index~ certifies one point, and ~rgsaddle.ase.saddle_index~ and ~rgsaddle.ase.NEB.saddle_index~ certify ASE atoms and the climbing image of an ASE band.
+
+ABI minor 44 adds the simplified string method of E, Ren, and Vanden-Eijnden, J. Chem. Phys. 126, 164103 (2007), doi:10.1063/1.2720838 @@rst::cite:`eSimplifiedImprovedString2007`@@.
+Band config bit 5, ~RGSADDLE_BAND_STRING~, read from a config stamped with minor 44 or newer, evolves interior images under the full potential force (no spring, no tangent projection) and places them at equal arc length after each step: on the not-a-knot cubic spline when ~RGSADDLE_BAND_SPLINE_REPARAM~ is also set, and on the polyline otherwise.
+An armed climbing image reflects the potential force along the tangent and stays anchored during reparametrization.
+~rgsaddle_band_set_string~ enables or clears the method on a live ~RgsaddleBand~ with an ~rgsaddle_reparametrization_t~ (~RGSADDLE_REPARAM_LINEAR~ or ~RGSADDLE_REPARAM_NOT_A_KNOT~); ~enabled = 0~ returns the band to NEB.
+~rgsaddle_band_project~ and ~rgsaddle_band_project_fixed~ also read ~RGSADDLE_BAND_STRING~.
+A host that loads the library at run time checks ~rgsaddle_abi_version()~ for at least minor 44 before resolving ~rgsaddle_band_set_string~.
+~include/rgsaddle/session.hpp~ wraps it as ~Band::set_string~, and Python exposes ~rgsaddle.Band(..., string=True)~, ~_core.project_band(..., projection="string")~, and ~rgsaddle.ase.SimplifiedString~.
+
+ABI minor 44 adds the growing string method of Peters, Heyden, Bell, and Chakraborty, J. Chem. Phys. 120, 7877 (2004), doi:10.1063/1.1691018 @@rst::cite:`petersGrowingStringMethod2004`@@. Its ~join_tol~ uses -1.0 for no early join and accepts zero as an inclusive zero-gap threshold.
+~rgsaddle_growing_string_config_default~ initializes an ~rgsaddle_growing_string_config_t~, ~rgsaddle_growing_string_create~ opens an ~RgsaddleGrowingString~ from the reactant and product endpoints, and ~rgsaddle_growing_string_step~ advances the separate fragments until they join and hand off to ~StringSession~.
+~rgsaddle_growing_string_create~ returns NULL for a ~frontier_tol~ that is not finite and positive, a ~min_steps_per_node~ below 1, a negative ~max_steps_per_node~ (0 means no cap), a negative ~join_tol~ other than -1.0, or a non-finite ~join_tol~ (-1.0 means no early join). The step report's ~rotations~ field is 0; ~rgsaddle_growing_string_nodes_added~ gives the nodes the last step grew.
+~rgsaddle_growing_string_n_images~, ~rgsaddle_growing_string_nodes_added~, ~rgsaddle_growing_string_phase~, ~rgsaddle_growing_string_positions~, ~rgsaddle_growing_string_ids~, ~rgsaddle_growing_string_set_fixed_atoms~, ~rgsaddle_growing_string_saddle_index~, and ~rgsaddle_growing_string_free~ inspect and manage the session.
+~include/rgsaddle/session.hpp~ wraps it as ~rgsaddle::GrowingString~, and Python exposes ~rgsaddle.GrowingString~ and ~rgsaddle.ase.GrowingString~.
