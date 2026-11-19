@@ -75,6 +75,19 @@ impl Cell {
         ])
     }
 
+    /// Convert a non-singular three-axis periodic cell to [`minimage::Cell`].
+    ///
+    /// Returns `None` when any row is zero (a slab or open axis) or the
+    /// lattice matrix is singular.
+    pub fn as_minimage(&self) -> Option<minimage::Cell> {
+        let periodic: [bool; 3] = std::array::from_fn(|i| self.0[i].iter().any(|v| *v != 0.0));
+        if !periodic.iter().all(|p| *p) {
+            return None;
+        }
+        self.inverse()?;
+        minimage::Cell::from_ase(self.0).ok()
+    }
+
     /// Wrap every per-atom 3-vector in `diff` to its nearest lattice
     /// image: fractional components `s = d H^-1` are shifted by
     /// `round(s)` and mapped back, `d - round(s) H`. A diagonal cell
@@ -89,25 +102,18 @@ impl Cell {
 
     /// [`Cell::minimum_image`] on borrowed storage.
     pub(crate) fn minimum_image_view(&self, mut diff: ArrayViewMut1<f64>) {
-        let h = &self.0;
-        let periodic: [bool; 3] = std::array::from_fn(|i| h[i].iter().any(|v| *v != 0.0));
-        if periodic.iter().all(|p| *p)
-            && let Some(inv) = self.inverse()
-        {
+        if let Some(cell) = self.as_minimage() {
             for a in 0..diff.len() / 3 {
                 let d = [diff[3 * a], diff[3 * a + 1], diff[3 * a + 2]];
-                let mut shift = [0.0; 3];
-                for (i, si) in shift.iter_mut().enumerate() {
-                    let s = d[0] * inv[0][i] + d[1] * inv[1][i] + d[2] * inv[2][i];
-                    *si = s.round();
-                }
-                for c in 0..3 {
-                    diff[3 * a + c] =
-                        d[c] - (shift[0] * h[0][c] + shift[1] * h[1][c] + shift[2] * h[2][c]);
-                }
+                let wrapped = cell.displacement([0.0; 3], d);
+                diff[3 * a] = wrapped[0];
+                diff[3 * a + 1] = wrapped[1];
+                diff[3 * a + 2] = wrapped[2];
             }
             return;
         }
+        let h = &self.0;
+        let periodic: [bool; 3] = std::array::from_fn(|i| h[i].iter().any(|v| *v != 0.0));
         // Partially periodic or singular: wrap only along axes whose
         // lattice vector is the coordinate axis itself.
         for a in 0..diff.len() / 3 {
