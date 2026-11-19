@@ -1948,7 +1948,8 @@ typedef int (*rgsaddle_geodesic_chart_fn)(void *ctx, const double *x,
  * Geodesic interpolation controls. Lengths are in the path's unit.
  * `flags` must be 0. `lower_ratio` is in (0, 1] and `upper_ratio` is
  * at least 1. Counts are at least 1, and `bound_samples` and
- * `max_images` are at least 2. ABI minor 46.
+ * `max_images` are at least 2. `seed` seeds the ten noisy starts of
+ * rgsaddle_geodesic_morse (Algorithm 3) and takes any value. ABI minor 46.
  */
 typedef struct {
   rgsaddle_version_t version;
@@ -1963,13 +1964,14 @@ typedef struct {
   int64_t memory;
   int64_t bound_samples;
   int64_t max_images;
+  uint64_t seed;
 } rgsaddle_geodesic_config_t;
 
 /**
  * Fill `out` with the default geodesic controls (step and gradient
  * tolerances 1e-6, max_move 0.5, lower_ratio 0.95, upper_ratio 1.1,
- * 40 sweeps, 40 iterations, memory 8, 10 bound samples, 32 images).
- * ABI minor 46.
+ * 40 sweeps, 40 iterations, memory 8, 10 bound samples, 32 images,
+ * seed 0). ABI minor 46.
  */
 rgsaddle_status_t rgsaddle_geodesic_config_default(
     rgsaddle_geodesic_config_t *out);
