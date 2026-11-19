@@ -525,7 +525,7 @@ pub fn geodesic_interpolate<C: GeodesicChart + ?Sized>(
     if !reactant.iter().all(|v| v.is_finite()) || !product.iter().all(|v| v.is_finite()) {
         return Err(SaddleError::NonFinite("geodesic path"));
     }
-    if chart.cell().is_some() && dof % 3 != 0 {
+    if chart.cell().is_some() && !dof.is_multiple_of(3) {
         return Err(SaddleError::Shape(
             "a periodic geodesic path holds three Cartesians per atom".into(),
         ));
@@ -656,7 +656,7 @@ fn check_path(path: ArrayView2<f64>, cell: Option<&Cell>) -> Result<(), SaddleEr
             "geodesic path needs at least two images".into(),
         ));
     }
-    if cell.is_some() && path.ncols() % 3 != 0 {
+    if cell.is_some() && !path.ncols().is_multiple_of(3) {
         return Err(SaddleError::Shape(
             "a periodic geodesic path holds three Cartesians per atom".into(),
         ));
@@ -929,9 +929,9 @@ fn insert_midpoints(
     }
     let mut rows: Vec<Array1<f64>> = Vec::with_capacity(n + room);
     let dof = path.ncols();
-    for i in 0..n - 1 {
+    for (i, &split) in loose.iter().enumerate().take(n - 1) {
         rows.push(path.row(i).to_owned());
-        if loose[i] {
+        if split {
             rows.push(toward(cell, path.row(i), path.row(i + 1), MIDPOINT_WEIGHT));
         }
     }
