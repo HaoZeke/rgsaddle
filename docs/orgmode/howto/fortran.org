@@ -1,7 +1,7 @@
 #+TITLE: Use the Fortran bindings
 #+OPTIONS: toc:nil num:nil author:nil
 
-The optional Fortran layer builds a Fortran 2008 module, =rgsaddle=, over =include/rgsaddle.h= (ABI major 1, minor 45) using =iso_c_binding=. See @@rst::doc:`the reference page <../reference>`@@ for the full symbol table of the module.
+The optional Fortran layer builds a Fortran 2008 module, =rgsaddle=, over =include/rgsaddle.h= (ABI major 1, minor 46) using =iso_c_binding=. See @@rst::doc:`the reference page <../reference>`@@ for the full symbol table of the module.
 
 * Build and link
 The feature is off by default in the top-level =meson.build=. Build the Rust C ABI library first, then configure and install the Fortran wrapper with meson:
@@ -38,7 +38,7 @@ target_link_libraries(app PRIVATE rgsaddle::fortran)
 - *Meson*: resolve =dependency('rgsaddle-fortran')= from =PKG_CONFIG_PATH= (or from a subproject configured with =-Dfortran=enabled=) and pass the link directory for =librgsaddle=.
 
 * Bound subset and status handling
-=rgsaddle= binds four session families from the C ABI at minor 45:
+=rgsaddle= binds four session families from the C ABI at minor 46:
 
 - =band_handle=: =create=, =step=, =step_c=, =positions=, =move_from=, =release=
 - =minmode_handle=: =create=, =step=, =step_c=, =position=, =mode=, =move_from=, =release=
