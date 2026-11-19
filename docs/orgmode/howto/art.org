@@ -21,3 +21,66 @@ The phase is stored on the session. =step= runs one phase and leaves the next on
 =ArtConfig::mode= is the Lanczos block. Its =artn= shortcut and its =saddle_check= are cleared: those steps are the phases above. =MinModeConfig::with_artn= remains the shorter opt-in inside one minimum-mode iteration. The point stencil's =Preset::Art= is still the push followed by a minimum-mode climb.
 
 The runnable example is the doctest on =ArtSession=: a one-dimensional double well in three coordinates, a host seed, and a connected index-1 exit. =tests/art_session.rs= repeats the paper's census on LJ7, starting from the pentagonal bipyramid.
+
+#+begin_export rst
+:cite:`malekFindingSaddlePoints2000,cancesImprovementsActivationRelaxation2009,marinicaEnergyLandscapeSmall2011,jayFindingReactionPathways2020`
+#+end_export
+
+* Runnable example: phased ART nouveau session
+
+#+begin_src rust
+use ndarray::{Array1, ArrayView1, array};
+use rgsaddle::{
+    ArtConfig, ArtPhase, ArtSeed, ArtSession, ArtStatus, PointSurface, SaddleError, full_mask,
+    run_events,
+};
+
+struct DoubleWell;
+
+impl PointSurface for DoubleWell {
+    fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+        let (px, py, pz) = (x[0], x[1], x[2]);
+        let e = (px * px - 1.0).powi(2) + 2.0 * py * py + 2.0 * pz * pz;
+        Ok((e, array![4.0 * px * (px * px - 1.0), 4.0 * py, 4.0 * pz]))
+    }
+}
+
+fn main() -> Result<(), SaddleError> {
+    let reactant = array![-1.0, 0.0, 0.0];
+    let direction = array![1.0, 0.1, 0.0];
+    let mask = full_mask(3);
+    let mode = rgsaddle::MinModeConfig::default()
+        .with_kind(rgsaddle::MinModeKind::Lanczos)
+        .with_saddle_check(None)
+        .with_force_tol(0.02)
+        .with_max_move(0.1)
+        .with_krylov_dim(4)
+        .with_max_rotations(6);
+    let config = ArtConfig::default()
+        .with_mode(mode)
+        .with_push_length(0.8)
+        .with_max_pushes(3)
+        .with_max_climbs(25)
+        .with_push_over(0.25);
+    let session = ArtSession::new(
+        config.clone(),
+        reactant.clone(),
+        direction.clone(),
+        mask.clone(),
+    )?;
+    assert_eq!(session.phase(), ArtPhase::Push);
+    let batch = run_events(
+        &config,
+        &reactant,
+        &[ArtSeed {
+            seed: direction,
+            mask,
+        }],
+        &DoubleWell,
+        200,
+    )?;
+    assert_eq!(batch.outcomes[0].status, ArtStatus::Connected);
+    Ok(())
+}
+#+end_src
+

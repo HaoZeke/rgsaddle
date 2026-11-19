@@ -11,6 +11,60 @@
 
 No C field was added.
 
+#+begin_export rst
+:cite:`sheppardGeneralizedSolidState2012,xiaoSolidStateDimer2014,zhangShearStrain2022,mishinStructuralStability2001`
+#+end_export
+
+* Runnable example: solid-state NEB on the joint chart
+
+#+begin_src rust
+use ndarray::{Array1, ArrayView1, array, s};
+use rgsaddle::{
+    BandConfig, BandStatus, CellMask, JointChart, PointSurface, SaddleError, SolidNeb,
+    joint_coordinate, linear_path,
+};
+
+const CUBE: [f64; 9] = [4.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 4.0];
+
+struct WellInCell;
+
+impl PointSurface for WellInCell {
+    fn eval(&self, r: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+        self.eval_in_cell(r, &CUBE)
+    }
+
+    fn eval_in_cell(
+        &self,
+        r: ArrayView1<f64>,
+        cell: &[f64; 9],
+    ) -> Result<(f64, Array1<f64>), SaddleError> {
+        let (x, y, z) = (r[0], r[1], r[2]);
+        let elastic: f64 = cell.iter().zip(CUBE).map(|(h, h0)| (h - h0).powi(2)).sum();
+        let energy = (x * x - 1.0).powi(2) + 2.0 * y * y + 2.0 * z * z + elastic;
+        Ok((energy, array![4.0 * x * (x * x - 1.0), 4.0 * y, 4.0 * z]))
+    }
+}
+
+fn main() -> Result<(), SaddleError> {
+    let cube = [[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]];
+    let chart = JointChart::new(cube, 1, CellMask::all(), [[0.0; 3]; 3], 1.0)?;
+    let _q0 = joint_coordinate(&chart, CellMask::all(), array![-1.0, 0.0, 0.0].view(), cube)?;
+    let mut positions = linear_path(array![-1.0, 0.0, 0.0].view(), array![1.0, 0.0, 0.0].view(), 5, None)?;
+    positions.slice_mut(s![1..4, 1]).fill(0.2);
+    let config = BandConfig::default()
+        .with_force_tol(1e-3)
+        .with_max_move(0.1)
+        .with_min_mode(None);
+    let mut neb = SolidNeb::joint(config, cube, positions, &[cube; 5], CellMask::all(), [[0.0; 3]; 3], 1.0)?;
+    let mut report = neb.step(&WellInCell)?;
+    while report.status == BandStatus::Running && report.iteration < 400 {
+        report = neb.step(&WellInCell)?;
+    }
+    assert_eq!(report.status, BandStatus::Converged);
+    Ok(())
+}
+#+end_src
+
 ** The shear-coupled double well
 
 =tests/ssneb.rs= uses =(u^2 - 1)^2 + 6 (γ - 0.2 u)^2= plus penalties that vanish on the path. The minima have energy 0. The saddle =u = 0=, =γ = 0= has energy 1, so the barrier is 1. The variable-cell climbing image converges to that barrier. The frozen cell on the plain double well matches the ordinary CI-NEB at every step.
