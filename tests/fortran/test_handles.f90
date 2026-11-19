@@ -191,7 +191,7 @@ contains
     real(c_double) :: energy
     integer(c_int) :: status
     req%version%major = 1_c_int32_t
-    req%version%minor = 44_c_int32_t
+    req%version%minor = RGSADDLE_ABI_MINOR
     req%flags = RGSADDLE_REQ_ONE_IMAGE
     req%n_images = 4_c_int64_t
     req%n_atoms = 2_c_int64_t ** 30
