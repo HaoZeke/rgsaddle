@@ -1394,7 +1394,11 @@ extern "C" rgsaddle_status_t ohtst_python_point(void *user, int64_t n, const dou
   if (text == nullptr || text[0] == '\0') {
     text = rgsaddle_status_name(status);
   }
-  throw nb::value_error(text == nullptr || text[0] == '\0' ? "OH-TST call failed" : text);
+  const char *message = text == nullptr || text[0] == '\0' ? "OH-TST call failed" : text;
+  if (status == RGSADDLE_NON_FINITE) {
+    throw rgbind::NumericalError(message);
+  }
+  throw nb::value_error(message);
 }
 
 struct OhtstSample {

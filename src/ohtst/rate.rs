@@ -91,6 +91,12 @@ impl OhTstRate {
         rate.rate *= factor;
         rate.error *= factor;
         rate.log_rate += factor.ln();
+        if ![rate.rate, rate.error, rate.log_rate]
+            .iter()
+            .all(|value| value.is_finite())
+        {
+            return Err(SaddleError::NonFinite("rate"));
+        }
         Ok(rate)
     }
 }
@@ -187,10 +193,14 @@ impl RateMultiplicity {
     }
 }
 
+const DEFAULT_NORMAL_GAP: f64 = 1.0 / 1_000_000_000_000.0;
+const DEFAULT_OFFSET_FRACTION: f64 = 1.0 / 1_000_000_000.0;
+const DEFAULT_THERMAL_FRACTION: f64 = 1.0 / 1_000_000_000_000.0;
+
 fn same_plane(a: &Hyperplane, b: &Hyperplane, config: &OhTstRateConfig) -> bool {
     let scale = 1.0 + a.point().dot(&a.point()).sqrt();
     a.dim() == b.dim()
-        && a.normal().dot(&b.normal()) > 1.0 - config.normal_gap
+        && a.normal().dot(&b.normal()) >= 1.0 - config.normal_gap
         && a.distance(b.point()).abs() <= config.offset_fraction * scale
 }
 
@@ -209,9 +219,9 @@ pub struct OhTstRateConfig {
 impl Default for OhTstRateConfig {
     fn default() -> Self {
         Self {
-            normal_gap: 1.0e-12,
-            offset_fraction: 1.0e-9,
-            thermal_fraction: 1.0e-12,
+            normal_gap: DEFAULT_NORMAL_GAP,
+            offset_fraction: DEFAULT_OFFSET_FRACTION,
+            thermal_fraction: DEFAULT_THERMAL_FRACTION,
         }
     }
 }
@@ -299,6 +309,11 @@ pub fn ohtst_rate_with_config<D: PlaneDensity + ?Sized>(
 ) -> Result<OhTstRate, SaddleError> {
     config.check()?;
     let kt = density.thermal();
+    if !(kt.is_finite() && kt > 0.0 && work.thermal.is_finite() && work.thermal > 0.0) {
+        return Err(SaddleError::Invalid(
+            "kT must be finite and positive".into(),
+        ));
+    }
     let (value, value_error) = density.density();
     if (work.thermal - kt).abs() > config.thermal_fraction * kt {
         return Err(SaddleError::Invalid(
@@ -357,9 +372,16 @@ pub fn rate_from_parts(
     let log_rate_error =
         ((density_error / density).powi(2) + (free_energy_error / thermal).powi(2)).sqrt();
     let rate = log_rate.exp();
+    let error = rate * log_rate_error;
+    if ![rate, error, log_rate, log_rate_error, flux]
+        .iter()
+        .all(|value| value.is_finite())
+    {
+        return Err(SaddleError::NonFinite("rate"));
+    }
     Ok(OhTstRate {
         rate,
-        error: rate * log_rate_error,
+        error,
         log_rate,
         log_rate_error,
         flux,
@@ -609,6 +631,95 @@ mod tests {
         assert!(ohtst_rate(&empty, &work).is_err());
         assert!(rate_from_parts(kt, 0.4, -0.02, 3.0, 0.1).is_err());
         assert!(rate_from_parts(kt, 0.4, 0.02, 3.0, -0.1).is_err());
+        assert!(matches!(
+            rate_from_parts(1.0, 1.0, 0.0, -1000.0, 0.0),
+            Err(SaddleError::NonFinite("rate"))
+        ));
+        assert!(matches!(
+            rate_from_parts(1.0, 1.0, 0.1, -1000.0, 0.1),
+            Err(SaddleError::NonFinite("rate"))
+        ));
+        assert!(matches!(
+            rate_from_parts(1.0, 1.0, 0.0, 0.0, f64::MAX),
+            Err(SaddleError::NonFinite("rate"))
+        ));
+        let mut overflow_work = work.clone();
+        overflow_work.thermal = 1.0;
+        overflow_work.work = -1000.0;
+        overflow_work.error = 0.0;
+        let mut unit_density = empty.clone();
+        unit_density.thermal = 1.0;
+        unit_density.density = 1.0;
+        unit_density.density_error = 0.0;
+        assert!(matches!(
+            ohtst_rate(&unit_density, &overflow_work),
+            Err(SaddleError::NonFinite("rate"))
+        ));
+        let mut nan_work = work.clone();
+        nan_work.thermal = f64::NAN;
+        assert!(ohtst_rate(&unit_density, &nan_work).is_err());
+        let mut inf_work = work.clone();
+        inf_work.thermal = f64::INFINITY;
+        assert!(ohtst_rate(&unit_density, &inf_work).is_err());
+        let mut nan_density = unit_density.clone();
+        nan_density.thermal = f64::NAN;
+        assert!(ohtst_rate(&nan_density, &work).is_err());
+        let exact_normal = OhTstRateConfig::default().with_normal_gap(0.0);
+        let mut matching_density = unit_density;
+        matching_density.thermal = kt;
+        assert!(ohtst_rate_with_config(&matching_density, &work, &exact_normal).is_ok());
+    }
+
+    #[test]
+    fn non_finite_thermal_is_rejected_by_rate() {
+        let plane = Hyperplane::new(array![-0.5, 0.0], array![1.0, 0.0]).unwrap();
+        let config = LangevinConfig::default().with_records(200);
+        let end = sample_plane(&Bowl, &plane, None, &config).unwrap();
+        let node = WorkNode {
+            leg: 0,
+            s: 0.0,
+            plane: plane.clone(),
+            derivative: 0.0,
+            error: 0.0,
+            work: 0.0,
+            bar_work: None,
+            overlap: None,
+            transport_weight: None,
+            mbar_work: None,
+        };
+        let work = ReversibleWork {
+            work: 3.0,
+            error: 0.1,
+            estimate: WorkEstimate::Integration,
+            integrated_work: 3.0,
+            integrated_error: 0.1,
+            nodes: vec![node],
+            end,
+            evaluations: 0,
+            thermal: f64::NAN,
+            bar_work: None,
+            bar_error: None,
+            mbar_work: None,
+            mbar_error: None,
+            overlap: None,
+            warnings: Vec::new(),
+        };
+        let density = ReactantDensity {
+            plane,
+            thermal: 0.5,
+            density: 0.4,
+            density_error: 0.02,
+            crossing_density: 0.4,
+            crossing_error: 0.05,
+            behind: 0.3,
+            tau: 1.0,
+            records: 1,
+            evaluations: 0,
+            acceptance: 1.0,
+            wall_hits: 0,
+            last: array![0.0, 0.0],
+        };
+        assert!(ohtst_rate(&density, &work).is_err());
     }
 
     #[test]

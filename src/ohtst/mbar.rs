@@ -47,7 +47,13 @@ pub(crate) fn mbar(
             "MBAR needs two states or more and one count and start per state".into(),
         ));
     }
-    if counts.contains(&0) || counts.iter().sum::<usize>() != samples {
+    let total = counts
+        .iter()
+        .try_fold(0usize, |acc, &count| acc.checked_add(count))
+        .ok_or_else(|| {
+            SaddleError::Invalid("MBAR needs samples from every state, as many as the rows".into())
+        })?;
+    if counts.contains(&0) || total != samples {
         return Err(SaddleError::Invalid(
             "MBAR needs samples from every state, as many as the rows".into(),
         ));
@@ -285,5 +291,12 @@ mod tests {
         assert!((pair_overlap(&zeros, &zeros, 0.0) - 0.5).abs() < 1e-12);
         let far: Vec<f64> = vec![60.0; 50];
         assert!(pair_overlap(&far, &far, 0.0) < 1e-20);
+    }
+
+    #[test]
+    fn mbar_rejects_overflowing_count_sum() {
+        let u = Array2::zeros((2, 2));
+        let err = mbar_free_energies(&u, &[usize::MAX, 2], &MbarConfig::default()).unwrap_err();
+        assert!(matches!(err, SaddleError::Invalid(_)), "{err:?}");
     }
 }
