@@ -15,14 +15,15 @@ use crate::error::SaddleError;
 use crate::minmode::PointSurface;
 use crate::ohtst::{
     AnalyticSurfaceDynamics, AnalyticSurfaceSampler, Hyperplane, LangevinConfig, MbarConfig,
-    PlaneOptimizer, PlaneOptimizerConfig, ReversibleWorkConfig, TransmissionConfig, WorkEstimate,
-    mbar_free_energies, rate_from_parts, reversible_work, sample_plane, transmission_coefficient,
+    PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimizerStatus, ReversibleWorkConfig,
+    TransmissionConfig, WorkEstimate, mbar_free_energies, rate_from_parts, reversible_work,
+    sample_plane, transmission_coefficient,
 };
 
 use super::{
-    RGSADDLE_ABI_MAJOR, RGSADDLE_ABI_MISMATCH, RGSADDLE_INVALID_PARAMETER, RGSADDLE_NON_FINITE,
-    RGSADDLE_NULL_SURFACE, RGSADDLE_OK, RGSADDLE_SHAPE, RGSADDLE_SOLVER, RgsaddleVersion,
-    status_of,
+    RGSADDLE_ABI_MAJOR, RGSADDLE_ABI_MINOR, RGSADDLE_ABI_MISMATCH, RGSADDLE_INVALID_PARAMETER,
+    RGSADDLE_NON_FINITE, RGSADDLE_NULL_SURFACE, RGSADDLE_OK, RGSADDLE_SHAPE, RGSADDLE_SOLVER,
+    RgsaddleVersion, status_of,
     stencil::{clear_last_error, set_last_error},
 };
 
@@ -342,7 +343,7 @@ fn fail(err: &SaddleError) -> i32 {
 fn stamp() -> RgsaddleVersion {
     RgsaddleVersion {
         major: RGSADDLE_ABI_MAJOR,
-        minor: OHTST_MINOR,
+        minor: RGSADDLE_ABI_MINOR,
     }
 }
 
@@ -633,12 +634,15 @@ unsafe fn optimize_call(
         Ok(value) => value,
         Err(code) => return code,
     };
-    let optimizer = PlaneOptimizerConfig::default()
+    let records = match as_usize(config.records) {
+        Ok(value) => value,
+        Err(code) => return code,
+    };
+    let default_config = PlaneOptimizerConfig::default();
+    let max_records = default_config.max_records.max(records);
+    let optimizer = default_config
         .with_sampler(sampler)
-        .with_max_records(match as_usize(config.records) {
-            Ok(value) => value,
-            Err(code) => return code,
-        })
+        .with_max_records(max_records)
         .with_max_translation(config.max_translation)
         .with_max_rotation(config.max_rotation)
         .with_translate(config.translate != 0)
@@ -660,6 +664,12 @@ unsafe fn optimize_call(
         Ok(optimum) => optimum,
         Err(err) => return fail(&err),
     };
+    if optimum.status != PlaneOptimizerStatus::Converged {
+        return fail(&SaddleError::Solver(format!(
+            "the plane did not converge in {} iterations ({:?})",
+            optimum.iterations, optimum.status
+        )));
+    }
     if write_owned(point, optimum.plane.point().iter().copied()).is_err()
         || write_owned(normal, optimum.plane.normal().iter().copied()).is_err()
     {
