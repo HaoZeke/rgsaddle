@@ -631,7 +631,7 @@ void make_band(nb::ndarray<const double, nb::ndim<2>, nb::c_contig> x, const std
   }
   const char *text = rgsaddle_last_error();
   rgsaddle_py_set_last_error(text == nullptr ? "" : text);
-  throw nb::value_error(text == nullptr || text[0] == '\0' ? "band presets stay on feat/band-methods-zoom"
+  throw nb::value_error(text == nullptr || text[0] == '\0' ? "band presets are not implemented"
                                                            : text);
 }
 
@@ -1797,7 +1797,7 @@ NB_MODULE(_core, m) {
           "negative steps by max_move along the mode. Band preset names "
           "raise ValueError.")
       .def_static("band", &make_band, nb::arg("x").noconvert(), nb::arg("preset") = "ci-neb",
-                  "Band presets stay on feat/band-methods-zoom and raise ValueError.")
+                  "Band presets are not implemented and raise ValueError.")
       .def(
           "step", [](PyStencil &self, nb::callable fn) { return step_python(self, fn, 1, false); },
           nb::arg("surface"),
