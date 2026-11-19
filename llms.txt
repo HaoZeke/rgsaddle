@@ -1,0 +1,62 @@
+# rgsaddle
+
+> Band, minimum-mode, and index-1 Newton saddle mechanics in Rust, C, C++, and Python. Every session takes one solver step on an assembled force or Hessian model while the host owns the outer loop.
+
+rgsaddle is system-agnostic and unit-agnostic: surfaces supply energies, gradients, and optional cell stresses or directional Hessian actions in the caller's units.
+
+- Documentation site: https://omnipotentrpc.github.io/rgsaddle/
+- Full LLM context: https://omnipotentrpc.github.io/rgsaddle/llms-full.txt (repo root `llms-full.txt`)
+- Rust API docs: https://docs.rs/rgsaddle
+- Repository: https://github.com/OmniPotentRPC/rgsaddle
+
+## Core guides
+
+- [rgsaddle](https://omnipotentrpc.github.io/rgsaddle/index.html): Overview, installation, and host-controlled stepping loop (`docs/orgmode/index.org`)
+- [Getting started](https://omnipotentrpc.github.io/rgsaddle/getting-started.html): First band session on an analytic double-well surface (`docs/orgmode/getting-started.org`)
+- [How-to](https://omnipotentrpc.github.io/rgsaddle/howto.html): Task index for bands, minimum-mode searches, C ABI, and rates (`docs/orgmode/howto.org`)
+- [Reference](https://omnipotentrpc.github.io/rgsaddle/reference.html): Exhaustive inventory of Rust modules, types, functions, configs, C ABI, and Python bindings (`docs/orgmode/reference.org`)
+- [Explanation](https://omnipotentrpc.github.io/rgsaddle/explanation.html): Mathematical and numerical design of band, string, and minimum-mode methods (`docs/orgmode/explanation.org`)
+- [In the seat](https://omnipotentrpc.github.io/rgsaddle/seat.html): Role of rgsaddle in the leidarljos and rgpot stack (`docs/orgmode/seat.org`)
+
+## Tutorials
+
+- [Find a saddle with a nudged elastic band](https://omnipotentrpc.github.io/rgsaddle/tutorials/band.html): Nudged elastic band and OCI-NEB on the Mueller-Brown surface (`docs/orgmode/tutorials/band.org`)
+- [Find a saddle with the dimer](https://omnipotentrpc.github.io/rgsaddle/tutorials/dimer.html): Dimer and Lanczos minimum-mode searches (`docs/orgmode/tutorials/dimer.org`)
+- [Optimize a saddle with Sella's step](https://omnipotentrpc.github.io/rgsaddle/tutorials/sella.html): Order-1 saddle optimization with Sella's P-RFO trust step (`docs/orgmode/tutorials/sella.org`)
+- [Roll down from a first-order saddle](https://omnipotentrpc.github.io/rgsaddle/tutorials/quickstart.html): Intrinsic reaction coordinate (IRC) forward and reverse branches (`docs/orgmode/tutorials/quickstart.org`)
+
+## How-to guides
+
+- [Step a NEB band](https://omnipotentrpc.github.io/rgsaddle/howto/band.html): NEB, climbing image, OCI-NEB, simplified and growing string, free-end adaptive NEB, IDPP, AFIR, and connect (`docs/orgmode/howto/band.org`)
+- [Grow a band with AutoNEB](https://omnipotentrpc.github.io/rgsaddle/howto/autoneb.html): AutoNEB window insertion and spring scaling (`docs/orgmode/howto/autoneb.org`)
+- [Follow a minimum mode](https://omnipotentrpc.github.io/rgsaddle/howto/minmode.html): Dimer, Lanczos, soft-mode seeding, surrogate Hessian actions, saddle index, and ARTn protocol (`docs/orgmode/howto/minmode.org`)
+- [Leave a minimum with ART nouveau](https://omnipotentrpc.github.io/rgsaddle/howto/art.html): Phased Activation-Relaxation Technique nouveau (ArtSession) (`docs/orgmode/howto/art.org`)
+- [Follow k lowest modes](https://omnipotentrpc.github.io/rgsaddle/howto/indexk.html): Index-k minimum-mode searches with LOBPCG and block Lanczos (`docs/orgmode/howto/indexk.org`)
+- [Solid-state dimer](https://omnipotentrpc.github.io/rgsaddle/howto/solid-dimer.html): Variable-cell solid-state dimer on atoms and strain (`docs/orgmode/howto/solid-dimer.org`)
+- [Solid-state NEB](https://omnipotentrpc.github.io/rgsaddle/howto/ssneb.html): Generalized solid-state NEB on the joint atom-strain chart (`docs/orgmode/howto/ssneb.org`)
+- [Strain response of a hop](https://omnipotentrpc.github.io/rgsaddle/howto/strain-rate.html): Elastic dipoles, multipoles, FMM fields, and strain response of a hop (`docs/orgmode/howto/strain-rate.org`)
+- [Defect-pair hop rates](https://omnipotentrpc.github.io/rgsaddle/howto/defect-pair-rates.html): Defect-pair hop rates, PAFI free energy, Bennett-Chandler kappa, and pair networks (`docs/orgmode/howto/defect-pair-rates.org`)
+- [Optimal hyperplanar transition state theory](https://omnipotentrpc.github.io/rgsaddle/howto/oh-tst.html): Optimal hyperplanar transition state theory (OH-TST) and reversible work (`docs/orgmode/howto/oh-tst.org`)
+- [Sample a hyperplane with LAMMPS](https://omnipotentrpc.github.io/rgsaddle/howto/lammps-hyperplane.html): Plane-constrained BAOAB sampling with LAMMPS through lammpc (`docs/orgmode/howto/lammps-hyperplane.org`)
+- [Recover a sparse Hessian](https://omnipotentrpc.github.io/rgsaddle/howto/sparse-hessian.html): Direct Curtis-Powell-Reid sparse Hessian recovery by distance-2 colouring (`docs/orgmode/howto/sparse-hessian.org`)
+- [Use Sella steppers and sessions](https://omnipotentrpc.github.io/rgsaddle/howto/sella.html): P-RFO, restricted P-RFO, Index1Session, Sella sessions, internal coordinates, cell charts, and SAMD (`docs/orgmode/howto/sella.org`)
+- [Drive an IRC session](https://omnipotentrpc.github.io/rgsaddle/howto/irc.html): Intrinsic reaction coordinate (IRC) integration with SellaSphere, GS2, and Morokuma steps (`docs/orgmode/howto/irc.org`)
+- [Read a molecular frame](https://omnipotentrpc.github.io/rgsaddle/howto/io.html): Reading and writing CON frames and restart bands (`docs/orgmode/howto/io.org`)
+- [Use the C and C++ interfaces](https://omnipotentrpc.github.io/rgsaddle/howto/c-abi.html): Stepping bands, minimum-mode sessions, Sella, IRC, and strings from C and C++ (`docs/orgmode/howto/c-abi.org`)
+- [Use the headers from a meson project](https://omnipotentrpc.github.io/rgsaddle/howto/meson.html): Consuming rgsaddle headers from Meson wrap-git or pkg-config (`docs/orgmode/howto/meson.org`)
+- [Python package](https://omnipotentrpc.github.io/rgsaddle/howto/python.html): Python nanobind surface, SurfaceAdapter, and ASE drop-in classes (`docs/orgmode/howto/python.org`)
+- [Move a search from ASE or eOn](https://omnipotentrpc.github.io/rgsaddle/howto/migrate.html): Migrating NEB, dimer, and Sella workflows from ASE or eOn (`docs/orgmode/howto/migrate.org`)
+- [Step a point stencil](https://omnipotentrpc.github.io/rgsaddle/howto/stencil.html): Unified point stencil builder across Rust, C, C++, and Python (`docs/orgmode/howto/stencil.org`)
+- [Formal stencil](https://omnipotentrpc.github.io/rgsaddle/howto/formal.html): Lean 4 formal proofs and MPFR differential verification (`docs/orgmode/howto/formal.org`)
+
+## Explanation and reference
+
+- [Mass-weighted reaction paths](https://omnipotentrpc.github.io/rgsaddle/explanation/mep.html): Mass-weighted intrinsic reaction coordinates and unweighted minimum energy paths (`docs/orgmode/explanation/mep.org`)
+- [One stencil](https://omnipotentrpc.github.io/rgsaddle/explanation/one-stencil.html): Householder reflection shared by climbing-image NEB and minimum-mode searches (`docs/orgmode/explanation/one-stencil.org`)
+- [Hyperplane methods on one geometric footing](https://omnipotentrpc.github.io/rgsaddle/explanation/hyperplane-methods.html): PAFI, OH-TST, and constrained-ensemble samplers on one geometric footing (`docs/orgmode/explanation/hyperplane-methods.org`)
+- [Crystal operations and symmetry-unique regions](https://omnipotentrpc.github.io/rgsaddle/explanation/symmetry-regions.html): Crystal symmetry operations, path multiplicity, and hard Voronoi regions (`docs/orgmode/explanation/symmetry-regions.org`)
+- [Architecture](https://omnipotentrpc.github.io/rgsaddle/reference/architecture.html): Crate architecture and module boundaries (`docs/orgmode/reference/architecture.org`)
+- [LAMMPS hyperplane API](https://omnipotentrpc.github.io/rgsaddle/reference/lammps-hyperplane.html): LAMMPS hyperplane sampler contract and C ABI hooks (`docs/orgmode/reference/lammps-hyperplane.org`)
+- [Bibliography](https://omnipotentrpc.github.io/rgsaddle/reference/bibliography.html): Literature bibliography (`docs/orgmode/reference/bibliography.org`)
+- [C function index](https://omnipotentrpc.github.io/rgsaddle/reference/c-symbols.html): Complete C ABI symbol index for include/rgsaddle.h (`docs/orgmode/reference/c-symbols.org`)
+- [Contributing](https://omnipotentrpc.github.io/rgsaddle/contributing/index.html): Build, test, MSRV, Python stub, documentation, and release workflow (`docs/orgmode/contributing/index.org`)
