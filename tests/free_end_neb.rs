@@ -691,6 +691,72 @@ fn adaptive_cut_keeps_a_local_window_on_muller_brown() {
     assert_cached_matches(&session, &MullerBrown);
 }
 
+fn segment_lengths(positions: ndarray::ArrayView2<f64>) -> Vec<f64> {
+    let mut lengths = Vec::new();
+    for image in 1..positions.nrows() {
+        let step = &positions.row(image) - &positions.row(image - 1);
+        lengths.push(step.dot(&step).sqrt());
+    }
+    lengths
+}
+
+fn assert_even_monotone_free_end(session: &BandSession, side: FreeEndSide, anchor: f64) {
+    let positions = session.positions();
+    let n_images = positions.nrows();
+    let end_idx = match side {
+        FreeEndSide::First => 0,
+        FreeEndSide::Last => n_images - 1,
+    };
+    let end = positions.row(end_idx)[0];
+    let xs: Vec<f64> = positions.column(0).iter().copied().collect();
+    let lengths = segment_lengths(positions);
+    assert!(
+        (end - anchor).abs() < 1e-8,
+        "{side:?} dropped the free end: end={end} anchor={anchor} xs={xs:?}"
+    );
+    assert!(
+        xs.windows(2).all(|pair| pair[1] > pair[0]),
+        "{side:?} arc length is not monotone: xs={xs:?}"
+    );
+    let mean = lengths.iter().sum::<f64>() / lengths.len() as f64;
+    assert!(
+        lengths.iter().all(|len| (len - mean).abs() <= 1e-6),
+        "{side:?} spacing is not even: lengths={lengths:?} xs={xs:?}"
+    );
+}
+
+#[test]
+fn last_cut_off_the_free_end_keeps_even_monotone_spacing() {
+    let (session, windows) = cut_once(FreeEndSide::Last, 5, 1.0);
+    assert_eq!(windows, 1);
+    assert_eq!(session.free_end_windows(), &[(0, 2)]);
+    assert_even_monotone_free_end(&session, FreeEndSide::Last, 4.0);
+}
+
+#[test]
+fn first_cut_off_the_free_end_keeps_even_monotone_spacing() {
+    let (session, windows) = cut_once(FreeEndSide::First, 5, 3.0);
+    assert_eq!(windows, 1);
+    assert_eq!(session.free_end_windows(), &[(2, 4)]);
+    assert_even_monotone_free_end(&session, FreeEndSide::First, 0.0);
+}
+
+#[test]
+fn edge_window_cut_keeps_the_free_end_and_even_spacing() {
+    // n = 5, offset = 1. Last peaks at image 3, so the window is (2, 4)
+    // and touches the free end. First peaks at image 1, so the window is
+    // (0, 2) and touches the free end.
+    let (last, last_windows) = cut_once(FreeEndSide::Last, 5, 3.0);
+    assert_eq!(last_windows, 1);
+    assert_eq!(last.free_end_windows(), &[(2, 4)]);
+    assert_even_monotone_free_end(&last, FreeEndSide::Last, 4.0);
+
+    let (first, first_windows) = cut_once(FreeEndSide::First, 5, 1.0);
+    assert_eq!(first_windows, 1);
+    assert_eq!(first.free_end_windows(), &[(0, 2)]);
+    assert_even_monotone_free_end(&first, FreeEndSide::First, 0.0);
+}
+
 fn assert_cached_matches(session: &BandSession, surface: &impl BandSurface) {
     let held = session.evaluation().expect("free-end evaluation");
     let positions = session.positions().to_owned();

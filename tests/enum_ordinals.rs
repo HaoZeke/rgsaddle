@@ -1,7 +1,9 @@
-//! The eight Python IntEnum tables and the Rust `to_abi` ordinals.
+//! Rust `to_abi` ordinals. The eight Python IntEnum tables are listed
+//! first. `FreeEndSide` is the C discriminant (`0` for `First`, `1` for
+//! `Last`); Python takes the strings `first` and `last`.
 
 use rgsaddle::{
-    CellChart, EigenDevice, ExpandKind, ForceGate, HessUpdate, IrcKind, MinModeKind,
+    CellChart, EigenDevice, ExpandKind, ForceGate, FreeEndSide, HessUpdate, IrcKind, MinModeKind,
     Reparametrization, RestrictedKind,
 };
 
@@ -47,4 +49,15 @@ fn to_abi_matches_the_python_and_c_table() {
         );
     }
     assert_eq!(Reparametrization::from_abi(2), None);
+
+    assert_eq!(FreeEndSide::First.to_abi(), 0);
+    assert_eq!(FreeEndSide::Last.to_abi(), 1);
+    for code in 0..2 {
+        assert_eq!(
+            FreeEndSide::from_abi(code).map(FreeEndSide::to_abi),
+            Some(code)
+        );
+    }
+    assert_eq!(FreeEndSide::from_abi(2), None);
+    assert_eq!(FreeEndSide::from_abi(-1), None);
 }
