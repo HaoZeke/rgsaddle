@@ -2739,6 +2739,7 @@ mod tests {
 
     #[test]
     #[cfg(feature = "par")]
+    #[ignore = "slow strong-scaling sweep over 97555-atom cells; run with --ignored"]
     fn colour_block_strong_scaling_on_vacancy_cells() {
         let systems = [
             (14usize, "fcc_vacancy_10975_shifted_force"),
