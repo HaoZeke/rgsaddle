@@ -235,6 +235,9 @@ mod capi {
             force_tol: 1e-5,
             max_move: 0.1,
             memory: 20,
+            refine_threshold: 0.0,
+            refine_method: 0,
+            reserved: 0,
         };
         let session = unsafe { rgsaddle_band_create(&config, n as i64, 1, x.as_ptr()) };
         assert!(!session.is_null());

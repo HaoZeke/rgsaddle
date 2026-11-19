@@ -135,6 +135,9 @@ mod capi {
             force_tol: 1e-5,
             max_move: 0.1,
             memory: 10,
+            refine_threshold: 0.0,
+            refine_method: 0,
+            reserved: 0,
         };
         let x: Vec<f64> = bowed_band().into_iter().collect();
         unsafe { rgsaddle_band_create(&config, N as i64, 1, x.as_ptr()) }

@@ -28,7 +28,7 @@ extern "C" {
 #endif
 
 #define RGSADDLE_ABI_MAJOR 1u
-#define RGSADDLE_ABI_MINOR 44u
+#define RGSADDLE_ABI_MINOR 45u
 
 /**
  * Band config flags bit 0. When set, each evaluation calls the surface
@@ -192,6 +192,18 @@ typedef enum {
   RGSADDLE_METHOD_ODE12R = 4
 } rgsaddle_method_t;
 
+/**
+ * The refine optimizer of a band, rgsaddle_band_config_t.refine_method.
+ * It mirrors the opt_method of eOn's [Refine] section. Further optimizers
+ * take the next codes. ABI minor 45.
+ */
+typedef enum {
+  /** No refine stepper, eOn's None: the band steps with its method alone. */
+  RGSADDLE_REFINE_NONE = 0,
+  /** L-BFGS of the config's memory (20 for zero). */
+  RGSADDLE_REFINE_LBFGS = 1
+} rgsaddle_refine_method_t;
+
 typedef enum {
   RGSADDLE_MINMODE_DIMER = 0,
   RGSADDLE_MINMODE_LANCZOS = 1,
@@ -349,6 +361,32 @@ typedef struct {
   double force_tol;
   double max_move;
   int64_t memory;
+  /**
+   * ABI minor 45, read only from a config whose version minor is 45 or
+   * newer. The convergence force, in the host's force units, at or under
+   * which a step uses refine_method. It mirrors the threshold of eOn's
+   * [Refine] section and the library converts no units. The comparison
+   * is convergence force <= threshold, with the value the force_tol stop
+   * test reads. Zero is the default, 0.5 as in eOn. A negative or NaN
+   * value is refused at create when refine_method is set, and the member
+   * is ignored when refine_method is RGSADDLE_REFINE_NONE.
+   */
+  double refine_threshold;
+  /**
+   * ABI minor 45, read only from a config whose version minor is 45 or
+   * newer. An rgsaddle_refine_method_t, which mirrors the opt_method of
+   * eOn's [Refine] section. As in eOn the choice is made on every step: a
+   * step whose convergence force is at or under refine_threshold uses
+   * this optimizer and any other step uses method, so a force that rises
+   * back over the threshold returns the band to its method. Both
+   * steppers keep their own state across the switches. Zero, eOn's None
+   * and the default of a zeroed config, and any config older than minor
+   * 45 step with method alone. An unknown code is refused at create. The
+   * refine stepper acts on an atomic band whose method is
+   * RGSADDLE_METHOD_FIRE.
+   */
+  int32_t refine_method;
+  int32_t reserved; /**< Set to zero. */
 } rgsaddle_band_config_t;
 
 /** One step's report. The session stamps version and flags. */
@@ -1794,6 +1832,31 @@ typedef enum {
 } rgsaddle_growing_string_phase_t;
 
 /**
+ * The band configuration as laid out before ABI minor 45. It is the band
+ * member of rgsaddle_growing_string_config_t, so that config keeps its
+ * layout when rgsaddle_band_config_t gains the refine members. It has no
+ * refine members: a growing string steps with its band method alone.
+ */
+typedef struct {
+  rgsaddle_version_t version;
+  uint64_t flags;
+  int32_t tangent;    /**< rgsaddle_tangent_t */
+  int32_t spring;     /**< rgsaddle_spring_t */
+  int32_t projection; /**< rgsaddle_projection_t */
+  int32_t method;     /**< rgsaddle_method_t */
+  double spring_k;
+  /** Weighted springs: n_images - 1 constants, else NULL. */
+  const double *spring_ks;
+  double ci_trigger_factor;
+  double ci_trigger_force;
+  /** Row-major 3x3 cell for minimum-image differences; NULL for none. */
+  const double *cell;
+  double force_tol;
+  double max_move;
+  int64_t memory;
+} rgsaddle_band_config_v44_t;
+
+/**
  * Configuration of rgsaddle_growing_string_create, ABI minor 44.
  * Peters, Heyden, Bell, and Chakraborty, J. Chem. Phys. 120, 7877 (2004),
  * doi:10.1063/1.1691018.
@@ -1801,7 +1864,7 @@ typedef enum {
 typedef struct {
   rgsaddle_version_t version;
   uint64_t flags;
-  rgsaddle_band_config_t band;
+  rgsaddle_band_config_v44_t band;
   int64_t n_images;
   double frontier_tol;
   int64_t min_steps_per_node;
