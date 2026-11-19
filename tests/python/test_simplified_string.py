@@ -346,7 +346,7 @@ def test_python_free_end_adaptive_neb_residual_and_cuts() -> None:
 
     weights = np.linspace(0.0, 1.0, 7)[:, None]
     start = np.array([0.0, 0.0, 0.0], dtype=np.float64)
-    end = np.array([1.75, 0.48, 0.0], dtype=np.float64)
+    end = np.array([1.75, 0.4375, 0.0], dtype=np.float64)
     initial = np.ascontiguousarray((1.0 - weights) * start + weights * end, dtype=np.float64)
 
     band = rgsaddle.Band(
@@ -374,3 +374,8 @@ def test_python_free_end_adaptive_neb_residual_and_cuts() -> None:
     assert band.free_end_cuts() == 2
     res = band.target_energy_residual()
     assert res is not None and abs(res) < 1e-5
+    energies, gradients, projected = band.evaluation()
+    fresh_e, fresh_g = tilted_surface(band.positions())
+    np.testing.assert_allclose(energies, fresh_e)
+    np.testing.assert_allclose(gradients, fresh_g)
+    assert projected.shape == (initial.shape[0] - 2, initial.shape[1])

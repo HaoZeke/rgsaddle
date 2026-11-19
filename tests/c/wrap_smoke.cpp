@@ -227,6 +227,20 @@ int main() {
         return 1;
     }
 
+    std::vector<double> cpos(5 * 3, 0.0);
+    for (int i = 0; i < 5; ++i) {
+        cpos[static_cast<std::size_t>(3 * i)] = -0.6 + 0.3 * static_cast<double>(i);
+    }
+    rgsaddle::Band cut_band(cfg, 5, n_atoms, cpos.data());
+    cut_band.set_free_end(true, RGSADDLE_FREE_END_LAST, false, 0.0, 1, 100.0, 0.001, 1, 1,
+                          false);
+    cut_band.step(surface, nullptr);
+    if (cut_band.free_end_cuts() < 1) {
+        std::fprintf(stderr, "C++ free-end band did not cut, cuts=%lld\n",
+                     static_cast<long long>(cut_band.free_end_cuts()));
+        return 1;
+    }
+
     std::vector<double> pair(static_cast<std::size_t>(n_images * 6));
     for (std::size_t i = 0; i < static_cast<std::size_t>(n_images); ++i) {
         for (std::size_t c = 0; c < 3; ++c) {
