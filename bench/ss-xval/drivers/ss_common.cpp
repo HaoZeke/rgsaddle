@@ -1,6 +1,8 @@
-// Common-frame re-evaluation: one rgpot shifted-LJ build, exact H = E + pV.
+// Common-frame re-evaluation: one rgpot build, exact H = E + pV.
+#include "ss_geom.hpp"
 #include "rgpot/ForceStructs.hpp"
 #include "rgpot/LennardJones/LJPot.hpp"
+#include "rgpot/fortran/FortranPots.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -10,90 +12,6 @@
 #include <vector>
 
 namespace {
-
-struct Geom {
-  int n_images = 0;
-  int n_atoms = 0;
-  double pressure = 0;
-  double epsilon = 1;
-  double sigma = 1;
-  double cutoff = 1;
-  int solid = 0;
-  std::vector<double> cells;
-  std::vector<double> xyz;
-};
-
-bool read_geom(const std::string &path, Geom &g) {
-  std::ifstream in(path);
-  if (!in) {
-    return false;
-  }
-  std::string key;
-  while (in >> key) {
-    if (key == "image") {
-      break;
-    }
-    if (key == "n_images") {
-      in >> g.n_images;
-    } else if (key == "n_atoms") {
-      in >> g.n_atoms;
-    } else if (key == "pressure") {
-      in >> g.pressure;
-    } else if (key == "epsilon") {
-      in >> g.epsilon;
-    } else if (key == "sigma") {
-      in >> g.sigma;
-    } else if (key == "cutoff") {
-      in >> g.cutoff;
-    } else if (key == "solid") {
-      in >> g.solid;
-    } else {
-      return false;
-    }
-  }
-  if (g.n_images < 1 || g.n_atoms < 1) {
-    return false;
-  }
-  g.cells.assign(static_cast<size_t>(g.n_images * 9), 0.0);
-  g.xyz.assign(static_cast<size_t>(g.n_images * g.n_atoms * 3), 0.0);
-  for (int image = 0; image < g.n_images; ++image) {
-    if (image > 0) {
-      in >> key;
-      if (key != "image") {
-        return false;
-      }
-    }
-    for (int k = 0; k < 9; ++k) {
-      in >> g.cells[static_cast<size_t>(image * 9 + k)];
-    }
-    for (int a = 0; a < g.n_atoms * 3; ++a) {
-      in >> g.xyz[static_cast<size_t>(image * g.n_atoms * 3 + a)];
-    }
-  }
-  return static_cast<bool>(in);
-}
-
-double det3(const double *h) {
-  return h[0] * (h[4] * h[8] - h[5] * h[7]) - h[1] * (h[3] * h[8] - h[5] * h[6]) +
-         h[2] * (h[3] * h[7] - h[4] * h[6]);
-}
-
-bool inv3(const double *h, double *o) {
-  const double d = det3(h);
-  if (!(std::abs(d) > 1e-18)) {
-    return false;
-  }
-  o[0] = (h[4] * h[8] - h[5] * h[7]) / d;
-  o[1] = (h[2] * h[7] - h[1] * h[8]) / d;
-  o[2] = (h[1] * h[5] - h[2] * h[4]) / d;
-  o[3] = (h[5] * h[6] - h[3] * h[8]) / d;
-  o[4] = (h[0] * h[8] - h[2] * h[6]) / d;
-  o[5] = (h[2] * h[3] - h[0] * h[5]) / d;
-  o[6] = (h[3] * h[7] - h[4] * h[6]) / d;
-  o[7] = (h[1] * h[6] - h[0] * h[7]) / d;
-  o[8] = (h[0] * h[4] - h[1] * h[3]) / d;
-  return true;
-}
 
 struct Eval {
   double energy = 0;
@@ -106,14 +24,75 @@ struct Eval {
   bool ok = false;
 };
 
-Eval evaluate(rgpot::LJPot &pot, const std::vector<int> &z, int n, const double *x,
-              const double *h, double pressure) {
+template <class Pot>
+double energy_of(Pot &pot, const std::vector<int> &z, int n, const double *x, const double *h) {
+  std::vector<double> force(static_cast<size_t>(3 * n));
+  rgpot::ForceOut raw{force.data(), 0.0, 0.0, {}, 0};
+  rgpot::ForceInput in{static_cast<size_t>(n), x, z.data(), h};
+  pot.forceImpl(in, &raw);
+  return raw.energy;
+}
+
+template <class Pot>
+bool stress_from_energy(Pot &pot, const std::vector<int> &z, int n, const double *x,
+                        const double *h, double *stress) {
+  double inv[9];
+  if (!inv3(h, inv)) {
+    return false;
+  }
+  std::vector<double> frac(static_cast<size_t>(3 * n));
+  for (int a = 0; a < n; ++a) {
+    for (int c = 0; c < 3; ++c) {
+      frac[static_cast<size_t>(3 * a + c)] =
+          x[3 * a] * inv[c] + x[3 * a + 1] * inv[3 + c] + x[3 * a + 2] * inv[6 + c];
+    }
+  }
+  const double eps = 1e-6;
+  double dedh[9];
+  for (int ij = 0; ij < 9; ++ij) {
+    auto shifted = [&](double delta) {
+      double hh[9];
+      for (int k = 0; k < 9; ++k) {
+        hh[k] = h[k];
+      }
+      hh[ij] += delta;
+      std::vector<double> xx(static_cast<size_t>(3 * n));
+      for (int a = 0; a < n; ++a) {
+        for (int c = 0; c < 3; ++c) {
+          xx[static_cast<size_t>(3 * a + c)] = frac[static_cast<size_t>(3 * a)] * hh[c] +
+                                              frac[static_cast<size_t>(3 * a + 1)] * hh[3 + c] +
+                                              frac[static_cast<size_t>(3 * a + 2)] * hh[6 + c];
+        }
+      }
+      return energy_of(pot, z, n, xx.data(), hh);
+    };
+    dedh[ij] = (shifted(eps) - shifted(-eps)) / (2.0 * eps);
+  }
+  const double volume = std::abs(det3(h));
+  if (!(volume > 0.0)) {
+    return false;
+  }
+  for (int k = 0; k < 3; ++k) {
+    for (int j = 0; j < 3; ++j) {
+      double acc = 0.0;
+      for (int i = 0; i < 3; ++i) {
+        acc += h[3 * i + k] * dedh[3 * i + j];
+      }
+      stress[3 * k + j] = acc / volume;
+    }
+  }
+  return true;
+}
+
+template <class Pot>
+Eval evaluate(Pot &pot, const std::vector<int> &z, int n, const double *x, const double *h,
+              double pressure) {
   Eval out;
   std::vector<double> force(static_cast<size_t>(3 * n));
   rgpot::ForceOut raw{force.data(), 0.0, 0.0, {}, 0};
   rgpot::ForceInput in{static_cast<size_t>(n), x, z.data(), h};
   pot.forceImpl(in, &raw);
-  if (raw.has_stress == 0) {
+  if (raw.has_stress == 0 && !stress_from_energy(pot, z, n, x, h, raw.stress)) {
     return out;
   }
   out.energy = raw.energy;
@@ -147,7 +126,8 @@ Eval evaluate(rgpot::LJPot &pot, const std::vector<int> &z, int n, const double 
   return out;
 }
 
-double finite_difference(rgpot::LJPot &pot, const std::vector<int> &z, int n, const double *x,
+template <class Pot>
+double finite_difference(Pot &pot, const std::vector<int> &z, int n, const double *x,
                          const double *h) {
   double h0[9];
   for (int i = 0; i < 9; ++i) {
@@ -217,22 +197,43 @@ int main(int argc, char **argv) {
   cfg.psi = g.sigma;
   cfg.cutoff = g.cutoff;
   cfg.switch_width = 0.0;
-  rgpot::LJPot pot(cfg);
-  std::vector<int> z(static_cast<size_t>(g.n_atoms), 18);
-  const double fd = finite_difference(pot, z, g.n_atoms, g.xyz.data(), g.cells.data());
+  rgpot::LJPot lj(cfg);
+  rgpot::fortranpots::TersoffPot tersoff;
+  std::vector<int> z(static_cast<size_t>(g.n_atoms), g.z);
+  const bool tersoff_case = g.potential == "tersoff";
+  if (g.potential != "lj" && !tersoff_case) {
+    std::cerr << "unknown potential\n";
+    return 2;
+  }
+  const double fd = tersoff_case
+                        ? 0.0
+                        : finite_difference(lj, z, g.n_atoms, g.xyz.data(), g.cells.data());
 
   std::ofstream out(std::string(argv[2]) + "/common.txt");
   out.setf(std::ios::scientific);
   out.precision(16);
-  out << "fd_cell_derivative_error " << fd << "\n";
+  out << "fd_cell_derivative_error " << fd << "\n"
+      << "stress_source " << (tersoff_case ? "finite_difference" : "analytic") << "\n";
+  WidthLog widths;
+  note_widths(g, g.cells.data(), widths);
+  out << "min_perp_width " << widths.min_width << "\nguard " << g.guard << "\nwidth_ok "
+      << widths.ok << "\n";
+  for (int image = 0; image < g.n_images; ++image) {
+    out << "image_min_width " << image << " " << widths.per_image[static_cast<size_t>(image)]
+        << "\n";
+  }
   int saddle = 0;
   double h0 = 0.0;
   double hs = -1e300;
   double interior_max_atomic = 0.0;
+  auto eval_at = [&](int image) {
+    const double *x = g.xyz.data() + static_cast<size_t>(image * g.n_atoms * 3);
+    const double *h = g.cells.data() + static_cast<size_t>(image * 9);
+    return tersoff_case ? evaluate(tersoff, z, g.n_atoms, x, h, g.pressure)
+                        : evaluate(lj, z, g.n_atoms, x, h, g.pressure);
+  };
   for (int image = 0; image < g.n_images; ++image) {
-    const Eval ev = evaluate(pot, z, g.n_atoms,
-                             g.xyz.data() + static_cast<size_t>(image * g.n_atoms * 3),
-                             g.cells.data() + static_cast<size_t>(image * 9), g.pressure);
+    const Eval ev = eval_at(image);
     if (!ev.ok) {
       std::cerr << "evaluation failed\n";
       return 3;
@@ -257,9 +258,7 @@ int main(int argc, char **argv) {
     hs = h0;
     saddle = 0;
   }
-  const Eval saddle_ev =
-      evaluate(pot, z, g.n_atoms, g.xyz.data() + static_cast<size_t>(saddle * g.n_atoms * 3),
-               g.cells.data() + static_cast<size_t>(saddle * 9), g.pressure);
+  const Eval saddle_ev = eval_at(saddle);
   const double limit = 1e-3 * std::cbrt(saddle_ev.volume);
   const int pass_force = saddle_ev.max_force <= 1e-3;
   const int pass_stress = saddle_ev.max_enthalpy_stress <= limit;

@@ -1,86 +1,27 @@
-// Solid-state and fixed-cell band runner. The surface is rgpot shifted LJ.
+// Solid-state and fixed-cell band runner.
+#include "ss_geom.hpp"
 #include "rgsaddle.h"
 #include "rgpot/ForceStructs.hpp"
 #include "rgpot/LennardJones/LJPot.hpp"
+#include "rgpot/fortran/FortranPots.hpp"
 
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
+#include <cstdlib>
+#include <exception>
 #include <fstream>
 #include <iostream>
-#include <sstream>
 #include <string>
 #include <vector>
 
 namespace {
 
-struct Geom {
-  int n_images = 0;
-  int n_atoms = 0;
-  double pressure = 0;
-  double epsilon = 1;
-  double sigma = 1;
-  double cutoff = 1;
-  int solid = 0;
-  std::vector<double> cells;
-  std::vector<double> xyz;
-};
-
 struct Surf {
-  rgpot::LJPot *pot = nullptr;
+  rgpot::LJPot *lj = nullptr;
+  rgpot::fortranpots::TersoffPot *tersoff = nullptr;
   std::vector<int> z;
   long calls = 0;
 };
-
-bool read_geom(const std::string &path, Geom &g) {
-  std::ifstream in(path);
-  if (!in) {
-    return false;
-  }
-  std::string key;
-  while (in >> key) {
-    if (key == "image") {
-      break;
-    }
-    if (key == "n_images") {
-      in >> g.n_images;
-    } else if (key == "n_atoms") {
-      in >> g.n_atoms;
-    } else if (key == "pressure") {
-      in >> g.pressure;
-    } else if (key == "epsilon") {
-      in >> g.epsilon;
-    } else if (key == "sigma") {
-      in >> g.sigma;
-    } else if (key == "cutoff") {
-      in >> g.cutoff;
-    } else if (key == "solid") {
-      in >> g.solid;
-    } else {
-      return false;
-    }
-  }
-  if (g.n_images < 3 || g.n_atoms < 1) {
-    return false;
-  }
-  g.cells.assign(static_cast<size_t>(g.n_images * 9), 0.0);
-  g.xyz.assign(static_cast<size_t>(g.n_images * g.n_atoms * 3), 0.0);
-  for (int image = 0; image < g.n_images; ++image) {
-    if (image > 0) {
-      in >> key;
-      if (key != "image") {
-        return false;
-      }
-    }
-    for (int k = 0; k < 9; ++k) {
-      in >> g.cells[static_cast<size_t>(image * 9 + k)];
-    }
-    for (int a = 0; a < g.n_atoms * 3; ++a) {
-      in >> g.xyz[static_cast<size_t>(image * g.n_atoms * 3 + a)];
-    }
-  }
-  return static_cast<bool>(in);
-}
 
 bool eval_one(Surf &s, int n, const double *x, const double *h, double &energy,
               double *grad, double *stress) {
@@ -88,12 +29,21 @@ bool eval_one(Surf &s, int n, const double *x, const double *h, double &energy,
   rgpot::ForceOut out{force.data(), 0.0, 0.0, {}, 0};
   rgpot::ForceInput in{static_cast<size_t>(n), x, s.z.data(), h};
   try {
-    s.pot->forceImpl(in, &out);
+    if (s.lj != nullptr) {
+      s.lj->forceImpl(in, &out);
+    } else {
+      s.tersoff->forceImpl(in, &out);
+    }
   } catch (const std::exception &) {
     return false;
   }
-  if (out.has_stress == 0) {
+  if (s.lj != nullptr && out.has_stress == 0) {
     return false;
+  }
+  if (out.has_stress == 0) {
+    for (int i = 0; i < 9; ++i) {
+      out.stress[i] = 0.0;
+    }
   }
   energy = out.energy;
   for (int i = 0; i < 3 * n; ++i) {
@@ -183,30 +133,6 @@ double linear_h(double energy, const double *h, const double *h0, double pressur
   return energy + pressure * trace * std::abs(det3(h0));
 }
 
-void write_geom(const std::string &path, const Geom &g, const std::vector<double> &xyz,
-                const std::vector<double> &cells) {
-  std::ofstream out(path);
-  out.setf(std::ios::scientific);
-  out.precision(16);
-  out << "n_images " << g.n_images << "\n"
-      << "n_atoms " << g.n_atoms << "\n"
-      << "pressure " << g.pressure << "\n"
-      << "epsilon " << g.epsilon << "\n"
-      << "sigma " << g.sigma << "\n"
-      << "cutoff " << g.cutoff << "\n"
-      << "solid " << g.solid << "\n";
-  for (int image = 0; image < g.n_images; ++image) {
-    out << "image\n";
-    for (int k = 0; k < 9; ++k) {
-      out << cells[static_cast<size_t>(image * 9 + k)] << (k == 8 ? "\n" : " ");
-    }
-    for (int a = 0; a < g.n_atoms; ++a) {
-      const size_t b = static_cast<size_t>(image * g.n_atoms * 3 + 3 * a);
-      out << xyz[b] << " " << xyz[b + 1] << " " << xyz[b + 2] << "\n";
-    }
-  }
-}
-
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -230,10 +156,38 @@ int main(int argc, char **argv) {
   cfg.psi = g.sigma;
   cfg.cutoff = g.cutoff;
   cfg.switch_width = 0.0;
-  rgpot::LJPot pot(cfg);
+  rgpot::LJPot lj(cfg);
+  rgpot::fortranpots::TersoffPot tersoff;
   Surf surf;
-  surf.pot = &pot;
-  surf.z.assign(static_cast<size_t>(g.n_atoms), 18);
+  if (g.potential == "lj") {
+    surf.lj = &lj;
+  } else if (g.potential == "tersoff") {
+    if (g.solid) {
+      std::cerr << "tersoff publishes no stress; the cell is not a degree of freedom\n";
+      return 2;
+    }
+    surf.tersoff = &tersoff;
+  } else {
+    std::cerr << "unknown potential\n";
+    return 2;
+  }
+  surf.z.assign(static_cast<size_t>(g.n_atoms), g.z);
+
+  WidthLog widths;
+  if (!note_widths(g, g.cells.data(), widths)) {
+    write_geom(outdir + "/final.geom", g, g.xyz, g.cells);
+    std::ofstream out(outdir + "/result.txt");
+    out.setf(std::ios::scientific);
+    out.precision(16);
+    out << "converged 0\niterations 0\nforce_calls 0\nmax_force 0\nstatus fail_cell_width\n"
+        << "native_barrier 0\nmin_perp_width " << widths.min_width << "\nguard " << g.guard
+        << "\nwidth_ok 0\n";
+    for (int image = 0; image < g.n_images; ++image) {
+      out << "image_min_width " << image << " " << widths.per_image[static_cast<size_t>(image)]
+          << "\n";
+    }
+    return 0;
+  }
 
   rgsaddle_band_config_t band{};
   rgsaddle_abi_stamp(&band.version);
@@ -276,6 +230,18 @@ int main(int argc, char **argv) {
       status = rgsaddle_status_name(code);
       break;
     }
+    std::vector<double> step_cells(g.cells.size());
+    if (g.solid) {
+      rgsaddle_band_cells(session, step_cells.data());
+    } else {
+      step_cells = g.cells;
+    }
+    if (!note_widths(g, step_cells.data(), widths)) {
+      status = "fail_cell_width";
+      converged = 0;
+      steps += 1;
+      break;
+    }
     if (report.status == RGSADDLE_STATUS_CONVERGED) {
       converged = 1;
       status = "converged";
@@ -304,6 +270,7 @@ int main(int argc, char **argv) {
   {
     double highest = -1e300;
     double first = 0.0;
+    int interior = 0;
     std::vector<double> grad(static_cast<size_t>(3 * g.n_atoms));
     double stress[9];
     double energy = 0.0;
@@ -320,9 +287,14 @@ int main(int argc, char **argv) {
       if (image == 0) {
         first = value;
       }
-      highest = std::max(highest, value);
+      if (image > 0 && image + 1 < g.n_images) {
+        highest = std::max(highest, value);
+        interior += 1;
+      }
     }
-    native_barrier = highest - first;
+    if (interior > 0) {
+      native_barrier = highest - first;
+    }
   }
   // The barrier evaluation is not part of the optimization.
   const long opt_calls = calls;
@@ -336,7 +308,14 @@ int main(int argc, char **argv) {
       << "force_calls " << opt_calls << "\n"
       << "max_force " << report.max_force << "\n"
       << "status " << status << "\n"
-      << "native_barrier " << native_barrier << "\n";
+      << "native_barrier " << native_barrier << "\n"
+      << "min_perp_width " << widths.min_width << "\n"
+      << "guard " << g.guard << "\n"
+      << "width_ok " << widths.ok << "\n";
+  for (int image = 0; image < g.n_images; ++image) {
+    out << "image_min_width " << image << " " << widths.per_image[static_cast<size_t>(image)]
+        << "\n";
+  }
   rgsaddle_band_free(session);
   return 0;
 }
