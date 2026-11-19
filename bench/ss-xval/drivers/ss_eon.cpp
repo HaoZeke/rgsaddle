@@ -1,0 +1,240 @@
+// eOn band runner on rgpot shifted LJ.
+#include "eon/Matter.h"
+#include "eon/NudgedElasticBand.h"
+#include "eon/Parameters.h"
+#include "eon/potentials/RgpotAdapter/RgpotAdapter.h"
+#include "rgpot/LennardJones/LJPot.hpp"
+
+#include <cmath>
+#include <fstream>
+#include <iostream>
+#include <limits>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace {
+
+struct Geom {
+  int n_images = 0;
+  int n_atoms = 0;
+  double pressure = 0;
+  double epsilon = 1;
+  double sigma = 1;
+  double cutoff = 1;
+  int solid = 0;
+  std::vector<double> cells;
+  std::vector<double> xyz;
+};
+
+bool read_geom(const std::string &path, Geom &g) {
+  std::ifstream in(path);
+  if (!in) {
+    return false;
+  }
+  std::string key;
+  while (in >> key) {
+    if (key == "image") {
+      break;
+    }
+    if (key == "n_images") {
+      in >> g.n_images;
+    } else if (key == "n_atoms") {
+      in >> g.n_atoms;
+    } else if (key == "pressure") {
+      in >> g.pressure;
+    } else if (key == "epsilon") {
+      in >> g.epsilon;
+    } else if (key == "sigma") {
+      in >> g.sigma;
+    } else if (key == "cutoff") {
+      in >> g.cutoff;
+    } else if (key == "solid") {
+      in >> g.solid;
+    } else {
+      return false;
+    }
+  }
+  if (g.n_images < 3 || g.n_atoms < 1) {
+    return false;
+  }
+  g.cells.assign(static_cast<size_t>(g.n_images * 9), 0.0);
+  g.xyz.assign(static_cast<size_t>(g.n_images * g.n_atoms * 3), 0.0);
+  for (int image = 0; image < g.n_images; ++image) {
+    if (image > 0) {
+      in >> key;
+      if (key != "image") {
+        return false;
+      }
+    }
+    for (int k = 0; k < 9; ++k) {
+      in >> g.cells[static_cast<size_t>(image * 9 + k)];
+    }
+    for (int a = 0; a < g.n_atoms * 3; ++a) {
+      in >> g.xyz[static_cast<size_t>(image * g.n_atoms * 3 + a)];
+    }
+  }
+  return static_cast<bool>(in);
+}
+
+double linear_h(double energy, const Matrix3d &h, const Matrix3d &h0, double pressure) {
+  if (pressure == 0.0) {
+    return energy;
+  }
+  const Matrix3d strain = h0.inverse() * (h - h0);
+  return energy + pressure * strain.trace() * std::abs(h0.determinant());
+}
+
+void write_result(const std::string &outdir, int converged, long iterations,
+                  long force_calls, double max_force, const std::string &status,
+                  double native_barrier, const Geom &g, const std::vector<eonc::Matter> &images) {
+  if (!images.empty()) {
+    std::ofstream geom(outdir + "/final.geom");
+    geom.setf(std::ios::scientific);
+    geom.precision(16);
+    geom << "n_images " << g.n_images << "\nn_atoms " << g.n_atoms << "\npressure " << g.pressure
+         << "\nepsilon " << g.epsilon << "\nsigma " << g.sigma << "\ncutoff " << g.cutoff
+         << "\nsolid " << g.solid << "\n";
+    for (const auto &image : images) {
+      const Matrix3d cell = image.getCell();
+      const AtomMatrix xyz = image.getPositions();
+      geom << "image\n";
+      for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c) {
+          geom << cell(r, c) << (c == 2 ? "\n" : " ");
+        }
+      }
+      for (int a = 0; a < g.n_atoms; ++a) {
+        geom << xyz(a, 0) << " " << xyz(a, 1) << " " << xyz(a, 2) << "\n";
+      }
+    }
+  }
+  std::ofstream out(outdir + "/result.txt");
+  out.setf(std::ios::scientific);
+  out.precision(16);
+  out << "converged " << converged << "\n"
+      << "iterations " << iterations << "\n"
+      << "force_calls " << force_calls << "\n"
+      << "max_force " << max_force << "\n"
+      << "status " << status << "\n"
+      << "native_barrier " << native_barrier << "\n";
+}
+
+}  // namespace
+
+int main(int argc, char **argv) {
+  if (argc != 8) {
+    std::cerr << "usage: ss_eon geom outdir optimizer spring ci tol max_iter\n";
+    return 2;
+  }
+  Geom g;
+  if (!read_geom(argv[1], g)) {
+    std::cerr << "could not read geometry\n";
+    return 2;
+  }
+  const std::string outdir = argv[2];
+  const std::string optimizer = argv[3];
+  const double spring = std::atof(argv[4]);
+  const double ci = std::atof(argv[5]);
+  const double tol = std::atof(argv[6]);
+  const int max_iter = std::atoi(argv[7]);
+
+  eonc::Parameters params;
+  eonc::ParametersLoadAccess::main_options(params).parallel = false;
+  auto &neb = eonc::ParametersLoadAccess::neb_options(params);
+  neb.image_count = g.n_images - 2;
+  neb.max_iterations = max_iter;
+  neb.force_tolerance = tol;
+  neb.spring.constant = spring;
+  neb.climbing_image.enabled = true;
+  neb.climbing_image.trigger_force = ci;
+  neb.climbing_image.trigger_factor = 0.0;
+  neb.solid_state.enabled = g.solid != 0;
+  neb.solid_state.pressure = g.pressure;
+  neb.solid_state.weight = 1.0;
+  auto &opt = eonc::ParametersLoadAccess::optimizer_options(params);
+  opt.max_move = 0.2;
+  opt.max_iterations = static_cast<size_t>(max_iter);
+  opt.converged_force = tol;
+  if (optimizer == "fire") {
+    neb.opt_method = eonc::OptType::FIRE;
+    opt.method = eonc::OptType::FIRE;
+    // Parameters() resolves time_step_input. Do not replace that value.
+  } else if (optimizer == "lbfgs") {
+    neb.opt_method = eonc::OptType::LBFGS;
+    opt.method = eonc::OptType::LBFGS;
+  } else {
+    std::cerr << "optimizer must be fire or lbfgs\n";
+    return 2;
+  }
+
+  rgpot::LJConfig lj;
+  lj.u0 = g.epsilon;
+  lj.psi = g.sigma;
+  lj.cutoff = g.cutoff;
+  lj.switch_width = 0.0;
+  auto potential = std::make_shared<RgpotAdapter<rgpot::LJPot>>(eonc::PotType::LJ, params, lj);
+  const size_t calls_before = potential->forceCallCounter.load();
+
+  std::vector<eonc::Matter> images;
+  images.reserve(static_cast<size_t>(g.n_images));
+  for (int image = 0; image < g.n_images; ++image) {
+    eonc::Matter matter(potential, params);
+    matter.resize(g.n_atoms);
+    Matrix3d cell;
+    for (int r = 0; r < 3; ++r) {
+      for (int c = 0; c < 3; ++c) {
+        cell(r, c) = g.cells[static_cast<size_t>(image * 9 + 3 * r + c)];
+      }
+    }
+    AtomMatrix xyz(g.n_atoms, 3);
+    for (int a = 0; a < g.n_atoms; ++a) {
+      matter.setAtomicNr(a, 18);
+      matter.setMass(a, 1.0);
+      matter.setFixed(a, false);
+      for (int c = 0; c < 3; ++c) {
+        xyz(a, c) = g.xyz[static_cast<size_t>(image * g.n_atoms * 3 + 3 * a + c)];
+      }
+    }
+    matter.setCell(cell);
+    matter.setPeriodic(true);
+    matter.setPositions(xyz);
+    images.push_back(std::move(matter));
+  }
+
+  try {
+    eonc::NudgedElasticBand band(std::move(images), params, potential);
+    const auto state = band.compute();
+    const long calls =
+        static_cast<long>(potential->forceCallCounter.load() - calls_before);
+    const bool converged = state == eonc::NudgedElasticBand::NEBStatus::GOOD;
+    double highest = -std::numeric_limits<double>::infinity();
+    double first = 0.0;
+    std::vector<eonc::Matter> kept;
+    kept.reserve(band.path.size());
+    for (size_t i = 0; i < band.path.size(); ++i) {
+      const double value = linear_h(band.path[i]->getPotentialEnergy(), band.path[i]->getCell(),
+                                    band.path.front()->getCell(), g.pressure);
+      if (i == 0) {
+        first = value;
+      }
+      highest = std::max(highest, value);
+      kept.push_back(*band.path[i]);
+    }
+    write_result(outdir, converged ? 1 : 0, band.lastIteration(), calls,
+                 band.convergenceForce(), converged ? "converged" : "not_converged",
+                 highest - first, g, kept);
+  } catch (const std::exception &err) {
+    std::string message = err.what();
+    for (char &ch : message) {
+      if (ch == '\n' || ch == '\r') {
+        ch = ' ';
+      }
+    }
+    write_result(outdir, 0, 0,
+                 static_cast<long>(potential->forceCallCounter.load() - calls_before),
+                 std::numeric_limits<double>::quiet_NaN(), "abort " + message,
+                 std::numeric_limits<double>::quiet_NaN(), g, {});
+  }
+  return 0;
+}
