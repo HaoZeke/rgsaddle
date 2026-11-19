@@ -182,3 +182,6 @@ The narrative for a session is the C and C++ how-to, not this list.
 - =rgsaddle_growing_string_set_fixed_atoms=. Purpose: Replace the per-atom fixed mask (n_atoms bytes, 1 fixed and 0 free) on a growing string session, ABI minor 44. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_growing_string_saddle_index=. Purpose: Read the saddle-index certificate of a joined growing string session, ABI minor 44. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_growing_string_free=. Purpose: Free a growing string session, ABI minor 44. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_geodesic_config_default=. Purpose: Fill `out` with the default geodesic controls (step and gradient tolerances 1e-6, max_move 0.5, lower_ratio 0.95, upper_ratio 1.1, 40 sweeps, 40 iterations, memory 8, 10 bound samples, 32 images). Parameters: the declaration. Units: the caller's.
+- =rgsaddle_geodesic_path=. Purpose: Minimize the geodesic length of an existing path. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_geodesic_morse=. Purpose: Morse pair geodesic between two geometries. Parameters: the declaration. Units: the caller's.
