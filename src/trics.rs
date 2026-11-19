@@ -841,7 +841,12 @@ fn angle(
             "TRIC angle has a zero length leg".into(),
         ));
     }
-    let cosine = (dot(u, v) / denominator).max(-1.0).min(1.0);
+    let raw_cosine = dot(u, v) / denominator;
+    let cosine = if (-1.0..=1.0).contains(&raw_cosine) {
+        raw_cosine
+    } else {
+        raw_cosine.signum()
+    };
     Ok(cosine.acos())
 }
 
@@ -1044,12 +1049,12 @@ fn solve_metric(matrix: &Array2<f64>, right: &Array1<f64>) -> Result<Array1<f64>
     let largest = values.iter().copied().fold(0.0_f64, f64::max);
     let threshold = largest * DEFAULT_RANK_TOLERANCE;
     let mut solution = Array1::zeros(n);
-    for mode in 0..n {
-        if values[mode] <= threshold {
+    for (mode, &value) in values.iter().enumerate() {
+        if value <= threshold {
             continue;
         }
         let vector = vectors.column(mode);
-        let coefficient = vector.dot(right) / values[mode];
+        let coefficient = vector.dot(right) / value;
         solution += &(&vector * coefficient);
     }
     Ok(solution)
@@ -1174,11 +1179,11 @@ fn molecular_primitives(
     for neighbors in &mut adjacency {
         neighbors.sort_unstable();
     }
-    for center in 0..n_atoms {
-        for first in 0..adjacency[center].len() {
-            for second in first + 1..adjacency[center].len() {
-                let left = adjacency[center][first];
-                let right = adjacency[center][second];
+    for (center, neighbors) in adjacency.iter().enumerate() {
+        for first in 0..neighbors.len() {
+            for second in first + 1..neighbors.len() {
+                let left = neighbors[first];
+                let right = neighbors[second];
                 let value = angle(reference, left, center, right)?;
                 if value.cos().abs() >= ANGLE_FAILURE_COSINE {
                     let bond = sub(atom(reference, left)?, atom(reference, center)?);
