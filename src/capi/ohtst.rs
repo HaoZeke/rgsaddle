@@ -15,9 +15,9 @@ use crate::error::SaddleError;
 use crate::minmode::PointSurface;
 use crate::ohtst::{
     AnalyticSurfaceDynamics, AnalyticSurfaceSampler, Hyperplane, LangevinConfig, MbarConfig,
-    PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimizerStatus, ReversibleWorkConfig,
-    TransmissionConfig, WorkEstimate, mbar_free_energies, rate_from_parts, reversible_work,
-    sample_plane, transmission_coefficient,
+    PlaneOptimizer, PlaneOptimizerConfig, PlaneOptimizerStatus, ReversibleWork,
+    ReversibleWorkConfig, TransmissionConfig, WorkEstimate, mbar_free_energies, rate_from_parts,
+    reversible_work, sample_plane, transmission_coefficient,
 };
 
 use super::{
@@ -332,6 +332,29 @@ fn guard(body: impl FnOnce() -> i32) -> i32 {
             set_last_error("OH-TST call panicked");
             RGSADDLE_SOLVER
         }
+    }
+}
+
+/// BAR and MBAR report an infinite standard error when a variance
+/// estimate overflows. The ABI carries that as a failure, never as `OK`.
+fn require_finite_errors(work: &ReversibleWork) -> Result<(), SaddleError> {
+    finite_errors([
+        ("reversible work error", Some(work.error)),
+        ("integrated work error", Some(work.integrated_error)),
+        ("BAR work error", work.bar_error),
+        ("MBAR work error", work.mbar_error),
+    ])
+}
+
+fn finite_errors<const N: usize>(
+    errors: [(&'static str, Option<f64>); N],
+) -> Result<(), SaddleError> {
+    match errors
+        .into_iter()
+        .find(|(_, error)| error.is_some_and(|value| !value.is_finite()))
+    {
+        Some((name, _)) => Err(SaddleError::NonFinite(name)),
+        None => Ok(()),
     }
 }
 
@@ -917,6 +940,9 @@ unsafe fn work_call(
         Ok(work) => work,
         Err(err) => return fail(&err),
     };
+    if let Err(err) = require_finite_errors(&work) {
+        return fail(&err);
+    }
     let mut output = RgsaddleOhtstWorkReport {
         version: stamp(),
         flags: 0,
@@ -1119,4 +1145,24 @@ unsafe fn rate_call(input: *const RgsaddleOhtstRateIn, out: *mut RgsaddleOhtstRa
         };
     }
     RGSADDLE_OK
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_infinite_or_nan_error_is_not_ok() {
+        for bad in [f64::INFINITY, f64::NAN, f64::NEG_INFINITY] {
+            let err = finite_errors([("work error", Some(0.5)), ("BAR work error", Some(bad))])
+                .unwrap_err();
+            assert!(matches!(err, SaddleError::NonFinite("BAR work error")));
+            assert_eq!(status_of(&err), RGSADDLE_NON_FINITE);
+        }
+    }
+
+    #[test]
+    fn finite_and_absent_errors_are_ok() {
+        assert!(finite_errors([("work error", Some(0.5)), ("BAR work error", None)]).is_ok());
+    }
 }
