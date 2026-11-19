@@ -809,6 +809,106 @@ int main(void) {
     }
   }
 
+  /* Free-end adaptive NEB (ABI minor 45): setter validation, level-set
+   * residual reporting, and saddle convergence. */
+  {
+    if (rgsaddle_band_set_free_end(NULL, 1, RGSADDLE_FREE_END_LAST, 1, 0.25, 0,
+                                   0.0, 0.001, 2, 1, 1) != RGSADDLE_NULL_BAND) {
+      return fail(RGSADDLE_NULL_BAND, "free_end null band");
+    }
+    rgsaddle_band_config_t fc = cfg;
+    fc.flags = RGSADDLE_BAND_NO_MIN_MODE;
+    fc.ci_trigger_factor = 0.5;
+    double fpos[7 * 3];
+    for (int i = 0; i < 7; ++i) {
+      double t = (double)i / 6.0;
+      fpos[3 * i + 0] = -1.0 + 1.6 * t;
+      fpos[3 * i + 1] = 0.2 * sin(3.14159265358979 * t);
+      fpos[3 * i + 2] = 0.0;
+    }
+    RgsaddleBand *fb = rgsaddle_band_create(&fc, 7, n_atoms, fpos);
+    if (!fb) {
+      return fail(RGSADDLE_SHAPE, "free_end band create");
+    }
+    double fres = 0.0;
+    if (rgsaddle_band_free_end_residual(fb, &fres) != RGSADDLE_NO_EVALUATION ||
+        rgsaddle_band_set_free_end(fb, 2, RGSADDLE_FREE_END_LAST, 1, 0.25, 0,
+                                   0.0, 0.001, 2, 1, 1) !=
+            RGSADDLE_INVALID_PARAMETER ||
+        rgsaddle_band_set_free_end(fb, 1, 99, 1, 0.25, 0, 0.0, 0.001, 2, 1,
+                                   1) != RGSADDLE_INVALID_PARAMETER ||
+        rgsaddle_band_set_free_end(fb, 1, RGSADDLE_FREE_END_LAST, 1, 0.25, 0,
+                                   0.0, 0.001, 0, 1, 1) !=
+            RGSADDLE_INVALID_PARAMETER ||
+        rgsaddle_band_set_free_end(fb, 1, RGSADDLE_FREE_END_LAST, 1, 0.25, 0,
+                                   0.0, 0.001, 2, 0, 1) !=
+            RGSADDLE_INVALID_PARAMETER ||
+        rgsaddle_band_set_free_end(fb, 1, RGSADDLE_FREE_END_LAST, 1, 0.25, 0,
+                                   0.0, 0.001, 2, 1, 1) != RGSADDLE_OK) {
+      return fail(RGSADDLE_INVALID_PARAMETER, "free_end setter validation");
+    }
+    climbing_seen_t fseen = {1, 0, -1};
+    rgsaddle_report_t fr;
+    memset(&fr, 0, sizeof fr);
+    int fk = 0;
+    do {
+      st = rgsaddle_band_step(fb, surface, &fseen, &fr);
+      if (st != RGSADDLE_OK) {
+        return fail(st, "free_end step");
+      }
+      ++fk;
+    } while (fr.status == RGSADDLE_STATUS_RUNNING && fk < 500);
+    if (fr.status != RGSADDLE_STATUS_CONVERGED ||
+        rgsaddle_band_free_end_residual(fb, &fres) != RGSADDLE_OK ||
+        fabs(fres) > 1e-5) {
+      return fail(RGSADDLE_SOLVER, "free_end band residual or convergence");
+    }
+    rgsaddle_band_free(fb);
+  }
+
+  /* A local window with max_cuts > 0 removes images and the evaluation
+   * matches the reported positions. */
+  {
+    if (rgsaddle_band_free_end_cuts(NULL) != 0) {
+      return fail(RGSADDLE_NULL_BAND, "free_end_cuts null band");
+    }
+    rgsaddle_band_config_t cc = cfg;
+    cc.flags = RGSADDLE_BAND_NO_MIN_MODE;
+    double cpos[5 * 3];
+    for (int i = 0; i < 5; ++i) {
+      cpos[3 * i + 0] = -0.6 + 0.3 * (double)i;
+      cpos[3 * i + 1] = 0.0;
+      cpos[3 * i + 2] = 0.0;
+    }
+    RgsaddleBand *cb = rgsaddle_band_create(&cc, 5, n_atoms, cpos);
+    if (!cb) {
+      return fail(RGSADDLE_SHAPE, "free_end cut band create");
+    }
+    if (rgsaddle_band_evaluation(cb, NULL, NULL, NULL) != RGSADDLE_NO_EVALUATION ||
+        rgsaddle_band_set_free_end(cb, 1, RGSADDLE_FREE_END_LAST, 0, 0.0, 1, 100.0,
+                                   0.001, 1, 1, 0) != RGSADDLE_OK) {
+      return fail(RGSADDLE_INVALID_PARAMETER, "free_end cut setup");
+    }
+    climbing_seen_t cseen = {1, 0, -1};
+    rgsaddle_report_t cr;
+    memset(&cr, 0, sizeof cr);
+    st = rgsaddle_band_step(cb, surface, &cseen, &cr);
+    if (st != RGSADDLE_OK || rgsaddle_band_free_end_cuts(cb) < 1) {
+      return fail(st == RGSADDLE_OK ? RGSADDLE_SOLVER : st, "free_end cut count");
+    }
+    double energies[5], gradients[15], projected[9], positions[15];
+    if (rgsaddle_band_evaluation(cb, energies, gradients, projected) != RGSADDLE_OK ||
+        rgsaddle_band_positions(cb, positions) != RGSADDLE_OK) {
+      return fail(RGSADDLE_NO_EVALUATION, "free_end evaluation");
+    }
+    double x = positions[0];
+    double expect = (x * x - 1.0) * (x * x - 1.0);
+    if (fabs(energies[0] - expect) > 1e-12) {
+      return fail(RGSADDLE_SOLVER, "free_end evaluation energy");
+    }
+    rgsaddle_band_free(cb);
+  }
+
   printf("RGSADDLE_C_ABI_OK steps=%d ci=%lld\n", steps, (long long)rep.ci_index);
   return RGSADDLE_OK;
 }

@@ -23,12 +23,14 @@ use crate::tangent::TangentKind;
 use crate::tangent::compute_tangent;
 
 mod climb;
+mod free_end;
 mod growing_string;
 mod min_mode;
 mod pair_model;
 mod saddle_check;
 mod string;
 mod zoom;
+pub use free_end::{FeaNebReport, FeaNebSession, FreeEndConfig, FreeEndReport, FreeEndSide};
 pub use growing_string::{
     GrowingStringConfig, GrowingStringPhase, GrowingStringReport, GrowingStringSession,
 };
@@ -36,6 +38,13 @@ pub use min_mode::MinModeRefine;
 pub(crate) use min_mode::RefinePhase;
 pub use string::{StringConfig, StringSession};
 pub use zoom::ZoomConfig;
+
+fn lock_guard<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
 
 /// Row-major 3x3 simulation cell: row `i` is lattice vector `a_i`.
 /// Band mechanics need nothing more from periodicity; neighbor lists
@@ -401,6 +410,13 @@ pub struct BandConfig {
     /// step, anchoring the climbing image when armed. `None`, the
     /// default, runs the nudged elastic band.
     pub string: Option<StringConfig>,
+    /// Free-end adaptive nudged elastic band (FEA-NEB) of Zhang, Zhang,
+    /// Ye, and Zheng, J. Chem. Phys. 145, 094104 (2016),
+    /// doi:10.1063/1.4962019: one terminal image moves subject to the
+    /// energy level-set constraint \(E(x_{\mathrm{end}}) = E_{\mathrm{target}}\)
+    /// with repeated adaptive cut-and-remesh around the detected saddle.
+    /// `None`, the default, keeps both endpoints fixed.
+    pub free_end: Option<FreeEndConfig>,
 }
 
 with_setters!(BandConfig {
@@ -424,6 +440,7 @@ with_setters!(BandConfig {
     with_fixed_atoms => fixed_atoms: val Vec<bool>,
     with_saddle_check => saddle_check: opt SaddleIndexCheck,
     with_string => string: opt StringConfig,
+    with_free_end => free_end: opt FreeEndConfig,
 });
 
 impl BandConfig {
@@ -552,6 +569,7 @@ impl Default for BandConfig {
             fixed_atoms: Vec::new(),
             saddle_check: Some(SaddleIndexCheck::default()),
             string: None,
+            free_end: None,
         }
     }
 }
@@ -2493,6 +2511,7 @@ pub struct BandSession {
     zoom: zoom::ZoomState,
     saddle: saddle_check::SaddleState,
     string_state: string::StringState,
+    free_end_state: free_end::FreeEndState,
     highs: bool,
 }
 
@@ -2578,6 +2597,9 @@ impl BandSession {
         if config.string.is_some() {
             string::check_string(&config)?;
         }
+        if let Some(fe) = &config.free_end {
+            free_end::check_free_end(&config, fe)?;
+        }
         if !(config.time_step.is_finite() && config.time_step > 0.0) {
             return Err(SaddleError::Invalid(
                 "band time step must be positive and finite".into(),
@@ -2601,6 +2623,7 @@ impl BandSession {
             zoom: zoom::ZoomState::default(),
             saddle: saddle_check::SaddleState::default(),
             string_state: string::StringState::default(),
+            free_end_state: free_end::FreeEndState::default(),
             highs: false,
         };
         if session.config.has_fixed() {
@@ -3118,6 +3141,7 @@ impl BandSession {
             self.positions.row_mut(i).assign(&new_row);
             if i == 0 || i == n_images - 1 {
                 self.state.set_endpoints(None);
+                self.free_end_state.fixed_endpoint_energy = None;
                 // The interior may be unchanged, so the solver's own
                 // cached force (assembled against the old endpoint)
                 // would answer the next step; drop it, keep the memory.
@@ -3145,6 +3169,7 @@ impl BandSession {
     pub fn reset(&mut self) {
         self.restart();
         self.state.set_endpoints(None);
+        self.free_end_state.fixed_endpoint_energy = None;
         self.state.drop_last();
     }
 
@@ -3242,6 +3267,25 @@ impl BandSession {
         })
     }
 
+    pub(super) fn cache_free_end_evaluation(
+        &self,
+        energies: Array1<f64>,
+        gradients: Array2<f64>,
+        projected: Array1<f64>,
+    ) {
+        let evaluation = BandEval {
+            x: self.interior_flat(),
+            energies,
+            gradients,
+            projected,
+            stresses: Array2::zeros((0, 0)),
+            band_positions: Array2::zeros((0, 0)),
+            band_cells: Vec::new(),
+        };
+        *lock_guard(&self.state.last) = Some(evaluation);
+        *lock_guard(&self.state.previous) = None;
+    }
+
     fn interior_flat(&self) -> Array1<f64> {
         let n_images = self.positions.nrows();
         self.positions
@@ -3298,6 +3342,18 @@ impl BandSession {
         }
         if let Some(string_cfg) = self.config.string {
             return self.step_string(surface, string_cfg);
+        }
+        if let Some(fe_cfg) = self.config.free_end {
+            let fe_rep = self.step_free_end_inner(surface, fe_cfg)?;
+            return Ok(BandReport {
+                status: fe_rep.status,
+                max_force: fe_rep.max_force,
+                ci_index: fe_rep.ci_index,
+                iteration: fe_rep.iteration,
+                surface_rows: fe_rep.surface_rows,
+                curvature: None,
+                saddle_index: None,
+            });
         }
         if self.rtr.is_some() {
             return self.step_rtr(surface);

@@ -3802,6 +3802,106 @@ pub unsafe extern "C" fn rgsaddle_growing_string_free(session: *mut RgsaddleGrow
     }
 }
 
+/// Enable, replace, or clear free-end adaptive NEB on a live band (ABI minor 45).
+///
+/// # Safety
+/// `band` is a live session or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_band_set_free_end(
+    band: *mut RgsaddleBand,
+    enabled: i32,
+    side: i32,
+    has_target_energy: i32,
+    target_energy: f64,
+    max_cuts: i64,
+    cut_force: f64,
+    energy_tol: f64,
+    stability: i64,
+    window_offset: i64,
+    cubic: i32,
+) -> i32 {
+    if band.is_null() {
+        return RGSADDLE_NULL_BAND;
+    }
+    let free_end = match enabled {
+        0 => None,
+        1 => {
+            let Some(side_enum) = crate::FreeEndSide::from_abi(side) else {
+                return RGSADDLE_INVALID_PARAMETER;
+            };
+            if (has_target_energy != 0 && has_target_energy != 1)
+                || (cubic != 0 && cubic != 1)
+                || max_cuts < 0
+                || stability < 1
+                || window_offset < 1
+            {
+                return RGSADDLE_INVALID_PARAMETER;
+            }
+            let target = if has_target_energy == 1 {
+                Some(target_energy)
+            } else {
+                None
+            };
+            Some(
+                crate::FreeEndConfig::default()
+                    .with_side(side_enum)
+                    .with_target_energy(target)
+                    .with_max_cuts(max_cuts as usize)
+                    .with_cut_force(cut_force)
+                    .with_energy_tol(energy_tol)
+                    .with_stability(stability as usize)
+                    .with_window_offset(window_offset as usize)
+                    .with_cubic(cubic == 1),
+            )
+        }
+        _ => return RGSADDLE_INVALID_PARAMETER,
+    };
+    match unsafe { (*band).session.set_free_end(free_end) } {
+        Ok(()) => RGSADDLE_OK,
+        Err(e) => status_of(&e),
+    }
+}
+
+/// Read the signed target-energy residual `E(x_end) - E_target` from a
+/// free-end band into `out` (ABI minor 45).
+///
+/// # Safety
+/// `band` and `out` must be valid pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_band_free_end_residual(
+    band: *const RgsaddleBand,
+    out: *mut f64,
+) -> i32 {
+    if band.is_null() {
+        return RGSADDLE_NULL_BAND;
+    }
+    if out.is_null() {
+        return RGSADDLE_INVALID_PARAMETER;
+    }
+    let band = unsafe { &*band };
+    match band.session.target_energy_residual() {
+        Some(res) => {
+            unsafe { *out = res };
+            RGSADDLE_OK
+        }
+        None => RGSADDLE_NO_EVALUATION,
+    }
+}
+
+/// Number of adaptive cut-and-remesh refinements performed so far on a
+/// free-end band (ABI minor 45).
+///
+/// # Safety
+/// `band` is a live session or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_band_free_end_cuts(band: *const RgsaddleBand) -> i64 {
+    if band.is_null() {
+        return 0;
+    }
+    let band = unsafe { &*band };
+    band.session.free_end_cuts() as i64
+}
+
 /// # Safety
 /// `session` is a live session or null. `enabled` is 0 or 1.
 #[unsafe(no_mangle)]

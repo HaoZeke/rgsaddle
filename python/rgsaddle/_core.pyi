@@ -291,6 +291,19 @@ class Band:
         Enable or clear the simplified string method on the band (ABI minor 44).
         """
 
+    def set_free_end(self, enabled: bool = True, side: str = 'last', target_energy: object | None = None, max_cuts: int = 2, cut_force: float = 0.0, energy_tol: float = 0.001, stability: int = 2, window_offset: int = 1, cubic: bool = True) -> None:
+        """Enable or clear free-end adaptive NEB on the band (ABI minor 45)."""
+
+    def target_energy_residual(self) -> float | None:
+        """
+        Signed target-energy residual E(x_end) - E_target from the last free-end step.
+        """
+
+    def free_end_cuts(self) -> int:
+        """
+        Number of adaptive cut-and-remesh refinements performed so far (ABI minor 45).
+        """
+
     def set_fixed_atoms(self, fixed: Annotated[NDArray[numpy.uint8], dict(shape=(None,), order='C', device='cpu', writable=False)]) -> None:
         """Replace the per-atom fixed mask (1 fixed, 0 free)."""
 
