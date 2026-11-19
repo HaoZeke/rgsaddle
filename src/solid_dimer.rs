@@ -2131,6 +2131,160 @@ mod tests {
         assert!(berendsen_isotropic_scale(0.1, 0.0, 1.0, 1.0).is_err());
     }
 
+    /// Strain step for the pair-spring Cauchy stress.
+    const PAIR_STRESS_STEP: f64 = 1.0e-6;
+    /// Lattice constant agreement for the relaxed pair crystal.
+    const PAIR_LATTICE_TOLERANCE: f64 = 1.0e-8;
+    /// Hydrostatic tension left at that lattice constant.
+    const PAIR_TENSION_TOLERANCE: f64 = 1.0e-6;
+
+    /// Nearest image springs along the three cell edges.
+    struct EdgeSprings {
+        k: f64,
+        r0: f64,
+    }
+
+    impl PointSurface for EdgeSprings {
+        fn eval(&self, r: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+            self.eval_in_cell(r, &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0])
+        }
+
+        fn eval_in_cell(
+            &self,
+            r: ArrayView1<f64>,
+            cell: &[f64; 9],
+        ) -> Result<(f64, Array1<f64>), SaddleError> {
+            let mut energy = 0.0;
+            for edge in 0..3 {
+                let base = 3 * edge;
+                let length = (cell[base] * cell[base]
+                    + cell[base + 1] * cell[base + 1]
+                    + cell[base + 2] * cell[base + 2])
+                    .sqrt();
+                let delta = length - self.r0;
+                energy += 0.5 * self.k * delta * delta;
+            }
+            Ok((energy, Array1::zeros(r.len())))
+        }
+    }
+
+    fn hydrostatic_tension(stress: M3) -> f64 {
+        (stress[0][0] + stress[1][1] + stress[2][2]) / 3.0
+    }
+
+    fn pair_tension(length: f64) -> f64 {
+        let springs = EdgeSprings { k: 1.0, r0: 1.0 };
+        let origin = array![0.0, 0.0, 0.0];
+        let stress = finite_difference_cauchy_stress(
+            &springs,
+            origin.view(),
+            diagonal(length, length, length),
+            PAIR_STRESS_STEP,
+        )
+        .expect("pair stress");
+        hydrostatic_tension(stress)
+    }
+
+    #[test]
+    fn berendsen_scale_is_identity_at_zero_tension() {
+        let cases = [(1.0, 1.0, 1.0), (0.87, 0.002, 0.5), (4.0, 0.1, 10.0)];
+        for (modulus, dt, tau) in cases {
+            let scale = berendsen_isotropic_scale(0.0, modulus, dt, tau).expect("scale");
+            assert_eq!(scale.to_bits(), 1.0_f64.to_bits());
+            let capped = BerendsenIsotropic::default()
+                .with_max_strain_per_step(0.005)
+                .scale(0.0, modulus, dt, tau)
+                .expect("capped");
+            assert_eq!(capped.to_bits(), 1.0_f64.to_bits());
+        }
+    }
+
+    #[test]
+    fn berendsen_scale_shrinks_a_stretched_cell() {
+        let stretched = pair_tension(1.05);
+        assert!(
+            stretched > 0.0,
+            "a stretched pair cell is under tension, got {stretched}"
+        );
+        let shrink = berendsen_isotropic_scale(stretched, 1.0, 0.2, 1.0).expect("scale");
+        assert!(
+            shrink < 1.0,
+            "tension {stretched} must shrink the cell, scale {shrink}"
+        );
+        let compressed = pair_tension(0.95);
+        assert!(
+            compressed < 0.0,
+            "a compressed pair cell is under compression, got {compressed}"
+        );
+        let grow = berendsen_isotropic_scale(compressed, 1.0, 0.2, 1.0).expect("scale");
+        assert!(
+            grow > 1.0,
+            "tension {compressed} must expand the cell, scale {grow}"
+        );
+    }
+
+    #[test]
+    fn berendsen_scale_rejects_bad_arguments() {
+        let bad = [
+            (f64::NAN, 1.0, 1.0, 1.0),
+            (f64::INFINITY, 1.0, 1.0, 1.0),
+            (f64::NEG_INFINITY, 1.0, 1.0, 1.0),
+            (0.1, f64::NAN, 1.0, 1.0),
+            (0.1, f64::INFINITY, 1.0, 1.0),
+            (0.1, 0.0, 1.0, 1.0),
+            (0.1, -1.0, 1.0, 1.0),
+            (0.1, 1.0, f64::NAN, 1.0),
+            (0.1, 1.0, 0.0, 1.0),
+            (0.1, 1.0, -0.5, 1.0),
+            (0.1, 1.0, 1.0, f64::NAN),
+            (0.1, 1.0, 1.0, 0.0),
+            (0.1, 1.0, 1.0, -1.0),
+        ];
+        for (tension, modulus, dt, tau) in bad {
+            assert!(
+                berendsen_isotropic_scale(tension, modulus, dt, tau).is_err(),
+                "tension {tension} modulus {modulus} dt {dt} tau {tau}"
+            );
+        }
+        assert!(berendsen_isotropic_scale(2.0, 1.0, 1.0, 1.0).is_err());
+        let bad_caps = [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.1, 1.0, 1.5];
+        for cap in bad_caps {
+            assert!(
+                BerendsenIsotropic::default()
+                    .with_max_strain_per_step(cap)
+                    .scale(0.1, 1.0, 1.0, 1.0)
+                    .is_err(),
+                "cap {cap}"
+            );
+        }
+        let capped = BerendsenIsotropic::default()
+            .with_max_strain_per_step(0.005)
+            .scale(2.0, 1.0, 1.0, 1.0)
+            .expect("capped");
+        assert_eq!(capped.to_bits(), (1.0 - 0.005_f64).cbrt().to_bits());
+    }
+
+    #[test]
+    fn berendsen_scale_relaxes_a_pair_crystal_to_zero_stress() {
+        let rest = 1.0;
+        let mut length = 1.08;
+        let mut scale = 0.0;
+        for _ in 0..400 {
+            let tension = pair_tension(length);
+            scale = berendsen_isotropic_scale(tension, 1.0, 0.25, 1.0).expect("scale");
+            length *= scale;
+        }
+        assert!(
+            (length - rest).abs() < PAIR_LATTICE_TOLERANCE,
+            "lattice {length} last scale {scale}"
+        );
+        let tension = pair_tension(length);
+        assert!(
+            tension.abs() < PAIR_TENSION_TOLERANCE,
+            "tension {tension} at lattice {length}"
+        );
+    }
+
     fn diagonal(x: f64, y: f64, z: f64) -> M3 {
         [[x, 0.0, 0.0], [0.0, y, 0.0], [0.0, 0.0, z]]
     }
