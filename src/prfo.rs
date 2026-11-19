@@ -13,6 +13,16 @@
 //!
 //! The i-PI Nichols shift is a different displacement and stays in
 //! [`crate::nichols`].
+//!
+//! The rational-function form is that of Banerjee, Adams, Simons, and
+//! Shepard, J. Phys. Chem. 89, 52 (1985), doi:10.1021/j100247a015.
+//!
+//! Units: the Cartesian Hessian is in eV/Angstrom^2, the gradient in
+//! eV/Angstrom, masses in amu and the trust radius and the returned
+//! displacement in Angstrom. The eigenbasis entry points work in
+//! mass-weighted coordinates: eigenvalues in eV/(Angstrom^2 amu), gradient
+//! components in eV/(Angstrom sqrt(amu)) and steps in Angstrom sqrt(amu).
+//! `alpha` is dimensionless.
 
 use ndarray::{Array1, ArrayView1, ArrayView2};
 
@@ -20,6 +30,8 @@ use crate::error::SaddleError;
 use crate::nichols::{mass_weight, masses_or_ones, sym_eigh};
 
 /// Which stationary structure the partition is aimed at.
+///
+/// There is no default; pass the kind explicitly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrfoKind {
     /// Maximize along the lowest mode and minimize along the rest.
@@ -71,6 +83,19 @@ fn maximize_root(curvature: f64, gradient: f64, alpha: f64) -> f64 {
 /// `evals` ascend. `gradient` is the energy gradient in that basis.
 /// [`PrfoKind::Index1`] maximizes mode 0. [`PrfoKind::Minimize`]
 /// minimizes every mode.
+///
+/// `evals` and `gradient` have the same length `n`, in the units of the
+/// module docs. `alpha` is positive and finite; `1.0` is the pure partition
+/// and a larger value shortens the step. The result has length `n`, one
+/// step component per mode.
+///
+/// # Errors
+///
+/// - [`SaddleError::Shape`] when `n == 0`, `gradient.len() != n`, or
+///   `kind` is [`PrfoKind::Index1`] with `n < 2`.
+/// - [`SaddleError::Invalid`] when `alpha` is not positive and finite.
+/// - [`SaddleError::NonFinite`] when the secular equation or the step is not
+///   finite.
 pub fn partitioned_rfo_eigen(
     evals: ArrayView1<f64>,
     gradient: ArrayView1<f64>,
@@ -147,6 +172,18 @@ fn cartesian_of(
 /// has those eigenvectors as columns. `mass` is the per-coordinate
 /// mass that takes the mass-weighted step back to Cartesian
 /// coordinates. The trust radius bounds the Cartesian Euclidean norm.
+///
+/// `evecs` is `n x n`, `mass` has length `n` in amu and `trust_radius` is in
+/// Angstrom. The result is the Cartesian displacement, length `n`, in
+/// Angstrom, with norm at most `trust_radius`. The scaling `alpha` is
+/// bracketed by doubling (up to 40 times) and then bisected (70 times).
+///
+/// # Errors
+///
+/// - [`SaddleError::Invalid`] when `trust_radius` is not positive and
+///   finite, or no scaling reached by the doubling puts the step inside it.
+/// - Every error of [`partitioned_rfo_eigen`].
+/// - [`SaddleError::NonFinite`] when the Cartesian step is not finite.
 pub fn restricted_partitioned_rfo(
     evals: ArrayView1<f64>,
     gradient: ArrayView1<f64>,
@@ -201,6 +238,42 @@ pub fn restricted_partitioned_rfo(
 }
 
 /// Restricted-step partition from a Cartesian energy Hessian and gradient.
+///
+/// `hessian` is `n x n` in eV/Angstrom^2 and need only be symmetric to what
+/// the eigensolver accepts. `gradient` has length `n` in eV/Angstrom.
+/// `masses` is one amu value per coordinate (`None` is unit mass) and
+/// `trust_radius` is in Angstrom. Returns the displacement, length `n`, in
+/// Angstrom, with norm at most `trust_radius`. It diagonalizes the
+/// mass-weighted Hessian, so cost is that of a dense symmetric eigensolve.
+///
+/// # Errors
+///
+/// - [`SaddleError::Shape`] when `hessian` is not `n x n`.
+/// - [`SaddleError::NonFinite`] when `gradient` has a NaN or infinite entry.
+/// - The errors of the mass weighting, the eigensolve and
+///   [`restricted_partitioned_rfo`].
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::array;
+/// use rgsaddle::prfo::{PrfoKind, restricted_prfo_displacement};
+///
+/// // Mode 0 has negative curvature (-1 eV/Angstrom^2), mode 1 positive (2).
+/// let hessian = array![[-1.0, 0.0], [0.0, 2.0]];
+/// let gradient = array![1.0, 1.0];
+/// let dx = restricted_prfo_displacement(
+///     hessian.view(),
+///     gradient.view(),
+///     None,
+///     0.5,
+///     PrfoKind::Index1,
+/// )?;
+/// // Uphill along the negative mode, downhill along the other, inside 0.5 Angstrom.
+/// assert!(dx[0] > 0.0 && dx[1] < 0.0);
+/// assert!(dx.dot(&dx).sqrt() <= 0.5);
+/// # Ok::<(), rgsaddle::SaddleError>(())
+/// ```
 pub fn restricted_prfo_displacement(
     hessian: ArrayView2<f64>,
     gradient: ArrayView1<f64>,

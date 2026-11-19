@@ -8,6 +8,17 @@
 //! [`rgmin::vecops`] so `par` applies. A host that needs the increment
 //! on a set calls [`force_match_on`] (`project` / `retract` /
 //! `transport`).
+//!
+//! Units: positions and lattice translations in Angstrom, the gradient in
+//! eV/Angstrom, the seed Hessian in eV/Angstrom^2. Frames are flat `3N`
+//! vectors, atom-major `[x0, y0, z0, x1, ...]`, with one atomic number per
+//! atom in `z`. The seed Hessian is `3N x 3N`; it is the identity when no
+//! pair falls inside the cutoffs.
+//!
+//! The matcher is a port of Sella's `force_match.pyx` (Sella is described by
+//! Hermes, Sargsyan, Najm, and Zádor, J. Chem. Theory Comput. 18, 6974
+//! (2022), doi:10.1021/acs.jctc.2c00395). The paper does not describe the
+//! force-matching seed, so no separate reference exists for it.
 
 use ndarray::{Array1, Array2, Array3, ArrayView1};
 use rgmin::Manifold;
@@ -20,19 +31,30 @@ use crate::error::SaddleError;
 const DEFAULT_RHO: f64 = 2.5;
 
 /// Pair term in `force_match.pyx` `types`.
+///
+/// Linear coefficients are fitted by least squares; the nonlinear one
+/// (`rho` or `r0`, in Angstrom) by a bounded search.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PairKind {
-    /// Lennard-Jones `C6` / `C12`.
+    /// Lennard-Jones `C6` / `C12`: two linear coefficients per element pair,
+    /// no nonlinear one.
     Lj,
-    /// Buckingham `A`, `C6`, `rho`.
+    /// Buckingham `A`, `C6` (two linear coefficients per element pair) and
+    /// `rho` (one nonlinear, in Angstrom, bounded to 0.1-10).
     Buckingham,
-    /// Morse `A`, `B`, `rho`.
+    /// Morse `A`, `B` (two linear coefficients per element pair) and `rho`
+    /// (one nonlinear, in Angstrom, bounded to 0.1-10).
     Morse,
-    /// Harmonic bond `K` at `r0`.
+    /// Harmonic bond `K` in eV/Angstrom^2 (one linear coefficient per element
+    /// pair) at `r0` (one nonlinear, in Angstrom, bounded to 0.5-2 times the
+    /// sum of the covalent radii).
     Bond,
 }
 
 /// Options for the full Cython matcher.
+///
+/// The defaults are `kinds = [Buckingham, Bond]`, `bond_scale = 1.5`,
+/// `rcut_factor = 3.0` and `tvecs = [[0, 0, 0]]`.
 ///
 /// Non-exhaustive: start from [`ForceMatchOpts::default`] and chain the
 /// `with_*` setters.
@@ -41,11 +63,15 @@ pub enum PairKind {
 pub struct ForceMatchOpts {
     /// Sella `types`. Default is `buck` then `bond`.
     pub kinds: Vec<PairKind>,
-    /// Bond cutoff scale. Sella uses `1.5 * (rcov_i + rcov_j)`.
+    /// Bond cutoff scale, dimensionless: a pair is a bond when
+    /// `r <= bond_scale * (rcov_i + rcov_j)`. Sella uses 1.5.
     pub bond_scale: f64,
-    /// vdW cutoff as a multiple of the shortest pair distance. Sella uses 3.
+    /// vdW cutoff as a multiple of the shortest pair distance,
+    /// dimensionless. Sella uses 3.
     pub rcut_factor: f64,
-    /// Lattice translations. Empty / identity is the isolated molecule.
+    /// Lattice translations `[x, y, z]` in Angstrom, each added to the
+    /// separation of every atom pair. Empty or just the zero vector is the
+    /// isolated molecule.
     pub tvecs: Vec<[f64; 3]>,
 }
 
@@ -70,11 +96,15 @@ impl Default for ForceMatchOpts {
 /// Fitted seed Hessian plus linear / nonlinear coefficients.
 #[derive(Clone, Debug)]
 pub struct ForceMatchReport {
-    /// The hessian.
+    /// The seed Hessian, `3N x 3N`, in eV/Angstrom^2. It is the identity
+    /// when no pair is inside the cutoffs.
     pub hessian: Array2<f64>,
-    /// The linpars.
+    /// Fitted linear coefficients: two per Lennard-Jones, Buckingham and
+    /// Morse element pair and one per bond element pair, grouped in that
+    /// order of kinds. Empty when there is no pair.
     pub linpars: Array1<f64>,
-    /// The nonlinpars.
+    /// Nonlinear coefficients in Angstrom: one `rho` per Buckingham pair,
+    /// then one per Morse pair, then one `r0` per bond element pair.
     pub nonlinpars: Array1<f64>,
 }
 
@@ -92,12 +122,22 @@ const CORDERO: [f64; 97] = [
     1.69,
 ];
 
-/// ASE Cordero covalent radius (Å) by Z. Missing entries are 0.2.
+/// ASE Cordero covalent radius (Å) by atomic number `z`. Missing entries
+/// (`z` above 96) and `z = 0` are 0.2 Angstrom.
 pub fn covalent_radius(z: u8) -> f64 {
     CORDERO.get(z as usize).copied().unwrap_or(CORDERO_MISSING)
 }
 
-/// Pairs with `r < scale * (rcov_i + rcov_j)`.
+/// Pairs with `r <= scale * (rcov_i + rcov_j)`.
+///
+/// `x` is the flat `3N` position vector in Angstrom, `z` the atomic numbers
+/// (length `N`) and `scale` dimensionless (1.5 in Sella). Returns the atom
+/// index pairs `[i, j]` with `i < j`, in row-major order. Coincident atoms
+/// are skipped.
+///
+/// # Errors
+///
+/// [`SaddleError::Shape`] when `x.len() != 3 * z.len()`.
 pub fn covalent_pairs(
     x: ArrayView1<f64>,
     z: &[u8],
@@ -135,6 +175,16 @@ pub fn covalent_pairs(
 ///
 /// Pair `i-j` contributes `k (r - r0) u` on `i` and the opposite on
 /// `j` (`V = 1/2 k (r-r0)^2`), with `r0 = rcov_i + rcov_j`.
+///
+/// `x` is the flat `3N` position vector in Angstrom, `g` the energy gradient
+/// in eV/Angstrom (the target force is `-g`), `z` the atomic numbers and
+/// `pairs` the bonds (see [`covalent_pairs`]). Returns one `k` per pair, in
+/// eV/Angstrom^2, in the order of `pairs`.
+///
+/// # Errors
+///
+/// [`SaddleError::Shape`] when `g.len() != x.len()`, plus the errors of the
+/// pair geometry (coincident atoms, an index outside `x`).
 pub fn fit_bond_ks(
     x: ArrayView1<f64>,
     g: ArrayView1<f64>,
@@ -159,6 +209,14 @@ pub fn fit_bond_ks(
 }
 
 /// Analytic pair-harmonic Hessian at the current geometry.
+///
+/// `ks` holds one constant per entry of `pairs`, in eV/Angstrom^2. Returns
+/// the `3N x 3N` Hessian in eV/Angstrom^2.
+///
+/// # Errors
+///
+/// [`SaddleError::Shape`] when `ks.len() != pairs.len()`, plus the errors
+/// of the pair geometry.
 pub fn bond_hessian(
     x: ArrayView1<f64>,
     z: &[u8],
@@ -182,10 +240,37 @@ pub fn bond_hessian(
     Ok(h)
 }
 
-/// Fit bond `k` and return the seed Hessian in one call.
+/// Fit bond `k` and return the seed Hessian in one call: the `3N x 3N`
+/// Hessian in eV/Angstrom^2, the fitted constants in eV/Angstrom^2 and the
+/// bond pairs.
 pub type ForceMatchedHessian = (Array2<f64>, Array1<f64>, Vec<[usize; 2]>);
 
-/// Force match hessian.
+/// Seed Hessian from harmonic bonds alone: [`covalent_pairs`] with `scale`,
+/// [`fit_bond_ks`], then [`bond_hessian`].
+///
+/// `x` is in Angstrom, `g` the gradient in eV/Angstrom, `z` the atomic
+/// numbers. With no bond the result is the identity, no constants and no
+/// pairs.
+///
+/// # Errors
+///
+/// The errors of [`covalent_pairs`], [`fit_bond_ks`] and [`bond_hessian`].
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::array;
+/// use rgsaddle::force_match::force_match_hessian;
+///
+/// // A stretched H2 bond: 0.9 Angstrom against r0 = 0.62 Angstrom.
+/// let x = array![0.0, 0.0, 0.0, 0.9, 0.0, 0.0];
+/// let g = array![-0.5, 0.0, 0.0, 0.5, 0.0, 0.0];
+/// let (hessian, ks, pairs) = force_match_hessian(x.view(), g.view(), &[1, 1], 1.5)?;
+/// assert_eq!(pairs, vec![[0, 1]]);
+/// assert_eq!(ks.len(), 1);
+/// assert_eq!(hessian.dim(), (6, 6));
+/// # Ok::<(), rgsaddle::SaddleError>(())
+/// ```
 pub fn force_match_hessian(
     x: ArrayView1<f64>,
     g: ArrayView1<f64>,
@@ -202,6 +287,31 @@ pub fn force_match_hessian(
 }
 
 /// Full Sella matcher. Default `kinds` is Buckingham then bond.
+///
+/// `x` is the flat `3N` position vector in Angstrom, `g` the energy
+/// gradient in eV/Angstrom and `z` the atomic numbers. The report holds the
+/// `3N x 3N` seed Hessian in eV/Angstrom^2 and the fitted coefficients.
+///
+/// # Errors
+///
+/// [`SaddleError::Shape`] when `x.len() != 3 * z.len()` or
+/// `g.len() != x.len()`, and the numerical errors of the least-squares and
+/// bounded nonlinear fits.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::array;
+/// use rgsaddle::force_match::{ForceMatchOpts, PairKind, force_match};
+///
+/// let x = array![0.0, 0.0, 0.0, 0.9, 0.0, 0.0];
+/// let g = array![-0.5, 0.0, 0.0, 0.5, 0.0, 0.0];
+/// let opts = ForceMatchOpts::default().with_kinds(vec![PairKind::Bond]);
+/// let report = force_match(x.view(), g.view(), &[1, 1], &opts)?;
+/// assert_eq!(report.hessian.dim(), (6, 6));
+/// assert_eq!(report.linpars.len(), 1);
+/// # Ok::<(), rgsaddle::SaddleError>(())
+/// ```
 pub fn force_match(
     x: ArrayView1<f64>,
     g: ArrayView1<f64>,
@@ -239,12 +349,17 @@ pub fn force_match(
     })
 }
 
-/// Project a force-match direction onto `T_x`.
+/// Project a force-match direction onto `T_x`: `man.project(x, v)`.
+///
+/// `x` and `v` are flat vectors of the manifold's dimension.
 pub fn project_force_match<M: Manifold>(man: &M, x: &Array1<f64>, v: &Array1<f64>) -> Array1<f64> {
     man.project(x, v)
 }
 
 /// Retract a force-match increment onto the set.
+///
+/// `v` is scaled to length `eta` Angstrom, projected onto the tangent space
+/// at `x`, then retracted. A `v` shorter than `1e-12` Angstrom returns `x`.
 pub fn retract_force_match<M: Manifold>(
     man: &M,
     x: &Array1<f64>,
@@ -261,7 +376,8 @@ pub fn retract_force_match<M: Manifold>(
     man.retract(x, &s)
 }
 
-/// Vector transport of a force-match increment from `x_from` to `x_to`.
+/// Vector transport of a force-match increment from `x_from` to `x_to`:
+/// `man.transport(x_from, x_to, v)`.
 pub fn transport_force_match<M: Manifold>(
     man: &M,
     x_from: &Array1<f64>,
@@ -272,6 +388,15 @@ pub fn transport_force_match<M: Manifold>(
 }
 
 /// Seed Hessian plus a retracted increment that stays on `man`.
+///
+/// Fits [`force_match`] at `x`, takes the regularized Newton step
+/// `H s = -g`, projects it onto the tangent space and retracts a displacement
+/// of 1e-4 Angstrom along it. Returns the retracted point (a flat `3N`
+/// vector in Angstrom) and the report.
+///
+/// # Errors
+///
+/// The errors of [`force_match`].
 pub fn force_match_on<M: Manifold>(
     man: &M,
     x: ArrayView1<f64>,

@@ -11,6 +11,13 @@
 //! the host. A failed matrix claim records `A.shape[0]` (`nrows`),
 //! not the flattened length. `to_gpu` itself returns `None` when
 //! `SELLA_DISABLE_GPU=1`. A missing dlpk kernel is not an OOM.
+//!
+//! A disable flag is on for the values `1`, `true` or `yes`, in any case,
+//! and an unparsable `*_GPU_MIN_DIM` falls back to the default. Matrices
+//! are `n x n` or `n x k` `f64` arrays (in practice a Hessian in
+//! eV/Angstrom^2) and every function returns the same numbers on the host
+//! and on a device. Errors are [`SaddleError::Shape`] for incompatible
+//! shapes and [`SaddleError::Solver`] for a failed factorisation.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,9 +30,10 @@ use crate::eigensolve::exact_eigh;
 use crate::error::SaddleError;
 use crate::linalg::modified_gram_schmidt;
 
-/// Sella `SELLA_GPU_MIN_DIM` default.
+/// Sella `SELLA_GPU_MIN_DIM` default: matrices with fewer than 200 rows stay on
+/// the host.
 pub const GPU_MIN_DIM: usize = 200;
-/// The DEFAULT MIN DIM.
+/// Alias of [`GPU_MIN_DIM`] (200).
 pub const DEFAULT_MIN_DIM: usize = GPU_MIN_DIM;
 
 static OOM_FLOOR: Mutex<Option<usize>> = Mutex::new(None);
@@ -42,9 +50,11 @@ static FAIL_NEXT_CLAIM: AtomicBool = AtomicBool::new(false);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct GpuPolicy {
-    /// `SELLA_DISABLE_GPU`. When false the host path always runs.
+    /// False when `RGSADDLE_DISABLE_GPU` or `SELLA_DISABLE_GPU` is set to a true
+    /// value (see the module docs). When false the host path always runs.
     pub enabled: bool,
-    /// Upload only when `n >= min_dim`.
+    /// Smallest matrix row count that may be offloaded, from `RGSADDLE_GPU_MIN_DIM`
+    /// or `SELLA_GPU_MIN_DIM`; the default is [`GPU_MIN_DIM`].
     pub min_dim: usize,
 }
 
@@ -60,7 +70,8 @@ impl Default for GpuPolicy {
 }
 
 impl GpuPolicy {
-    /// Read the Sella / rgsaddle environment gate.
+    /// Read the Sella / rgsaddle environment gate: `enabled` and `min_dim` from the
+    /// variables named in the module docs.
     pub fn from_env() -> Self {
         Self {
             enabled: !env_disabled(),
@@ -68,7 +79,8 @@ impl GpuPolicy {
         }
     }
 
-    /// Disabled policy (`SELLA_DISABLE_GPU=1`).
+    /// Disabled policy (as `SELLA_DISABLE_GPU=1`): `enabled` is false and `min_dim`
+    /// is [`GPU_MIN_DIM`].
     pub fn disabled() -> Self {
         Self {
             enabled: false,
@@ -76,27 +88,40 @@ impl GpuPolicy {
         }
     }
 
-    /// A policy restricted to host kernels.
+    /// A policy restricted to host kernels; the same as [`GpuPolicy::disabled`].
     pub fn host() -> Self {
         Self::disabled()
     }
 
-    /// Whether the size and device policy permit an upload.
+    /// Whether the size and device policy permit an upload for an `n`-row matrix;
+    /// see [`gpu_ok`].
     pub fn ok(self, n: usize) -> bool {
         gpu_ok(&self, n)
     }
 
-    /// Eigh.
+    /// Symmetric eigendecomposition under this policy; see [`gpu_eigh`].
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`gpu_eigh`].
     pub fn eigh(mut self, a: ArrayView2<f64>) -> Result<(Array1<f64>, Array2<f64>), SaddleError> {
         gpu_eigh(a, &mut self)
     }
 
-    /// Qr.
+    /// Economy QR under this policy; see [`gpu_qr`].
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`gpu_qr`].
     pub fn qr(mut self, a: ArrayView2<f64>) -> Result<(Array2<f64>, Array2<f64>), SaddleError> {
         gpu_qr(a, &mut self)
     }
 
-    /// Project.
+    /// Projection `U^T H U` under this policy; see [`gpu_project`].
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`gpu_project`].
     pub fn project(
         mut self,
         h: ArrayView2<f64>,
@@ -105,18 +130,21 @@ impl GpuPolicy {
         gpu_project(h, u, &mut self)
     }
 
-    /// Sella `_gpu_ok(n)`.
+    /// Sella `_gpu_ok(n)`; the method form of [`gpu_ok()`].
     pub fn gpu_ok(&self, n: usize) -> bool {
         gpu_ok(self, n)
     }
 
-    /// Sella `_record_oom(n)`: writes the process-global floor.
+    /// Sella `_record_oom(n)`: writes the process-global floor. The policy itself
+    /// is not changed.
     pub fn record_oom(&mut self, n: usize) {
         record_oom(n);
     }
 }
 
-/// Sella `_gpu_ok(n)`.
+/// Sella `_gpu_ok(n)`: true when the policy is enabled, a CUDA kernel backend is
+/// present ([`cuda_available`]), `n >= policy.min_dim` and `n` is below the
+/// process-global OOM floor ([`oom_floor`]) if one is set.
 pub fn gpu_ok(policy: &GpuPolicy, n: usize) -> bool {
     policy.enabled
         && cuda_available()
@@ -154,12 +182,13 @@ fn env_min_dim() -> usize {
     GPU_MIN_DIM
 }
 
-/// Current Sella `_oom_floor`, if any.
+/// Current Sella `_oom_floor`, if any: the smallest row count whose offload failed.
 pub fn oom_floor() -> Option<usize> {
     OOM_FLOOR.lock().ok().and_then(|g| *g)
 }
 
-/// Sella `_record_oom(n)`: refuse later offload for shapes `>= n`.
+/// Sella `_record_oom(n)`: refuse later offload for shapes `>= n`. The floor only
+/// ever moves down, so a larger `n` after a smaller one is ignored.
 pub fn record_oom(n: usize) {
     if let Ok(mut g) = OOM_FLOOR.lock()
         && g.is_none_or(|floor| n < floor)
@@ -175,7 +204,8 @@ pub fn clear_oom_floor() {
     }
 }
 
-/// Hold while a test mutates process-wide GPU state (OOM floor or env).
+/// Hold while a test mutates process-wide GPU state (OOM floor or env). The guard
+/// releases the lock on drop.
 pub fn lock_oom_for_test() -> std::sync::MutexGuard<'static, ()> {
     OOM_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner())
 }
@@ -188,14 +218,16 @@ pub fn cuda_device() -> DLDevice {
     }
 }
 
-/// True when `Vector::try_on(kDLCUDA)` has a kernel backend.
+/// True when `Vector::try_on(kDLCUDA)` has a kernel backend. A build without one
+/// returns false and all work runs on the host.
 pub fn cuda_available() -> bool {
     Vector::try_on(cuda_device(), Array1::zeros(1)).is_ok()
 }
 
 /// Next [`to_gpu`] / [`to_gpu_matrix`] claim fails as a CUDA OOM.
 ///
-/// Exercises Sella `_record_oom(A.shape[0])` without a device.
+/// Exercises Sella `_record_oom(A.shape[0])` without a device. The flag is
+/// cleared by that next claim, even when the GPU is disabled.
 pub fn fail_next_cuda_claim() {
     FAIL_NEXT_CLAIM.store(true, Ordering::SeqCst);
 }
@@ -206,6 +238,9 @@ pub fn fail_next_cuda_claim() {
 /// and does not upload (`sella/_gpu.py:24-25,61`). A missing CUDA
 /// backend is not an OOM. A failed claim after the backend is
 /// present records [`record_oom`] with `A.shape[0]`.
+///
+/// `data` is a flat `f64` array. Returns the uploaded vector, or `None` when the
+/// GPU is disabled, no CUDA backend exists, or the claim failed.
 pub fn to_gpu(data: Array1<f64>) -> Option<Vector> {
     let n = data.len();
     try_cuda(data, n)
@@ -215,6 +250,9 @@ pub fn to_gpu(data: Array1<f64>) -> Option<Vector> {
 ///
 /// A failed claim records [`record_oom`] with `a.nrows()` (Sella
 /// `A.shape[0]`), never the flattened `n * n`.
+///
+/// Returns `None` in the same cases as [`to_gpu`]. The matrix is flattened in row
+/// order.
 pub fn to_gpu_matrix(a: ArrayView2<f64>) -> Option<Vector> {
     let n = a.nrows();
     let flat = Array1::from_iter(a.iter().copied());
@@ -242,19 +280,34 @@ fn try_cuda(data: Array1<f64>, oom_n: usize) -> Option<Vector> {
     }
 }
 
-/// Sella `gpu_eigh_t`: stay on device. No kernel in this build.
+/// Sella `gpu_eigh_t`: stay on device. No kernel in this build, so the result is
+/// always `None`.
 ///
 /// A missing kernel is not a Sella OOM (`RuntimeError`/`MemoryError`).
 pub fn gpu_eigh_t(_uploaded: &Vector) -> Option<(Array1<f64>, Array2<f64>)> {
     None
 }
 
-/// Sella `gpu_eigh` with the process env policy and global `_oom_floor`.
+/// Sella `gpu_eigh` with the process env policy and global `_oom_floor`. As
+/// [`gpu_eigh`] with [`GpuPolicy::from_env`].
+///
+/// # Errors
+///
+/// The errors of [`gpu_eigh`].
 pub fn gpu_eigh_env(a: ArrayView2<f64>) -> Result<(Array1<f64>, Array2<f64>), SaddleError> {
     gpu_eigh(a, &mut GpuPolicy::from_env())
 }
 
-/// Apply the device policy and compute the spectrum with the available backend.
+/// Symmetric eigendecomposition of `a`, offloaded when `policy` allows it and the
+/// device has a kernel, otherwise [`exact_eigh`] on the host.
+///
+/// Returns the ascending eigenvalues (length `n`) and the eigenvectors as columns
+/// (`n x n`).
+///
+/// # Errors
+///
+/// [`SaddleError::Shape`] when `a` is not square, and the errors of
+/// [`exact_eigh`].
 pub fn gpu_eigh(
     a: ArrayView2<f64>,
     policy: &mut GpuPolicy,
@@ -274,7 +327,13 @@ pub fn gpu_eigh(
 
 /// Economy QR through the host Gram-Schmidt kernel.
 ///
-/// `Q` has orthonormal columns (Stiefel). `R = Q^T A`.
+/// `a` is `n x m`. `Q` is `n x k` with orthonormal columns (Stiefel) and `R = Q^T A`
+/// is `k x m`, where `k <= m` is the number of independent columns of `a`.
+///
+/// # Errors
+///
+/// [`SaddleError::Shape`] when `a` is empty; [`SaddleError::Solver`] when every
+/// column of `a` is numerically zero.
 pub fn gpu_qr(
     a: ArrayView2<f64>,
     policy: &mut GpuPolicy,
@@ -287,6 +346,27 @@ pub fn gpu_qr(
 }
 
 /// Sella `gpu_project`: `U^T H U` via rgmin vecops reductions.
+///
+/// `h` is a symmetric `n x n` matrix and `u` an `n x k` basis. Returns the
+/// `k x k` projection.
+///
+/// # Errors
+///
+/// [`SaddleError::Shape`] when `h` is not square or `u` has a different row count.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::array;
+/// use rgsaddle::gpu::{GpuPolicy, gpu_project};
+///
+/// let hessian = array![[2.0, 0.0], [0.0, -1.0]];
+/// let basis = array![[0.0], [1.0]];
+/// let mut policy = GpuPolicy::host();
+/// let projected = gpu_project(hessian.view(), basis.view(), &mut policy)?;
+/// assert_eq!(projected, array![[-1.0]]);
+/// # Ok::<(), rgsaddle::SaddleError>(())
+/// ```
 pub fn gpu_project(
     h: ArrayView2<f64>,
     u: ArrayView2<f64>,
@@ -305,41 +385,61 @@ pub fn gpu_project(
     Ok(host_project(h, u))
 }
 
-/// Gpu ok env.
+/// [`gpu_ok()`] with the environment policy ([`GpuPolicy::from_env`]).
 pub fn gpu_ok_env(n: usize) -> bool {
     gpu_ok(&GpuPolicy::from_env(), n)
 }
 
-/// Gpu qr env.
+/// [`gpu_qr`] with the environment policy.
+///
+/// # Errors
+///
+/// The errors of [`gpu_qr`].
 pub fn gpu_qr_env(a: ArrayView2<f64>) -> Result<(Array2<f64>, Array2<f64>), SaddleError> {
     gpu_qr(a, &mut GpuPolicy::from_env())
 }
 
-/// Gpu project env.
+/// [`gpu_project`] with the environment policy.
+///
+/// # Errors
+///
+/// The errors of [`gpu_project`].
 pub fn gpu_project_env(h: ArrayView2<f64>, u: ArrayView2<f64>) -> Result<Array2<f64>, SaddleError> {
     gpu_project(h, u, &mut GpuPolicy::from_env())
 }
 
-/// To gpu view.
+/// [`to_gpu`] of a copy of `data`.
 pub fn to_gpu_view(data: ndarray::ArrayView1<f64>) -> Option<Vector> {
     to_gpu(data.to_owned())
 }
 
-/// Gpu eigh with.
+/// [`gpu_eigh`] with an explicit `policy`.
+///
+/// # Errors
+///
+/// The errors of [`gpu_eigh`].
 pub fn gpu_eigh_with(
     a: ArrayView2<f64>,
     policy: GpuPolicy,
 ) -> Result<(Array1<f64>, Array2<f64>), SaddleError> {
     policy.eigh(a)
 }
-/// Gpu qr with.
+/// [`gpu_qr`] with an explicit `policy`.
+///
+/// # Errors
+///
+/// The errors of [`gpu_qr`].
 pub fn gpu_qr_with(
     a: ArrayView2<f64>,
     policy: GpuPolicy,
 ) -> Result<(Array2<f64>, Array2<f64>), SaddleError> {
     policy.qr(a)
 }
-/// Gpu project with.
+/// [`gpu_project`] with an explicit `policy`.
+///
+/// # Errors
+///
+/// The errors of [`gpu_project`].
 pub fn gpu_project_with(
     h: ArrayView2<f64>,
     u: ArrayView2<f64>,

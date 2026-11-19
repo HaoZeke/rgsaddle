@@ -12,6 +12,17 @@
 //! Ambient reductions go through [`rgmin::vecops`]. A host that
 //! wants a point on a set calls [`QuasiNewton::step_on`]:
 //! `egrad2rgrad`, `project`, `retract`.
+//!
+//! The stepper contract is Sella's (Hermes, Sargsyan, Najm, and Zádor,
+//! J. Chem. Theory Comput. 18, 6974 (2022), doi:10.1021/acs.jctc.2c00395).
+//!
+//! Units and shapes: `evals` are the `n` Hessian eigenvalues in
+//! eV/Angstrom^2, `evecs` the `n x n` eigenvectors as columns, `g` the
+//! length-`n` energy gradient in eV/Angstrom, secant steps `s` in Angstrom
+//! and gradient differences `y` in eV/Angstrom. A step is a length-`n`
+//! displacement in Angstrom. The functions here return no errors: wrongly
+//! shaped input is skipped (updates leave `b` unchanged) or gives the zero
+//! step.
 
 pub use rgmin::{qn_get_s, qn_restricted};
 
@@ -22,14 +33,15 @@ use rgmin::vecops::nrm2;
 const STEP_FLOOR: f64 = 1e-8;
 const PIVOT_FLOOR: f64 = 1e-12;
 
-/// Sella `QuasiNewton.alpha0`. Slope is \(-1\): larger \(\alpha\)
+/// Sella `QuasiNewton.alpha0`, the starting level shift (0, the full
+/// Newton step), in eV/Angstrom^2. Slope is \(-1\): larger \(\alpha\)
 /// shortens the step.
 pub const ALPHA0: f64 = 0.0;
-/// Sella `QuasiNewton.alphamin`.
+/// Sella `QuasiNewton.alphamin`, the smallest level shift (0).
 pub const ALPHA_MIN: f64 = 0.0;
-/// Sella `QuasiNewton.alphamax`.
+/// Sella `QuasiNewton.alphamax`, the largest level shift (no bound).
 pub const ALPHA_MAX: f64 = f64::INFINITY;
-/// Sella `QuasiNewton.slope`.
+/// Sella `QuasiNewton.slope`: the sign of `d|s|/d alpha`, negative.
 pub const SLOPE: f64 = -1.0;
 /// Sella `newton_safe`. QN is Newton-safe on \(\|s(\alpha)\|\).
 pub const NEWTON_SAFE: bool = true;
@@ -46,7 +58,8 @@ pub const SYNONYMS: &[&str] = &[
     "dimer",
 ];
 
-/// True when `name` is a Sella QuasiNewton synonym.
+/// True when `name` is a Sella QuasiNewton synonym (see [`SYNONYMS`]),
+/// compared exactly; case and spacing matter.
 pub fn matches(name: &str) -> bool {
     let n = name.trim().to_ascii_lowercase();
     SYNONYMS.iter().any(|s| *s == n)
@@ -54,6 +67,10 @@ pub fn matches(name: &str) -> bool {
 
 /// Sella `get_stepper`. Only QuasiNewton lives here; RFO / P-RFO
 /// are their own tickets.
+///
+/// Returns `Some(StepperKind::QuasiNewton)` for a name in [`SYNONYMS`] and
+/// `None` otherwise, so `"rfo"` and `"prfo"` are not found here; use
+/// [`crate::rfo::rfo_stepper`] and [`crate::prfo::prfo_stepper`].
 pub fn get_stepper(name: &str) -> Option<StepperKind> {
     if matches(name) {
         Some(StepperKind::QuasiNewton)
@@ -81,6 +98,9 @@ pub struct QuasiNewton {
 impl QuasiNewton {
     /// `evals` / `evecs` from a symmetric Hessian; `order` is the
     /// number of uphill modes Sella flips (`L_i ← -|L_i|`).
+    ///
+    /// `evals` and `g` have length `n`, `evecs` is `n x n`. The inputs are
+    /// copied and not validated; see [`QuasiNewton::get_s`].
     pub fn new(evals: &Array1<f64>, evecs: &Array2<f64>, g: &Array1<f64>, order: usize) -> Self {
         Self {
             evals: evals.clone(),
@@ -91,16 +111,43 @@ impl QuasiNewton {
     }
 
     /// Sella `QuasiNewton.get_s`: step and \(ds/d\alpha\).
+    ///
+    /// `alpha` is the level shift in eV/Angstrom^2 (0 is the Newton step).
+    /// Returns the displacement in Angstrom and its derivative with respect
+    /// to `alpha` in Angstrom^3/eV, both length `n`.
     pub fn get_s(&self, alpha: f64) -> (Array1<f64>, Array1<f64>) {
         qn_get_s(&self.evals, &self.evecs, &self.g, self.order, alpha)
     }
 
     /// Sella TrustRegion + QuasiNewton: \(\|s\| \le \delta\).
+    ///
+    /// `delta` is the trust radius in Angstrom. The result has length `n` and
+    /// norm at most `delta`, up to the tolerance of the rgmin root find.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::{Array2, array};
+    /// use rgsaddle::qn::QuasiNewton;
+    ///
+    /// // Hessian diag(-1, 2) eV/Angstrom^2: one uphill mode, order 1.
+    /// let evals = array![-1.0, 2.0];
+    /// let evecs = Array2::<f64>::eye(2);
+    /// let gradient = array![0.5, 0.5];
+    /// let qn = QuasiNewton::new(&evals, &evecs, &gradient, 1);
+    /// // The Newton step (0.5, -0.25) is 0.56 Angstrom; the trust radius cuts it to 0.3.
+    /// let step = qn.restricted(0.3);
+    /// assert!((step.dot(&step).sqrt() - 0.3).abs() < 0.001);
+    /// ```
     pub fn restricted(&self, delta: f64) -> Array1<f64> {
         qn_restricted(&self.evals, &self.evecs, &self.g, self.order, delta)
     }
 
     /// Riemannian QN step: Riemannian gradient, tangent projection, retract.
+    ///
+    /// `x` is the current point in Angstrom, `egrad` the ambient gradient in
+    /// eV/Angstrom, `alpha` the level shift in eV/Angstrom^2. Returns the new
+    /// point on `man` in Angstrom.
     pub fn step_on<M: Manifold>(
         &self,
         man: &M,
@@ -115,6 +162,9 @@ impl QuasiNewton {
     }
 
     /// Vector transport of the QN increment from `x` to `x_to`.
+    ///
+    /// The increment is the projected QN step, in Angstrom, transported
+    /// along `man` to `x_to`.
     pub fn transport_step<M: Manifold>(
         &self,
         man: &M,
@@ -131,6 +181,10 @@ impl QuasiNewton {
 }
 
 /// Tangent QN increment: rgrad, `get_s`, project.
+///
+/// `x` is the point in Angstrom, `egrad` the ambient gradient in
+/// eV/Angstrom, `order` the number of uphill modes and `alpha` the level
+/// shift in eV/Angstrom^2. Returns the tangent displacement in Angstrom.
 pub fn qn_tangent<M: Manifold>(
     man: &M,
     x: &Array1<f64>,
@@ -146,6 +200,8 @@ pub fn qn_tangent<M: Manifold>(
 }
 
 /// Riemannian QN step: egrad → rgrad, `get_s`, project, retract.
+///
+/// Arguments as [`qn_tangent`]. Returns the new point on `man`, in Angstrom.
 pub fn retract_qn<M: Manifold>(
     man: &M,
     x: &Array1<f64>,
@@ -177,14 +233,17 @@ pub fn qn_retract<M: Manifold>(
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum HessUpdate {
     #[default]
-    /// The Bfgs.
+    /// Plain BFGS secant update; a pair with `||s|| < 1e-8` is skipped. This
+    /// is the default and ordinal 0.
     Bfgs,
-    /// The TsBfgs.
+    /// Sella's transition-state BFGS for saddle searches, which uses `|B|` in
+    /// the secant weight (see the module docs). Ordinal 1.
     TsBfgs,
 }
 
 impl HessUpdate {
-    /// C / Python ordinal. Unknown values stay out of the enum.
+    /// C / Python ordinal: 0 for [`HessUpdate::Bfgs`], 1 for
+    /// [`HessUpdate::TsBfgs`].
     pub const fn to_abi(self) -> i32 {
         match self {
             Self::Bfgs => 0,
@@ -192,7 +251,8 @@ impl HessUpdate {
         }
     }
 
-    /// Inverse of [`Self::to_abi`]. Unknown ordinals are `None`.
+    /// Inverse of [`Self::to_abi`]. Any ordinal other than 0 or 1, negative
+    /// ones included, is `None`.
     pub const fn try_from_abi(v: i32) -> Option<Self> {
         match v {
             0 => Some(Self::Bfgs),
@@ -202,6 +262,9 @@ impl HessUpdate {
     }
 
     /// Apply this method to `b` in place.
+    ///
+    /// `b` is the `n x n` Hessian in eV/Angstrom^2, `s` the step in Angstrom
+    /// and `y` the gradient difference in eV/Angstrom. See [`update_h`].
     pub fn apply(self, b: &mut Array2<f64>, s: &Array1<f64>, y: &Array1<f64>) {
         update_h(b, s, y, self);
     }
@@ -211,6 +274,10 @@ impl HessUpdate {
 ///
 /// Columns of `s` and `y` are secant pairs. `None` or a single pair
 /// returns `y` unchanged. `symm` 0 / 1 / 2 match Sella.
+///
+/// `s` and `y` are `n x k` with one pair per column, in Angstrom and
+/// eV/Angstrom. Returns the corrected `y`, `n x k`. Any `symm` other than
+/// 0, 1 or 2, a shape mismatch, or a singular solve returns `y` unchanged.
 pub fn symmetrize_y(s: ArrayView2<f64>, y: ArrayView2<f64>, symm: Option<i32>) -> Array2<f64> {
     let k = s.ncols();
     if symm.is_none() || k <= 1 || s.nrows() != y.nrows() || y.ncols() != k {
@@ -239,6 +306,11 @@ pub fn symmetrize_y(s: ArrayView2<f64>, y: ArrayView2<f64>, symm: Option<i32>) -
 }
 
 /// Sella `hessian_update.update_H` for one pair. `||s|| < 1e-8` is a no-op.
+///
+/// `b` is the `n x n` Hessian in eV/Angstrom^2, updated in place; `s` is the
+/// step (length `n`, Angstrom) and `y` the gradient difference (length `n`,
+/// eV/Angstrom). A shape mismatch or `n == 0` leaves `b` unchanged, so does
+/// a step shorter than `1e-8` Angstrom.
 pub fn update_h(b: &mut Array2<f64>, s: &Array1<f64>, y: &Array1<f64>, method: HessUpdate) {
     let n = s.len();
     if n == 0 || y.len() != n || b.nrows() != n || b.ncols() != n {
@@ -254,6 +326,9 @@ pub fn update_h(b: &mut Array2<f64>, s: &Array1<f64>, y: &Array1<f64>, method: H
 }
 
 /// Multi-column Sella `update_H`: [`symmetrize_y`] then the MS formula.
+///
+/// `s` and `y` are `n x k` with one secant pair per column; `b` is `n x n`.
+/// A single column is [`update_h`]. Shape mismatches leave `b` unchanged.
 pub fn update_h_ms(
     b: &mut Array2<f64>,
     s: ArrayView2<f64>,
@@ -277,12 +352,14 @@ pub fn update_h_ms(
     }
 }
 
-/// Symmetrize one secant pair. One column needs no correction.
+/// Symmetrize one secant pair. One column needs no correction: the result
+/// is a copy of `y`.
 pub fn symmetrize_y_pair(_s: &Array1<f64>, y: &Array1<f64>) -> Array1<f64> {
     y.clone()
 }
 
-/// Symmetrize secant columns with mode 0, 1, or the default mode 2.
+/// Symmetrize secant columns with mode 0, 1, or the default mode 2: any
+/// `symm` other than 0 or 1 selects mode 2.
 pub fn symmetrize_y_cols(s: ArrayView2<f64>, y: ArrayView2<f64>, symm: i32) -> Array2<f64> {
     let mode = match symm {
         0 | 1 => symm,
@@ -291,12 +368,15 @@ pub fn symmetrize_y_cols(s: ArrayView2<f64>, y: ArrayView2<f64>, symm: i32) -> A
     symmetrize_y(s, y, Some(mode))
 }
 
-/// Apply one BFGS or TS-BFGS secant update.
+/// Apply one BFGS or TS-BFGS secant update; the same as [`update_h`].
 pub fn update_hessian(b: &mut Array2<f64>, s: &Array1<f64>, y: &Array1<f64>, kind: HessUpdate) {
     update_h(b, s, y, kind);
 }
 
 /// Apply one Hessian update per symmetrized column, in column order.
+///
+/// `s` and `y` are `n x k`, `b` is `n x n`. `symm` is as in
+/// [`symmetrize_y_cols`]. Mismatched `s` and `y` shapes leave `b` unchanged.
 pub fn update_hessian_cols(
     b: &mut Array2<f64>,
     s: ArrayView2<f64>,

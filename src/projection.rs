@@ -1,5 +1,9 @@
 //! Force projections, ported from eOn NEBForceProjection.cpp and
 //! NEBProjection.cpp.
+//!
+//! Every vector is a flat `3N` array over one band image, atom-major
+//! `[x0, y0, z0, x1, ...]`. Forces and spring forces are in eV/Angstrom,
+//! tangents are unitless unit vectors.
 
 use crate::spring::SpringForces;
 use ndarray::{Array1, ArrayView1, ArrayViewMut1, Zip};
@@ -7,26 +11,47 @@ use ndarray::{Array1, ArrayView1, ArrayViewMut1, Zip};
 /// Which band projection assembles the relaxed force.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ProjectionKind {
-    /// Mills, Jonsson, Schenter (1995): full spring + full true force.
+    /// Mills, Jónsson, and Schenter, Surf. Sci. 324, 305 (1995),
+    /// doi:10.1016/0039-6028(94)00731-4: the full spring force plus the full
+    /// true force, with no projection. It cuts corners and sags on a curved
+    /// path, which is why the NEB projection exists.
     PlainElasticBand,
-    /// Jonsson, Mills, Jacobsen (1998): parallel spring +
-    /// perpendicular true force.
+    /// Jónsson, Mills, and Jacobsen, in Classical and Quantum Dynamics in
+    /// Condensed Phase Simulations (World Scientific, 1998), pp. 385-404,
+    /// doi:10.1142/9789812839664_0016: the spring force along the tangent
+    /// plus the true force perpendicular to it. This is the default and the
+    /// standard NEB projection.
     #[default]
     Neb,
-    /// Trygubenko & Wales, JCP 120:2082 (2004): NEB plus the switched
-    /// perpendicular spring correction.
+    /// Trygubenko and Wales, J. Chem. Phys. 120, 2082 (2004),
+    /// doi:10.1063/1.1636455: the NEB force plus the component of the
+    /// perpendicular spring force that is perpendicular to the perpendicular
+    /// true force, switched by `(2/pi) atan(|F_perp|^2 / |F_spring_perp|^2)`.
     DoublyNudged,
 }
 
-/// True force with its tangent component removed.
+/// True force with its tangent component removed: `F - (F . t) t`.
+///
+/// `force` is the true force on one image in eV/Angstrom and `tangent` is its
+/// unit tangent, both length `3N`. The result has length `3N`, in
+/// eV/Angstrom. `tangent` must be unit length; it is not normalised here.
 pub fn force_perp(force: ArrayView1<f64>, tangent: ArrayView1<f64>) -> Array1<f64> {
     crate::stencil::perp(force, tangent)
 }
 
 /// Climbing-image force: `F - 2 (F . t) t + F_dneb`.
 ///
-/// The reflection is [`crate::stencil::reflect`] (Goswami, Gunde, and
-/// Jónsson, Front. Chem. (2026), doi:10.3389/fchem.2026.1807063, Eq. 9).
+/// The climbing image of Henkelman, Uberuaga, and Jónsson, J. Chem. Phys.
+/// 113, 9901 (2000), doi:10.1063/1.1329672, has the spring force removed and
+/// the tangent component of the true force inverted, so the image climbs
+/// toward the saddle along the band. The reflection is
+/// [`crate::stencil::reflect`] (Goswami, Gunde, and Jónsson, Front. Chem.
+/// (2026), doi:10.3389/fchem.2026.1807063, Eq. 9).
+///
+/// `force` is the true force in eV/Angstrom, `tangent` the unit tangent and
+/// `force_dneb` the [`dneb_component`] (pass zeros when the band is not
+/// doubly nudged), all length `3N`. The result has length `3N`, in
+/// eV/Angstrom.
 pub fn climbing_image_force(
     force: ArrayView1<f64>,
     tangent: ArrayView1<f64>,
@@ -35,7 +60,15 @@ pub fn climbing_image_force(
     crate::stencil::reflect(force, tangent) + force_dneb
 }
 
-/// DNEB correction with the Trygubenko–Wales atan switching.
+/// DNEB correction with the Trygubenko–Wales atan switching
+/// (J. Chem. Phys. 120, 2082 (2004), doi:10.1063/1.1636455).
+///
+/// `force_spring` is the full spring force, `tangent` the unit tangent and
+/// `f_perp` the true force perpendicular to the tangent ([`force_perp`]),
+/// all length `3N` in eV/Angstrom (the tangent is unitless). The result has
+/// length `3N`, in eV/Angstrom. It is the zero vector when the
+/// perpendicular spring force or the perpendicular true force has a norm of
+/// at most `1e-10` eV/Angstrom.
 pub fn dneb_component(
     force_spring: ArrayView1<f64>,
     tangent: ArrayView1<f64>,
@@ -82,6 +115,13 @@ pub(crate) fn dneb_component_into(
 
 impl ProjectionKind {
     /// Projected relaxation force at one non-climbing interior image.
+    ///
+    /// `force` is the true force (eV/Angstrom, length `3N`), `tangent` the unit
+    /// tangent and `spring` the [`SpringForces`] of the same image. The
+    /// result has length `3N`, in eV/Angstrom, and is the force a minimizer
+    /// follows for that image. [`ProjectionKind::PlainElasticBand`] ignores
+    /// `tangent`. The climbing image does not go through this method; use
+    /// [`climbing_image_force`].
     pub fn project(
         &self,
         force: ArrayView1<f64>,

@@ -9,6 +9,9 @@
 //!
 //! Nordlund, Ghaly, Averback, Caturla, Diaz de la Rubia and Tarus,
 //! Phys. Rev. B 57, 7556 (1998), doi:10.1103/PhysRevB.57.7556.
+//!
+//! Positions, sites and the cell are in Angstrom. The analysis has no
+//! distance threshold: every atom goes to its nearest site.
 
 use ndarray::ArrayView1;
 
@@ -18,28 +21,30 @@ use crate::error::SaddleError;
 /// Occupancy of every reference site.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SiteOccupancy {
-    /// Atoms assigned to each site, in site order.
+    /// Atoms assigned to each site, in site order; one entry per reference
+    /// site.
     pub counts: Vec<usize>,
-    /// Site of each atom, in atom order.
+    /// Index of the site each atom was assigned to, in atom order; one
+    /// entry per atom.
     pub site_of: Vec<usize>,
 }
 
 impl SiteOccupancy {
-    /// Sites with no atom.
+    /// Indices of the sites with no atom (the vacancies), in site order.
     pub fn vacancies(&self) -> Vec<usize> {
         (0..self.counts.len())
             .filter(|&site| self.counts[site] == 0)
             .collect()
     }
 
-    /// Sites with more than one atom.
+    /// Indices of the sites with more than one atom, in site order.
     pub fn crowded(&self) -> Vec<usize> {
         (0..self.counts.len())
             .filter(|&site| self.counts[site] > 1)
             .collect()
     }
 
-    /// Number of empty sites.
+    /// Number of empty sites, the vacancy count.
     pub fn vacancy_count(&self) -> usize {
         self.counts.iter().filter(|&&n| n == 0).count()
     }
@@ -49,7 +54,8 @@ impl SiteOccupancy {
         self.counts.iter().map(|&n| n.saturating_sub(1)).sum()
     }
 
-    /// Every site holds exactly one atom.
+    /// Whether every site holds exactly one atom. This is false whenever a
+    /// vacancy and an interstitial coexist, and true after they recombine.
     pub fn is_perfect(&self) -> bool {
         self.counts.iter().all(|&n| n == 1)
     }
@@ -61,6 +67,36 @@ impl SiteOccupancy {
 /// whose rows are the lattice vectors. Sites are binned on a fractional
 /// grid, so the cost grows with the number of atoms, not with the
 /// product of atoms and sites.
+///
+/// `sites` has length `3 * n_sites` and `positions` length `3 * n_atoms`,
+/// both atom-major `[x0, y0, z0, x1, ...]` in Angstrom. `cell` is the
+/// `[[ax, ay, az], [bx, by, bz], [cx, cy, cz]]` lattice, one vector per row,
+/// in Angstrom, and every direction is periodic. Distances use the minimum
+/// image. A tie goes to the site with the lower index.
+///
+/// # Errors
+///
+/// - [`SaddleError::Shape`] when `sites` is empty, or `sites` or `positions`
+///   is not a whole number of triples.
+/// - [`SaddleError::NonFinite`] when a coordinate is NaN or infinite.
+/// - [`SaddleError::Invalid`] when the cell has zero volume, and the error
+///   of [`crate::cell_log::m3_inv`] when it cannot be inverted.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::array;
+/// use rgsaddle::site_occupancy;
+///
+/// // Two sites in a 4 Angstrom cubic cell; one atom, near the first site.
+/// let cell = [[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]];
+/// let sites = array![0.0, 0.0, 0.0, 2.0, 2.0, 2.0];
+/// let atoms = array![0.1, 0.0, 0.0];
+/// let occupancy = site_occupancy(sites.view(), atoms.view(), cell)?;
+/// assert_eq!(occupancy.counts, vec![1, 0]);
+/// assert_eq!(occupancy.vacancies(), vec![1]);
+/// # Ok::<(), rgsaddle::SaddleError>(())
+/// ```
 pub fn site_occupancy(
     sites: ArrayView1<f64>,
     positions: ArrayView1<f64>,

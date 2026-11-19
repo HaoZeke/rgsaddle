@@ -615,6 +615,19 @@ pub(crate) fn escape_push<S: PointSurface>(
 /// atoms leaves it. A surface with [`PointSurface::hessian_vector`]
 /// supplies the actions itself. The escape of `check` is not read.
 ///
+/// `x` is the flat `3N` position in Angstrom, `gradient` is in eV/Angstrom,
+/// and the curvatures returned are in eV/Angstrom^2.
+///
+/// # Errors
+///
+/// [`SaddleError::Invalid`] when `check` fails its validation (a zero block or
+/// count, a non-positive or non-finite step or residual tolerance, a budget
+/// below one block, or a negative or non-finite curvature threshold) or `x` is
+/// empty or not finite; [`SaddleError::Shape`] when `fixed` is not empty and
+/// does not hold `x.len() / 3` entries, or `mode`, a supplied gradient or an
+/// excluded mode differs in length from `x`; [`SaddleError::NonFinite`] for a
+/// non-finite gradient or action; and the errors of `surface`.
+///
 /// ```
 /// use ndarray::{Array1, ArrayView1, array};
 /// use rgsaddle::{PointSurface, SaddleError, SaddleIndexCheck, saddle_index};

@@ -10,17 +10,25 @@ use crate::SaddleError;
 use crate::constraints::Constraints;
 
 /// One vocn primitive. Dest stores the atom indices only.
+///
+/// Atom indices are zero-based rows of the host's `N x 3` position array.
+/// The primitive's value (Angstrom for a bond, radian for an angle and a
+/// dihedral) is read from the positions when the set is loaded.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Primitive {
-    /// The Bond.
+    /// A bond between atoms `[i, j]`; the coordinate is the distance in Angstrom.
     Bond([usize; 2]),
-    /// The Angle.
+    /// A bend `[i, j, k]` with the vertex at `j`; the coordinate is the angle in radian.
     Angle([usize; 3]),
-    /// The Dihedral.
+    /// A torsion about the bond `j-k` of the chain `[i, j, k, l]`; the
+    /// coordinate is the dihedral angle in radian.
     Dihedral([usize; 4]),
 }
 
 /// Primitive set returned by vocn auto-find.
+///
+/// The set is ordered bonds, then angles, then dihedrals. It holds atom
+/// indices only, so it carries no units.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Found {
     primitives: Vec<Primitive>,
@@ -34,6 +42,9 @@ impl Found {
     }
 
     /// Pack bonds, then angles, then dihedrals (Sella internals order).
+    ///
+    /// Each iterator yields zero-based atom-index arrays. No index is
+    /// checked here; [`Found::load`] reports an index outside the chart.
     pub fn from_parts(
         bonds: impl IntoIterator<Item = [usize; 2]>,
         angles: impl IntoIterator<Item = [usize; 3]>,
@@ -52,22 +63,36 @@ impl Found {
         Self { primitives }
     }
 
-    /// Active primitives, Sella packing order.
+    /// Active primitives in Sella packing order: all bonds, all angles, all
+    /// dihedrals, each group in the order given to [`Found::from_parts`].
     pub fn primitives(&self) -> &[Primitive] {
         &self.primitives
     }
 
-    /// Chart length dest loads into [`crate::InternalPes`].
+    /// Chart length dest loads into [`crate::InternalPes`]: one internal
+    /// coordinate per primitive.
     pub fn n_int(&self) -> usize {
         self.primitives.len()
     }
 
-    /// Is empty.
+    /// Whether the set holds no primitive.
     pub fn is_empty(&self) -> bool {
         self.primitives.is_empty()
     }
 
     /// Push the vocn set onto a chart. Targets are the current values.
+    ///
+    /// `x` is the flat `3N` Cartesian position vector in Angstrom, atom-major
+    /// `[x0, y0, z0, x1, ...]`. Each primitive is fixed at its value in `x`
+    /// (Angstrom for bonds, radian for angles and dihedrals).
+    ///
+    /// # Errors
+    ///
+    /// [`SaddleError::Shape`] when `x` is not the `3N` frame of the chart or
+    /// an atom index is outside it, and [`SaddleError::NonFinite`] when a
+    /// primitive is degenerate in `x` (coincident atoms, a collinear angle
+    /// or dihedral). The chart keeps the primitives loaded before the
+    /// failing one.
     pub fn load(&self, chart: &mut Constraints, x: ArrayView1<f64>) -> Result<(), SaddleError> {
         for p in &self.primitives {
             match p {

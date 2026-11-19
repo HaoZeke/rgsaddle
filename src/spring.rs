@@ -1,4 +1,8 @@
 //! Spring forces, ported from eOn NEBSpringForce.cpp.
+//!
+//! Spring constants are in eV/Angstrom^2, image distances in Angstrom, and
+//! the spring forces in eV/Angstrom. Vectors are flat `3N` arrays over one
+//! band image, atom-major `[x0, y0, z0, x1, ...]`.
 
 use std::borrow::Cow;
 
@@ -6,42 +10,53 @@ use ndarray::{Array1, ArrayView1, ArrayView2};
 
 use crate::error::SaddleError;
 
-/// Below this `|2 k|` the Onsager-Machlup displacements are zero, the
-/// epsilon of eOn's `safemath::safe_recip`.
+/// Below this `|2 k|` (eV/Angstrom^2) the Onsager-Machlup displacements are
+/// zero, the epsilon of eOn's `safemath::safe_recip`.
 pub const OM_RECIP_EPS: f64 = 1e-300;
 
 /// Per-image spring result: the tangent-parallel component consumed
 /// by the NEB and DNEB projections, and the full spring vector
 /// consumed by the plain elastic band and the DNEB correction.
+///
+/// Both vectors are length `3N`, in eV/Angstrom.
 #[derive(Clone, Debug)]
 pub struct SpringForces {
-    /// Spring force along the tangent.
+    /// Spring force along the tangent, eV/Angstrom, length `3N`.
     pub parallel: Array1<f64>,
-    /// Spring force before the tangent projection.
+    /// Spring force before the tangent projection, eV/Angstrom, length `3N`.
     pub full: Array1<f64>,
 }
 
 /// Which spring model the band uses.
+///
+/// [`SpringKind::at_band`] and [`SpringKind::at_energies`] resolve the two
+/// variants that depend on the band state before [`SpringKind::compute`]
+/// is called.
 #[derive(Clone, Debug)]
 pub enum SpringKind {
     /// One constant for every segment.
     Uniform {
-        /// Spring constant, energy per length squared.
+        /// Spring constant, eV/Angstrom^2.
         k: f64,
     },
-    /// Henkelman-style energy-weighted constants, one per segment
-    /// (`ks[i]` couples images `i` and `i+1`; length `n_images - 1`).
+    /// Energy-weighted constants fixed by the host, one per segment
+    /// (`ks[i]` couples images `i` and `i+1`; length `n_images - 1`), in
+    /// eV/Angstrom^2. [`energy_weighted_constants`] computes such a list from
+    /// the band energies.
     Weighted {
-        /// One constant per segment. `ks[i]` couples images `i` and `i + 1`.
+        /// One constant per segment, eV/Angstrom^2. `ks[i]` couples images
+        /// `i` and `i + 1`.
         ks: Vec<f64>,
     },
-    /// Mandelli & Parrinello (2021) Onsager–Machlup springs; `l_vecs`
-    /// holds one force-scaled displacement per image (zero at the
-    /// endpoints).
+    /// Onsager–Machlup springs of Mandelli and Parrinello, J. Chem. Phys.
+    /// 155, 074103 (2021), doi:10.1063/5.0059593; `l_vecs` holds one
+    /// force-scaled displacement `F / (2 k)` per image, in Angstrom (zero at
+    /// the endpoints).
     OnsagerMachlup {
-        /// Spring constant, energy per length squared.
+        /// Spring constant, eV/Angstrom^2.
         k: f64,
-        /// One displacement per image. The endpoints are zero.
+        /// One displacement per image, each length `3N`, in Angstrom. The
+        /// endpoints are zero.
         l_vecs: Vec<Array1<f64>>,
     },
     /// Onsager-Machlup springs whose displacements follow the band:
@@ -52,10 +67,10 @@ pub enum SpringKind {
     /// [`SpringKind::at_band`] first. A solid-state band has no
     /// atomic-only displacement and rejects the variant at construction.
     OnsagerMachlupLive {
-        /// Spring constant, energy per length squared.
+        /// Spring constant, eV/Angstrom^2.
         k: f64,
     },
-    /// Energy-weighted springs of Asgeirsson et al., J. Chem. Theory
+    /// Energy-weighted springs of Ásgeirsson et al., J. Chem. Theory
     /// Comput. 17, 4929 (2021), doi:10.1021/acs.jctc.1c00462, set again
     /// from the band energies at every evaluation as eOn's
     /// `buildSpringStrategy` does. [`energy_weighted_constants`] is the
@@ -63,16 +78,25 @@ pub enum SpringKind {
     /// with [`SpringKind::at_energies`] or [`SpringKind::at_band`]
     /// first, so a peaked segment is not silently given `k_min`.
     EnergyWeighted {
-        /// Softest constant, energy per length squared.
+        /// Softest constant, eV/Angstrom^2. Segments at or below the higher
+        /// endpoint energy get this value.
         k_min: f64,
-        /// Stiffest constant, energy per length squared.
+        /// Stiffest constant, eV/Angstrom^2. The segment at the highest
+        /// interior image gets this value.
         k_max: f64,
     },
 }
 
-/// Segment constants of the energy-weighted rule. `energies` has one
-/// entry per image, endpoints included, and `ks[i]` couples images `i`
-/// and `i + 1`. With `E_ref` the higher endpoint, `E_max` the highest
+/// Segment constants of the energy-weighted rule of Henkelman and Jónsson,
+/// J. Chem. Phys. 113, 9978 (2000), doi:10.1063/1.1323224, which stiffens
+/// the springs near the saddle so the images stay spread over the
+/// high-energy part of the path.
+///
+/// `energies` has one entry per image in eV, endpoints included, and
+/// `ks[i]` couples images `i` and `i + 1`. `k_min` and `k_max` are in
+/// eV/Angstrom^2 and the result has `energies.len() - 1` constants in the
+/// same unit (empty for fewer than two images, all `k_min` for fewer than
+/// three). With `E_ref` the higher endpoint, `E_max` the highest
 /// interior image, and `E_i` the higher image of segment `i`, a segment
 /// above `E_ref` gets `k_max - (k_max - k_min) (E_max - E_i) /
 /// (E_max - E_ref)` and every other segment gets `k_min`. A band whose
@@ -126,7 +150,9 @@ pub(crate) fn onsager_machlup_scale(k: f64) -> f64 {
 }
 
 /// Displacements of the Onsager-Machlup spring, eOn's `L_vecs`.
-/// `gradients` has one row per image, endpoints included. Interior
+/// `gradients` has one row per image, endpoints included, each row the flat
+/// `3N` energy gradient in eV/Angstrom, and `k` is in eV/Angstrom^2. The
+/// result has one displacement of length `3N` per row, in Angstrom. Interior
 /// image `j` gets `F_j / (2 k)` with `F_j = -g_j`, and both endpoints
 /// get zero. A `|2 k|` below [`OM_RECIP_EPS`] gives zero throughout.
 pub fn onsager_machlup_displacements(gradients: ArrayView2<f64>, k: f64) -> Vec<Array1<f64>> {
@@ -147,6 +173,11 @@ impl SpringKind {
     /// The springs at one band evaluation. [`SpringKind::OnsagerMachlupLive`]
     /// takes the displacements of these gradients; every other kind is
     /// [`SpringKind::at_energies`].
+    ///
+    /// `energies` has one entry per image in eV and `gradients` one row per
+    /// image, each the flat `3N` energy gradient in eV/Angstrom, endpoints
+    /// included in both. The result borrows `self` unless a variant had to be
+    /// resolved. It cannot fail.
     pub fn at_band(
         &self,
         energies: ArrayView1<f64>,
@@ -163,6 +194,10 @@ impl SpringKind {
 
     /// The springs at these image energies: per-segment constants for
     /// [`SpringKind::EnergyWeighted`], and `self` for every other kind.
+    ///
+    /// `energies` has one entry per image in eV, endpoints included. It
+    /// cannot fail; [`SpringKind::OnsagerMachlupLive`] is returned unresolved
+    /// and still needs [`SpringKind::at_band`].
     pub fn at_energies(&self, energies: ArrayView1<f64>) -> Cow<'_, SpringKind> {
         match self {
             SpringKind::EnergyWeighted { k_min, k_max } => Cow::Owned(SpringKind::Weighted {
@@ -177,13 +212,41 @@ impl SpringKind {
     /// `R[i+1] - R[i]` and `pos_diff_prev` is `R[i] - R[i-1]`, both
     /// minimum-imaged by a periodic host.
     ///
-    /// [`SpringKind::EnergyWeighted`] and [`SpringKind::OnsagerMachlupLive`]
-    /// have no segment data until [`SpringKind::at_energies`] or
-    /// [`SpringKind::at_band`] resolves them, and this returns
-    /// [`SaddleError::Invalid`] instead of a spring built from `k_min`
-    /// or from zero displacements. A weighted list or an
-    /// Onsager-Machlup displacement whose length does not match the
-    /// tangent returns [`SaddleError::Shape`].
+    /// `tangent` is the unit tangent of image `i`, `dist_next` and
+    /// `dist_prev` are the norms of `pos_diff_next` and `pos_diff_prev` in
+    /// Angstrom, and all three vectors are flat `3N` arrays in Angstrom
+    /// (the tangent is unitless). The result is in eV/Angstrom.
+    ///
+    /// # Errors
+    ///
+    /// - [`SaddleError::Invalid`] when `i == 0`, an endpoint.
+    ///   [`SpringKind::EnergyWeighted`] and [`SpringKind::OnsagerMachlupLive`]
+    ///   have no segment data until [`SpringKind::at_energies`] or
+    ///   [`SpringKind::at_band`] resolves them, and this returns
+    ///   [`SaddleError::Invalid`] instead of a spring built from `k_min`
+    ///   or from zero displacements.
+    /// - [`SaddleError::Shape`] when a [`SpringKind::Weighted`] list has no
+    ///   entry for segment `i` (`ks.len() <= i`), when an
+    ///   [`SpringKind::OnsagerMachlup`] list has no displacement for image
+    ///   `i + 1`, or when an Onsager-Machlup displacement length differs
+    ///   from the tangent length.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::array;
+    /// use rgsaddle::spring::SpringKind;
+    ///
+    /// // Image 1 of a collinear band, 1 Angstrom from each neighbour,
+    /// // joined by springs of 2 eV/Angstrom^2: the springs cancel.
+    /// let t = array![1.0, 0.0, 0.0];
+    /// let next = array![1.0, 0.0, 0.0];
+    /// let prev = array![1.0, 0.0, 0.0];
+    /// let f = SpringKind::Uniform { k: 2.0 }
+    ///     .compute(1, t.view(), 1.0, 1.0, next.view(), prev.view())?;
+    /// assert_eq!(f.parallel, array![0.0, 0.0, 0.0]);
+    /// # Ok::<(), rgsaddle::SaddleError>(())
+    /// ```
     pub fn compute(
         &self,
         i: usize,
