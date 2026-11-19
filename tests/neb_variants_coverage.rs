@@ -138,8 +138,43 @@ fn connect_falls_back_through_compass_and_sqnm_when_idpp_hits_well() {
     assert!(connect(two_barrier_toy, &left, &[2.0, 0.0], &cfg).is_err());
     assert!(connect(two_barrier_toy, &[], &[], &cfg).is_err());
     assert!(connect(two_barrier_toy, &[f64::NAN, 0.0, 0.0], &right, &cfg).is_err());
-    let zero_budget = ConnectConfig::optbench(0);
-    assert!(connect(two_barrier_toy, &left, &right, &zero_budget).is_err());
+    assert!(
+        connect(
+            two_barrier_toy,
+            &left,
+            &right,
+            &cfg.clone().with_forcetol(0.0)
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn connect_zero_steps_returns_ok() {
+    let left = [-2.0, 0.0, 0.0];
+    let right = [2.0, 0.0, 0.0];
+    let zero_optbench = ConnectConfig::optbench(0);
+    let report =
+        connect(two_barrier_toy, &left, &right, &zero_optbench).expect("optbench(0) returns Ok");
+    assert_eq!(report.position.len(), left.len());
+    assert!(report.position.iter().all(|v| v.is_finite()));
+    assert!(report.energy.is_finite());
+    assert!(report.force_norm.is_finite());
+    assert!(matches!(report.kind, 's' | 'u' | 'f'));
+    assert!(report.evaluations > 0);
+
+    let zero_nsteps = ConnectConfig::default()
+        .with_band_images(1)
+        .with_nsteps(0)
+        .with_minimize_nsteps(0)
+        .with_n_loops(2);
+    let capped =
+        connect(two_barrier_toy, &left, &right, &zero_nsteps).expect("nsteps == 0 returns Ok");
+    assert_eq!(capped.position.len(), left.len());
+    assert!(capped.position.iter().all(|v| v.is_finite()));
+    assert!(capped.energy.is_finite());
+    assert!(capped.force_norm.is_finite());
+    assert!(matches!(capped.kind, 's' | 'u' | 'f'));
 }
 
 #[test]
