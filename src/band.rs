@@ -3326,6 +3326,19 @@ impl BandSession {
         Ok(report)
     }
 
+    /// Minimum-mode refinement, when climbing is on. `None` means the
+    /// band step runs instead. Shared by [`BandSession::step`] and
+    /// [`BandSession::step_free_end`].
+    fn climbing_refine_step<S: BandSurface>(
+        &mut self,
+        surface: &S,
+    ) -> Result<Option<BandReport>, SaddleError> {
+        if self.config.climbing.is_none() {
+            return Ok(None);
+        }
+        self.refine_step(surface)
+    }
+
     fn step_inner<S: BandSurface>(&mut self, surface: &S) -> Result<BandReport, SaddleError> {
         if self.solid.is_some() {
             if self.rtr.is_some() {
@@ -3335,9 +3348,7 @@ impl BandSession {
             }
             return self.step_solid(surface);
         }
-        if self.config.climbing.is_some()
-            && let Some(report) = self.refine_step(surface)?
-        {
+        if let Some(report) = self.climbing_refine_step(surface)? {
             return Ok(report);
         }
         if let Some(string_cfg) = self.config.string {
