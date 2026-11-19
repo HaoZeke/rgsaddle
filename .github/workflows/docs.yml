@@ -29,6 +29,7 @@ jobs:
       - name: Check the C index and reject machine-local paths
         run: |
           python docs/check_c_symbols.py
+          python docs/render_llms.py --check
           python docs/check_paths.py
       - name: Export the nested guides and the changelog from the org sources
         run: emacs --batch -l docs/export.el

@@ -17,6 +17,41 @@ Each call to ~step~ performs one outer IRC move, of one of three kinds.
 
 ~new~ accepts a molecular Cartesian packing and atom masses. ~new_euclidean~ accepts an arbitrary nonzero dimension with unit coordinate weights. ~from_surface~ estimates the launch mode through Hessian actions as the lowest eigenvector of the mass-weighted Hessian. A host can instead pass a measured mode to ~new~.
 
+* Runnable example: forward and reverse IRC branches
+
+#+begin_src rust
+use ndarray::{Array1, ArrayView1, array};
+use rgsaddle::{IrcConfig, IrcDirection, IrcKind, IrcSession, PointSurface, SaddleError};
+
+struct DoubleWell;
+
+impl PointSurface for DoubleWell {
+    fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+        let t = x[0];
+        let e = (t * t - 1.0).powi(2);
+        let mut g = Array1::zeros(x.len());
+        g[0] = 4.0 * t * (t * t - 1.0);
+        Ok((e, g))
+    }
+}
+
+fn main() -> Result<(), SaddleError> {
+    let saddle = Array1::zeros(6);
+    let masses = array![1.0, 1.0];
+    let mode = array![1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let config = IrcConfig::default()
+        .with_dx(0.2)
+        .with_kind(IrcKind::SellaSphere);
+    let mut irc = IrcSession::new(config, saddle, masses, mode, IrcDirection::Forward)?;
+    let fwd = irc.step(&DoubleWell)?;
+    assert!(fwd.arc > 0.0);
+    irc.set_direction(IrcDirection::Reverse);
+    let rev = irc.step(&DoubleWell)?;
+    assert!(rev.arc > 0.0);
+    Ok(())
+}
+#+end_src
+
 ~set_direction~ restores the saddle and reverses the launch. ~reset~ clears the approximation at a surface change. A sphere step rejects an energy increase above its specified numerical threshold and reduces the radius.
 Each later step without a rejection doubles the radius back up to the requested one.
 ~set_direction~ starts each branch at the requested radius.

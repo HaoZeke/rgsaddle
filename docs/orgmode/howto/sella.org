@@ -1,7 +1,111 @@
 #+TITLE: Use Sella steppers and sessions
 #+OPTIONS: toc:nil num:nil
 
+#+begin_export rst
+:cite:`goswamiGaussianProcessSaddle2025,hermesSellaOpensourceAutomationfriendly2022,bakerAlgorithmLocationTransition1986,banerjeeSearchStationaryPoints1985,besaluRestrictedStepRfo1998,bofillUpdatedHessian1994,simonsWalkingPotentialSurfaces1990,bussiCanonicalSampling2007`
+#+end_export
+
 ~SellaMinSession~ uses order-zero quasi-Newton steps. ~SellaSaddleSession~ partitions a rational function optimization (RFO) step into uphill and downhill subspaces. Both retain a Hessian model and a trust radius, and expose one outer step at a time.
+
+* Runnable example: P-RFO, restricted P-RFO, Index1Session, Sella, internal coordinates, cell charts, and SAMD
+
+Partitioned rational function optimization (P-RFO) follows Baker, J. Comput. Chem. 7, 385 (1986), doi:10.1002/jcc.540070402 @@rst::cite:`bakerAlgorithmLocationTransition1986`@@, on the rational-function form of Banerjee, Adams, Simons, and Shepard, J. Phys. Chem. 89, 52 (1985), doi:10.1021/j100247a015 @@rst::cite:`banerjeeSearchStationaryPoints1985`@@. Restricted-step P-RFO scales the augmented Hessian so the Cartesian step stays within the Euclidean trust sphere, following Besalú and Bofill, Theor. Chem. Acc. 100, 265 (1998), doi:10.1007/s002140050387 @@rst::cite:`besaluRestrictedStepRfo1998`@@, and Bofill's Hessian update mixes Powell and SR1 as in Bofill, J. Comput. Chem. 15, 1 (1994), doi:10.1002/jcc.540150102 @@rst::cite:`bofillUpdatedHessian1994`@@. The i-PI level shift in ~nichols_step~ and ~nichols_displacement~ follows Simons and Nichols, Int. J. Quantum Chem. 38, 263 (1990), doi:10.1002/qua.560382435 @@rst::cite:`simonsWalkingPotentialSurfaces1990`@@. Sella's order-1 and order-0 sessions, equality ~Constraints~ and ~InternalPes~ charts, cell log-deformation chart (~CellChart::LogDeform~), and surface-adapted molecular dynamics (~SamdSession~) follow Hermes, Sargsyan, Najm, and Zádor, J. Chem. Theory Comput. 18, 6974 (2022), doi:10.1021/acs.jctc.2c00395 @@rst::cite:`hermesSellaOpensourceAutomationfriendly2022`@@, with the canonical velocity-rescaling thermostat of Bussi, Donadio, and Parrinello, J. Chem. Phys. 126, 014101 (2007), doi:10.1063/1.2408420 @@rst::cite:`bussiCanonicalSampling2007`@@; the Cartesian GP dimer comparison against Sella internal coordinates is Goswami, Masterov, Kamath, Peña-Torres, and Jónsson, J. Chem. Theory Comput. 21, 7935 (2025), doi:10.1021/acs.jctc.5c00866 @@rst::cite:`goswamiGaussianProcessSaddle2025`@@.
+
+#+begin_src rust
+use ndarray::{Array1, Array2, ArrayView1, array};
+use rgsaddle::{
+    CellCartesianPes, CellChart, Constraints, HessianUpdate, Index1Config, Index1Session,
+    Index1Status, InternalPes, NicholsMode, PartitionedRationalFunctionOptimization, PointSurface,
+    PrfoKind, RationalFunctionOptimization, SaddleError, SamdConfig, SamdSession, SellaMinConfig,
+    SellaMinSession, SellaSaddleConfig, SellaSaddleSession, VelocitySofteningConfig, VocnFound,
+    bofill_update, cap_max_abs, expm_3x3, logm_3x3, nichols_displacement, nichols_step,
+    niggli_reduce_cell, partitioned_rfo_eigen, place_perp_dummy, powell_update, prfo_get_s,
+    prfo_stepper, prfo_trust_region, restricted_prfo_displacement, rfo_stepper,
+    soften_velocity_on,
+};
+
+struct QuadraticSaddle;
+
+impl PointSurface for QuadraticSaddle {
+    fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+        let mut e = -0.5 * x[0] * x[0];
+        let mut g = Array1::zeros(x.len());
+        g[0] = -x[0];
+        for i in 1..x.len() {
+            e += x[i] * x[i];
+            g[i] = 2.0 * x[i];
+        }
+        Ok((e, g))
+    }
+}
+
+fn main() -> Result<(), SaddleError> {
+    // 1. P-RFO, RFO, restricted P-RFO, and Nichols steps on a 2x2 spectrum
+    let evals = array![-1.0, 2.0];
+    let evecs = Array2::<f64>::eye(2);
+    let grad = array![0.4, 0.6];
+    let _eig_step = partitioned_rfo_eigen(evals.view(), grad.view(), 1.0, PrfoKind::Index1)?;
+    let _sella_prfo = prfo_get_s(&evals, &evecs, &grad, 1, 1.0);
+    let _sella_tr = prfo_trust_region(&evals, &evecs, &grad, 1, 0.2);
+    let _prfo_opt = prfo_stepper("prfo", 1).unwrap_or(PartitionedRationalFunctionOptimization::new(1));
+    let _rfo_opt = rfo_stepper("rfo", 0).unwrap_or(RationalFunctionOptimization::new(0));
+
+    let mut h = array![[-1.0, 0.0], [0.0, 2.0]];
+    let mut dx = restricted_prfo_displacement(h.view(), grad.view(), None, 0.2, PrfoKind::Index1)?;
+    cap_max_abs(&mut dx, 0.15)?;
+    let _nichols_eig = nichols_step(grad.view(), evals.view(), evecs.view(), None, 0.2, NicholsMode::Index1)?;
+    let _nichols_cart = nichols_displacement(h.view(), grad.view(), None, 0.2, NicholsMode::Index1)?;
+    powell_update(&mut h, dx.view(), grad.view())?;
+    bofill_update(&mut h, dx.view(), grad.view())?;
+
+    // 2. Index1Session on QuadraticSaddle
+    let mut index1 = Index1Session::new(
+        Index1Config::default().with_update(HessianUpdate::Bofill),
+        array![0.2, 0.3, -0.1],
+        None,
+        None,
+    )?;
+    let rep1 = index1.run(&QuadraticSaddle, 20)?;
+    assert_eq!(rep1.status, Index1Status::Converged);
+
+    // 3. SellaSaddleSession and SellaMinSession
+    let x0 = array![0.0, 0.0, 0.0, 0.96, 0.0, 0.0, -0.24, 0.93, 0.0];
+    let masses = array![16.0, 1.0, 1.0];
+    let mut sella_sad = SellaSaddleSession::new(SellaSaddleConfig::default(), x0.clone(), masses.clone())?;
+    let _sad_step = sella_sad.step(&QuadraticSaddle)?;
+    let mut sella_min = SellaMinSession::new(SellaMinConfig::default(), x0.clone(), masses.clone())?;
+    let _min_step = sella_min.step(&QuadraticSaddle)?;
+
+    // 4. Internal coordinates (vocn + Constraints + InternalPes) and CellChart::LogDeform
+    let found = VocnFound::from_parts([[0, 1], [0, 2]], [[1, 0, 2]], []);
+    let mut ipes = InternalPes::from_find(x0.clone(), masses.clone(), &found)?;
+    let _ = ipes.kick(&QuadraticSaddle, array![0.01, -0.01, 0.02].view())?;
+    let _dummy = place_perp_dummy(x0.view(), 0, 1)?;
+    let mut cons = Constraints::new(3)?;
+    cons.fix_com(x0.view())?;
+
+    let cell = rgsaddle::mic::Cell::ortho(10.0, 10.0, 10.0).unwrap();
+    let mut cpes = CellCartesianPes::new(x0.clone(), masses, cell)?;
+    cpes.set_chart(CellChart::LogDeform);
+    let mut raw_cell = cpes.cell9();
+    let _ = niggli_reduce_cell(&mut raw_cell, 20.0)?;
+    let _ = logm_3x3(expm_3x3([[0.01, 0.0, 0.0], [0.0, -0.01, 0.0], [0.0, 0.0, 0.0]]))?;
+
+    // 5. SAMD and velocity softening
+    let soft = soften_velocity_on(
+        &cons,
+        x0.view(),
+        array![0.2, -0.1, 0.0, -0.1, 0.2, 0.0, -0.1, -0.1, 0.0].view(),
+        &QuadraticSaddle,
+        VelocitySofteningConfig::default().with_steps(2),
+    )?;
+    let mut samd = SamdSession::with_chart(SamdConfig::default(), x0, soft.direction, &QuadraticSaddle, cons)?;
+    let draw = Array1::from_elem(9, 0.1);
+    let samd_rep = samd.step(&QuadraticSaddle, draw.view())?;
+    assert!(samd_rep.energy.is_finite());
+    Ok(())
+}
+#+end_src
 
 ~SellaGeom~ selects a named geometry or an equality ~Constraints~ chart. The steppers project onto the tangent space, retract the displacement, and transport vectors. Cartesian sessions use the rigid quotient when internal molecular modes are available. ~InternalPes~ maps host-supplied bonds, angles and dihedrals through the Wilson matrix. ~CellCartesianPes~ and ~CellInternalPes~ include the active cell entries; their energy and gradients are evaluated in the displaced cell.
 

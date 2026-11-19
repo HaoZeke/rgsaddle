@@ -52,6 +52,7 @@ jobs:
       - name: C index and machine-local paths
         run: |
           python3 docs/check_c_symbols.py
+          python3 docs/render_llms.py --check
           python3 docs/check_paths.py
       - name: Git dependencies pin a full rev and resolve once
         run: |
