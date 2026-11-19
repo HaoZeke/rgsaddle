@@ -2,7 +2,8 @@
 //!
 //! Dimer and Lanczos construct a [`MinModeSession`],
 //! so a preset with the same settings repeats that session's positions.
-//! Band presets stay on `feat/band-methods-zoom`.
+//! Band preset construction is not implemented; use the dedicated band
+//! sessions instead.
 //! Goswami, Gunde, and Jónsson, Front. Chem. (2026),
 //! doi:10.3389/fchem.2026.1807063, Eq. 9.
 //! Henkelman and Jónsson, J. Chem. Phys. 111, 7010 (1999),
@@ -20,8 +21,9 @@ use crate::minmode::{
     ArtNConfig, FiniteDifference, MinModeConfig, MinModeKind, MinModeSession, MinModeStatus,
     convex_displacement, translated_gradient,
 };
-/// Error text [`BandBuilder::build`] returns until `feat/band-methods-zoom` lands.
-pub const BAND_PRESET_SEAM: &str = "band presets stay on feat/band-methods-zoom";
+/// Error text returned for every band preset: [`BandBuilder::build`],
+/// [`PointBuilder::build`] and the C and Python bindings all report it.
+pub const BAND_PRESET_SEAM: &str = "band presets are not implemented";
 
 /// Closed preset list. A band value is accepted by the builder and
 /// rejected by [`BandBuilder::build`] and by [`PointBuilder::build`].
@@ -232,7 +234,8 @@ pub struct PointBuilder {
     mode_solver: bool,
 }
 
-/// Band search. [`BandBuilder::build`] is the seam with the band branch.
+/// Validated shape of an unimplemented band preset. [`BandBuilder::build`]
+/// checks the array and then returns [`BAND_PRESET_SEAM`].
 pub struct BandBuilder {
     rows: usize,
     dof: usize,
@@ -306,7 +309,8 @@ impl Stencil {
     }
 
     /// Start a band search over the rows of `x`, one image per row.
-    /// [`BandBuilder::build`] returns [`BAND_PRESET_SEAM`] for now.
+    /// [`BandBuilder::build`] checks the shape and then returns
+    /// [`BAND_PRESET_SEAM`]; use [`crate::BandSession`] for a band search.
     pub fn band(x: Array2<f64>) -> BandBuilder {
         BandBuilder {
             rows: x.nrows(),
@@ -545,7 +549,7 @@ impl PointBuilder {
 }
 
 impl BandBuilder {
-    /// Band method. Not read until band presets land.
+    /// Band method. Not read: band presets are not implemented.
     pub fn preset(self, _preset: Preset) -> Self {
         self
     }

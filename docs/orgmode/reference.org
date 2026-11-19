@@ -56,7 +56,7 @@ The table below lists the main types.
 | =SellaSaddleConfig=            | Settings of the order-1 Sella session for partitioned rational function optimization |
 | =Cell=                         | 3×3 lattice (rows are vectors), fractional minimum-image wrap                                                      |
 | =SaddleError=                  | Shape, surface, non-finite, solver, invalid, stalled, not-equilibrated, and insufficient-effective-samples errors |
-| =Stencil=                      | Point builder. Dimer and Lanczos wrap =MinModeSession=. Band presets return the zoom seam. See @@rst::doc:`one stencil <explanation/one-stencil>`@@ |
+| =Stencil=                      | Point builder. Dimer and Lanczos wrap =MinModeSession=. =Stencil::band= returns an error because band presets are not implemented. See @@rst::doc:`one stencil <explanation/one-stencil>`@@ |
 | =Chain=                        | Positions, ids, and roles. =evaluate= uses a fixed block of one image. =Mesh= remeshes (linear, Hermite, or not-a-knot spline), inserts, or windows with no force call |
 | =reparametrize=                | Equal arc-length placement of a band, =Reparametrization::Linear= on the polyline or =NotAKnot= on the not-a-knot cubic spline. =RtrConfig::reparametrization= selects it for the trust-region band |
 | =Preset=                       | =Min=, =Dimer=, =Lanczos=, =Art=, =EigenFollow=, and the named band presets                                         |
@@ -159,7 +159,7 @@ The importable package is =rgsaddle=. =rgsaddle._core= is the nanobind extension
 | =last_error= | Thread-local text reserved for the C ABI last-error call. Empty unless an error text was set. =raise_status= reads it and then clears the slot |
 | =raise_status= | Map an =rgsaddle_status_t= value. The message is the stored text, or the status name when that text is empty. =RGSADDLE_OK= returns true |
 | =rgsaddle.ase.SurfaceAdapter= | =list[Atoms]= evaluated as =(ids, x) -> (energies, gradients)= request rows. Optional extra =ase= |
-| =rgsaddle.Stencil= | Point search. =point=, =step=, =run=, =positions=, =mode=, =curvature=. =band= raises =ValueError= with the zoom seam |
+| =rgsaddle.Stencil= | Point search. =point=, =step=, =run=, =positions=, =mode=, =curvature=. =band= raises =ValueError= because band presets are not implemented |
 | =rgsaddle.connect= | Run-to-completion double-ended search. =surface(x)= is the one-image =(energy, gradient)= callback. =ConnectReport= holds the geometry, energy, gradient norm, kind, Hessian index, and evaluation count |
 | =rgsaddle.Band= | Stepping NEB and simplified-string session (=string=True=, =reparametrization=). =step=, =run=, =positions=, =set_positions=, =evaluation=, =set_string=, =set_fixed_atoms=, =saddle_index=, =set_saddle_check=, =restart=, =reset= |
 | =rgsaddle.GrowingString= | Stepping growing-string session (Peters et al. 2004) with hand-off to =StringSession= upon join. =step=, =run=, =n_images=, =joined=, =positions=, =ids=, =set_fixed_atoms=, =saddle_index= |
