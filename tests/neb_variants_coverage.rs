@@ -134,19 +134,54 @@ fn connect_falls_back_through_compass_and_sqnm_when_idpp_hits_well() {
     assert_eq!(r2.kind, 's');
     assert_eq!(r2.hessian_index, 1);
 
-    // Invalid connect inputs fail cleanly.
-    assert!(connect(two_barrier_toy, &left, &[2.0, 0.0], &cfg).is_err());
-    assert!(connect(two_barrier_toy, &[], &[], &cfg).is_err());
-    assert!(connect(two_barrier_toy, &[f64::NAN, 0.0, 0.0], &right, &cfg).is_err());
-    assert!(
+    // Invalid connect inputs fail with specific variants before any surface callback.
+    let calls = std::cell::Cell::new(0usize);
+    let counting = |x: &[f64]| -> Result<(f64, Vec<f64>), SaddleError> {
+        calls.set(calls.get() + 1);
+        Ok((x.iter().map(|v| 0.5 * v * v).sum(), x.to_vec()))
+    };
+    assert!(matches!(
+        connect(counting, &left, &[2.0, 0.0], &cfg),
+        Err(SaddleError::Shape(_))
+    ));
+    assert_eq!(calls.get(), 0);
+    assert!(matches!(
+        connect(counting, &[], &[], &cfg),
+        Err(SaddleError::Shape(_))
+    ));
+    assert_eq!(calls.get(), 0);
+    assert!(matches!(
+        connect(counting, &[-2.0, 0.0], &[2.0, 0.0], &cfg),
+        Err(SaddleError::Shape(_))
+    ));
+    assert_eq!(calls.get(), 0);
+    assert!(matches!(
         connect(
-            two_barrier_toy,
-            &left,
-            &right,
-            &cfg.clone().with_forcetol(0.0)
-        )
-        .is_err()
-    );
+            counting,
+            &[-2.0, 0.0, 0.0, 1.0],
+            &[2.0, 0.0, 0.0, 1.0],
+            &cfg
+        ),
+        Err(SaddleError::Shape(_))
+    ));
+    assert_eq!(calls.get(), 0);
+    assert!(matches!(
+        connect(counting, &[f64::NAN, 0.0, 0.0], &right, &cfg),
+        Err(SaddleError::NonFinite(_))
+    ));
+    assert_eq!(calls.get(), 0);
+    assert!(matches!(
+        connect(counting, &left, &[2.0, f64::INFINITY, 0.0], &cfg),
+        Err(SaddleError::NonFinite(_))
+    ));
+    assert_eq!(calls.get(), 0);
+    for bad_tol in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        assert!(matches!(
+            connect(counting, &left, &right, &cfg.clone().with_forcetol(bad_tol)),
+            Err(SaddleError::Invalid(_))
+        ));
+        assert_eq!(calls.get(), 0);
+    }
 }
 
 #[test]
