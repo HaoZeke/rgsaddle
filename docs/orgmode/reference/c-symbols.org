@@ -182,3 +182,9 @@ The narrative for a session is the C and C++ how-to, not this list.
 - =rgsaddle_growing_string_set_fixed_atoms=. Purpose: Replace the per-atom fixed mask (n_atoms bytes, 1 fixed and 0 free) on a growing string session, ABI minor 44. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_growing_string_saddle_index=. Purpose: Read the saddle-index certificate of a joined growing string session, ABI minor 44. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_growing_string_free=. Purpose: Free a growing string session, ABI minor 44. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_ohtst_sample=. Purpose: Sample the plane through point with the given normal. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_ohtst_optimize=. Purpose: Climb the plane free energy from point and normal, and write the optimum back. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_ohtst_mbar=. Purpose: Solve MBAR. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_ohtst_work=. Purpose: Reversible work through n_planes planes stored row-major. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_ohtst_transmission=. Purpose: Transmission coefficient of the plane, from n_starts configurations stored row-major. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_ohtst_rate=. Purpose: OH-TST rate from a reactant density and the reversible work off its plane. Parameters: the declaration. Units: the caller's.
