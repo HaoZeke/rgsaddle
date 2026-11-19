@@ -330,6 +330,28 @@ fn lock_guard<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     }
 }
 
+fn cut_force_limit(first_cut_tol: f64, final_cut_tol: f64, cut: usize, max_cuts: usize) -> f64 {
+    let first_cut_tol = first_cut_tol.max(final_cut_tol);
+    if max_cuts <= 1 {
+        first_cut_tol
+    } else {
+        let frac = cut as f64 / (max_cuts - 1) as f64;
+        first_cut_tol * (final_cut_tol / first_cut_tol).powf(frac)
+    }
+}
+
+fn first_cut_tolerance(cut_force: f64, baseline_force: Option<f64>, final_cut_tol: f64) -> f64 {
+    let requested = if cut_force > 0.0 {
+        cut_force
+    } else {
+        baseline_force
+            .map(|baseline| baseline * 0.5)
+            .unwrap_or(final_cut_tol * 4.0)
+            .max(final_cut_tol * 2.0)
+    };
+    requested.max(final_cut_tol)
+}
+
 /// Project `force` exactly onto the tangent hyperplane orthogonal to
 /// `grad_end`.
 fn project_onto_level_set(
@@ -1171,21 +1193,12 @@ impl BandSession {
         {
             let c_idx = self.free_end_state.cuts;
             let final_cut_tol = 4.0 * self.config.force_tol;
-            let first_cut_tol = if fe_cfg.cut_force > 0.0 {
-                fe_cfg.cut_force
-            } else {
-                let b = match self.free_end_state.cut_baseline_force {
-                    Some(b) => b * 0.5,
-                    None => final_cut_tol * 4.0,
-                };
-                b.max(final_cut_tol * 2.0)
-            };
-            let cut_limit = if fe_cfg.max_cuts <= 1 {
-                first_cut_tol
-            } else {
-                let frac = c_idx as f64 / (fe_cfg.max_cuts - 1) as f64;
-                first_cut_tol * (final_cut_tol / first_cut_tol).powf(frac)
-            };
+            let first_cut_tol = first_cut_tolerance(
+                fe_cfg.cut_force,
+                self.free_end_state.cut_baseline_force,
+                final_cut_tol,
+            );
+            let cut_limit = cut_force_limit(first_cut_tol, final_cut_tol, c_idx, fe_cfg.max_cuts);
             let ediff = energies[max_i] - energies[max_i - 1].min(energies[max_i + 1]);
 
             if max_force <= cut_limit
@@ -1212,8 +1225,6 @@ impl BandSession {
                 self.free_end_state.cut_windows.push((lo, hi));
                 self.free_end_state.prev_peak = None;
                 self.free_end_state.stable = 0;
-                self.free_end_state.prev_end_pos = None;
-                self.free_end_state.prev_end_force = None;
                 self.forget_optimizer();
                 let method = if self.config.quickmin {
                     Method::QuickMin
@@ -1362,15 +1373,91 @@ impl FeaNebSession {
 
 #[cfg(test)]
 mod tests {
-    use ndarray::{Array1, Array2, array};
+    use ndarray::{Array1, Array2, ArrayView2, array};
 
     use super::{
-        SAME_ROW_TOL, assembled_free_end_force, eq7_endpoint_force, peak_window,
-        project_onto_level_set,
+        SAME_ROW_TOL, assembled_free_end_force, cut_force_limit, eq7_endpoint_force,
+        first_cut_tolerance, peak_window, project_onto_level_set,
     };
     use crate::{
-        BandConfig, BandSession, FeaNebSession, FreeEndConfig, FreeEndSide, SaddleError, SpringKind,
+        BandConfig, BandSession, BandSurface, FeaNebSession, FreeEndConfig, FreeEndSide,
+        SaddleError, SpringKind,
     };
+
+    #[test]
+    fn cut_force_schedule_never_increases() {
+        let final_cut_tol = 0.4;
+        for sample in 0..=100 {
+            let cut_force = final_cut_tol * sample as f64 / 100.0;
+            let first_cut_tol =
+                first_cut_tolerance(cut_force, Some(4.0 * final_cut_tol), final_cut_tol);
+            let limits: Vec<_> = (0..4)
+                .map(|cut| cut_force_limit(first_cut_tol, final_cut_tol, cut, 4))
+                .collect();
+            assert_eq!(limits[3], final_cut_tol);
+            assert!(limits.windows(2).all(|pair| pair[0] >= pair[1]));
+            if cut_force > 0.0 {
+                assert_eq!(limits, vec![final_cut_tol; 4]);
+            }
+        }
+
+        let above_final = f64::from_bits(final_cut_tol.to_bits() + 1);
+        let above_final =
+            first_cut_tolerance(above_final, Some(4.0 * final_cut_tol), final_cut_tol);
+        let limits: Vec<_> = (0..4)
+            .map(|cut| cut_force_limit(above_final, final_cut_tol, cut, 4))
+            .collect();
+        assert_eq!(limits[0], above_final);
+        assert_eq!(limits[3], final_cut_tol);
+        assert!(limits.windows(2).all(|pair| pair[0] >= pair[1]));
+    }
+
+    struct CutSurface;
+
+    impl BandSurface for CutSurface {
+        fn eval(
+            &self,
+            positions: ArrayView2<f64>,
+            energies: &mut Array1<f64>,
+            gradients: &mut Array2<f64>,
+        ) -> Result<(), SaddleError> {
+            for (image, row) in positions.outer_iter().enumerate() {
+                let delta = row[0] - 1.0;
+                energies[image] = -(delta * delta);
+                gradients[(image, 0)] = -2.0 * delta;
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn cut_forgets_the_endpoint_step_state() {
+        let positions = Array2::from_shape_fn(
+            (5, 3),
+            |(image, axis)| if axis == 0 { image as f64 } else { 0.0 },
+        );
+        let config = BandConfig::default()
+            .with_free_end(
+                FreeEndConfig::default()
+                    .with_max_cuts(1)
+                    .with_cut_force(100.0)
+                    .with_stability(1)
+                    .with_cubic(false),
+            )
+            .with_climbing(None)
+            .with_min_mode(None)
+            .with_saddle_check(None)
+            .with_remove_translation(false);
+        let mut session = BandSession::new(config, positions).expect("session");
+        session.free_end_state.endpoint_dt = Some(0.0125);
+
+        let report = session.step_free_end(&CutSurface).expect("cut step");
+
+        assert!(report.cut_this_step);
+        assert_eq!(session.free_end_state.endpoint_dt, None);
+        assert_eq!(session.free_end_state.prev_end_pos, None);
+        assert_eq!(session.free_end_state.prev_end_force, None);
+    }
 
     #[test]
     fn endpoint_force_matches_analytic_surface_and_eq_7_is_orthogonal() {
