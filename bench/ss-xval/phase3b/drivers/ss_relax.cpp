@@ -67,10 +67,8 @@ void write_geom(const std::string &path, const Geom &g, const std::vector<double
   geom << "n_images 1\nn_atoms " << g.n_atoms << "\npressure " << g.pressure << "\nepsilon "
        << g.epsilon << "\nsigma " << g.sigma << "\ncutoff " << g.cutoff << "\nsolid 0\npotential "
        << g.potential << "\nguard " << g.guard << "\nz " << g.z << "\nimage\n";
-  for (int r = 0; r < 3; ++r) {
-    for (int c = 0; c < 3; ++c) {
-      geom << g.cells[static_cast<size_t>(3 * r + c)] << (c == 2 ? "\n" : " ");
-    }
+  for (int k = 0; k < 9; ++k) {
+    geom << g.cells[static_cast<size_t>(k)] << (k == 8 ? "\n" : " ");
   }
   for (int a = 0; a < g.n_atoms; ++a) {
     geom << xyz[static_cast<size_t>(3 * a)] << " " << xyz[static_cast<size_t>(3 * a + 1)] << " "
