@@ -22,7 +22,24 @@ def test_write_table_keeps_the_build_section(tmp_path):
         "summary": [],
         "systems": {},
         "comparisons": [],
-        "runs": [],
+        "runs": [
+            {
+                "system": "pt_exchange",
+                "method": "ase-neb",
+                "images": 7,
+                "round": 0,
+                "status": "max_iterations",
+                "success": False,
+            },
+            {
+                "system": "pt_exchange",
+                "method": "eon-dimer",
+                "images": None,
+                "round": 0,
+                "status": "GOOD",
+                "success": False,
+            },
+        ],
         "shas": {
             "rgsaddle": "abc12345",
             "rgpot": "def12345",
@@ -46,6 +63,9 @@ def test_write_table_keeps_the_build_section(tmp_path):
     assert "3.29.0" in text
     assert "0.4.2" in text
     assert "abc12345" in text
+    assert "| source |" in text
+    assert "rgsaddle-revision" in text
+    assert "unverified (" in text
     harness.write_table(str(path), payload)
     rewritten = path.read_text(encoding="utf-8")
     assert rewritten.count("## Build") == 1
@@ -58,13 +78,170 @@ def test_coverage_record_stores_the_cpu_and_versions():
         rounds = 12
         threads = 1
 
-    recorded = {"ase": "3.29.0", "numpy": "2.5.5", "pyeonclient": "0.4.2"}
-    payload = harness.coverage_record(Args, recorded, {"runs": []})
+    recorded = {
+        "ase": "3.29.0",
+        "numpy": "2.5.5",
+        "pyeonclient": "0.4.2",
+        "rgsaddle_abi": "1.43",
+    }
+    payload = harness.coverage_record(
+        Args,
+        recorded,
+        {
+            "runs": [
+                {"system": "pt_hop", "method": "ase-neb", "images": 7},
+                {"system": "pt_hop", "method": "eon-dimer", "images": None},
+            ]
+        },
+    )
     assert payload["versions"]["ase"] == "3.29.0"
     assert payload["versions"]["pyeonclient"] == "0.4.2"
     assert payload["versions"]["eon_project"] == harness.EON_PROJECT_VERSION
     assert payload["cpu_model"]
     assert not str(payload["cpu_model"]).startswith("/")
+    assert payload["build"]
+    for run in payload["runs"]:
+        assert run["rgsaddle_revision"]
+        assert run["rgsaddle_abi"]
+
+
+def test_fresh_neb_rows_use_the_live_revision():
+    class Args:
+        shas = {"rgpot": "a" * 8, "eon": "b" * 8, "rgsaddle": "c" * 8}
+        rounds = 12
+        threads = 1
+
+    payload = harness.coverage_record(
+        Args,
+        {"rgsaddle_abi": "1.43"},
+        {
+            "runs": [
+                {"system": "pt_exchange", "method": "ase-neb", "images": 7},
+            ]
+        },
+    )
+    assert payload["runs"][0]["rgsaddle_revision"] == "c" * 8
+    assert payload["runs"][0]["rgsaddle_abi"] == "1.43"
+
+
+def test_finalize_results_corrects_summary_and_json(tmp_path, monkeypatch):
+    monkeypatch.setattr(harness, "_load_external_rmsd_corrections", lambda: [])
+    payload = {
+        "runs": [
+            {
+                "system": "pt_exchange",
+                "method": "ase-neb",
+                "images": 7,
+                "round": 0,
+                "wall_s": 1.0,
+                "outside_s": 0.5,
+                "force_calls": 10,
+                "success": False,
+                "rmsd": 5.0,
+                "energy_error": 1.0,
+            }
+        ],
+        "rmsd_corrections": [
+            {
+                "system": "pt_exchange",
+                "method": "ase-neb",
+                "images": 7,
+                "round": 0,
+                "rmsd_old": 5.0,
+                "rmsd_new": 2.0,
+                "cause": "test correction",
+            }
+        ],
+    }
+    harness.finalize_results(payload)
+    path = tmp_path / "results.json"
+    harness.dump_json(str(path), payload)
+    written = path.read_text(encoding="utf-8")
+    assert payload["summary"][0]["rmsd_median_angstrom"] == 2.0
+    assert '"rmsd_corrected": 2.0' in written
+    assert '"rmsd_median_angstrom": 2.0' in written
+
+
+def test_validate_payload_rejects_missing_cell_revision():
+    payload = {
+        "runs": [{"system": "pt_hop", "method": "ase-neb", "images": 7}],
+        "build": [],
+    }
+    with pytest.raises(RuntimeError, match="missing per-cell revision metadata"):
+        harness.validate_payload(payload)
+
+
+def test_validate_payload_rejects_build_with_too_few_revisions():
+    payload = {
+        "runs": [
+            {
+                "system": "pt_hop",
+                "method": "ase-neb",
+                "images": 7,
+                "rgsaddle_revision": "aaa",
+                "rgsaddle_abi": "1.42",
+            },
+            {
+                "system": "pt_hop",
+                "method": "eon-dimer",
+                "images": None,
+                "rgsaddle_revision": "bbb",
+                "rgsaddle_abi": "1.43",
+            },
+        ],
+        "build": [
+            {
+                "component": "rgsaddle-revision",
+                "value": "aaa, ABI 1.42",
+                "source": "fixture cell metadata",
+                "revision_sha": "aaa",
+                "revision_abi": "1.42",
+            }
+        ],
+    }
+    with pytest.raises(RuntimeError, match="fewer than cell revisions"):
+        harness.validate_payload(payload)
+
+
+def test_validate_payload_rejects_a_bare_build_literal():
+    payload = {
+        "runs": [
+            {
+                "system": "pt_hop",
+                "method": "ase-neb",
+                "images": 7,
+                "rgsaddle_revision": "aaa",
+                "rgsaddle_abi": "1.42",
+            }
+        ],
+        "build": ["0.3.11"],
+    }
+    with pytest.raises(RuntimeError, match="bare Build value"):
+        harness.validate_payload(payload)
+
+
+def test_build_entries_record_their_source():
+    payload = {
+        "runs": [
+            {
+                "system": "pt_exchange",
+                "method": "ase-neb",
+                "images": 7,
+                "rgsaddle_revision": "aaa",
+                "rgsaddle_abi": "1.42",
+            }
+        ],
+        "shas": {"rgsaddle": "bbb", "rgpot": "ccc", "eon": "ddd"},
+        "versions": {"rgpot": "3.7.0", "eon_project": "3.6.0"},
+    }
+    rows = harness.derive_build_entries(payload)
+    assert rows
+    for row in rows:
+        assert row["source"]
+    assert not any(
+        row["component"] == "linkcell (eOn-side)" and row["value"] == "0.3.11"
+        for row in rows
+    )
 
 
 def _cluster(numbers):
