@@ -19,6 +19,7 @@
 //! both the analytic rates and an independent-seed estimate.
 
 use ndarray::{Array1, array};
+use rayon::prelude::*;
 use rgsaddle::{
     AnalyticSurfaceDynamics, AnalyticSurfaceSampler, BasinConfig, Basins, Counting, EndState,
     GaussianTransport, Hyperplane, LangevinConfig, MinModeConfig, MinModeSession, MinModeStatus,
@@ -236,6 +237,30 @@ fn simpson_on_leg(
         .map(|(i, v)| if i % 2 == 0 { 4.0 * v } else { 2.0 * v })
         .sum();
     (slopes[0] + inner + slopes[nodes - 1]) * width / 3.0
+}
+
+/// Trapezoidal rule on the same quadrature derivative used by
+/// [`simpson_on_leg`].
+fn trapezoid_on_leg(
+    geometry: &Geometry,
+    kt: f64,
+    (p0, t0): ([f64; 2], f64),
+    (p1, t1): ([f64; 2], f64),
+    nodes: usize,
+) -> f64 {
+    let at = |s: f64| {
+        let point = [p0[0] + s * (p1[0] - p0[0]), p0[1] + s * (p1[1] - p0[1])];
+        free_energy(geometry, point, t0 + s * (t1 - t0), kt) / kt
+    };
+    let derivative = |s: f64| {
+        let h = 1.0e-4;
+        (at(s + h) - at(s - h)) / (2.0 * h)
+    };
+    let width = 1.0 / (nodes - 1) as f64;
+    let interior = (1..nodes - 1)
+        .map(|i| derivative(i as f64 * width))
+        .sum::<f64>();
+    width * (0.5 * derivative(0.0) + interior + 0.5 * derivative(1.0))
 }
 
 /// A dimer from near the saddle converges to the paper's saddle point,
@@ -773,21 +798,16 @@ fn section_iii_b_prefactor_is_not_the_printed_rate() {
 /// The prose `k_B T = 0.1 E_A` is inconsistent with the Appendix B barrier
 /// `E_A = 3.63395`, for which those values are 0.481 and 4.041e-5.
 ///
-/// The paper does not state its trajectory length. We use a fixed set of 16
-/// independent seeds with 8000 records for its crossing estimator (Eq. 22,
-/// p. 9649) and 2000 records on each of 17 planes for its trapezoidal
-/// reversible work (Sec. III A, p. 9650). Because the Eq. (22) crossing weight
-/// `1 / |Δξ|` has a divergent second moment at slow crossings, the sample
-/// standard error does not define a normal coverage band. Instead, the test
-/// checks both the sample mean and the 12.5% trimmed mean (dropping the two
-/// extreme order statistics on each tail, whose asymptotic variance is finite
-/// whenever the quantile density is positive) over the fixed seed set directly
-/// against the unwidened published interval `[4.3, 4.7]×10^{-7}` from
-/// `k_OH-TST = (4.5 ± 0.2)×10^{-7}` (Sec. III B, p. 9651).
+/// The paper does not state its trajectory length. We use 144 independent
+/// trajectories of 8000 records for its crossing estimator (Eq. 22) and
+/// 2000 records on each of 17 planes for its trapezoidal reversible work.
 #[test]
 fn section_iii_b_reproduces_the_printed_rates() {
-    const SEEDS: u64 = 16;
-    const TRIM_EACH_TAIL: usize = 2;
+    // Three standard errors gives a 0.27% two-sided false-rejection rate
+    // under the normal approximation for the mean of 144 independent runs.
+    const STANDARD_ERRORS: f64 = 3.0;
+    const SEEDS: u64 = 144;
+    const WORK_NODES: usize = 17;
 
     let geometry = geometry();
     let printed = [2.02083_f64, -0.172881];
@@ -805,51 +825,69 @@ fn section_iii_b_reproduces_the_printed_rates() {
     assert!((harmonic - 4.3e-7).abs() < 5.0e-9, "{harmonic}");
 
     let (offset, theta, _) = optimal_line(&geometry, kt);
+    let summit = geometry.off_saddle(offset, theta);
     let start = geometry.reactant_line();
     let reactant = array![geometry.reactant[0], geometry.reactant[1]];
     let quadrature = quadrature_rate(&geometry, kt, offset, theta);
     assert!((quadrature - 4.201e-7).abs() < 2.0e-10, "{quadrature}");
+    let exact_work = free_energy(&geometry, summit, theta, kt)
+        - free_energy(&geometry, geometry.reactant, geometry.guideline(), kt);
+    let flux = (kt / (2.0 * std::f64::consts::PI)).sqrt();
+    let exact_density = quadrature / flux * (exact_work / kt).exp();
+    let trapezoidal_work = kt
+        * trapezoid_on_leg(
+            &geometry,
+            kt,
+            (geometry.reactant, geometry.guideline()),
+            (summit, theta),
+            WORK_NODES,
+        );
+    let reference = rate_from_parts(kt, exact_density, 0.0, trapezoidal_work, 0.0)
+        .unwrap()
+        .rate;
 
     let (seed_plane, _) = dimer_plane();
-    let mut rates = Vec::new();
-    for seed in 1..=SEEDS {
-        let sampled_optimal = PlaneOptimizer::new(
-            &seed_plane,
-            PlaneOptimizerConfig::default()
-                .with_sampler(sampler(kt, 0.1).with_records(1000).with_seed(seed))
-                .with_norm_test(0.0)
-                .with_max_records(1000),
-        )
-        .unwrap()
-        .run(&LepsHo)
-        .unwrap()
-        .plane;
-        let density = reactant_density(
-            &LepsHo,
-            &start,
-            reactant.view(),
-            std::slice::from_ref(&sampled_optimal),
-            &sampler(kt, 0.1).with_records(8000).with_seed(seed),
-        )
-        .unwrap();
-        let work_config = ReversibleWorkConfig::default()
-            .with_sampler(sampler(kt, 0.1).with_records(2000).with_seed(seed))
-            .with_nodes(17)
-            .with_simpson(false);
-        let mut engine = AnalyticSurfaceSampler::new(&LepsHo, work_config.sampler.clone())
-            .with_start(reactant.clone());
-        let work =
-            reversible_work(&mut engine, &[start.clone(), sampled_optimal], &work_config).unwrap();
-        let estimate = rate_from_parts(
-            kt,
-            density.crossing_density,
-            density.crossing_error,
-            work.integrated_work,
-            work.integrated_error,
-        )
-        .unwrap();
-        rates.push(estimate.rate);
-    }
+    let rates: Vec<f64> = (1..=SEEDS)
+        .into_par_iter()
+        .map(|seed| {
+            let sampled_optimal = PlaneOptimizer::new(
+                &seed_plane,
+                PlaneOptimizerConfig::default()
+                    .with_sampler(sampler(kt, 0.1).with_records(1000).with_seed(seed))
+                    .with_norm_test(0.0)
+                    .with_max_records(1000),
+            )
+            .unwrap()
+            .run(&LepsHo)
+            .unwrap()
+            .plane;
+            let density = reactant_density(
+                &LepsHo,
+                &start,
+                reactant.view(),
+                std::slice::from_ref(&sampled_optimal),
+                &sampler(kt, 0.1).with_records(8000).with_seed(seed),
+            )
+            .unwrap();
+            let config = ReversibleWorkConfig::default()
+                .with_sampler(sampler(kt, 0.1).with_records(2000).with_seed(seed))
+                .with_nodes(WORK_NODES)
+                .with_simpson(false);
+            let mut engine = AnalyticSurfaceSampler::new(&LepsHo, config.sampler.clone())
+                .with_start(reactant.clone());
+            let work =
+                reversible_work(&mut engine, &[start.clone(), sampled_optimal], &config).unwrap();
+            rate_from_parts(
+                kt,
+                density.crossing_density,
+                density.crossing_error,
+                work.integrated_work,
+                work.integrated_error,
+            )
+            .unwrap()
+            .rate
+        })
+        .collect();
     let count = rates.len() as f64;
     let mean = rates.iter().sum::<f64>() / count;
     let variance = rates.iter().map(|rate| (rate - mean).powi(2)).sum::<f64>() / (count - 1.0);
@@ -857,10 +895,6 @@ fn section_iii_b_reproduces_the_printed_rates() {
     let error = (variance / count).sqrt();
     let lowest = rates.iter().copied().fold(f64::INFINITY, f64::min);
     let highest = rates.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let mut sorted = rates.clone();
-    sorted.sort_by(f64::total_cmp);
-    let trimmed_slice = &sorted[TRIM_EACH_TAIL..sorted.len() - TRIM_EACH_TAIL];
-    let trimmed_mean = trimmed_slice.iter().sum::<f64>() / trimmed_slice.len() as f64;
 
     let prose_kt = 0.1 * geometry.barrier;
     let prose_speed = (2.0 * prose_kt / std::f64::consts::PI).sqrt();
@@ -878,14 +912,15 @@ fn section_iii_b_reproduces_the_printed_rates() {
     );
     eprintln!(
         "Section III B printed-rate convention: kT={kt}, <|v|>={speed}, \
-         k_hTST={harmonic:e}, quadrature={quadrature:e}"
+         k_hTST={harmonic:e}, quadrature={quadrature:e}, \
+         {WORK_NODES}-node trapezoidal reference={reference:e}"
     );
     for (seed, rate) in (1..=SEEDS).zip(&rates) {
         eprintln!("Section III B seed {seed}: k_OH-TST={rate:e}");
     }
     eprintln!(
-        "Section III B k_OH-TST over {count} seeds: mean={mean:e}, trimmed mean={trimmed_mean:e}, \
-         sample sd={spread:e}, standard error={error:e}, lowest={lowest:e}, highest={highest:e}"
+        "Section III B k_OH-TST over {count} seeds: mean={mean:e}, sample sd={spread:e}, \
+         standard error={error:e}, lowest={lowest:e}, highest={highest:e}"
     );
     eprintln!(
         "Section III B against ({published:e} ± {published_error:e}): \
@@ -898,12 +933,24 @@ fn section_iii_b_reproduces_the_printed_rates() {
         (mean - band_low) / error,
         band_high - mean
     );
-    assert!(
-        (band_low..=band_high).contains(&mean),
-        "sampled OH-TST mean {mean:e} outside [{band_low:e}, {band_high:e}]; quadrature {quadrature:e}"
+    eprintln!(
+        "Section III B reference comparison: mean - reference={:e} ({} standard errors), \
+         reference - published={:e} ({}%), reference - quadrature={:e} ({}%)",
+        mean - reference,
+        (mean - reference) / error,
+        reference - published,
+        100.0 * (reference / published - 1.0),
+        reference - quadrature,
+        100.0 * (reference / quadrature - 1.0)
     );
     assert!(
-        (band_low..=band_high).contains(&trimmed_mean),
-        "sampled OH-TST trimmed mean {trimmed_mean:e} outside [{band_low:e}, {band_high:e}]; quadrature {quadrature:e}"
+        (band_low..=band_high).contains(&reference),
+        "trapezoidal reference {reference:e} outside published interval \
+         [{band_low:e}, {band_high:e}]"
+    );
+    assert!(
+        (mean - reference).abs() <= STANDARD_ERRORS * error,
+        "sampled OH-TST {mean:e} ± {error:e}; reference {reference:e}; \
+         limit {STANDARD_ERRORS} standard errors"
     );
 }
