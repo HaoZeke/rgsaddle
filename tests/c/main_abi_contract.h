@@ -5,7 +5,7 @@
 #include <stddef.h>
 
 _Static_assert(RGSADDLE_ABI_MAJOR == 1u, "main ABI major");
-_Static_assert(RGSADDLE_ABI_MINOR == 46u, "ABI minor");
+_Static_assert(RGSADDLE_ABI_MINOR == 45u, "ABI minor");
 _Static_assert(RGSADDLE_BAND_NO_MIN_MODE == (1ull << 3), "band flag bit 3");
 _Static_assert(RGSADDLE_BAND_SPLINE_REPARAM == (1ull << 4), "band flag bit 4");
 _Static_assert(RGSADDLE_BAND_STRING == (1ull << 5), "band flag bit 5");
@@ -663,13 +663,13 @@ _Static_assert(_Generic(&rgsaddle_ohtst_curve, abi45_signature_rgsaddle_ohtst_cu
 typedef void (*abi45_signature_rgsaddle_ohtst_free)(RgsaddleOhtst *session);
 _Static_assert(_Generic(&rgsaddle_ohtst_free, abi45_signature_rgsaddle_ohtst_free: 1, default: 0), "rgsaddle_ohtst_free signature");
 
-typedef rgsaddle_status_t (*abi46_signature_rgsaddle_band_set_dynamic)(
+typedef rgsaddle_status_t (*abi45_signature_rgsaddle_band_set_dynamic)(
     RgsaddleBand *band, int32_t enabled, double fmax, double scale_fmax);
-_Static_assert(_Generic(&rgsaddle_band_set_dynamic, abi46_signature_rgsaddle_band_set_dynamic: 1, default: 0), "rgsaddle_band_set_dynamic signature");
+_Static_assert(_Generic(&rgsaddle_band_set_dynamic, abi45_signature_rgsaddle_band_set_dynamic: 1, default: 0), "rgsaddle_band_set_dynamic signature");
 
-typedef rgsaddle_status_t (*abi46_signature_rgsaddle_dyneb_mask)(
+typedef rgsaddle_status_t (*abi45_signature_rgsaddle_dyneb_mask)(
     int64_t n_images, int64_t n_atoms, const double *positions, const double *energies,
     double *forces, double fmax, double scale_fmax, uint8_t *frozen);
-_Static_assert(_Generic(&rgsaddle_dyneb_mask, abi46_signature_rgsaddle_dyneb_mask: 1, default: 0), "rgsaddle_dyneb_mask signature");
+_Static_assert(_Generic(&rgsaddle_dyneb_mask, abi45_signature_rgsaddle_dyneb_mask: 1, default: 0), "rgsaddle_dyneb_mask signature");
 
 #endif
