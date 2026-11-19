@@ -1345,6 +1345,7 @@ fn fill_band(
                 fit2(&mut work.interior_g, (n_images - 2, dof));
                 state.eval_rows(
                     surface,
+                    1..last,
                     interior,
                     &mut work.interior_e,
                     &mut work.interior_g,
@@ -1430,6 +1431,7 @@ fn fill_dynamic_interior(
         fit2(&mut work.interior_g, (n_interior, dof));
         state.eval_rows(
             surface,
+            1..(n_interior + 1),
             interior,
             &mut work.interior_e,
             &mut work.interior_g,
