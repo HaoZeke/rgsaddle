@@ -17,7 +17,7 @@ from typing import Any, Literal
 import numpy as np
 from numpy.typing import NDArray
 
-from rgsaddle._core import ClaimSlot, SaddleIndex
+from rgsaddle._core import ClaimSlot, GrowingString as CoreGrowingString, SaddleIndex
 
 Float64 = NDArray[np.float64]
 Int64 = NDArray[np.int64]
@@ -1151,7 +1151,7 @@ class GrowingString:
         self.min_mode = bool(min_mode)
         self._adapter = SurfaceAdapter(images, allow_shared_calculator=allow_shared_calculator)
         self.ci: int | None = None
-        self._session: Any = None
+        self._session: CoreGrowingString | None = None
         self._report: Any = None
         self._endpoints: tuple[Float64, Float64] | None = None
         self._observers: list[tuple[Any, int, tuple[Any, ...], dict[str, Any]]] = []
@@ -1186,10 +1186,8 @@ class GrowingString:
             np.ascontiguousarray(x, dtype=np.float64),
         )
 
-    def _ensure(self, force_tol: float) -> Any:
+    def _ensure(self, force_tol: float) -> CoreGrowingString:
         if self._session is None:
-            from rgsaddle._core import GrowingString as CoreGrowingString
-
             reactant = np.ascontiguousarray(
                 self.images[0].get_positions(), dtype=np.float64
             ).reshape(-1)

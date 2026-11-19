@@ -44,6 +44,7 @@
 #include <cstring>
 #include <exception>
 #include <map>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -1594,7 +1595,8 @@ SessionReport with_growing_string_saddle_index(SessionReport report, const PyGro
 
 PyGrowingString make_growing_string_session(Vector reactant, Vector product, std::int64_t n_images,
                                             double frontier_tol, std::int64_t min_steps_per_node,
-                                            std::int64_t max_steps_per_node, nb::handle join_tol,
+                                            std::int64_t max_steps_per_node,
+                                            std::optional<double> join_tol,
                                             bool climb, double ci_after, double ci_after_rel,
                                             const std::string &method, std::int64_t memory,
                                             double force_tol, double max_move,
@@ -1660,8 +1662,8 @@ PyGrowingString make_growing_string_session(Vector reactant, Vector product, std
   config.frontier_tol = frontier_tol;
   config.min_steps_per_node = min_steps_per_node;
   config.max_steps_per_node = max_steps_per_node;
-  if (!join_tol.is_none()) {
-    const auto value = nb::cast<double>(join_tol);
+  if (join_tol.has_value()) {
+    const auto value = *join_tol;
     if (!std::isfinite(value) || value < 0.0) {
       throw nb::value_error("join_tol must be non-negative or None");
     }
@@ -2158,10 +2160,11 @@ NB_MODULE(_core, m) {
           "__init__",
           [](PyGrowingString *self, Vector reactant, Vector product, std::int64_t n_images,
              double frontier_tol, std::int64_t min_steps_per_node,
-             std::int64_t max_steps_per_node, nb::handle join_tol, bool climb, double ci_after,
-             double ci_after_rel, const std::string &method, std::int64_t memory,
-             double force_tol, double max_move, bool remove_translation, bool min_mode,
-             const std::string &reparametrization, nb::handle cell, nb::handle fixed) {
+             std::int64_t max_steps_per_node, std::optional<double> join_tol, bool climb,
+             double ci_after, double ci_after_rel, const std::string &method,
+             std::int64_t memory, double force_tol, double max_move, bool remove_translation,
+             bool min_mode, const std::string &reparametrization, nb::handle cell,
+             nb::handle fixed) {
             new (self) PyGrowingString(make_growing_string_session(
                 reactant, product, n_images, frontier_tol, min_steps_per_node,
                 max_steps_per_node, join_tol, climb, ci_after, ci_after_rel, method, memory,
