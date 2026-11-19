@@ -1,0 +1,5 @@
+A periodic atomic band now keeps each neighbour-link image shift
+continuous between steps using =minimage::Cell= instead of rewrapping
+the link from scratch on every assembly.
+This avoids force sign flips at half-cell cuts and keeps host-wrapped
+handoffs and skewed triclinic links on the same physical image.
