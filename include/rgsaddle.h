@@ -1218,9 +1218,8 @@ void rgsaddle_samd_free(RgsaddleSamd *session);
 /**
  * Image dependent pair potential initial path.
  *
- * Goswami, MethodsX (2026), doi:10.1016/j.mex.2026.103899.
  * Smidstrup, Pedersen, Stokbro, and Jonsson, J. Chem. Phys. 140,
- * 214106 (2014).
+ * 214106 (2014), doi:10.1063/1.4878664.
  *
  * `reactant` and `product` each hold `3 * n_atoms` doubles. `n_images`
  * counts the endpoints. `out` holds `n_images * 3 * n_atoms` doubles,
