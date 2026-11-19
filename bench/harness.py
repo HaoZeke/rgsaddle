@@ -17,8 +17,10 @@ sets the climbing-after flag with trigger factor 0 and trigger force
 0.5, and turns min-mode refinement off, so the band is plain CI-NEB.
 eOn climbing keeps its own default arm (immediate) and converged_only.
 
-Matched min-mode start: 12 seeds, not a subset. Seed s is
-PCG64(20261118 + s). Each free Cartesian component is an independent
+Matched min-mode start: 12 seeds, not a subset. Seed s for a system
+is PCG64(20261118 + s + tag * 13). The tag is a stable mix of the
+system name, so two systems that share a reactant do not draw the
+same displacement. Each free Cartesian component is an independent
 normal draw with standard deviation 0.1 Angstrom, which is eOn's
 documented displace magnitude. The initial mode is that displacement
 after it is normalized. Fixed components stay zero. The same displaced
@@ -39,8 +41,9 @@ Angstrom of that point. The barrier is the saddle energy minus the
 reactant energy and is compared at the same 0.01 eV.
 
 RMSD uses free atoms only. A periodic pair is the Euclidean
-minimum-image displacement from minimage. A free cluster has its
-center of mass removed and is not rotated.
+minimum-image displacement from minimage. A free cluster is centered
+and Kabsch-aligned. Identical species are matched by enumerating
+permutations when that count is at most 5040.
 
 One potential evaluation is one call of the rgpot evaluate method.
 A final probe of the returned geometry is not part of the search
@@ -60,9 +63,11 @@ import hashlib
 import json
 import math
 import os
+import subprocess
 import sys
 import threading
 import time
+import zlib
 
 
 PROTOCOL = {
@@ -92,6 +97,14 @@ PROTOCOL = {
     "displacement_sigma_angstrom": 0.1,
     "displacement_generator": "PCG64",
     "displacement_seed_base": 20261118,
+    "displacement_seed": (
+        "PCG64(displacement_seed_base + round + tag * (n_seeds + 1)); "
+        "tag is zlib.crc32 of the system name"
+    ),
+    "cluster_rmsd": (
+        "center, Kabsch rotation, and enumeration of identical species "
+        "when the permutation count is at most 5040"
+    ),
     "n_seeds": 12,
     "reference_images": 15,
     "reference_fmax_ev_per_angstrom": 1.0e-4,
@@ -218,9 +231,123 @@ def pin(args):
     ):
         os.environ[key] = str(args.threads)
     ctypes.CDLL(os.path.join(args.libdir, "librgpot.so"), mode=ctypes.RTLD_GLOBAL)
+    preload_eonclib(args.pythonpath, args.libdir)
     for entry in reversed(args.pythonpath):
         if entry not in sys.path:
             sys.path.insert(0, entry)
+
+
+EON_PROJECT_VERSION = "3.6.0"
+PERMUTATION_CAP = 5040
+RGSADDLE_BUILD = "release, C API"
+RGPOT_BUILD = "scalar kernels, fast neighbour list on, Fortran pots on"
+
+BUILD_PINS = (
+    ("linkcell", "0.3.5 with rgsaddle, 0.3.11 with eOn"),
+    ("minimage", "0.1.2 with rgsaddle, 0.1.4 with eOn"),
+    ("rgmin", "0.6.0"),
+    ("readcon-core", "0.20.0"),
+)
+
+EONCLIB_MISSING = (
+    "pyeonclient needs libeonclib loaded before the extension imports. "
+    "The harness looks for libeonclib next to the pyeonclient package on "
+    "--pythonpath and in --libdir. Put that library in one of those places, "
+    "or set LD_LIBRARY_PATH to the directory that contains it."
+)
+
+BUILD_NOTES = (
+    "eOn was built with native architecture off and fast math off. "
+    "Its bundled vector library is not on the timed potential path. "
+    "The eOn rgpot engine calls capnp directly, so that client was linked with capnp-rpc.",
+)
+
+
+def eon_package_dirs(pythonpath):
+    found = []
+    for entry in pythonpath:
+        package = os.path.join(entry, "pyeonclient")
+        if os.path.isdir(package):
+            found.append(package)
+        if os.path.basename(os.path.normpath(entry)) == "pyeonclient" and os.path.isdir(entry):
+            found.append(entry)
+    return found
+
+
+def _eonclib_name(name):
+    return (
+        name == "libeonclib.so"
+        or name.startswith("libeonclib.so.")
+        or name in ("libeonclib.dylib", "eonclib.dll")
+    )
+
+
+def locate_eonclib(pythonpath, libdir):
+    roots = []
+    if libdir:
+        roots.append(libdir)
+    for package in eon_package_dirs(pythonpath):
+        roots.append(package)
+        parent = os.path.dirname(package)
+        roots.append(parent)
+        roots.append(os.path.join(parent, "lib"))
+    for directory in os.environ.get("LD_LIBRARY_PATH", "").split(os.pathsep):
+        if directory:
+            roots.append(directory)
+    seen = set()
+    for root in roots:
+        key = os.path.normpath(root)
+        if key in seen or not os.path.isdir(root):
+            continue
+        seen.add(key)
+        try:
+            names = os.listdir(root)
+        except OSError:
+            continue
+        for name in sorted(names):
+            if _eonclib_name(name):
+                path = os.path.join(root, name)
+                if os.path.isfile(path):
+                    return path
+    return None
+
+
+def preload_eonclib(pythonpath, libdir):
+    path = locate_eonclib(pythonpath, libdir)
+    if path is None:
+        raise SystemExit(EONCLIB_MISSING)
+    directory = os.path.dirname(os.path.abspath(path))
+    current = [item for item in os.environ.get("LD_LIBRARY_PATH", "").split(os.pathsep) if item]
+    if directory not in current:
+        os.environ["LD_LIBRARY_PATH"] = os.pathsep.join([directory, *current])
+    ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
+    return path
+
+
+def host_cpu_model():
+    try:
+        with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if line.lower().startswith("model name"):
+                    value = line.split(":", 1)[1].strip()
+                    if value:
+                        return sanitize(value)
+    except OSError:
+        pass
+    return "unknown"
+
+
+def tool_line(command):
+    try:
+        out = subprocess.check_output(
+            [command, "--version"],
+            text=True,
+            stderr=subprocess.STDOUT,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    line = out.splitlines()[0].strip() if out else ""
+    return sanitize(line) if line else None
 
 
 def sanitize(text):
@@ -910,6 +1037,60 @@ def mic_vectors(origin, dest, cell):
     return out
 
 
+def _kabsch_rmsd(reference, moving):
+    import numpy as np
+
+    reference = np.asarray(reference, dtype=np.float64)
+    moving = np.asarray(moving, dtype=np.float64)
+    if reference.shape != moving.shape or reference.ndim != 2 or reference.shape[1] != 3:
+        raise RuntimeError("rmsd coordinates do not match")
+    if reference.shape[0] < 2:
+        delta = moving - reference
+        if reference.shape[0] == 0:
+            return 0.0
+        return float(np.sqrt(np.mean(np.sum(delta * delta, axis=1))))
+    left = reference - reference.mean(axis=0)
+    right = moving - moving.mean(axis=0)
+    covariance = left.T @ right
+    left_basis, _singular, right_basis = np.linalg.svd(covariance)
+    correction = np.eye(3)
+    correction[-1, -1] = np.sign(np.linalg.det(right_basis.T @ left_basis.T))
+    if correction[-1, -1] == 0.0:
+        correction[-1, -1] = 1.0
+    rotation = right_basis.T @ correction @ left_basis.T
+    aligned = right @ rotation
+    delta = left - aligned
+    return float(np.sqrt(np.mean(np.sum(delta * delta, axis=1))))
+
+
+def _species_rmsd(reference, trial, numbers):
+    from itertools import permutations, product
+
+    labels = [int(number) for number in numbers]
+    groups = {}
+    for index, label in enumerate(labels):
+        groups.setdefault(label, []).append(index)
+    blocks = [indexes for indexes in groups.values() if len(indexes) > 1]
+    total = 1
+    for indexes in blocks:
+        total *= math.factorial(len(indexes))
+        if total > PERMUTATION_CAP:
+            return _kabsch_rmsd(reference, trial)
+    if not blocks:
+        return _kabsch_rmsd(reference, trial)
+    best = None
+    choices = [list(permutations(indexes)) for indexes in blocks]
+    for combo in product(*choices):
+        order = list(range(len(labels)))
+        for indexes, perm in zip(blocks, combo):
+            for src, dst in zip(indexes, perm):
+                order[src] = dst
+        value = _kabsch_rmsd(reference, trial[order])
+        if best is None or value < best:
+            best = value
+    return best
+
+
 def rmsd(system, reference, trial):
     import numpy as np
 
@@ -920,17 +1101,25 @@ def rmsd(system, reference, trial):
     right = np.asarray(trial, dtype=np.float64)[free]
     if system["periodic"]:
         delta = mic_vectors(left, right, np.asarray(system["cell"], dtype=np.float64))
-    else:
-        left = left - left.mean(axis=0)
-        right = right - right.mean(axis=0)
-        delta = right - left
-    return float(np.sqrt(np.mean(np.sum(delta * delta, axis=1))))
+        return float(np.sqrt(np.mean(np.sum(delta * delta, axis=1))))
+    numbers = system.get("numbers")
+    if numbers is None:
+        return _kabsch_rmsd(left, right)
+    return _species_rmsd(left, right, np.asarray(numbers)[free])
+
+
+def displacement_seed(name, seed):
+    # The round index alone is one stream. pt_hop and pt_exchange share a
+    # reactant, and a min-mode search never reads the product, so that
+    # stream was one trajectory. The name tag gives each system its own block.
+    tag = zlib.crc32(str(name).encode("utf-8")) & 0x7FFFFFFF
+    return PROTOCOL["displacement_seed_base"] + int(seed) + tag * (PROTOCOL["n_seeds"] + 1)
 
 
 def displace(system, seed):
     import numpy as np
 
-    rng = np.random.Generator(np.random.PCG64(PROTOCOL["displacement_seed_base"] + seed))
+    rng = np.random.Generator(np.random.PCG64(displacement_seed(system["name"], seed)))
     draw = rng.normal(
         0.0,
         PROTOCOL["displacement_sigma_angstrom"],
@@ -1463,7 +1652,8 @@ def write_table(path, payload):
         "Stop when the maximum per-atom force norm is under 0.01 eV/Angstrom.",
         "Spring 5.0 eV/Angstrom^2, linear path, 7 and 11 images, 1000 iterations.",
         "Success: code converged, reference index is 1, energy within 0.01 eV,",
-        "free-atom RMSD within 0.05 Angstrom. Medians and IQRs use n=12.",
+        "free-atom RMSD within 0.05 Angstrom. A free cluster is centered and",
+        "Kabsch-aligned, and identical species are matched. Medians and IQRs use n=12.",
         "A/A is a Mann-Whitney test of even rounds against odd rounds.",
         "Method p-values are Mann-Whitney, and success p-values are Fisher exact.",
         "ASE ships no Lanczos min-mode search.",
@@ -1549,8 +1739,65 @@ def write_table(path, payload):
             lines.append("")
             lines.append(f"{len(failures) - len(shown)} further failures are in the JSON.")
     lines.append("")
+    lines.extend(build_section(payload))
     with open(path, "w", encoding="utf-8") as handle:
         handle.write("\n".join(lines))
+
+
+def build_section(payload):
+    versions = payload.get("versions") or {}
+    shas = payload.get("shas") or {}
+    lines = ["## Build", ""]
+    lines.append("| component | revision or version |")
+    lines.append("| --- | --- |")
+    abi = versions.get("rgsaddle_abi")
+    rgsaddle_parts = [shas.get("rgsaddle") or ""]
+    if abi:
+        rgsaddle_parts.append(f"ABI {abi}")
+    rgsaddle_parts.append(RGSADDLE_BUILD)
+    rgsaddle = ", ".join(part for part in rgsaddle_parts if part)
+    if rgsaddle:
+        lines.append(f"| rgsaddle | {rgsaddle} |")
+    rgpot_parts = [shas.get("rgpot") or "", versions.get("rgpot") or "", RGPOT_BUILD]
+    rgpot = ", ".join(part for part in rgpot_parts if part)
+    if rgpot:
+        lines.append(f"| rgpot | {rgpot} |")
+    eon_parts = [shas.get("eon") or ""]
+    if versions.get("pyeonclient"):
+        eon_parts.append(f"pyeonclient {versions['pyeonclient']}")
+    project = versions.get("eon_project") or EON_PROJECT_VERSION
+    if project:
+        eon_parts.append(f"project version {project}")
+    eon = ", ".join(part for part in eon_parts if part)
+    if eon:
+        lines.append(f"| eOn | {eon} |")
+    for key, label in (
+        ("ase", "ASE"),
+        ("numpy", "numpy"),
+        ("scipy", "scipy"),
+        ("rustc", "rustc"),
+        ("gcc", "gcc"),
+        ("g++", "g++"),
+    ):
+        if versions.get(key):
+            lines.append(f"| {label} | {versions[key]} |")
+    for name, value in BUILD_PINS:
+        lines.append(f"| {name} | {value} |")
+    cpu = payload.get("cpu_model")
+    if cpu:
+        lines.append(f"| cpu | {cpu} |")
+    lines.append("")
+    for note in BUILD_NOTES:
+        lines.append(note)
+    threads = payload.get("threads")
+    rounds = payload.get("rounds")
+    if threads is not None and rounds is not None:
+        if int(threads) == 1:
+            lines.append(f"One core, one thread, {rounds} rounds.")
+        else:
+            lines.append(f"One core, {threads} threads, {rounds} rounds.")
+    lines.append("")
+    return lines
 
 
 def lattice_constant(potential, atomic_number):
@@ -1641,15 +1888,14 @@ def pack_system(name, potential_name, periodic, numbers, cell, pbc, fixed, react
 
 
 def distinct(system):
-    distance = rmsd(
-        {
-            "fixed": system["fixed"],
-            "periodic": system["periodic"],
-            "cell": system["cell"],
-        },
-        system["reactant"],
-        system["product"],
-    )
+    probe = {
+        "fixed": system["fixed"],
+        "periodic": system["periodic"],
+        "cell": system["cell"],
+    }
+    if "numbers" in system:
+        probe["numbers"] = system["numbers"]
+    distance = rmsd(probe, system["reactant"], system["product"])
     if distance < 0.2:
         raise RuntimeError(f"{system['name']} endpoints are {distance} Angstrom apart")
     return distance
@@ -2182,6 +2428,7 @@ def measure(args, library, rgpot, pyec):
         for method in MM_METHODS:
             jobs.append(("mm", system, method, None))
     runs = []
+    recorded = versions(rgpot, pyec, library)
     for round_index in range(args.rounds):
         order = "forward" if round_index % 2 == 0 else "reversed"
         sequence = jobs if round_index % 2 == 0 else list(reversed(jobs))
@@ -2235,20 +2482,33 @@ def measure(args, library, rgpot, pyec):
                 flush=True,
             )
         summary, comparisons = summarize(runs)
-        payload = {
-            "protocol": PROTOCOL,
-            "shas": args.shas,
-            "rounds": args.rounds,
-            "threads": args.threads,
-            "complete": round_index + 1 == args.rounds,
-            "systems": {name: frozen["systems"][name] for name in SYSTEM_ORDER},
-            "summary": summary,
-            "comparisons": comparisons,
-            "runs": runs,
-        }
+        payload = coverage_record(
+            args,
+            recorded,
+            {
+                "complete": round_index + 1 == args.rounds,
+                "systems": {name: frozen["systems"][name] for name in SYSTEM_ORDER},
+                "summary": summary,
+                "comparisons": comparisons,
+                "runs": runs,
+            },
+        )
         dump_json(os.path.join(args.out, "results.json"), payload)
         write_table(os.path.join(args.out, "results.md"), payload)
     print("measure complete", len(runs), flush=True)
+
+
+def coverage_record(args, recorded, body):
+    recorded = dict(recorded)
+    recorded.setdefault("eon_project", EON_PROJECT_VERSION)
+    body = dict(body)
+    body["protocol"] = PROTOCOL
+    body["shas"] = args.shas
+    body["rounds"] = args.rounds
+    body["threads"] = args.threads
+    body["cpu_model"] = host_cpu_model()
+    body["versions"] = recorded
+    return body
 
 
 def versions(rgpot, pyec, library):
@@ -2256,14 +2516,20 @@ def versions(rgpot, pyec, library):
     import numpy
     import scipy
 
-    return {
+    recorded = {
         "rgpot": getattr(rgpot, "__version__", None),
         "pyeonclient": getattr(pyec, "__version__", None),
         "rgsaddle_abi": library.abi,
         "ase": ase.__version__,
         "numpy": numpy.__version__,
         "scipy": scipy.__version__,
+        "eon_project": EON_PROJECT_VERSION,
     }
+    for name in ("rustc", "gcc", "g++"):
+        line = tool_line(name)
+        if line:
+            recorded[name] = line
+    return recorded
 
 
 def main(argv):
