@@ -614,6 +614,61 @@ impl JointChart {
     }
 }
 
+/// Linear scale of one Berendsen step on a cubic cell.
+///
+/// `hydrostatic_tension` uses the sign of [`finite_difference_cauchy_stress`]:
+/// positive in tension. `modulus` is the bulk modulus in energy per volume.
+/// It sets how fast the cell moves, not the volume at which the tension
+/// vanishes. `dt` and `tau` are the barostat step and the piston time, in
+/// the same unit. A negative tension is compression and the scale is
+/// greater than one. The kinetic pressure is not part of this function;
+/// add it to the tension first. The returned number multiplies each
+/// lattice length.
+///
+/// # Errors
+///
+/// [`SaddleError::Invalid`] when an argument is non-finite, the modulus
+/// or a time is not positive, or the volume factor is not positive.
+///
+/// # Examples
+///
+/// ```
+/// use rgsaddle::berendsen_isotropic_scale;
+///
+/// let compressed = berendsen_isotropic_scale(-0.1, 1.0, 1.0, 1.0)?;
+/// assert!(compressed > 1.0);
+/// let stretched = berendsen_isotropic_scale(0.1, 1.0, 1.0, 1.0)?;
+/// assert!(stretched < 1.0);
+/// # Ok::<(), rgsaddle::SaddleError>(())
+/// ```
+pub fn berendsen_isotropic_scale(
+    hydrostatic_tension: f64,
+    modulus: f64,
+    dt: f64,
+    tau: f64,
+) -> Result<f64, SaddleError> {
+    if !(hydrostatic_tension.is_finite()
+        && modulus.is_finite()
+        && modulus > 0.0
+        && dt.is_finite()
+        && dt > 0.0
+        && tau.is_finite()
+        && tau > 0.0)
+    {
+        return Err(SaddleError::Invalid(
+            "Berendsen scale needs finite tension, a positive modulus, and positive dt and tau"
+                .into(),
+        ));
+    }
+    let volume_factor = 1.0 - (dt / tau) * hydrostatic_tension / modulus;
+    if !(volume_factor.is_finite() && volume_factor > 0.0) {
+        return Err(SaddleError::Invalid(
+            "Berendsen volume factor is not positive".into(),
+        ));
+    }
+    Ok(volume_factor.cbrt())
+}
+
 /// Central-difference Cauchy stress of [`PointSurface::eval_in_cell`].
 ///
 /// Each of the nine right-strain entries is perturbed with the atoms
@@ -1962,6 +2017,17 @@ mod tests {
     use ndarray::{ArrayView1, array};
     use rgmin::Method;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn berendsen_scale_expands_a_compressed_cell() {
+        let compressed = berendsen_isotropic_scale(-0.1, 1.0, 1.0, 1.0).expect("scale");
+        let stretched = berendsen_isotropic_scale(0.1, 1.0, 1.0, 1.0).expect("scale");
+        assert!(compressed > 1.0);
+        assert!(stretched < 1.0);
+        let idle = berendsen_isotropic_scale(0.0, 1.0, 1.0, 1.0).expect("scale");
+        assert!((idle - 1.0).abs() < 1.0e-15);
+        assert!(berendsen_isotropic_scale(0.1, 0.0, 1.0, 1.0).is_err());
+    }
 
     fn diagonal(x: f64, y: f64, z: f64) -> M3 {
         [[x, 0.0, 0.0], [0.0, y, 0.0], [0.0, 0.0, z]]
