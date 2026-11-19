@@ -290,6 +290,7 @@ impl BandSession {
             self.config.cell.as_ref(),
         );
         self.pin_fixed();
+        self.refresh_links();
         self.state.set_endpoints(Some([energies[lo], energies[hi]]));
         self.state.drop_last();
         self.forget_optimizer();
@@ -306,6 +307,8 @@ impl BandSession {
 mod tests {
     use super::*;
     use approx::assert_abs_diff_eq;
+    use ndarray::array;
+    use std::sync::atomic::Ordering;
 
     fn manual(offset: usize) -> ZoomConfig {
         ZoomConfig::default().with_alpha(0.0).with_offset(offset)
@@ -342,5 +345,47 @@ mod tests {
                 assert_abs_diff_eq!(row[0], 3.0 + 0.4 * i as f64, epsilon = 1e-9);
             }
         }
+    }
+
+    #[test]
+    fn zoom_position_replacement_refreshes_periodic_links() {
+        let cell = Cell([[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]]);
+        let config = BandConfig::default()
+            .with_cell(Some(cell))
+            .with_min_mode(None)
+            .with_zoom(Some(
+                ZoomConfig::default().with_after(1.0).with_stability(1),
+            ));
+        let positions = array![
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [4.9, 0.0, 0.0],
+            [7.0, 0.0, 0.0],
+            [12.0, 0.0, 0.0]
+        ];
+        let mut session = BandSession::new(config, positions).expect("periodic zoom session");
+        session.state.armed.store(true, Ordering::Relaxed);
+        session.state.ci_index.store(2, Ordering::Relaxed);
+        let x = session.interior_flat();
+        *session
+            .state
+            .last
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(super::super::BandEval {
+            x,
+            energies: array![0.0, 1.0, 5.0, 1.0, 0.0],
+            gradients: Array2::zeros((5, 3)),
+            projected: Array1::zeros(9),
+            stresses: Array2::zeros((0, 0)),
+            band_positions: Array2::zeros((0, 0)),
+            band_cells: Vec::new(),
+        });
+        session.state.links = Some(super::super::LinkShifts::default());
+        assert!(session.zoom_latch(BandStatus::Running));
+        let expected = super::super::LinkShifts::new(&cell, session.positions.view());
+        assert_eq!(
+            session.state.links.as_ref().expect("periodic links").shifts,
+            expected.shifts
+        );
     }
 }

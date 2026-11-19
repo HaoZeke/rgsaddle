@@ -54,8 +54,9 @@ thiserror = "2"
 # The rev is tag v0.3.5. Its own minimage requirement is the caret
 # ^0.1.2, so the exact pin below is what holds 0.1.2.
 linkcell = { version = "=0.3.5", git = "https://github.com/d-SEAMS/linkcell", rev = "49f94dd2d2ff1e0d854cebc8a664599abe569156", default-features = false }
-# Matches the Cell that linkcell v0.3.5 re-exports; 0.1.3's displacement fix lands in a separate change.
-minimage = "=0.1.2"
+# Linkcell keeps its own compatible dependency; band geometry uses the
+# rank-aware partial cells and Euclidean displacement in this release.
+minimage = { version = "=0.2.3", default-features = false }
 proptest = { version = "1.6", optional = true }
 rug = { version = "1.27", optional = true }
 capnp = { version = "0.20", optional = true }
