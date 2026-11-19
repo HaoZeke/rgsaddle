@@ -20,8 +20,10 @@ SPEC.loader.exec_module(harness)
 def test_write_table_keeps_the_build_section(tmp_path):
     payload = {
         "summary": [],
-        "systems": {},
         "comparisons": [],
+        "systems": {
+            "pt_exchange": {"reference": {"usable": True, "index": 1, "barrier": 4.569}},
+        },
         "runs": [
             {
                 "system": "pt_exchange",
@@ -30,6 +32,12 @@ def test_write_table_keeps_the_build_section(tmp_path):
                 "round": 0,
                 "status": "max_iterations",
                 "success": False,
+                "wall_s": 1.0,
+                "outside_s": 0.5,
+                "force_calls": 10,
+                "barrier": None,
+                "rmsd": 5.0,
+                "energy_error": 1.0,
             },
             {
                 "system": "pt_exchange",
@@ -38,6 +46,12 @@ def test_write_table_keeps_the_build_section(tmp_path):
                 "round": 0,
                 "status": "GOOD",
                 "success": False,
+                "wall_s": 1.0,
+                "outside_s": 0.5,
+                "force_calls": 10,
+                "barrier": None,
+                "rmsd": 1.0,
+                "energy_error": 1.0,
             },
         ],
         "shas": {
@@ -64,8 +78,15 @@ def test_write_table_keeps_the_build_section(tmp_path):
     assert "0.4.2" in text
     assert "abc12345" in text
     assert "| source |" in text
-    assert "rgsaddle-revision" in text
+    assert "shas.rgsaddle" in text
+    assert "versions.rgsaddle_abi" in text
+    assert "runs[*].rgsaddle_revision" not in text
+    assert "runs[*].rgsaddle_abi" not in text
+    assert "next run" in text
     assert "unverified (" in text
+    for run in payload["runs"]:
+        assert "rgsaddle_revision" not in run
+        assert "rgsaddle_abi" not in run
     harness.write_table(str(path), payload)
     rewritten = path.read_text(encoding="utf-8")
     assert rewritten.count("## Build") == 1
@@ -160,6 +181,163 @@ def test_finalize_results_corrects_summary_and_json(tmp_path, monkeypatch):
     assert payload["summary"][0]["rmsd_median_angstrom"] == 2.0
     assert '"rmsd_corrected": 2.0' in written
     assert '"rmsd_median_angstrom": 2.0' in written
+
+
+def _measured_run(**overrides):
+    row = {
+        "system": "pt_hop",
+        "method": "ase-neb",
+        "images": 7,
+        "round": 0,
+        "status": "max_iterations",
+        "success": False,
+        "wall_s": 1.0,
+        "outside_s": 0.4,
+        "force_calls": 10,
+        "barrier": None,
+        "rmsd": 1.0,
+        "energy_error": 0.2,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_write_table_recomputes_the_summary(tmp_path, monkeypatch):
+    monkeypatch.setattr(harness, "_load_external_rmsd_corrections", lambda: [])
+    payload = {
+        "summary": [
+            {
+                "system": "pt_hop",
+                "method": "ase-neb",
+                "images": 7,
+                "rmsd_median_angstrom": 8.5,
+            }
+        ],
+        "comparisons": [
+            {
+                "system": "pt_hop",
+                "images": 7,
+                "a": "stale",
+                "b": "row",
+                "wall_p": 0.5,
+                "outside_p": 0.5,
+                "calls_p": 0.5,
+                "barrier_p": 0.5,
+                "success_p": 0.5,
+            }
+        ],
+        "systems": {"pt_hop": {"reference": {"usable": True, "index": 1, "barrier": 0.09}}},
+        "runs": [
+            _measured_run(round=0, rmsd=1.0),
+            _measured_run(round=1, rmsd=3.0),
+        ],
+        "rmsd_corrections": [
+            {
+                "system": "pt_hop",
+                "method": "ase-neb",
+                "images": 7,
+                "round": 0,
+                "rmsd_old": 1.0,
+                "rmsd_new": 4.0,
+                "cause": "unit correction",
+            },
+            {
+                "system": "pt_hop",
+                "method": "ase-neb",
+                "images": 7,
+                "round": 1,
+                "rmsd_old": 3.0,
+                "rmsd_new": 6.0,
+                "cause": "unit correction",
+            },
+        ],
+        "shas": {"rgsaddle": "abc12345", "rgpot": "def12345", "eon": "ghi12345"},
+        "versions": {"rgsaddle_abi": "1.43", "ase": "3.29.0"},
+        "cpu_model": "Example CPU",
+        "threads": 1,
+        "rounds": 2,
+    }
+    path = tmp_path / "results.md"
+    harness.write_table(str(path), payload)
+    text = path.read_text(encoding="utf-8")
+    assert payload["summary"][0]["rmsd_median_angstrom"] == 5.0
+    assert payload["comparisons"] == []
+    assert "8.5" not in text
+    assert "stale" not in text
+    assert "| 5 |" in text
+
+
+def test_matching_rmsd_overlay_is_a_consistency_check(tmp_path, monkeypatch):
+    monkeypatch.setattr(harness, "_load_external_rmsd_corrections", lambda: [])
+    payload = {
+        "summary": [],
+        "comparisons": [],
+        "systems": {"pt_hop": {"reference": {"usable": True, "index": 1, "barrier": 0.09}}},
+        "runs": [_measured_run(rmsd=1.25)],
+        "rmsd_corrections": [
+            {
+                "system": "pt_hop",
+                "method": "ase-neb",
+                "images": 7,
+                "round": 0,
+                "rmsd_old": 1.25,
+                "rmsd_new": 1.25,
+                "cause": "same value",
+            }
+        ],
+        "shas": {"rgsaddle": "abc12345"},
+        "versions": {"rgsaddle_abi": "1.43"},
+        "threads": 1,
+        "rounds": 1,
+    }
+    path = tmp_path / "results.md"
+    harness.write_table(str(path), payload)
+    text = path.read_text(encoding="utf-8")
+    assert "## RMSD consistency check" in text
+    assert "## RMSD corrections" not in text
+    assert "summary is unchanged" in text
+    assert payload["summary"][0]["rmsd_median_angstrom"] == 1.25
+
+
+def test_malformed_rmsd_corrections_raise(tmp_path, monkeypatch):
+    path = tmp_path / "corrections.json"
+    monkeypatch.setattr(harness, "RMSD_CORRECTIONS_PATH", str(path))
+    path.write_text("{", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="malformed RMSD corrections JSON"):
+        harness._load_external_rmsd_corrections()
+    path.write_text("[]", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="expected an object with a list of rows"):
+        harness._load_external_rmsd_corrections()
+    monkeypatch.setattr(harness, "RMSD_CORRECTIONS_PATH", str(tmp_path / "absent.json"))
+    assert harness._load_external_rmsd_corrections() == []
+
+
+def test_lockfile_reader_falls_back_to_tomli(monkeypatch, tmp_path):
+    import sys
+    import types
+
+    seen = {}
+
+    def loads(text):
+        seen["text"] = text
+        return {
+            "package": [
+                {"name": "minimage", "version": "9.9.9", "source": "registry+example"},
+            ]
+        }
+
+    fake = types.ModuleType("tomli")
+    fake.loads = loads
+    monkeypatch.setitem(sys.modules, "tomllib", None)
+    monkeypatch.setitem(sys.modules, "tomli", fake)
+    lock = tmp_path / "Cargo.lock"
+    lock.write_text(
+        'package = [{ name = "minimage", version = "1.2.3", source = "registry+example" }]\n',
+        encoding="utf-8",
+    )
+    found = harness._cargo_lock_packages(str(lock))
+    assert seen["text"].startswith("package")
+    assert found["minimage"][0]["version"] == "9.9.9"
 
 
 def test_validate_payload_rejects_missing_cell_revision():

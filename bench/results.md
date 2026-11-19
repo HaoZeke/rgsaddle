@@ -246,12 +246,12 @@ Reference usable: True; index 1; barrier 0.2365 eV.
 
 313 further failures are in the JSON.
 
-## RMSD corrections
+## RMSD consistency check
 
-Recomputed RMSD values are derived from stored structures with minimage 0.1.2.
-Original run rows are untouched; this section reports an append-only verification overlay.
+Recomputed RMSD values use the stored structures and minimage 0.1.2.
+Each recomputed value matches the stored RMSD, so the summary is unchanged.
 
-| system | method | images | round | old rmsd A | corrected rmsd A | cause |
+| system | method | images | round | stored rmsd A | recomputed rmsd A | note |
 | --- | --- | --- | --- | --- | --- | --- |
 | pt_exchange | ase-neb | 7 | 0 | 7.600849372084 | 7.600849372084 | The rejected independent check included fixed slab atoms and used a custom radius-2 lattice-image search; the benchmark uses free atoms only and minimage 0.1.2's Smith/Minkowski-reduced 27-image Euclidean convention. The legacy harness passes raw stored positions directly to minimage::Cell::displacement_euclidean through the C ABI, performs no ASE get_distances call, explicit wrapping, centering, or alignment, and computes sqrt(mean(per-atom squared 3D displacement)) over free atoms. For ase-neb it compares the reference with the highest-energy interior image selected from the final unconverged band. All rounds are identical because ASE BFGS starts from the same linear band without a seed and deterministically reaches the same final selected structure; each run stores that structure independently. |
 | pt_exchange | ase-neb | 7 | 1 | 7.600849372084 | 7.600849372084 | The rejected independent check included fixed slab atoms and used a custom radius-2 lattice-image search; the benchmark uses free atoms only and minimage 0.1.2's Smith/Minkowski-reduced 27-image Euclidean convention. The legacy harness passes raw stored positions directly to minimage::Cell::displacement_euclidean through the C ABI, performs no ASE get_distances call, explicit wrapping, centering, or alignment, and computes sqrt(mean(per-atom squared 3D displacement)) over free atoms. For ase-neb it compares the reference with the highest-energy interior image selected from the final unconverged band. All rounds are identical because ASE BFGS starts from the same linear band without a seed and deterministically reaches the same final selected structure; each run stores that structure independently. |
@@ -282,9 +282,8 @@ Original run rows are untouched; this section reports an append-only verificatio
 
 | component | revision or version | source |
 | --- | --- | --- |
-| rgsaddle-revision | 11707696d20994e2839cbc13c0c092799ad58de8, ABI 1.43; cells 25 [al_vacancy/ase-dimer/-, al_vacancy/eon-dimer/-, al_vacancy/eon-lanczos/-, al_vacancy/rgsaddle-dimer/-, ...] | runs[*].rgsaddle_revision + runs[*].rgsaddle_abi |
-| rgsaddle-revision | 7c1d432, ABI 1.42; cells 60 [al_vacancy/ase-ci/11, al_vacancy/ase-ci/7, al_vacancy/ase-neb/11, al_vacancy/ase-neb/7, ...] | runs[*].rgsaddle_revision + runs[*].rgsaddle_abi |
-| rgsaddle-min-mode-sha | 11707696d20994e2839cbc13c0c092799ad58de8 | shas.rgsaddle (retained for compatibility; min-mode revision) |
+| rgsaddle | 11707696d20994e2839cbc13c0c092799ad58de8 | shas.rgsaddle |
+| rgsaddle ABI | 1.43 | versions.rgsaddle_abi |
 | rgpot | 97ebba0b062128b7dc4637501c4b70ed4944ae9d, 3.7.0, scalar kernels, fast neighbour list on, Fortran pots on | shas.rgpot + versions.rgpot + harness metadata |
 | eOn | 16434cb979c979a152f4e6750bdcfdfb0bf173be, pyeonclient 0.4.2, project version 3.6.0 | shas.eon + versions metadata |
 | ASE | 3.29.0 | versions.ase |
@@ -303,5 +302,7 @@ Original run rows are untouched; this section reports an append-only verificatio
 | native-arch (eOn-side) | unverified (native-arch (eOn-side) not exposed in versions metadata) | versions.eon_native_arch |
 | capnp-rpc (eOn-side transport) | unverified (capnp-rpc (eOn-side transport) not exposed in versions metadata) | versions.eon_capnp_transport |
 | cpu | Intel(R) Xeon(R) Processor | Linux CPU model metadata |
+
+Revision and ABI are recorded on each run from the next run on.
 
 One core, one thread, 12 rounds.

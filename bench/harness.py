@@ -67,7 +67,6 @@ import subprocess
 import sys
 import threading
 import time
-import tomllib
 import zlib
 
 
@@ -245,13 +244,6 @@ RGPOT_BUILD = "scalar kernels, fast neighbour list on, Fortran pots on"
 BENCH_ROOT = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(BENCH_ROOT)
 RMSD_CORRECTIONS_PATH = os.path.join(BENCH_ROOT, "pt_exchange_ase_neb_rmsd_corrections.json")
-MIXED_PROVENANCE_DEFAULTS = {
-    "neb": {
-        "sha": "7c1d432",
-        "abi": "1.42",
-        "source": "baseline advisory snapshot",
-    }
-}
 
 EONCLIB_MISSING = (
     "pyeonclient needs libeonclib loaded before the extension imports. "
@@ -387,18 +379,10 @@ def _default_revision_map(shas, versions):
     return revisions
 
 
-def _merged_revision_map(payload, include_mixed_defaults=False):
+def _merged_revision_map(payload):
     shas = payload.get("shas") or {}
     versions = payload.get("versions") or {}
     revisions = _default_revision_map(shas, versions)
-    if include_mixed_defaults:
-        for family, info in MIXED_PROVENANCE_DEFAULTS.items():
-            if family in revisions:
-                revisions[family] = _revision_entry(
-                    info.get("sha"),
-                    info.get("abi"),
-                    info.get("source"),
-                )
     supplied = payload.get("cell_revision_map") or {}
     for key, value in supplied.items():
         if not isinstance(value, dict):
@@ -411,9 +395,9 @@ def _merged_revision_map(payload, include_mixed_defaults=False):
     return revisions
 
 
-def ensure_cell_revisions(payload, include_mixed_defaults=False):
+def ensure_cell_revisions(payload):
     runs = payload.get("runs") or []
-    revisions = _merged_revision_map(payload, include_mixed_defaults)
+    revisions = _merged_revision_map(payload)
     default = revisions.get("default") or {"sha": "", "abi": "", "source": ""}
     for run in runs:
         family = method_family(run.get("method"))
@@ -428,15 +412,21 @@ def ensure_cell_revisions(payload, include_mixed_defaults=False):
 
 
 def _load_external_rmsd_corrections():
+    path = RMSD_CORRECTIONS_PATH
     try:
-        with open(RMSD_CORRECTIONS_PATH, encoding="utf-8") as handle:
-            payload = json.load(handle)
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
     except OSError:
         return []
-    except json.JSONDecodeError:
-        return []
-    rows = payload.get("rows") if isinstance(payload, dict) else None
-    return rows if isinstance(rows, list) else []
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"malformed RMSD corrections JSON at {path}: {exc.msg}") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("rows"), list):
+        raise RuntimeError(
+            f"malformed RMSD corrections JSON at {path}: expected an object with a list of rows"
+        )
+    return payload["rows"]
 
 
 def apply_rmsd_corrections(payload):
@@ -475,10 +465,18 @@ def apply_rmsd_corrections(payload):
     return applied
 
 
+def _toml_loads(text):
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        import tomli as tomllib
+    return tomllib.loads(text)
+
+
 def _cargo_lock_packages(lock_path):
     try:
         with open(lock_path, encoding="utf-8") as handle:
-            data = tomllib.loads(handle.read())
+            data = _toml_loads(handle.read())
     except OSError:
         return {}
     packages = data.get("package")
@@ -543,20 +541,36 @@ def _rgsaddle_revision_rows(runs):
     return rows
 
 
+def _runs_have_revision(runs):
+    return bool(runs) and all(
+        run.get("rgsaddle_revision") and run.get("rgsaddle_abi") for run in runs
+    )
+
+
 def derive_build_entries(payload):
     versions = payload.get("versions") or {}
     shas = payload.get("shas") or {}
     packages = _cargo_lock_packages(os.path.join(REPO_ROOT, "Cargo.lock"))
     runs = payload.get("runs") or []
     entries = []
-    entries.extend(_rgsaddle_revision_rows(runs))
-    entries.append(
-        {
-            "component": "rgsaddle-min-mode-sha",
-            "value": sanitize(shas.get("rgsaddle") or ""),
-            "source": "shas.rgsaddle (retained for compatibility; min-mode revision)",
-        }
-    )
+    if _runs_have_revision(runs):
+        entries.extend(_rgsaddle_revision_rows(runs))
+        entries.append(
+            {
+                "component": "rgsaddle-min-mode-sha",
+                "value": sanitize(shas.get("rgsaddle") or ""),
+                "source": "shas.rgsaddle (retained for compatibility; min-mode revision)",
+            }
+        )
+    else:
+        sha = sanitize(shas.get("rgsaddle") or "")
+        abi = sanitize(versions.get("rgsaddle_abi") or "")
+        if sha:
+            entries.append({"component": "rgsaddle", "value": sha, "source": "shas.rgsaddle"})
+        if abi:
+            entries.append(
+                {"component": "rgsaddle ABI", "value": abi, "source": "versions.rgsaddle_abi"}
+            )
     rgpot = ", ".join(part for part in (shas.get("rgpot"), versions.get("rgpot"), RGPOT_BUILD) if part)
     entries.append({"component": "rgpot", "value": sanitize(rgpot), "source": "shas.rgpot + versions.rgpot + harness metadata"})
     eon_parts = [shas.get("eon")]
@@ -1928,10 +1942,13 @@ def fmt(value, digits=4):
 
 
 def write_table(path, payload):
-    ensure_cell_revisions(payload, include_mixed_defaults=True)
     apply_rmsd_corrections(payload)
+    summary, comparisons = summarize(payload.get("runs") or [])
+    payload["summary"] = summary
+    payload["comparisons"] = comparisons
     payload["build"] = derive_build_entries(payload)
-    validate_payload(payload)
+    if _runs_have_revision(payload.get("runs") or []):
+        validate_payload(payload)
     lines = [
         "# Saddle-search coverage",
         "",
@@ -2047,6 +2064,9 @@ def build_section(payload):
             )
         )
     lines.append("")
+    if not _runs_have_revision(payload.get("runs") or []):
+        lines.append("Revision and ABI are recorded on each run from the next run on.")
+        lines.append("")
     threads = payload.get("threads")
     rounds = payload.get("rounds")
     if threads is not None and rounds is not None:
@@ -2058,19 +2078,38 @@ def build_section(payload):
     return lines
 
 
+def _rmsd_values_match(row):
+    old = row.get("rmsd_old")
+    new = row.get("rmsd_new")
+    if not isinstance(old, (int, float)) or not isinstance(new, (int, float)):
+        return False
+    return float(old) == float(new)
+
+
 def rmsd_correction_section(payload):
     rows = payload.get("rmsd_corrections_applied") or []
     if not rows:
         return []
-    lines = [
-        "## RMSD corrections",
-        "",
-        "Recomputed RMSD values are derived from stored structures with minimage 0.1.2.",
-        "Original run rows are untouched; this section reports an append-only verification overlay.",
-        "",
-        "| system | method | images | round | old rmsd A | corrected rmsd A | cause |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
-    ]
+    if all(_rmsd_values_match(row) for row in rows):
+        lines = [
+            "## RMSD consistency check",
+            "",
+            "Recomputed RMSD values use the stored structures and minimage 0.1.2.",
+            "Each recomputed value matches the stored RMSD, so the summary is unchanged.",
+            "",
+            "| system | method | images | round | stored rmsd A | recomputed rmsd A | note |",
+            "| --- | --- | --- | --- | --- | --- | --- |",
+        ]
+    else:
+        lines = [
+            "## RMSD corrections",
+            "",
+            "Recomputed RMSD values are derived from stored structures with minimage 0.1.2.",
+            "Rows whose recomputed RMSD differs are applied before the summary.",
+            "",
+            "| system | method | images | round | old rmsd A | corrected rmsd A | cause |",
+            "| --- | --- | --- | --- | --- | --- | --- |",
+        ]
     for row in sorted(rows, key=lambda item: (item.get("images"), item.get("round"))):
         lines.append(
             "| {system} | {method} | {images} | {round} | {old} | {new} | {cause} |".format(
