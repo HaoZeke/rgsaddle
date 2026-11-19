@@ -152,11 +152,12 @@ fn run_one<S: PointSurface>(
     let mut found = vec![false; spec.known_saddles.len()];
     let mut calls_to_cover = 0usize;
     let mut direction_rng = SplitMix64::new(run_seed ^ 0xD1CE710u64);
+    let soft_prefix = (spec.per_run_seeds / 4).max(1);
     let soft_plan = matches!(strategy, Strategy::SoftModeFirst).then(|| {
         soft_mode_then_full_directions(
             spec.surface,
             spec.minimum.view(),
-            spec.per_run_seeds / 2,
+            soft_prefix,
             run_seed ^ 0x50F7u64,
         )
     });
@@ -166,13 +167,18 @@ fn run_one<S: PointSurface>(
         None => None,
     };
     let config = minmode_config();
-    for i in 0..spec.per_run_seeds {
+    let attempts = match strategy {
+        Strategy::IsotropicRandom => spec.per_run_seeds,
+        Strategy::SoftModeFirst => spec.per_run_seeds + soft_prefix,
+    };
+    for i in 0..attempts {
         let direction = match strategy {
             Strategy::IsotropicRandom => sample_on_sphere(spec.minimum.len(), &mut direction_rng),
-            Strategy::SoftModeFirst => soft_dirs
+            Strategy::SoftModeFirst if i < soft_prefix => soft_dirs
                 .as_ref()
                 .and_then(|v| v.get(i).cloned())
                 .unwrap_or_else(|| sample_on_sphere(spec.minimum.len(), &mut direction_rng)),
+            Strategy::SoftModeFirst => sample_on_sphere(spec.minimum.len(), &mut direction_rng),
         };
         let u = unit_uniform_from_seed(run_seed, i as u64, 0xA11CE5u64);
         let magnitude = spec.start_min + (spec.start_max - spec.start_min) * u;
@@ -297,8 +303,8 @@ fn softmode_seeding_protocol_and_significance() {
         minimum: array![1.0, 0.1, 0.0],
         known_saddles: vec![array![0.0, 0.0, 0.0]],
         classify_tol: 0.15,
-        start_min: 0.05,
-        start_max: 0.35,
+        start_min: 0.01,
+        start_max: 0.08,
         per_run_seeds: 14,
     };
 
@@ -362,6 +368,30 @@ fn softmode_seeding_protocol_and_significance() {
             }
         }
     }
+}
+
+#[test]
+fn softmode_plan_changes_with_run_seed() {
+    let surface = CoupledWell;
+    let minimum = array![1.0, 0.1, 0.0];
+    let a = soft_mode_then_full_directions(&surface, minimum.view(), 8, 11).expect("seed plan A");
+    let b = soft_mode_then_full_directions(&surface, minimum.view(), 8, 19).expect("seed plan B");
+    let different = a
+        .directions
+        .iter()
+        .zip(&b.directions)
+        .take(8)
+        .any(|(x, y)| {
+            x.iter()
+                .zip(y.iter())
+                .map(|(a, b)| (a - b).abs())
+                .sum::<f64>()
+                > 1.0e-12
+        });
+    assert!(
+        different,
+        "soft-mode arm is effectively seed-independent across run seeds"
+    );
 }
 
 #[cfg(not(feature = "lammps"))]

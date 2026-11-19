@@ -25,33 +25,35 @@ pub struct SoftModeDirectionPlan {
 
 /// Pick the soft-subspace rank from the largest adjacent relative spectral gap.
 ///
-/// For ascending eigenvalues `λ₀ ≤ λ₁ ≤ ...`, this returns `argmax_i
-/// (λᵢ₊₁-λᵢ)/max(|λᵢ|, 1e-12) + 1`, clamped to `[1, n]`.
+/// For ascending eigenvalues `λ₀ ≤ λ₁ ≤ ...`, this returns
+/// `argmax_i (λᵢ₊₁-λᵢ) + 1`, clamped to `[1, n]`.
+///
+/// If the largest and second-largest normalized gaps are tied at machine
+/// precision, there is no resolved split and the full space rank `n` is used.
 #[must_use]
 pub fn spectral_gap_rank(eigenvalues: ArrayView1<'_, f64>) -> usize {
     if eigenvalues.len() <= 1 {
         return eigenvalues.len().max(1);
     }
-    let mut min_gap = f64::INFINITY;
-    let mut max_gap = f64::NEG_INFINITY;
-    for i in 0..(eigenvalues.len() - 1) {
-        let gap = eigenvalues[i + 1] - eigenvalues[i];
-        min_gap = min_gap.min(gap);
-        max_gap = max_gap.max(gap);
-    }
-    // No dominant split: keep the full space.
-    if !max_gap.is_finite() || max_gap <= 0.0 || (max_gap - min_gap).abs() <= 1.0e-14 {
-        return eigenvalues.len();
-    }
     let mut best_i = 0usize;
     let mut best = f64::NEG_INFINITY;
+    let mut second = f64::NEG_INFINITY;
     for i in 0..(eigenvalues.len() - 1) {
-        let base = eigenvalues[i].abs().max(1.0e-12);
-        let score = (eigenvalues[i + 1] - eigenvalues[i]) / base;
-        if score > best {
+        let score = eigenvalues[i + 1] - eigenvalues[i];
+        if score >= best {
+            second = best;
             best = score;
             best_i = i;
+        } else if score > second {
+            second = score;
         }
+    }
+    if !best.is_finite() || best <= 0.0 {
+        return eigenvalues.len();
+    }
+    let ulp = f64::EPSILON * (best.abs() + second.abs()).max(1.0);
+    if second.is_finite() && (best - second) <= ulp {
+        return eigenvalues.len();
     }
     (best_i + 1).clamp(1, eigenvalues.len())
 }
@@ -113,29 +115,14 @@ pub fn soft_mode_then_full_directions<S: PointSurface>(
 
 fn sample_in_subspace(
     basis: &Array2<f64>,
-    minimum: ArrayView1<'_, f64>,
-    index: usize,
+    _minimum: ArrayView1<'_, f64>,
+    _index: usize,
     rng: &mut SplitMix64,
 ) -> Array1<f64> {
     let k = basis.ncols();
-    if k == 1 {
-        let dot = basis.column(0).dot(&minimum);
-        let sign = if dot >= 0.0 { -1.0 } else { 1.0 };
-        let v = basis.column(0).to_owned() * sign;
-        return unit(v);
-    }
     let mut coeffs = Array1::zeros(k);
-    // Cover every soft axis once in the direction that points back toward the
-    // local basin centre, then mix.
-    if index < k {
-        let axis = index;
-        let dot = basis.column(axis).dot(&minimum);
-        let sign = if dot >= 0.0 { -1.0 } else { 1.0 };
-        coeffs[axis] = sign;
-    } else {
-        for c in &mut coeffs {
-            *c = rng.normal();
-        }
+    for c in &mut coeffs {
+        *c = rng.normal();
     }
     let mut v = basis.dot(&coeffs);
     if v.iter().all(|x| x.abs() < 1.0e-14) {
@@ -150,6 +137,32 @@ fn sample_on_sphere(dim: usize, rng: &mut SplitMix64) -> Array1<f64> {
         *c = rng.normal();
     }
     unit(v)
+}
+
+#[cfg(test)]
+mod tests {
+    use ndarray::array;
+
+    use super::spectral_gap_rank;
+
+    #[test]
+    fn spectral_gap_rank_uses_full_space_when_gaps_are_degenerate() {
+        let values = array![1.0, 2.0, 3.0, 4.0];
+        assert_eq!(spectral_gap_rank(values.view()), 4);
+    }
+
+    #[test]
+    fn spectral_gap_rank_uses_full_space_when_no_gap_is_resolved() {
+        let values = array![1.0, 1.5, 2.0, 2.5, 3.0];
+        // All adjacent gaps are equal.
+        assert_eq!(spectral_gap_rank(values.view()), 5);
+    }
+
+    #[test]
+    fn spectral_gap_rank_picks_the_dominant_split() {
+        let values = array![1.0, 1.1, 1.2, 4.0, 4.5];
+        assert_eq!(spectral_gap_rank(values.view()), 3);
+    }
 }
 
 fn unit(mut v: Array1<f64>) -> Array1<f64> {
