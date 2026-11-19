@@ -555,6 +555,26 @@ typedef int64_t (*abi45_signature_rgsaddle_band_free_end_cuts)(
 _Static_assert(_Generic(&rgsaddle_band_free_end_cuts, abi45_signature_rgsaddle_band_free_end_cuts: 1, default: 0), "rgsaddle_band_free_end_cuts signature");
 
 _Static_assert(sizeof(rgsaddle_geodesic_config_t) == 104, "geodesic config size");
+_Static_assert(_Alignof(rgsaddle_geodesic_config_t) == 8, "geodesic config alignment");
+#define ABI46_GEODESIC_FIELD(field, offset, type)                                              \
+  _Static_assert(offsetof(rgsaddle_geodesic_config_t, field) == (offset),                      \
+                 "rgsaddle_geodesic_config_t." #field " offset");                              \
+  _Static_assert(_Generic(((rgsaddle_geodesic_config_t *)0)->field, type : 1, default : 0),    \
+                 "rgsaddle_geodesic_config_t." #field " type")
+ABI46_GEODESIC_FIELD(version, 0, rgsaddle_version_t);
+ABI46_GEODESIC_FIELD(flags, 8, uint64_t);
+ABI46_GEODESIC_FIELD(step_tol, 16, double);
+ABI46_GEODESIC_FIELD(grad_tol, 24, double);
+ABI46_GEODESIC_FIELD(max_move, 32, double);
+ABI46_GEODESIC_FIELD(lower_ratio, 40, double);
+ABI46_GEODESIC_FIELD(upper_ratio, 48, double);
+ABI46_GEODESIC_FIELD(max_sweeps, 56, int64_t);
+ABI46_GEODESIC_FIELD(max_iterations, 64, int64_t);
+ABI46_GEODESIC_FIELD(memory, 72, int64_t);
+ABI46_GEODESIC_FIELD(bound_samples, 80, int64_t);
+ABI46_GEODESIC_FIELD(max_images, 88, int64_t);
+ABI46_GEODESIC_FIELD(seed, 96, uint64_t);
+#undef ABI46_GEODESIC_FIELD
 
 typedef rgsaddle_status_t (*abi46_signature_rgsaddle_geodesic_config_default)(
     rgsaddle_geodesic_config_t *out);
