@@ -1,11 +1,16 @@
-//! Free-end adaptive nudged elastic band (FEA-NEB) of Jiayong Zhang,
-//! Hongwu Zhang, Hongfei Ye, and Yonggang Zheng, J. Chem. Phys. 145,
-//! 094104 (2016), doi:10.1063/1.4962019, building on the free-end
-//! level-set endpoint formulation of Ting Zhu, Ju Li, Amit Samanta,
-//! Hyoung Gyu Kim, and Subra Suresh, Proc. Natl. Acad. Sci. U.S.A.
-//! 104, 3031 (2007), doi:10.1073/pnas.0611097104. A nonzero endpoint
-//! gradient is required, each free endpoint couples to its single
-//! neighbour through the spring, and the endpoint residual is reported.
+//! Free-end adaptive nudged elastic band (FEA-NEB).
+//!
+//! Climbing on the final cut level reuses the climbing image force, and
+//! when minimum-mode refinement is left on, the off-path climb of
+//! Goswami, Gunde, and Jónsson, Front. Chem. 14 (2026),
+//! doi:10.3389/fchem.2026.1807063. The endpoint force and the adaptive
+//! window are those of Jiayong Zhang, Hongwu Zhang, Hongfei Ye, and
+//! Yonggang Zheng, J. Chem. Phys. 145, 094104 (2016),
+//! doi:10.1063/1.4962019, building on the free-end level-set endpoint
+//! formulation of Ting Zhu, Ju Li, Amit Samanta, Hyoung Gyu Kim, and
+//! Subra Suresh, Proc. Natl. Acad. Sci. U.S.A. 104, 3031 (2007),
+//! doi:10.1073/pnas.0611097104. A nonzero endpoint gradient is required
+//! and the endpoint residual is reported.
 //!
 //! One terminal image (`0` for [`FreeEndSide::First`] or `n_images - 1`
 //! for [`FreeEndSide::Last`], the default) moves subject to the energy
@@ -15,28 +20,32 @@
 //!    gradient \(\nabla E(x_{\mathrm{end}}) \ne 0\).
 //! 2. Its path tangent \(\hat{\tau}_{\mathrm{end}}\) is the unit vector
 //!    along the single adjacent band segment (`x_1 - x_0` for the first
-//!    image, `x_{N-1} - x_{N-2}` for the last image), and its raw
-//!    free-end force combines the perpendicular potential force of
-//!    Zhang, Zhang, Ye, and Zheng (2016), Eq. (7),
-//!    \(F^p_{\mathrm{end},\perp} = F^p_{\mathrm{end}} -
-//!    (F^p_{\mathrm{end}} \cdot \hat{\tau}_{\mathrm{end}})
-//!    \hat{\tau}_{\mathrm{end}}\) with the one-sided harmonic spring
-//!    \(F^s_{\mathrm{end}} = k (x_{\mathrm{neighbour}} - x_{\mathrm{end}})\)
-//!    used by this implementation. The spring and exact energy-level
-//!    constraint are rgsaddle extensions to Eq. (7).
-//! 3. The force is projected exactly onto
-//!    \(\nabla E(x_{\mathrm{end}})^\perp\). The Newton retraction of each
-//!    accepted endpoint geometry onto
+//!    image, `x_{N-1} - x_{N-2}` for the last image). Zhang, Zhang, Ye,
+//!    and Zheng (2016), Eq. (7), is only the perpendicular potential
+//!    force
+//!    \(F^p_{\mathrm{end},\perp} = -\nabla E(x_{\mathrm{end}}) +
+//!    (\nabla E(x_{\mathrm{end}}) \cdot \hat{\tau}_{\mathrm{end}})
+//!    \hat{\tau}_{\mathrm{end}}\).
+//!    The endpoint force does not include a spring, so it does not
+//!    depend on the spring constant.
+//! 3. Net translation is removed, when the band drops it, before the
+//!    force is projected onto \(\nabla E(x_{\mathrm{end}})^\perp\), so
+//!    the force that steps the endpoint stays orthogonal to the
+//!    gradient. Newton retraction onto
 //!    \(E(x_{\mathrm{end}}) = E_{\mathrm{target}}\) is delegated to
-//!    [`rgmin::Solver`] configured with [`rgmin::LevelSetConstraint`]
-//!    (`rgmin` commit `f3d18706c2b1ab380fd75f62449fdab46d01f5e2`).
+//!    [`rgmin::Solver`] configured with [`rgmin::LevelSetConstraint`].
 //! 4. When `max_cuts > 0`, once the highest-energy interior image holds
 //!    its index for `stability` steps and the band force falls under the
 //!    level's cut threshold while the peak rises above its neighbours by
-//!    more than `energy_tol`, the fixed side of the band is cut to the
-//!    window around the detected saddle and all `n_images` images are
-//!    remeshed at equal arc length (cubic Hermite or linear) while the
-//!    free terminal image remains on \(E(x_{\mathrm{end}}) = E_{\mathrm{target}}\).
+//!    more than `energy_tol`, images outside the local window around
+//!    that peak are dropped and all `n_images` images are remeshed at
+//!    equal arc length (cubic Hermite or linear). The window keeps
+//!    `window_offset` images on each side of the peak, the same local
+//!    cut Zhang, Zhang, Ye, and Zheng use (one image on each side in
+//!    their driver). A cut that would place the peak on an end, or that
+//!    would remove no image, is not counted. The free terminal image is
+//!    already on \(E(x_{\mathrm{end}}) = E_{\mathrm{target}}\), and that
+//!    position is written back after the remesh.
 
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
@@ -288,6 +297,14 @@ pub struct FreeEndReport {
 /// Alias for [`FreeEndReport`].
 pub type FeaNebReport = FreeEndReport;
 
+struct FreeEndMeasurement {
+    energies: Array1<f64>,
+    gradients: Array2<f64>,
+    projected: Array1<f64>,
+    max_force: f64,
+    endpoint_force: f64,
+}
+
 #[derive(Clone, Debug, Default)]
 pub(super) struct FreeEndState {
     pub(super) resolved_target: Option<f64>,
@@ -476,56 +493,79 @@ fn step_and_retract_endpoint_via_rgmin<S: BandSurface>(
     Ok(())
 }
 
-/// Zhang et al. Eq. (7) perpendicular endpoint force plus rgsaddle's
-/// one-sided terminal spring, before level-set projection.
-fn raw_free_end_force(
+/// Zhang, Zhang, Ye, and Zheng (2016), Eq. (7): the potential force
+/// perpendicular to the free-end tangent. The spring constant does not
+/// enter.
+fn eq7_endpoint_force(
     config: &BandConfig,
     side: FreeEndSide,
     pos_end: ArrayView1<f64>,
     pos_neigh: ArrayView1<f64>,
     grad_end: ArrayView1<f64>,
 ) -> Result<Array1<f64>, SaddleError> {
-    let spring_k = match config.spring {
-        SpringKind::Uniform { k } => k,
-        _ => {
-            return Err(SaddleError::Invalid(
-                "free-end adaptive NEB requires a uniform spring".into(),
-            ));
-        }
-    };
+    if !matches!(config.spring, SpringKind::Uniform { .. }) {
+        return Err(SaddleError::Invalid(
+            "free-end adaptive NEB requires a uniform spring".into(),
+        ));
+    }
     let mut inward = &pos_neigh - &pos_end;
     if let Some(cell) = &config.cell {
         cell.minimum_image(&mut inward);
     }
     zero_fixed(&config.fixed_atoms, &mut inward);
-    let dist = inward.dot(&inward).sqrt();
+    let dist2 = inward.dot(&inward);
+    let dist = dist2.sqrt();
     if !(dist.is_finite() && dist > SAME_ROW_TOL) {
         return Err(SaddleError::Invalid(
             "free-end terminal image coincides with its interior neighbour".into(),
         ));
     }
-    let (tangent, signed_distance) = match side {
-        FreeEndSide::First => (&inward / dist, dist),
-        FreeEndSide::Last => (-&inward / dist, -dist),
+    let tangent = match side {
+        FreeEndSide::First => &inward / dist,
+        FreeEndSide::Last => -&inward / dist,
     };
     let mut potential = -&grad_end;
     zero_fixed(&config.fixed_atoms, &mut potential);
     let potential_parallel = potential.dot(&tangent);
-    let potential_perpendicular = potential - &tangent * potential_parallel;
-    let spring = &tangent * (signed_distance * spring_k);
-    let mut raw = potential_perpendicular + spring;
-    zero_fixed(&config.fixed_atoms, &mut raw);
+    let mut perpendicular = potential - &tangent * potential_parallel;
+    zero_fixed(&config.fixed_atoms, &mut perpendicular);
+    Ok(perpendicular)
+}
+
+/// Eq. (7), then net translation removal, then the level-set projection.
+/// Translation is removed first so the force that is returned stays
+/// orthogonal to `grad_end`.
+fn assembled_free_end_force(
+    config: &BandConfig,
+    side: FreeEndSide,
+    pos_end: ArrayView1<f64>,
+    pos_neigh: ArrayView1<f64>,
+    grad_end: ArrayView1<f64>,
+) -> Result<Array1<f64>, SaddleError> {
+    let mut raw = eq7_endpoint_force(config, side, pos_end, pos_neigh, grad_end)?;
     if config.drops_translation() {
         remove_net_translation(&mut raw);
     }
-    Ok(raw)
+    let mut projected = project_onto_level_set(&grad_end.to_owned(), &raw)?;
+    zero_fixed(&config.fixed_atoms, &mut projected);
+    Ok(projected)
 }
 
-fn fixed_energy_after_cut(side: FreeEndSide, energies: &Array1<f64>, lo: usize, hi: usize) -> f64 {
-    match side {
-        FreeEndSide::Last => energies[lo],
-        FreeEndSide::First => energies[hi],
+/// Images kept around an interior peak. `None` when the peak would be a
+/// window endpoint or when the window is already the whole band.
+fn peak_window(n_images: usize, max_i: usize, offset: usize) -> Option<(usize, usize)> {
+    if offset == 0 || max_i == 0 || max_i + 1 >= n_images {
+        return None;
     }
+    let lo = max_i.saturating_sub(offset);
+    let hi = max_i.saturating_add(offset).min(n_images - 1);
+    if lo >= max_i || hi <= max_i {
+        return None;
+    }
+    if lo == 0 && hi + 1 == n_images {
+        return None;
+    }
+    Some((lo, hi))
 }
 
 impl BandSession {
@@ -573,6 +613,92 @@ impl BandSession {
     #[must_use]
     pub fn initial_fixed_endpoint_energy(&self) -> Option<f64> {
         self.free_end_state.initial_fixed_energy
+    }
+
+    /// Energies, gradients, and projected forces at the positions the
+    /// step is about to report.
+    fn measure_free_end<S: BandSurface>(
+        &mut self,
+        surface: &S,
+        side: FreeEndSide,
+        end_idx: usize,
+        neigh_idx: usize,
+        ci_at: Option<usize>,
+    ) -> Result<FreeEndMeasurement, SaddleError> {
+        let n_images = self.positions.nrows();
+        let dof = self.positions.ncols();
+        let mut energies = Array1::zeros(n_images);
+        let mut gradients = Array2::zeros((n_images, dof));
+        self.state.eval_rows(
+            surface,
+            0..n_images,
+            self.positions.view(),
+            &mut energies,
+            &mut gradients,
+        )?;
+        self.state.rows.fetch_add(n_images, Ordering::Relaxed);
+        if !energies.iter().all(|energy| energy.is_finite()) {
+            return Err(SaddleError::NonFinite("band energies"));
+        }
+        if !gradients.iter().all(|component| component.is_finite()) {
+            return Err(SaddleError::NonFinite("band gradients"));
+        }
+        if !self.state.fixed.is_empty() {
+            for mut row in gradients.outer_iter_mut() {
+                zero_fixed(&self.state.fixed, &mut row);
+            }
+        }
+        let mut grad_end = gradients.row(end_idx).to_owned();
+        zero_fixed(&self.config.fixed_atoms, &mut grad_end);
+        let endpoint = assembled_free_end_force(
+            &self.config,
+            side,
+            self.positions.row(end_idx),
+            self.positions.row(neigh_idx),
+            grad_end.view(),
+        )?;
+        let endpoint_force = match self.state.force_gate {
+            ForceGate::LinfNorm => max_abs(&endpoint),
+            gate => gate.value(endpoint.view()),
+        };
+        let endpoint_first = self.positions.row(0).to_owned();
+        let endpoint_last = self.positions.row(n_images - 1).to_owned();
+        let interior = self.interior_flat();
+        let resolved_spring = self
+            .config
+            .spring
+            .at_band(energies.view(), gradients.view());
+        let metrics = self.exp.as_ref().map(|exp| BandMetrics {
+            per_image: exp.metrics.as_slice(),
+            free: exp.free.as_deref(),
+        });
+        let mut projected = Array1::zeros((n_images - 2) * dof);
+        for image in 1..n_images - 1 {
+            let rows = s![(image - 1) * dof..image * dof];
+            let metric =
+                metrics.and_then(|band| band.per_image.get(image - 1).map(|p| (p, band.free)));
+            let (force, _) = image_force(
+                &self.config,
+                &resolved_spring,
+                image,
+                ci_at == Some(image),
+                endpoint_first.view(),
+                endpoint_last.view(),
+                interior.view(),
+                &energies,
+                &gradients,
+                metric,
+            )?;
+            projected.slice_mut(rows).assign(&force);
+        }
+        let max_force = self.state.convergence_force(&projected).max(endpoint_force);
+        Ok(FreeEndMeasurement {
+            energies,
+            gradients,
+            projected,
+            max_force,
+            endpoint_force,
+        })
     }
 
     /// Advance a free-end adaptive NEB session by one step and return the
@@ -754,22 +880,16 @@ impl BandSession {
             gradients.slice_mut(s![1..n_images - 1, ..]).assign(&int_g);
         }
 
-        // Assemble the published free-end force and project it onto the
-        // level-set tangent space via rgmin::Solver with LevelSetConstraint.
+        // Eq. (7), translation removal, then the level-set projection.
         let mut g_end_free = gradients.row(end_idx).to_owned();
         zero_fixed(&self.config.fixed_atoms, &mut g_end_free);
-        let f_end_raw = raw_free_end_force(
+        let f_end_level = assembled_free_end_force(
             &self.config,
             fe_cfg.side,
             self.positions.row(end_idx),
             self.positions.row(neigh_idx),
             g_end_free.view(),
         )?;
-        let mut f_end_level = project_onto_level_set(&g_end_free, &f_end_raw)?;
-        zero_fixed(&self.config.fixed_atoms, &mut f_end_level);
-        if self.config.drops_translation() {
-            remove_net_translation(&mut f_end_level);
-        }
 
         // Assemble interior NEB forces.
         let endpoint_first = self.positions.row(0).to_owned();
@@ -1068,51 +1188,57 @@ impl BandSession {
             };
             let ediff = energies[max_i] - energies[max_i - 1].min(energies[max_i + 1]);
 
-            if max_force <= cut_limit && ediff > fe_cfg.energy_tol {
-                let (lo, hi) = match fe_cfg.side {
-                    FreeEndSide::Last => {
-                        let left_cut = max_i
-                            .saturating_sub(fe_cfg.window_offset)
-                            .min(max_i - 1)
-                            .max(1);
-                        (left_cut, n_images - 1)
-                    }
-                    FreeEndSide::First => {
-                        let right_cut = (max_i + fe_cfg.window_offset)
-                            .min(n_images - 2)
-                            .max(max_i + 1);
-                        (0, right_cut)
-                    }
+            if max_force <= cut_limit
+                && ediff > fe_cfg.energy_tol
+                && let Some((lo, hi)) = peak_window(n_images, max_i, fe_cfg.window_offset)
+            {
+                // The free end is already on the target energy. The
+                // window drops that image, so put it back after the
+                // remesh. A Newton retraction from the window edge
+                // stalls when the edge is far from the level set.
+                let anchor = x_end.clone();
+                let window_slice = self.positions.slice(s![lo..=hi, ..]).to_owned();
+                self.positions = resample(
+                    window_slice.view(),
+                    n_images,
+                    fe_cfg.cubic,
+                    self.config.cell.as_ref(),
+                );
+                self.pin_fixed();
+                self.positions.row_mut(end_idx).assign(&anchor);
+                self.pin_fixed();
+                x_end.assign(&anchor);
+                self.free_end_state.cuts += 1;
+                self.free_end_state.cut_windows.push((lo, hi));
+                self.free_end_state.prev_peak = None;
+                self.free_end_state.stable = 0;
+                self.free_end_state.prev_end_pos = None;
+                self.free_end_state.prev_end_force = None;
+                self.forget_optimizer();
+                let method = if self.config.quickmin {
+                    Method::QuickMin
+                } else {
+                    self.config.method.clone()
                 };
-                if hi > lo {
-                    let window_slice = self.positions.slice(s![lo..=hi, ..]).to_owned();
-                    self.positions = resample(
-                        window_slice.view(),
-                        n_images,
-                        fe_cfg.cubic,
-                        self.config.cell.as_ref(),
-                    );
-                    self.pin_fixed();
-                    let new_fixed_e = fixed_energy_after_cut(fe_cfg.side, &energies, lo, hi);
-                    self.free_end_state.fixed_endpoint_energy = Some(new_fixed_e);
-                    self.free_end_state.cuts += 1;
-                    self.free_end_state.cut_windows.push((lo, hi));
-                    self.free_end_state.prev_peak = None;
-                    self.free_end_state.stable = 0;
-                    self.free_end_state.prev_end_pos = None;
-                    self.free_end_state.prev_end_force = None;
-                    self.forget_optimizer();
-                    let method = if self.config.quickmin {
-                        Method::QuickMin
-                    } else {
-                        self.config.method.clone()
-                    };
-                    self.solver = build_solver(&self.config, &method, interior_dof);
-                    self.solver.set_highs(self.highs);
-                    cut_this_step = true;
-                }
+                self.solver = build_solver(&self.config, &method, interior_dof);
+                self.solver.set_highs(self.highs);
+                cut_this_step = true;
             }
         }
+
+        let report_ci = if cut_this_step { None } else { ci_at };
+        let measured =
+            self.measure_free_end(surface, fe_cfg.side, end_idx, neigh_idx, report_ci)?;
+        self.free_end_state.fixed_endpoint_energy = Some(measured.energies[fixed_idx]);
+        let residual = measured.energies[end_idx] - target_energy;
+        let e_end = measured.energies[end_idx];
+        let max_force = measured.max_force;
+        let endpoint_force_norm = measured.endpoint_force;
+        self.free_end_state.last_residual = Some(residual);
+        self.free_end_state.last_endpoint_energy = Some(e_end);
+        self.free_end_state.last_endpoint_force = Some(endpoint_force_norm);
+        *lock_guard(&self.state.last_max_force) = max_force;
+        self.cache_free_end_evaluation(measured.energies, measured.gradients, measured.projected);
 
         let all_cuts_done = fe_cfg.max_cuts == 0 || self.free_end_state.cuts >= fe_cfg.max_cuts;
         let status = if !cut_this_step && all_cuts_done && max_force <= self.config.force_tol {
@@ -1120,47 +1246,6 @@ impl BandSession {
         } else {
             BandStatus::Running
         };
-        if self.state.ci().is_some()
-            && (self.config.min_mode.is_some() || self.config.saddle_check.is_some())
-        {
-            let mut check_energies = Array1::zeros(n_images);
-            let mut check_gradients = Array2::zeros((n_images, dof));
-            let mut interior_energies = Array1::zeros(n_images - 2);
-            let mut interior_gradients = Array2::zeros((n_images - 2, dof));
-            self.state.eval_rows(
-                surface,
-                1..n_images - 1,
-                self.positions.slice(s![1..n_images - 1, ..]),
-                &mut interior_energies,
-                &mut interior_gradients,
-            )?;
-            self.state.rows.fetch_add(n_images - 2, Ordering::Relaxed);
-            if !interior_energies.iter().all(|value| value.is_finite())
-                || !interior_gradients.iter().all(|value| value.is_finite())
-            {
-                return Err(SaddleError::NonFinite(
-                    "free-end stationary-point evaluation",
-                ));
-            }
-            if !self.state.fixed.is_empty() {
-                for mut row in interior_gradients.outer_iter_mut() {
-                    zero_fixed(&self.state.fixed, &mut row);
-                }
-            }
-            check_energies
-                .slice_mut(s![1..n_images - 1])
-                .assign(&interior_energies);
-            check_gradients
-                .slice_mut(s![1..n_images - 1, ..])
-                .assign(&interior_gradients);
-            check_energies[fixed_idx] = self
-                .free_end_state
-                .fixed_endpoint_energy
-                .ok_or_else(|| SaddleError::Solver("missing fixed endpoint energy".into()))?;
-            check_energies[end_idx] = e_end;
-            check_gradients.row_mut(end_idx).assign(&g_end);
-            self.cache_free_end_evaluation(check_energies, check_gradients);
-        }
         self.refine_latch(status)?;
 
         Ok(FreeEndReport {
@@ -1280,7 +1365,8 @@ mod tests {
     use ndarray::{Array1, Array2, array};
 
     use super::{
-        SAME_ROW_TOL, fixed_energy_after_cut, project_onto_level_set, raw_free_end_force,
+        SAME_ROW_TOL, assembled_free_end_force, eq7_endpoint_force, peak_window,
+        project_onto_level_set,
     };
     use crate::{
         BandConfig, BandSession, FeaNebSession, FreeEndConfig, FreeEndSide, SaddleError, SpringKind,
@@ -1295,7 +1381,7 @@ mod tests {
         let end = array![2.0, 1.0, 0.0];
         let neighbour = array![0.0, 1.0, 0.0];
         let gradient = array![3.0, 4.0, 0.0];
-        let force = raw_free_end_force(
+        let force = eq7_endpoint_force(
             &config,
             FreeEndSide::Last,
             end.view(),
@@ -1304,16 +1390,27 @@ mod tests {
         )
         .expect("endpoint force");
 
-        // Eq. (7) gives (0, -4, 0); the one-sided spring gives (-5, 0, 0).
-        let expected = array![-5.0, -4.0, 0.0];
+        // Eq. (7) is the perpendicular potential force (0, -4, 0).
+        let expected = array![0.0, -4.0, 0.0];
         assert_eq!(force, expected);
         let tangent = array![1.0, 0.0, 0.0];
-        let spring = array![-5.0, 0.0, 0.0];
-        assert!((&force - &spring).dot(&tangent).abs() < 1e-12);
+        assert!(force.dot(&tangent).abs() < SAME_ROW_TOL);
+        let stiffer = config.clone().with_spring(SpringKind::Uniform { k: 9.0 });
+        assert_eq!(
+            eq7_endpoint_force(
+                &stiffer,
+                FreeEndSide::Last,
+                end.view(),
+                neighbour.view(),
+                gradient.view(),
+            )
+            .expect("stiffer spring"),
+            expected
+        );
 
         let first_end = array![0.0, 1.0, 0.0];
         let first_neighbour = array![2.0, 1.0, 0.0];
-        let first_force = raw_free_end_force(
+        let first_force = eq7_endpoint_force(
             &config,
             FreeEndSide::First,
             first_end.view(),
@@ -1321,10 +1418,10 @@ mod tests {
             gradient.view(),
         )
         .expect("first endpoint force");
-        assert_eq!(first_force, array![5.0, -4.0, 0.0]);
+        assert_eq!(first_force, expected);
 
         assert!(matches!(
-            raw_free_end_force(
+            eq7_endpoint_force(
                 &config,
                 FreeEndSide::First,
                 first_end.view(),
@@ -1335,7 +1432,7 @@ mod tests {
         ));
         let tolerance_neighbour = array![SAME_ROW_TOL, 1.0, 0.0];
         assert!(matches!(
-            raw_free_end_force(
+            eq7_endpoint_force(
                 &config,
                 FreeEndSide::First,
                 first_end.view(),
@@ -1344,6 +1441,59 @@ mod tests {
             ),
             Err(SaddleError::Invalid(_))
         ));
+    }
+
+    #[test]
+    fn level_set_force_keeps_the_downhill_sign_without_a_spring() {
+        // Last end, neighbour to the left, tangent +x. The parallel
+        // gradient sits where a one-sided spring would flip F·n.
+        let config = BandConfig::default()
+            .with_remove_translation(false)
+            .with_spring(SpringKind::Uniform { k: 2.5 });
+        let end = array![2.0, 0.0, 0.0];
+        let neighbour = array![0.0, 0.0, 0.0];
+        let gradient = array![1.0, 4.0, 0.0];
+        let force = assembled_free_end_force(
+            &config,
+            FreeEndSide::Last,
+            end.view(),
+            neighbour.view(),
+            gradient.view(),
+        )
+        .expect("assembled force");
+        let downhill = array![0.0, -1.0, 0.0];
+        assert!(force.dot(&downhill) > 0.0);
+        assert!(force.dot(&gradient).abs() < SAME_ROW_TOL);
+    }
+
+    #[test]
+    fn translation_removal_before_projection_stays_orthogonal() {
+        let config = BandConfig::default().with_spring(SpringKind::Uniform { k: 2.5 });
+        let end = array![2.0, 0.0, 0.0, 2.0, 1.0, 0.0];
+        let neighbour = array![0.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let gradient = array![1.0, 0.0, 0.0, 3.0, 4.0, 0.0];
+        let force = assembled_free_end_force(
+            &config,
+            FreeEndSide::Last,
+            end.view(),
+            neighbour.view(),
+            gradient.view(),
+        )
+        .expect("assembled force");
+        assert!(force.dot(&gradient).abs() < SAME_ROW_TOL);
+
+        let perpendicular = eq7_endpoint_force(
+            &config,
+            FreeEndSide::Last,
+            end.view(),
+            neighbour.view(),
+            gradient.view(),
+        )
+        .expect("eq 7");
+        let mut projected_first =
+            project_onto_level_set(&gradient, &perpendicular).expect("project first");
+        super::remove_net_translation(&mut projected_first);
+        assert!(projected_first.dot(&gradient).abs() > SAME_ROW_TOL);
     }
 
     #[test]
@@ -1398,10 +1548,11 @@ mod tests {
         session.reset();
         assert_eq!(session.free_end_state.fixed_endpoint_energy, None);
 
-        let facade_positions = Array2::from_shape_fn(
-            (3, 3),
-            |(image, axis)| if axis == 0 { image as f64 } else { 0.0 },
-        );
+        let facade_positions =
+            Array2::from_shape_fn(
+                (3, 3),
+                |(image, axis)| if axis == 0 { image as f64 } else { 0.0 },
+            );
         let facade = FeaNebSession::new(
             BandConfig::default()
                 .with_min_mode(None)
@@ -1414,15 +1565,11 @@ mod tests {
     }
 
     #[test]
-    fn cut_keeps_the_energy_of_the_new_fixed_endpoint() {
-        let energies = Array1::from(vec![10.0, 20.0, 30.0, 40.0, 50.0]);
-        assert_eq!(
-            fixed_energy_after_cut(FreeEndSide::Last, &energies, 1, 4),
-            20.0
-        );
-        assert_eq!(
-            fixed_energy_after_cut(FreeEndSide::First, &energies, 0, 3),
-            40.0
-        );
+    fn peak_window_stays_off_the_ends_and_skips_a_full_band() {
+        assert_eq!(peak_window(5, 1, 1), Some((0, 2)));
+        assert_eq!(peak_window(5, 3, 1), Some((2, 4)));
+        assert_eq!(peak_window(3, 1, 1), None);
+        assert_eq!(peak_window(5, 0, 1), None);
+        assert_eq!(peak_window(5, 4, 1), None);
     }
 }
