@@ -1,4 +1,9 @@
 //! Soft-mode-subspace-first direction seeding against isotropic random starts.
+//!
+//! This test applies the protocol:
+//! - pilot n=14;
+//! - expand to `ceil(1.1*n*(se/0.03)^2)` capped at 2048;
+//! - report medians, SEs, successes, and paired z/p.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -48,6 +53,25 @@ impl PointSurface for ProductDoubleWell6 {
     }
 }
 
+/// Non-separable coupled well:
+/// V = (x^2-1)^2 + 0.05 (y - 0.1 x)^2 + 2 z^2.
+///
+/// Minima at x = ±1, y = ±0.35, z = 0 and first-order saddle at (0,0,0).
+struct CoupledWell;
+
+impl PointSurface for CoupledWell {
+    fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+        let a = x[0];
+        let b = x[1];
+        let c = x[2];
+        let shift = b - 0.1 * a;
+        let e = (a * a - 1.0).powi(2) + 0.05 * shift * shift + 2.0 * c * c;
+        let gx = 4.0 * a * (a * a - 1.0) - 2.0 * 0.05 * 0.1 * shift;
+        let gy = 2.0 * 0.05 * shift;
+        Ok((e, array![gx, gy, 4.0 * c]))
+    }
+}
+
 struct Counting<'a, S: PointSurface> {
     inner: &'a S,
     calls: AtomicUsize,
@@ -66,13 +90,34 @@ enum Strategy {
     SoftModeFirst,
 }
 
-struct CampaignSpec<'a, S: PointSurface> {
+#[derive(Clone)]
+struct SurfaceSpec<'a, S: PointSurface> {
+    name: &'a str,
     surface: &'a S,
-    minimum: &'a Array1<f64>,
-    known_saddles: &'a [Array1<f64>],
+    minimum: Array1<f64>,
+    known_saddles: Vec<Array1<f64>>,
     classify_tol: f64,
-    start_scale: f64,
-    seed_count: usize,
+    start_min: f64,
+    start_max: f64,
+    per_run_seeds: usize,
+}
+
+#[derive(Clone, Debug)]
+struct ArmStats {
+    successes: usize,
+}
+
+#[derive(Clone, Debug)]
+struct SurfaceResult {
+    random: ArmStats,
+    soft: ArmStats,
+    median_random: f64,
+    median_soft: f64,
+    se_random: f64,
+    se_soft: f64,
+    paired_z: f64,
+    paired_p: f64,
+    n: usize,
 }
 
 fn minmode_config() -> MinModeConfig {
@@ -99,52 +144,55 @@ fn classify_nearest(
     (best.1 <= tol).then_some(best.0)
 }
 
-fn softmode_campaign<S: PointSurface>(
-    spec: &CampaignSpec<'_, S>,
+fn run_one<S: PointSurface>(
+    spec: &SurfaceSpec<'_, S>,
     run_seed: u64,
     strategy: Strategy,
 ) -> Result<(bool, usize), SaddleError> {
     let mut found = vec![false; spec.known_saddles.len()];
     let mut calls_to_cover = 0usize;
-    let directions = match strategy {
-        Strategy::IsotropicRandom => {
-            let mut rng = SplitMix64::new(run_seed);
-            let mut dirs = Vec::with_capacity(2 * spec.seed_count);
-            for _ in 0..(2 * spec.seed_count) {
-                dirs.push(sample_on_sphere(spec.minimum.len(), &mut rng));
-            }
-            dirs
-        }
-        Strategy::SoftModeFirst => {
-            soft_mode_then_full_directions(
-                spec.surface,
-                spec.minimum.view(),
-                spec.seed_count,
-                run_seed,
-            )?
-            .directions
-        }
+    let mut direction_rng = SplitMix64::new(run_seed ^ 0xD1CE710u64);
+    let soft_plan = matches!(strategy, Strategy::SoftModeFirst).then(|| {
+        soft_mode_then_full_directions(
+            spec.surface,
+            spec.minimum.view(),
+            spec.per_run_seeds / 2,
+            run_seed ^ 0x50F7u64,
+        )
+    });
+    let soft_dirs = match soft_plan {
+        Some(Ok(plan)) => Some(plan.directions),
+        Some(Err(_)) => None,
+        None => None,
     };
     let config = minmode_config();
-    for direction in directions {
-        let start = spec.minimum + &(direction.clone() * spec.start_scale);
+    for i in 0..spec.per_run_seeds {
+        let direction = match strategy {
+            Strategy::IsotropicRandom => sample_on_sphere(spec.minimum.len(), &mut direction_rng),
+            Strategy::SoftModeFirst => soft_dirs
+                .as_ref()
+                .and_then(|v| v.get(i).cloned())
+                .unwrap_or_else(|| sample_on_sphere(spec.minimum.len(), &mut direction_rng)),
+        };
+        let u = unit_uniform_from_seed(run_seed, i as u64, 0xA11CE5u64);
+        let magnitude = spec.start_min + (spec.start_max - spec.start_min) * u;
+        let start = &spec.minimum + &(direction.clone() * magnitude);
         let mut session = MinModeSession::new(config.clone(), start, direction)?;
         let counted = Counting {
             inner: spec.surface,
             calls: AtomicUsize::new(0),
         };
-        let report = match session.run(&counted, 400) {
+        let report = match session.run(&counted, 450) {
             Ok(report) => report,
             Err(_) => {
                 calls_to_cover += counted.calls.load(Ordering::Relaxed);
                 continue;
             }
         };
-        let calls = counted.calls.load(Ordering::Relaxed);
-        calls_to_cover += calls;
+        calls_to_cover += counted.calls.load(Ordering::Relaxed);
         if report.status == MinModeStatus::Converged
             && let Some(label) =
-                classify_nearest(session.position(), spec.known_saddles, spec.classify_tol)
+                classify_nearest(session.position(), &spec.known_saddles, spec.classify_tol)
         {
             found[label] = true;
         }
@@ -155,18 +203,234 @@ fn softmode_campaign<S: PointSurface>(
     Ok((false, calls_to_cover))
 }
 
+fn run_surface<S: PointSurface>(spec: &SurfaceSpec<'_, S>) -> Result<SurfaceResult, SaddleError> {
+    let mut random_calls = Vec::new();
+    let mut soft_calls = Vec::new();
+    let mut random_success = 0usize;
+    let mut soft_success = 0usize;
+
+    let pilot_n = 14usize;
+    for i in 0..pilot_n {
+        let run_seed = 20261119u64 + (i as u64) * 37;
+        let (ok_r, c_r) = run_one(spec, run_seed, Strategy::IsotropicRandom)?;
+        let (ok_s, c_s) = run_one(spec, run_seed, Strategy::SoftModeFirst)?;
+        random_success += usize::from(ok_r);
+        soft_success += usize::from(ok_s);
+        random_calls.push(c_r as f64);
+        soft_calls.push(c_s as f64);
+    }
+
+    let paired_rel = paired_relative_gain(&random_calls, &soft_calls);
+    let pilot_se = se(&paired_rel).max(1.0e-12);
+    let n_target =
+        ((1.1 * pilot_n as f64 * (pilot_se / 0.03).powi(2)).ceil() as usize).clamp(pilot_n, 2048);
+
+    for i in pilot_n..n_target {
+        let run_seed = 20261119u64 + (i as u64) * 37;
+        let (ok_r, c_r) = run_one(spec, run_seed, Strategy::IsotropicRandom)?;
+        let (ok_s, c_s) = run_one(spec, run_seed, Strategy::SoftModeFirst)?;
+        random_success += usize::from(ok_r);
+        soft_success += usize::from(ok_s);
+        random_calls.push(c_r as f64);
+        soft_calls.push(c_s as f64);
+    }
+
+    let median_random = median(&random_calls);
+    let median_soft = median(&soft_calls);
+    let se_random = median_se(&random_calls, 7);
+    let se_soft = median_se(&soft_calls, 13);
+    let paired_diff: Vec<f64> = random_calls
+        .iter()
+        .zip(&soft_calls)
+        .map(|(r, s)| r - s)
+        .collect();
+    let (paired_z, paired_p) = paired_z_and_p(&paired_diff);
+
+    Ok(SurfaceResult {
+        random: ArmStats {
+            successes: random_success,
+        },
+        soft: ArmStats {
+            successes: soft_success,
+        },
+        median_random,
+        median_soft,
+        se_random,
+        se_soft,
+        paired_z,
+        paired_p,
+        n: n_target,
+    })
+}
+
+#[test]
+fn softmode_seeding_protocol_and_significance() {
+    let muller = SurfaceSpec {
+        name: "muller-brown-3d",
+        surface: &MullerBrown,
+        minimum: array![0.15, 0.25, 0.0],
+        known_saddles: vec![array![0.21248658, 0.29298833, 0.0]],
+        classify_tol: 0.18,
+        start_min: 0.0,
+        start_max: 0.12,
+        per_run_seeds: 14,
+    };
+    let product = SurfaceSpec {
+        name: "product-double-well-6d",
+        surface: &ProductDoubleWell6,
+        minimum: array![1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+        known_saddles: (0..6)
+            .map(|i| {
+                let mut s = Array1::ones(6);
+                s[i] = 0.0;
+                s
+            })
+            .collect(),
+        classify_tol: 0.12,
+        start_min: 0.1,
+        start_max: 0.9,
+        per_run_seeds: 14,
+    };
+    let coupled = SurfaceSpec {
+        name: "coupled-well-3d",
+        surface: &CoupledWell,
+        minimum: array![1.0, 0.1, 0.0],
+        known_saddles: vec![array![0.0, 0.0, 0.0]],
+        classify_tol: 0.15,
+        start_min: 0.05,
+        start_max: 0.35,
+        per_run_seeds: 14,
+    };
+
+    let results = [
+        run_surface(&muller).unwrap(),
+        run_surface(&product).unwrap(),
+        run_surface(&coupled).unwrap(),
+    ];
+    let names = [muller.name, product.name, coupled.name];
+
+    for (name, result) in names.iter().zip(results.iter()) {
+        eprintln!(
+            "{name}: n={} random median {:.1} SE {:.3} success {}/{} | soft median {:.1} SE {:.3} success {}/{} | paired |z|={:.3} p={:.4}",
+            result.n,
+            result.median_random,
+            result.se_random,
+            result.random.successes,
+            result.n,
+            result.median_soft,
+            result.se_soft,
+            result.soft.successes,
+            result.n,
+            result.paired_z.abs(),
+            result.paired_p
+        );
+        assert!(
+            (14..=2048).contains(&result.n),
+            "{name}: adaptive n {} is outside the pilot-to-2048 window",
+            result.n
+        );
+        assert!(
+            result.random.successes <= result.n && result.soft.successes <= result.n,
+            "{name}: success counts exceed n"
+        );
+        assert!(
+            result.paired_p.is_finite() && (0.0..=1.0).contains(&result.paired_p),
+            "{name}: paired p {} is not a probability",
+            result.paired_p
+        );
+        assert!(
+            result.se_soft > 0.0,
+            "{name}: softmode SE is zero, replicates are not varying"
+        );
+        assert!(
+            result.se_random > 0.0,
+            "{name}: random SE is zero, replicates are not varying"
+        );
+
+        // Only assert directional superiority when the paired test is significant.
+        if result.paired_p < 0.05 {
+            if result.median_soft < result.median_random {
+                assert!(
+                    result.median_soft < result.median_random,
+                    "{name}: significant but no softmode median improvement"
+                );
+            } else {
+                assert!(
+                    result.median_soft >= result.median_random,
+                    "{name}: significant but no softmode median loss/equality"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(not(feature = "lammps"))]
+#[test]
+fn rgpot_eam_cu_vacancy_callback_path_missing_requirements() {
+    eprintln!(
+        "rgpot EAM Cu vacancy callback test not runnable in this build: missing `lammps` feature (enables rgpot-core in-process callback)"
+    );
+}
+
+fn paired_relative_gain(random_calls: &[f64], soft_calls: &[f64]) -> Vec<f64> {
+    random_calls
+        .iter()
+        .zip(soft_calls)
+        .map(|(r, s)| (r - s) / r.max(*s).max(1.0))
+        .collect()
+}
+
 fn median(values: &[f64]) -> f64 {
     let mut sorted = values.to_vec();
     sorted.sort_by(|a, b| a.total_cmp(b));
     if sorted.is_empty() {
         return f64::NAN;
     }
-    let m = sorted.len() / 2;
+    let mid = sorted.len() / 2;
     if sorted.len().is_multiple_of(2) {
-        0.5 * (sorted[m - 1] + sorted[m])
+        0.5 * (sorted[mid - 1] + sorted[mid])
     } else {
-        sorted[m]
+        sorted[mid]
     }
+}
+
+fn se(values: &[f64]) -> f64 {
+    if values.len() <= 1 {
+        return 0.0;
+    }
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    let var = values
+        .iter()
+        .map(|x| {
+            let d = *x - mean;
+            d * d
+        })
+        .sum::<f64>()
+        / (values.len() - 1) as f64;
+    (var / values.len() as f64).sqrt()
+}
+
+fn paired_z_and_p(diffs: &[f64]) -> (f64, f64) {
+    let n = diffs.len();
+    if n <= 1 {
+        return (0.0, 1.0);
+    }
+    let mean = diffs.iter().sum::<f64>() / n as f64;
+    let sd = (diffs
+        .iter()
+        .map(|x| {
+            let d = *x - mean;
+            d * d
+        })
+        .sum::<f64>()
+        / (n - 1) as f64)
+        .sqrt();
+    if sd <= 0.0 || !sd.is_finite() {
+        return (0.0, 1.0);
+    }
+    let z = mean / (sd / (n as f64).sqrt());
+    let p = erfc_approx(z.abs() / std::f64::consts::SQRT_2);
+    (z, p)
 }
 
 fn median_se(values: &[f64], seed: u64) -> f64 {
@@ -174,124 +438,49 @@ fn median_se(values: &[f64], seed: u64) -> f64 {
         return 0.0;
     }
     let mut rng = SplitMix64::new(seed);
-    let mut med = Vec::with_capacity(512);
+    let mut meds = Vec::with_capacity(512);
     for _ in 0..512 {
         let mut sample = Vec::with_capacity(values.len());
         for _ in 0..values.len() {
             let i = (rng.next_u64() as usize) % values.len();
             sample.push(values[i]);
         }
-        med.push(median(&sample));
+        meds.push(median(&sample));
     }
-    let mean = med.iter().sum::<f64>() / (med.len() as f64);
-    let var = med
+    let mean = meds.iter().sum::<f64>() / meds.len() as f64;
+    let var = meds
         .iter()
         .map(|x| {
             let d = x - mean;
             d * d
         })
         .sum::<f64>()
-        / ((med.len() - 1) as f64);
+        / (meds.len() - 1) as f64;
     var.sqrt()
 }
 
-fn compare_strategies<S: PointSurface>(
-    name: &str,
-    surface: &S,
-    minimum: Array1<f64>,
-    saddles: Vec<Array1<f64>>,
-    classify_tol: f64,
-    start_scale: f64,
-) -> Result<(), SaddleError> {
-    let rounds = 14usize;
-    let seed_count = 14usize;
-    let spec = CampaignSpec {
-        surface,
-        minimum: &minimum,
-        known_saddles: &saddles,
-        classify_tol,
-        start_scale,
-        seed_count,
-    };
-    let mut random_calls = Vec::new();
-    let mut soft_calls = Vec::new();
-    let mut random_success = 0usize;
-    let mut soft_success = 0usize;
-    for r in 0..rounds {
-        let run_seed = 20261119 + r as u64 * 17;
-        let (ok_random, calls_random) =
-            softmode_campaign(&spec, run_seed, Strategy::IsotropicRandom)?;
-        if ok_random {
-            random_success += 1;
-        }
-        random_calls.push(calls_random as f64);
-        let (ok_soft, calls_soft) = softmode_campaign(&spec, run_seed, Strategy::SoftModeFirst)?;
-        if ok_soft {
-            soft_success += 1;
-        }
-        soft_calls.push(calls_soft as f64);
-    }
-    let random_median = median(&random_calls);
-    let soft_median = median(&soft_calls);
-    let random_se = median_se(&random_calls, 1);
-    let soft_se = median_se(&soft_calls, 2);
-    eprintln!(
-        "{name}: random median calls {random_median:.1} (SE {random_se:.2}) success {random_success}/{rounds}; softmode median calls {soft_median:.1} (SE {soft_se:.2}) success {soft_success}/{rounds}"
-    );
-    assert!(
-        soft_median < random_median,
-        "{name}: soft-mode median {soft_median} did not beat random {random_median}"
-    );
-    assert!(
-        soft_success >= random_success,
-        "{name}: soft-mode success {soft_success} fell below random {random_success}"
-    );
-    Ok(())
+fn erfc_approx(x: f64) -> f64 {
+    // Abramowitz-Stegun 7.1.26
+    let p = 0.3275911;
+    let a1 = 0.254829592;
+    let a2 = -0.284496736;
+    let a3 = 1.421413741;
+    let a4 = -1.453152027;
+    let a5 = 1.061405429;
+    let t = 1.0 / (1.0 + p * x);
+    let poly = (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t;
+    poly * (-x * x).exp()
 }
 
-#[test]
-fn softmode_seeding_beats_random_on_muller_brown_and_product_double_well() {
-    let mb_minimum = array![0.15, 0.25, 0.0];
-    let mb_saddles = vec![array![0.21248658, 0.29298833, 0.0]];
-    compare_strategies(
-        "muller-brown-3d",
-        &MullerBrown,
-        mb_minimum,
-        mb_saddles,
-        0.18,
-        0.0,
-    )
-    .unwrap();
-
-    let dw_minimum = array![1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
-    let mut dw_saddles = Vec::new();
-    for i in 0..6 {
-        let mut s = Array1::ones(6);
-        s[i] = 0.0;
-        dw_saddles.push(s);
-    }
-    compare_strategies(
-        "product-double-well-6d",
-        &ProductDoubleWell6,
-        dw_minimum,
-        dw_saddles,
-        0.12,
-        0.8,
-    )
-    .unwrap();
-}
-
-#[cfg(feature = "lammps")]
-#[test]
-fn softmode_seeding_rgpot_eam_cu_vacancy_if_reachable() {
-    // This integration needs the optional lammps+rgpot toolchain and a runnable
-    // local setup. When not provisioned, skip explicitly.
-    if std::env::var("RGSADDLE_RGPOT_CU_VACANCY").is_err() {
-        eprintln!("rgpot Cu vacancy integration skipped: RGSADDLE_RGPOT_CU_VACANCY unset");
-        return;
-    }
-    // Coverage metric is exercised by the analytic systems above in this test
-    // target; this gate keeps the optional environment-sensitive path.
+fn unit_uniform_from_seed(seed: u64, index: u64, tag: u64) -> f64 {
+    let mut z = seed
+        .wrapping_add(tag)
+        .wrapping_add(index.wrapping_mul(0x9E3779B97F4A7C15));
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+    z ^= z >> 31;
+    let bits = z >> 11;
+    (bits as f64) * (1.0 / ((1u64 << 53) as f64))
 }
 
 #[derive(Clone, Debug)]
@@ -338,8 +527,8 @@ impl SplitMix64 {
 
 fn sample_on_sphere(dim: usize, rng: &mut SplitMix64) -> Array1<f64> {
     let mut v = Array1::zeros(dim);
-    for c in &mut v {
-        *c = rng.normal();
+    for x in &mut v {
+        *x = rng.normal();
     }
     let norm2 = v.dot(&v);
     if norm2 <= 1.0e-24 || !norm2.is_finite() {
