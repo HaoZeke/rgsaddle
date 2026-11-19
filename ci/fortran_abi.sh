@@ -178,7 +178,15 @@ for doc_src in "$work/doc-examples"/*.f90; do
     $pc_libs
 done
 
-cat >"$work/smoke.f90" <<'EOF'
+abi_minor="$(
+  sed -n 's/^#define RGSADDLE_ABI_MINOR \([0-9][0-9]*\)u$/\1/p' include/rgsaddle.h
+)"
+if [[ -z "${abi_minor}" ]]; then
+  echo "include/rgsaddle.h does not define RGSADDLE_ABI_MINOR" >&2
+  exit 1
+fi
+
+cat >"$work/smoke.f90" <<EOF
 program smoke
   use, intrinsic :: iso_c_binding
   use rgsaddle
@@ -187,7 +195,7 @@ program smoke
   integer(c_int) :: status
   status = abi_stamp(version)
   if (status /= RGSADDLE_OK) stop 1
-  if (version%major /= 1 .or. version%minor /= 44) stop 2
+  if (version%major /= 1 .or. version%minor /= ${abi_minor}) stop 2
 end program smoke
 EOF
 
