@@ -57,6 +57,8 @@
 #[macro_use]
 mod config;
 
+#[cfg(feature = "ohtst")]
+pub mod adaptive_ohtst;
 pub mod art;
 pub mod autoneb;
 pub mod band;
@@ -106,6 +108,13 @@ mod differential;
 
 mod sqnm;
 mod stats;
+#[cfg(feature = "ohtst")]
+pub use adaptive_ohtst::{
+    ADAPTIVE_OHTST_MAX_SAMPLES, ADAPTIVE_OHTST_PILOT_SAMPLES, ADAPTIVE_OHTST_SAMPLE_SAFETY,
+    ADAPTIVE_OHTST_TARGET_LOG_ERROR, AdaptiveOhTstConfig, AdaptiveOhTstEstimate,
+    AdaptiveOhTstProfile, AdaptiveOhTstStatus, adaptive_ohtst_sample_count,
+    adaptive_ohtst_string_rate,
+};
 pub use art::{
     ArtBatch, ArtConfig, ArtDuplicate, ArtForceCall, ArtOutcome, ArtPhase, ArtReport,
     ArtReversibility, ArtSeed, ArtSession, ArtStatus, atom_mask, connection_verdict, full_mask,

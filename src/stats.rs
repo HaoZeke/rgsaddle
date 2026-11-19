@@ -24,13 +24,43 @@ pub struct EquilibrationReport {
     pub drift_passed: bool,
 }
 
+/// Equal-width batch layout for `len` records.
+///
+/// The width is at least `len / blocks` and at least `min_width`. The
+/// remainder `len % width` is dropped, so every retained block has that
+/// width and none is empty. Returns `(block_count, width)` when at least
+/// two blocks fit. Ceiling the width instead (`div_ceil`) turns an odd tail
+/// at two blocks into a single block: 15 records become width 8, and only
+/// one block fits.
+pub(crate) fn batch_blocks(len: usize, blocks: usize, min_width: usize) -> Option<(usize, usize)> {
+    if blocks < 2 || len < 2 {
+        return None;
+    }
+    let width = (len / blocks).max(min_width).max(1);
+    let block_count = len / width;
+    if block_count < 2 {
+        return None;
+    }
+    Some((block_count, width))
+}
+
 /// Chodera-style automated equilibration followed by a split-half drift test.
 ///
 /// Candidate discards maximize `(N-t0)/g(t0)`. For long series a
 /// coarse-to-fine scan bounds the cost of repeated autocorrelation estimates.
-/// The drift threshold is four block standard errors: a conservative
-/// four-sigma check that rejects visible nonstationarity without turning an
-/// ordinary finite-sample fluctuation into a failure.
+/// The effective-sample floor is the block count passed by the caller,
+/// `n_eff >= blocks`: 20 for the plane and thermodynamic-integration
+/// samplers, 5 for PAFI, and the adaptive string's own count. It is not a
+/// literal shared by every caller.
+///
+/// The drift threshold is four block standard errors. On a stationary
+/// Gaussian series the statistic is a two-sample *t*. With `ν` degrees of
+/// freedom the two-sided false-rejection probability at four standard
+/// errors is the Student-*t* tail `I_{ν/(ν+16)}(ν/2, 1/2)`. Two block means
+/// in each half give `ν = 2` and a 5.72% tail. Seven in each half (a
+/// 14-record production sample) give `ν = 12` and a 0.176% tail. That tail
+/// is left in place: the threshold is an absolute four-standard-error
+/// screen, and the pilot already spends the family-wise budget.
 pub(crate) fn equilibrate(
     values: &[f64],
     warmup_floor: usize,
@@ -92,11 +122,20 @@ pub(crate) fn equilibrate(
         sigma_multiple: K,
         drift_passed: passed,
     };
+    // The caller passes `blocks`. The floor is that count, not a literal.
     if report.n_eff < blocks as f64 {
         return Err(SaddleError::InsufficientEffectiveSamples {
             equilibration_steps: report.equilibration_steps,
             n_eff: report.n_eff,
             required: blocks as f64,
+        });
+    }
+    let correlation_width = ((2.0 * report.tau).ceil() as usize).max(1);
+    if batch_blocks(tail.len(), blocks, correlation_width).is_none() {
+        return Err(SaddleError::InsufficientEffectiveSamples {
+            equilibration_steps: report.equilibration_steps,
+            n_eff: report.n_eff,
+            required: 2.0 * correlation_width as f64,
         });
     }
     if !passed {
@@ -159,7 +198,9 @@ pub(crate) fn autocorr_time(values: &[f64]) -> f64 {
     }
     let mut tau = 0.5;
     let mut lag = 1usize;
-    while lag < n / 4 {
+    // A 6-point half has `n / 4 == 1`, so `lag < n / 4` never runs. Keep lag 1
+    // there; longer series stay on the original cutoff.
+    while lag < n / 4 || (n / 4 == 1 && lag == 1) {
         let mut cov = 0.0;
         for i in 0..(n - lag) {
             cov += (values[i] - mean) * (values[i + lag] - mean);
@@ -259,5 +300,157 @@ mod tests {
             ),
             "{result:?}"
         );
+    }
+
+    /// One-sided allowance under the normal approximation to a binomial count.
+    /// Three standard errors: `3 sqrt(k (n-k) / n)`, rounded up. For the
+    /// 15-record, 2-block cell at `n = 2000` and `k = 1892` this is 31 counts.
+    /// The same cell measured independently at 1884 differs by 8 counts, and
+    /// `sqrt(1892 * 108 / 2000) = 10.1`, so that gap is 0.8 standard errors.
+    fn binomial_lower(passes: usize, trials: usize) -> usize {
+        let variance = passes as f64 * (trials - passes) as f64 / trials as f64;
+        let allowance = (3.0 * variance.sqrt()).ceil() as usize;
+        passes.saturating_sub(allowance)
+    }
+
+    #[test]
+    fn odd_lengths_keep_two_equal_blocks() {
+        for len in (13..=30).filter(|len| len % 2 == 1) {
+            let (blocks, width) = batch_blocks(len, 2, 1).expect("two blocks");
+            assert_eq!(blocks, 2, "len {len}");
+            assert_eq!(width, len / 2, "len {len}");
+            assert_eq!(blocks * width + len % 2, len);
+        }
+        // Ceiling the width is the regression: an odd tail then holds one block.
+        for len in 13usize..=30 {
+            if len % 2 == 0 {
+                continue;
+            }
+            let width = len.div_ceil(2);
+            assert!(len / width < 2, "len {len}");
+        }
+    }
+
+    /// Pass counts for `Rng::new(seed)`, seeds `1..=200`, standard normal
+    /// draws, `equilibrate` with that block count. Rows are record counts 13
+    /// through 30. Columns are block counts 2 through 7.
+    ///
+    /// The allowance is [`binomial_lower`]: three standard errors of the
+    /// binomial count, rounded up. The widest allowance on this table is 14
+    /// counts (179 of 200). Replacing the floor width by `div_ceil` drops the
+    /// two-block odd-length cells from about 180 passes to about 10, which
+    /// is outside every one of those allowances. That is the ceiling layout.
+    #[test]
+    fn iid_batch_pass_rates_match_the_equal_width_layout() {
+        const TRIALS: usize = 200;
+        const BASE: [[usize; 6]; 18] = [
+            [188, 198, 200, 200, 198, 189],
+            [190, 198, 200, 200, 200, 195],
+            [184, 199, 199, 200, 199, 194],
+            [183, 198, 198, 200, 200, 198],
+            [185, 198, 198, 200, 200, 199],
+            [191, 198, 199, 200, 200, 200],
+            [189, 198, 199, 199, 200, 200],
+            [194, 196, 199, 199, 200, 200],
+            [190, 196, 199, 199, 200, 200],
+            [189, 198, 199, 199, 200, 200],
+            [194, 196, 200, 200, 200, 200],
+            [190, 198, 199, 200, 200, 200],
+            [190, 197, 199, 200, 200, 200],
+            [193, 197, 199, 200, 200, 200],
+            [194, 197, 199, 200, 200, 200],
+            [179, 198, 200, 200, 200, 200],
+            [182, 194, 199, 199, 200, 200],
+            [190, 195, 199, 199, 200, 200],
+        ];
+        for (row, records) in (13..=30).enumerate() {
+            for (col, blocks) in (2..=7).enumerate() {
+                let mut passes = 0usize;
+                for seed in 1..=TRIALS as u64 {
+                    let mut rng = Rng::new(seed);
+                    let values: Vec<f64> = (0..records).map(|_| rng.normal()).collect();
+                    if equilibrate(&values, 0, 1, blocks).is_ok() {
+                        passes += 1;
+                    }
+                }
+                let floor = binomial_lower(BASE[row][col], TRIALS);
+                assert!(
+                    passes >= floor,
+                    "records {records} blocks {blocks}: {passes} passes, base {}, allowance {floor}",
+                    BASE[row][col]
+                );
+            }
+        }
+    }
+
+    /// Canonical cell from the review: 15 records, 2 blocks, 2000 seeds.
+    /// The floor width passes 1892 with this generator. An independent count
+    /// of 1884 is 0.8 binomial standard errors lower
+    /// (`sqrt(1892 * 108 / 2000) = 10.1`).
+    #[test]
+    fn fifteen_records_and_two_blocks_keep_the_base_pass_rate() {
+        let mut passes = 0usize;
+        for seed in 1..=2000 {
+            let mut rng = Rng::new(seed);
+            let values: Vec<f64> = (0..15).map(|_| rng.normal()).collect();
+            if equilibrate(&values, 0, 1, 2).is_ok() {
+                passes += 1;
+            }
+        }
+        let floor = binomial_lower(1892, 2000);
+        assert!(
+            passes >= floor,
+            "{passes} passes, base 1892, allowance {floor}"
+        );
+    }
+
+    fn thinned_ar1(phi: f64, records: usize, stride: usize, seed: u64) -> Vec<f64> {
+        let mut rng = Rng::new(seed);
+        let innov = (1.0 - phi * phi).sqrt();
+        let mut x = rng.normal();
+        let mut values = Vec::with_capacity(records);
+        let mut step = 0usize;
+        while values.len() < records {
+            x = phi * x + innov * rng.normal();
+            step += 1;
+            if step.is_multiple_of(stride) {
+                values.push(x);
+            }
+        }
+        values
+    }
+
+    /// Stationary AR(1), recorded every 5th step (the default production
+    /// stride), 80 records, 20 blocks, seeds 1..=300.
+    ///
+    /// At `phi = 0.9` the floor refuses 65 and at `phi = 0.95` it refuses 207.
+    /// The review's 60 and 213 differ by 5 and 6. The binomial standard
+    /// errors are `sqrt(65 * 235 / 300) = 7.1` and `sqrt(207 * 93 / 300) = 8.0`,
+    /// so both gaps are under one standard error. The acceptance window is
+    /// three of those standard errors, 22 and 24 counts. A literal floor of
+    /// 4 refuses none of these runs: every retained `n_eff` is at least 4.
+    #[test]
+    fn caller_block_floor_refuses_at_the_base_rate() {
+        let expected = [(0.9_f64, 65usize, 22usize), (0.95, 207, 24)];
+        for (phi, base, allowance) in expected {
+            let mut refused = 0usize;
+            for seed in 1..=300 {
+                let values = thinned_ar1(phi, 80, 5, seed);
+                match equilibrate(&values, 0, 1, 20) {
+                    Ok(_) => {}
+                    Err(SaddleError::InsufficientEffectiveSamples { required, .. }) => {
+                        assert_eq!(required, 20.0);
+                        refused += 1;
+                    }
+                    Err(error) => panic!("phi {phi} seed {seed}: {error}"),
+                }
+            }
+            let low = base.saturating_sub(allowance);
+            let high = base + allowance;
+            assert!(
+                (low..=high).contains(&refused),
+                "phi {phi}: refused {refused}, base {base}, window {low}..={high}"
+            );
+        }
     }
 }
