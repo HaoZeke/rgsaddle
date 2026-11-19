@@ -183,6 +183,8 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
       - name: Clippy (capi)
         run: cargo clippy --locked --features capi -- -D warnings
+      - name: Clippy (capi,ohtst)
+        run: cargo clippy --locked --all-targets --features capi,ohtst -- -D warnings
       - name: Clippy (readcon)
         run: cargo clippy --locked --all-targets --features readcon -- -D warnings
       - name: Clippy (readcon,readcon-db)
