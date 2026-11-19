@@ -675,11 +675,13 @@ impl BerendsenIsotropic {
 /// before the call, because that pressure is a negative contribution to
 /// the tension.
 ///
-/// `modulus` is the bulk modulus in energy per volume. It sets how fast
-/// the cell moves, not the volume at which the tension vanishes. `dt`
-/// and `tau` are the barostat step and the piston time, in the same
-/// unit. A negative tension is compression and the scale is greater
-/// than one.
+/// `modulus` is the bulk modulus in energy per volume, the reciprocal
+/// of the isothermal compressibility in Berendsen, Postma, van
+/// Gunsteren, DiNola, and Haak, J. Chem. Phys. 81, 3684 (1984),
+/// doi:10.1063/1.448118. It sets how fast the cell moves, not the
+/// volume at which the tension vanishes. `dt` and `tau` are the
+/// barostat step and the piston time, in the same unit. A negative
+/// tension is compression and the scale is greater than one.
 ///
 /// [`BerendsenIsotropic::with_max_strain_per_step`] caps the absolute
 /// change of the volume factor in one step. This function is the scale
