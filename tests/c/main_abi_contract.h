@@ -5,7 +5,7 @@
 #include <stddef.h>
 
 _Static_assert(RGSADDLE_ABI_MAJOR == 1u, "main ABI major");
-_Static_assert(RGSADDLE_ABI_MINOR == 44u, "ABI minor");
+_Static_assert(RGSADDLE_ABI_MINOR == 45u, "ABI minor");
 _Static_assert(RGSADDLE_BAND_NO_MIN_MODE == (1ull << 3), "band flag bit 3");
 _Static_assert(RGSADDLE_BAND_SPLINE_REPARAM == (1ull << 4), "band flag bit 4");
 _Static_assert(RGSADDLE_BAND_STRING == (1ull << 5), "band flag bit 5");
@@ -582,8 +582,8 @@ typedef rgsaddle_status_t (*abi44_signature_rgsaddle_ohtst_mbar)(
     const double *initial, double *free_energies, double *covariance, double *overlap);
 _Static_assert(_Generic(&rgsaddle_ohtst_mbar, abi44_signature_rgsaddle_ohtst_mbar: 1, default: 0), "rgsaddle_ohtst_mbar signature");
 
-typedef rgsaddle_status_t (*abi44_signature_rgsaddle_ohtst_rate)(
+typedef rgsaddle_status_t (*abi45_signature_rgsaddle_ohtst_rate)(
     const rgsaddle_ohtst_rate_in_t *input, rgsaddle_ohtst_rate_out_t *out);
-_Static_assert(_Generic(&rgsaddle_ohtst_rate, abi44_signature_rgsaddle_ohtst_rate: 1, default: 0), "rgsaddle_ohtst_rate signature");
+_Static_assert(_Generic(&rgsaddle_ohtst_rate, abi45_signature_rgsaddle_ohtst_rate: 1, default: 0), "rgsaddle_ohtst_rate signature");
 
 #endif

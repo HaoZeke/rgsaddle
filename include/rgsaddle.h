@@ -28,7 +28,7 @@ extern "C" {
 #endif
 
 #define RGSADDLE_ABI_MAJOR 1u
-#define RGSADDLE_ABI_MINOR 44u
+#define RGSADDLE_ABI_MINOR 45u
 
 /**
  * Band config flags bit 0. When set, each evaluation calls the surface
@@ -1893,7 +1893,7 @@ rgsaddle_status_t rgsaddle_growing_string_saddle_index(
 void rgsaddle_growing_string_free(RgsaddleGrowingString *session);
 
 /**
- * Point surface, ABI minor 44. q and gradient each hold n doubles.
+ * Point surface, ABI minor 45. q and gradient each hold n doubles.
  * The callback may run on more than one thread.
  */
 typedef rgsaddle_status_t (*rgsaddle_point_fn)(void *user, int64_t n, const double *q,
