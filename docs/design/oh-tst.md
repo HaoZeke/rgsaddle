@@ -482,9 +482,9 @@ specific problems:
    reactant minimum. Its printed speed and Vineyard rate instead both select
    $k_BT=0.25$ in the Appendix B energy units with unit mass. At that
    convention the paper's crossing estimator and trapezoidal work, repeated
-   over sixteen seeds, give a mean of $4.304\times10^{-7}$ and a 12.5%
-   trimmed mean of $4.311\times10^{-7}$ (sample standard error
-   $0.078\times10^{-7}$), both inside the printed
+   over 144 seeds, give $(4.333\pm0.037)\times10^{-7}$. The matching
+   quadrature reference for the 17-node trapezoidal protocol is
+   $4.31468\times10^{-7}$, inside the printed
    $(4.5\pm0.2)\times10^{-7}$ band. Section 10.3 gives the full check.
 
 ### 3.9 Numerical checks
@@ -1492,7 +1492,8 @@ $k_\mathrm{hTST}=4.33127\times10^{-7}$. At that convention:
 |---|---|
 | analytic Vineyard hTST | $4.33127\times10^{-7}$ |
 | optimal-line quadrature | $4.20148\times10^{-7}$ |
-| Eq. (22) crossings plus trapezoidal work, 16 independent seeds (mean; 12.5% trimmed mean) | $(4.304\pm0.078)\times10^{-7}$; $4.311\times10^{-7}$ |
+| 17-node trapezoidal protocol, quadrature reference | $4.31468\times10^{-7}$ |
+| Eq. (22) crossings plus trapezoidal work, 144 independent seeds | $(4.333\pm0.037)\times10^{-7}$ |
 | paper | $(4.5\pm0.2)\times10^{-7}$ |
 
 The sampled estimate uses 1000 records for each plane optimization, 8000
@@ -1502,14 +1503,14 @@ with stochastic collisions; it does not report a time step, collision
 frequency, trajectory length, number of planes, masses, or physical units.
 The test therefore states its sample counts rather than attributing them to
 the paper. It keeps the paper's crossing estimator and trapezoidal
-integration. Because the Eq. (22) crossing weight $1/|\Delta\xi|$ has a
-divergent second moment, the sample standard error does not define a normal
-coverage band; the test checks both the sample mean ($4.304\times10^{-7}$)
-and the 12.5% trimmed mean ($4.311\times10^{-7}$, whose asymptotic variance
-is finite) over the fixed seed set directly against the unwidened published
-band $[4.3,4.7]\times10^{-7}$. `docs/design/ohtst-paper-reproduction.md`
-gives the per-seed rates, the trimmed mean, and the command that prints
-them.
+integration. The mean is 3.70% below the printed $4.5\times10^{-7}$ and
+3.14% above the optimal-line quadrature rate. These measured offsets are
+properties of the reproduced protocol, not tolerance terms. The test
+compares the mean with the protocol's computed reference within three
+standard errors, and separately checks that the reference lies in the
+printed $[4.3,4.7]\times10^{-7}$ interval.
+`docs/design/ohtst-paper-reproduction.md` gives the standard error and the
+command that regenerates every value.
 
 The apparent $Q^\ddagger/Q_{Z_R}=0.765$ is a label error: Eq. (3) needs
 $Q_{Z_R}/Q_R$ in the prefactor, while $Q^\ddagger/Q_{Z_R}$ is the
