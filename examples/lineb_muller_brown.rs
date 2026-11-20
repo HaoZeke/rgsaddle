@@ -45,8 +45,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let end = [-0.55822363, 1.44172584];
     // Turning energy inferred from both endpoints of Figure 2(b).
     let energy = -0.145;
+    let on_line = |t: f64| Array1::from_shape_fn(2, |j| start[j] + t * (end[j] - start[j]));
+    // Place each end at the inward crossing. At the minimum itself the
+    // energy gradient vanishes and does not select a turning direction.
+    let crossing = |minimum: f64| -> Result<f64, SaddleError> {
+        let (mut below, mut above) = (minimum, 0.5);
+        for _ in 0..48 {
+            let mid = (below + above) / 2.0;
+            if ModifiedMullerBrown.eval(on_line(mid).view())?.0 < energy {
+                below = mid;
+            } else {
+                above = mid;
+            }
+        }
+        Ok(above)
+    };
+    let (left, right) = (crossing(0.0)?, crossing(1.0)?);
     let images = Array2::from_shape_fn((10, 2), |(i, j)| {
-        start[j] + (end[j] - start[j]) * i as f64 / 9.0
+        on_line(left + (right - left) * i as f64 / 9.0)[j]
     });
     let masses = Masses::coordinates(Array1::ones(2).view())?;
     let mut solver = LinebSession::new(LinebConfig::new(1e-5, 1e-5), masses, images, energy)?;
