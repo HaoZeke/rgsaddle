@@ -751,6 +751,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cyclic_schur_complements_match_the_signed_dense_projection() {
+        let blocks = vec![
+            ndarray::array![[0., 1.], [1., 0.]],
+            ndarray::array![[4., -0.3], [-0.3, 2.]],
+            ndarray::array![[-2., 0.4], [0.4, 3.]],
+            ndarray::array![[2., 0.7], [0.7, 1.]],
+        ];
+        let gauges = orthonormalize(vec![
+            ndarray::array![2., 0., 1., 3., -1., 1., 0., 2.],
+            ndarray::array![1., 2., -2., 0., 1., 1., 2., 0.],
+        ]);
+        let dense = projected_log_abs_det(dense_ring(&blocks, 0.5), gauges.clone()).unwrap();
+        let schur = bordered_ring(&blocks, 0.5, &gauges).unwrap().unwrap();
+        assert_eq!(schur.negative_modes, dense.negative_modes);
+        assert!((schur.log_abs_det - dense.log_abs_det).abs() < 1e-11);
+    }
+
+    #[test]
+    fn singular_bead_pivot_uses_the_full_projected_operator() {
+        let blocks = vec![
+            ndarray::array![[0.]],
+            ndarray::array![[2.]],
+            ndarray::array![[3.]],
+        ];
+        let gauges = orthonormalize(vec![ndarray::array![1., 2., 2.]]);
+        assert!(bordered_ring(&blocks, 1., &gauges).unwrap().is_none());
+        let dense = projected_log_abs_det(dense_ring(&blocks, 1.), gauges.clone()).unwrap();
+        let measured = ring_spectrum(&blocks, 1., gauges).unwrap();
+        assert_eq!(measured.negative_modes, dense.negative_modes);
+        assert_eq!(measured.log_abs_det, dense.log_abs_det);
+    }
+
+    #[test]
     fn dense_projection_removes_gauges_coupled_to_an_indefinite_block() {
         let basis = ndarray::array![
             [1., 1., 1., 1.],
