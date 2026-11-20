@@ -86,7 +86,7 @@ mod rate;
 #[cfg(test)]
 mod check;
 
-pub use continue_energy::{Continuation, continue_from_mep};
+pub use continue_energy::{Continuation, continue_from_mep, continue_from_mep_with_observer};
 pub use mass::Masses;
 pub use optimize::{LinebCalls, LinebConfig, LinebPath, LinebReport, LinebSession, LinebStatus};
 #[cfg(any(test, feature = "lineb-oracle"))]

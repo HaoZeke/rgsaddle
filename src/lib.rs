@@ -168,7 +168,7 @@ pub use lammps::{
 pub use lineb::hqtst_rate_interpolated_hessian;
 pub use lineb::{
     Continuation, HqtstRate, LinebCalls, LinebConfig, LinebPath, LinebReport, LinebSession,
-    LinebStatus, Masses, continue_from_mep, hqtst_rate,
+    LinebStatus, Masses, continue_from_mep, continue_from_mep_with_observer, hqtst_rate,
 };
 pub use minmode::{
     ArtNConfig, FiniteDifference, MinModeConfig, MinModeKind, MinModeReport, MinModeSession,

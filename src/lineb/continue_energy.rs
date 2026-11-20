@@ -80,6 +80,21 @@ pub fn continue_from_mep<S: PointSurface>(
     config: &LinebConfig,
     ladder: &Continuation,
 ) -> Result<Vec<LinebPath>, SaddleError> {
+    continue_from_mep_with_observer(surface, mep, masses, config, ladder, |_, _| Ok(()))
+}
+
+/// Continue the energy ladder and call `observe(level, path)` at each completed
+/// level, before any surface evaluation for the next seed. Levels are zero-based.
+/// An observer can record provider counters or save the converged path. Its
+/// error stops continuation.
+pub fn continue_from_mep_with_observer<S: PointSurface>(
+    surface: &S,
+    mep: ArrayView2<f64>,
+    masses: &Masses,
+    config: &LinebConfig,
+    ladder: &Continuation,
+    mut observe: impl FnMut(usize, &LinebPath) -> Result<(), SaddleError>,
+) -> Result<Vec<LinebPath>, SaddleError> {
     ladder.check()?;
     let &Continuation {
         delta,
@@ -123,6 +138,7 @@ pub fn continue_from_mep<S: PointSurface>(
         }
         let mut path = session.path(surface)?;
         path.calls.seed = seed_calls.swap(0, std::sync::atomic::Ordering::Relaxed);
+        observe(level, &path)?;
         if level + 1 < levels {
             energy -= delta;
             seed = extend_seed(&seeding, masses, &path, energy, images)?;

@@ -62,6 +62,37 @@ fn endpoint_convergence_allows_nonuniform_interior_spacing() {
     }
 }
 
+#[test]
+fn level_observer_includes_each_seed_in_its_own_path() {
+    let surface = FailingEckart {
+        calls: AtomicUsize::new(0),
+        fail_at: usize::MAX,
+    };
+    let mep = ndarray::array![[-2.], [-1.], [0.], [1.], [2.]];
+    let masses = Masses::coordinates(Array1::ones(1).view()).unwrap();
+    let mut observed = Vec::new();
+    let mut previous = 0;
+    let paths = rgsaddle::continue_from_mep_with_observer(
+        &surface,
+        mep.view(),
+        &masses,
+        &LinebConfig::new(1e-5, 1e-5).with_endpoint_convergence(true),
+        &rgsaddle::Continuation::new(0.25, 5, 2).with_linear_seed(true),
+        |level, path| {
+            assert_eq!(level, observed.len());
+            let current = surface.calls.load(Ordering::Relaxed);
+            assert_eq!(current - previous, path.calls.total_with_seed());
+            previous = current;
+            observed.push(path.energy);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(observed, vec![0.75, 0.5]);
+    assert_eq!(paths.len(), observed.len());
+    assert_eq!(previous, surface.calls.load(Ordering::Relaxed));
+}
+
 fn eckart_path() -> rgsaddle::LinebPath {
     let turning = (1.0 / 0.25_f64).sqrt().acosh();
     let images = Array2::from_shape_fn((9, 1), |(i, _)| {

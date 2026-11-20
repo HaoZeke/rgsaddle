@@ -333,7 +333,7 @@ Every public module exported by `src/lib.rs`, with its public types, free functi
 | `irc` | Types: `IrcConfig`, `IrcDirection`, `IrcKind`, `IrcReport`, `IrcSession` |
 | `kappa` | Types: `KappaDimerConfig`, `KappaDimerForce`. Functions: `kappa_dimer_force` |
 | `lammps` | Types: `LammpsHyperplaneSampler`, `LammpsSamplerConfig`, `LammpsSystem`, `LammpsThermodynamicReference`, `LammpsThermostatKind`, `LammpsThermostatRecord` |
-| `lineb` | Types: `Continuation`, `HqtstRate`, `LinebCalls`, `LinebConfig`, `LinebPath`, `LinebReport`, `LinebSession`, `LinebStatus`, `Masses`. Functions: `continue_from_mep`, `hqtst_rate`, `hqtst_rate_interpolated_hessian` |
+| `lineb` | Types: `Continuation`, `HqtstRate`, `LinebCalls`, `LinebConfig`, `LinebPath`, `LinebReport`, `LinebSession`, `LinebStatus`, `Masses`. Functions: `continue_from_mep`, `continue_from_mep_with_observer`, `hqtst_rate`, `hqtst_rate_interpolated_hessian` |
 | `linalg` | Types: `NumericalHessian`. Functions: `hessian_vec_sign`, `lift_through`, `modified_gram_schmidt`, `numerical_hvp`, `numerical_hvp_on`, `numerical_hvp_proj`, `project_hvp`, `project_through`, `retract_hvp`, `symmetrize_vt_av`, `transport_hvp` |
 | `mic` | Types: `Cell`. Functions: `wrap_difference` |
 | `minmode` | Types: `ArtNConfig`, `FiniteDifference`, `KrylovBlock`, `MinModeConfig`, `MinModeKind`, `MinModeReport`, `MinModeSession`, `MinModeStatus`, `ModeEstimate`, `PointSurface`, `RaisedStep`. Functions: `halve_raised_energy`, `rotation_force_error`. Constants: `DEFAULT_ROTATION_ANGLE_TOL`, `MODE_RESET_ANGLE` |
