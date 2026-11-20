@@ -52,8 +52,8 @@ The inserted image is the minimum-image midpoint. The fill from two endpoints cu
 ~AutoNebInterpolant::Linear~, the default, places that midpoint. ASE's AutoNEB defaults to ~interpolate_method='idpp'~ and interpolates the three images ~[left, copy, right]~ of the cut segment. ~AutoNebInterpolant::Idpp~ does the same for every new image, the fill included: the target pair distances are the mean of the two segment ends, as in Smidstrup, Pedersen, Stokbro, and Jonsson, J. Chem. Phys. 140, 214106 (2014), doi:10.1063/1.4878664. The relaxation is this crate's L-BFGS with ~IdppConfig~, not ASE's MDMin, and pair distances use the minimum image when ~BandConfig::cell~ is set. That cell must have three non-zero, independent rows. With two endpoints and one free image the fill is the interior row of ~idpp_path~ with three images. A single atom has no pairs, so both interpolants place the same image.
 
 ~AutoNebInterpolant::Trics~ constructs a seven-image TRICS path on the cut
-segment and inserts its middle image.  A local iterative-inversion failure
-falls back to the Cartesian midpoint.  It requires unwrapped nonperiodic
+segment and inserts its middle image.  A local iterative-inversion failure or
+degenerate midpoint returns a solver error.  It requires unwrapped nonperiodic
 coordinates.  See =howto/path-initialization= for choosing the seed.
 
 * One session per unchanged window

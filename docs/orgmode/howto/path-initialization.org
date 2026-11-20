@@ -41,12 +41,12 @@ The direct =trics_path= function accepts an existing path from any source.
 Select TRICS for every inserted AutoNEB image with
 =AutoNebInterpolant::Trics(TricsStartConfig::default())=.  AutoNEB samples a
 seven-image TRICS segment and takes its midpoint.  If iterative inversion of
-that local segment fails, insertion uses the Cartesian midpoint so band growth
-can continue.  Periodic AutoNEB rejects TRICS because rotations and the
+that local segment fails or produces a degenerate midpoint, insertion returns a
+solver error.  Periodic AutoNEB rejects TRICS because rotations and the
 diagnostic require unwrapped free-space coordinates.
 
 * C
-ABI minor 44 adds =rgsaddle_trics_path=.  The caller supplies an initial path
+ABI minor 46 adds =rgsaddle_trics_path=.  The caller supplies an initial path
 from linear interpolation, =rgsaddle_idpp_path=, or another source.  Input and
 output each hold =n_images * 3 * n_atoms= doubles in image-major order.
 
