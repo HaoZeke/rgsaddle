@@ -1,6 +1,0 @@
-code,method,commit,searches,connected_below_1.5,goal,reached,unique_connected_saddles,fraction_connected,campaign_force_calls,mean_force_calls_per_search,mean_climb_calls_per_search,wall_seconds,disconnected,over_1.5_eV,duplicate,wrong_stationary,endpoint_unconverged,no_index1_point,high_energy_abort
-rgsaddle,dimer-fire,8fa0eb1559c92b6ae9d1de190e253787a183729d,200,15,27,false,33,0.58,204061,1020.24,901.015,589.426,84,36,65,0,0,0,0
-rgsaddle,dimer-lbfgs,8fa0eb1559c92b6ae9d1de190e253787a183729d,200,14,27,false,31,0.54,94394,471.9,350.685,435.719,92,40,54,0,0,0,0
-rgsaddle,dimer-rotskip,8fa0eb1559c92b6ae9d1de190e253787a183729d,200,11,27,false,29,0.33,109557,547.715,424.145,458.151,134,30,23,2,0,0,0
-rgsaddle,lanczos,8fa0eb1559c92b6ae9d1de190e253787a183729d,200,10,27,false,23,0.96,127477,637.315,531.045,484.588,8,19,163,0,0,0,0
-eOn 3.5.0,classic-lbfgs,,200,13,27,false,26,0.675,96354,481.77,380.895,114.355,65,29,59,0,0,0,34

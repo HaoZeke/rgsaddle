@@ -1,5 +1,0 @@
-base: main
-head: main
-rounds: 10
-runs: 10
-machine: bench-runner

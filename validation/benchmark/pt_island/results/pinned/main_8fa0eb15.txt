@@ -1,9 +1,0 @@
-method search class barrier_eV saddle_A minus_A plus_A overlap
-dimer-fire 1 disconnected 1.190 2.14 1.59 2.75 1.0000
-dimer-fire 2 over_1.5_eV 1.512 2.00 0.00 2.85 1.0000
-dimer-fire 5 connected 1.482 2.00 0.00 2.80 1.0000
-dimer-fire 18 disconnected 1.196 4.43 2.74 4.28 1.0000
-dimer-rotskip 62 wrong_stationary 5.811 16.38 14.34 16.55 0.8306
-FAIL dimer-fire 1: disconnected
-FAIL dimer-rotskip 62: wrong_stationary
-exit 1
