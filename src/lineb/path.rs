@@ -647,7 +647,19 @@ fn simpson_s<S: PointSurface>(
     let mut rounding = 0.0;
     for (s, weight) in [(s0, 1.0), (mid, 4.0), (s1, 1.0)] {
         let taken = level.sample(chord.lambda(s))?;
-        let rate = end_rate(&taken, chord.u(s), chord.from_start)?;
+        // The spline coordinate can round to the turning knot even when
+        // repeated panel additions leave a positive residual in u.
+        let turn = if chord.from_start {
+            chord.left
+        } else {
+            chord.right
+        };
+        let u = if taken.lambda == turn {
+            0.0
+        } else {
+            chord.u(s)
+        };
+        let rate = end_rate(&taken, u, chord.from_start)?;
         acc += weight * rate;
         if taken.sigma > 0.0 {
             rounding += weight * rate * delta_v / (taken.sigma * taken.sigma);
