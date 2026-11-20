@@ -26,7 +26,7 @@ let path = session.path(&surface)?;
 
 =images= is one row per image in Cartesian coordinates, endpoints included. The two tolerances have no default. =opt_tol= stops the nudged force on every image and =perp_tol= the perpendicular action gradient on the interior ones. Both are norms in mass-weighted coordinates, so they carry units of the square root of an energy. A tolerance stated on the dimensionless action =W / hbar= per Cartesian length converts by =tol = g hbar / sqrt(m)=; the paper's 1e-2 per Angstrom for H, in eV, Angstrom and amu, is 6.44e-4.
 
-The default endpoint restraint has magnitude =endpoint_scale |V − E| / |∇V|= in mass-weighted coordinates. To use a constant coefficient as in Eqs. (19) and (21), set =with_endpoint_kappa(kappa)= in Rust. Its force magnitude is =kappa |V − E|=. Express the coefficient and the spring constant in the units of the action and coordinates used by the solver.
+The default endpoint restraint has magnitude =endpoint_scale |V − E| / |∇V|= in mass-weighted coordinates. To use a constant coefficient as in Eqs. (19) and (21), set =with_endpoint_kappa(kappa)= in Rust, pass =endpoint_kappa= to Python, or call ~rgsaddle_lineb_solve_with_kappa~ from C. Its force magnitude is =kappa |V − E|=. Express the coefficient and the spring constant in the units of the action and coordinates used by the solver.
 
 =Masses::coordinates= takes one mass per coordinate and leaves rigid motions alone. Use it for atoms in an external field, such as adsorbates over a fixed slab. =Masses::molecule= takes one mass per atom and removes the rigid translation and rotation between images by quaternion alignment, for a free molecule.
 
@@ -54,7 +54,7 @@ The paper's interpolated finite-difference Hessian is built with the =lineb-orac
 * Python
 =rgsaddle.lineb_solve(surface, positions, atom_masses, energy, opt_tol, perp_tol, molecular=False, max_steps=1000, beads=0, ...)= is the run-to-completion binding (=howto/python=). =positions= is =(n_images, 3N)=, =atom_masses= is one mass per atom, and =surface(x)= is the one-image =(energy, gradient)= callback used by =connect=. =molecular=False= expands each atom mass to three coordinates; =molecular=True= aligns the free molecule. =beads=0= returns the path only with =log_rate_over_reactant= set to NaN. =LinebResult= exposes the optimized =positions=, the quadrature temperature =temperature= and the constrained-dynamics estimate =temperature_dynamics=, their half periods, the log rate, and the per-phase call counts. A calculator exception propagates; an unconverged search raises with the C status.
 
-* C ABI (minor 46)
+* C ABI
 #+begin_src c
 rgsaddle_lineb_config_t cfg;
 rgsaddle_lineb_config_default(opt_tol, perp_tol, &cfg);

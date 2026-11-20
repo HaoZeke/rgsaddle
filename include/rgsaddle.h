@@ -28,7 +28,7 @@ extern "C" {
 #endif
 
 #define RGSADDLE_ABI_MAJOR 1u
-#define RGSADDLE_ABI_MINOR 46u
+#define RGSADDLE_ABI_MINOR 47u
 
 /**
  * Band config flags bit 0. When set, each evaluation calls the surface
@@ -1994,6 +1994,18 @@ rgsaddle_status_t rgsaddle_lineb_solve(const rgsaddle_lineb_config_t *cfg,
                                        rgsaddle_surface_fn surface, void *user,
                                        double *optimized_positions,
                                        rgsaddle_lineb_result_t *out);
+
+/** Solve with fixed endpoint coefficient κ. Pass NULL for the normalized
+ * restraint. All other arguments follow rgsaddle_lineb_solve. ABI minor 47. */
+rgsaddle_status_t rgsaddle_lineb_solve_with_kappa(const rgsaddle_lineb_config_t *cfg,
+                                       int64_t n_images, int64_t n_atoms,
+                                       const double *positions,
+                                       const double *atom_masses,
+                                       int32_t molecular, double energy,
+                                       int64_t max_steps, int64_t beads,
+                                       rgsaddle_surface_fn surface, void *user,
+                                       double *optimized_positions,
+                                       rgsaddle_lineb_result_t *out, const double *endpoint_kappa);
 
 #ifdef __cplusplus
 }

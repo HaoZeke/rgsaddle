@@ -112,7 +112,7 @@ fn as_i64(value: usize) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
-/// Fill `out` with paper defaults for the given force tolerances
+/// Fill `out` with the solver defaults for the given force tolerances
 /// (ABI minor 46).
 ///
 /// # Safety
@@ -176,6 +176,50 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve(
     user: *mut c_void,
     optimized_positions: *mut f64,
     out: *mut RgsaddleLinebResult,
+) -> i32 {
+    // SAFETY: buffers and callback satisfy this entry's contract.
+    unsafe {
+        rgsaddle_lineb_solve_with_kappa(
+            cfg,
+            n_images,
+            n_atoms,
+            positions,
+            atom_masses,
+            molecular,
+            energy,
+            max_steps,
+            beads,
+            surface,
+            user,
+            optimized_positions,
+            out,
+            std::ptr::null(),
+        )
+    }
+}
+
+/// Solve with a fixed endpoint coefficient. A null coefficient selects
+/// the gradient-normalized restraint in the supplied configuration.
+///
+/// # Safety
+/// The buffer and callback contract matches [`rgsaddle_lineb_solve`].
+/// A non-null `endpoint_kappa` must point to a readable double.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_lineb_solve_with_kappa(
+    cfg: *const RgsaddleLinebConfig,
+    n_images: i64,
+    n_atoms: i64,
+    positions: *const f64,
+    atom_masses: *const f64,
+    molecular: i32,
+    energy: f64,
+    max_steps: i64,
+    beads: i64,
+    surface: Option<RgsaddleSurfaceFn>,
+    user: *mut c_void,
+    optimized_positions: *mut f64,
+    out: *mut RgsaddleLinebResult,
+    endpoint_kappa: *const f64,
 ) -> i32 {
     clear_last_error();
     if cfg.is_null()
@@ -241,6 +285,15 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve(
     let config = match config_from_c(cfg) {
         Ok(config) => config,
         Err(status) => return status,
+    };
+    // SAFETY: the caller provides a readable coefficient or a null pointer.
+    let config = match unsafe { endpoint_kappa.as_ref() } {
+        Some(&kappa) if kappa.is_finite() && kappa > 0.0 => config.with_endpoint_kappa(kappa),
+        Some(_) => {
+            set_last_error("endpoint kappa must be finite and positive");
+            return RGSADDLE_INVALID_PARAMETER;
+        }
+        None => config,
     };
     let masses = match masses_from_c(atom_masses, molecular) {
         Ok(masses) => masses,

@@ -125,6 +125,12 @@ def test_lineb_solve_rejects_shape_mismatches() -> None:
         )
 
 
+def test_lineb_fixed_endpoint_coefficient() -> None:
+    positions, energy, _ = eckart_seed()
+    result = lineb_solve(eckart, positions, np.ones(1), energy, 0.5, 0.5, endpoint_kappa=0.2)
+    assert result.temperature == pytest.approx(1 / (2 * result.half_period))
+
+
 def test_lineb_solve_preserves_callback_exceptions() -> None:
     positions, energy, tol = eckart_seed(n_images=5)
     masses = np.array([1.0], dtype=np.float64)

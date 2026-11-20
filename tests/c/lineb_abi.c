@@ -149,7 +149,22 @@ int main(void) {
     return 1;
   }
 
-  printf("RGSADDLE_LINEB_ABI_OK action=%.6g iter=%lld\n", result.action,
-         (long long)result.iterations);
+  double kappa = 0.2;
+  const rgsaddle_status_t fixed =
+      rgsaddle_lineb_solve_with_kappa(&cfg, N_IMAGES, N_ATOMS, pos, masses, 0, 0.25,
+                                      200, 0, surface, NULL, out_pos, &result, &kappa);
+  if (fixed != RGSADDLE_OK || !isfinite(result.temperature)) {
+    return fail("fixed endpoint coefficient", fixed);
+  }
+  const double action = result.action;
+  const long long iterations = (long long)result.iterations;
+  kappa = NAN;
+  if (rgsaddle_lineb_solve_with_kappa(&cfg, N_IMAGES, N_ATOMS, pos, masses, 0, 0.25,
+                                      200, 0, surface, NULL, out_pos, &result, &kappa)
+      != RGSADDLE_INVALID_PARAMETER) {
+    return fail("non-finite endpoint coefficient", RGSADDLE_INVALID_PARAMETER);
+  }
+
+  printf("RGSADDLE_LINEB_ABI_OK action=%.6g iter=%lld\n", action, iterations);
   return 0;
 }

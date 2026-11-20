@@ -191,6 +191,7 @@ The narrative for a session is the C and C++ how-to, not this list.
 - =rgsaddle_band_free_end_cuts=. Purpose: Number of adaptive cut-and-remesh refinements performed so far on a free-end band, or 0 for NULL, ABI minor 45. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_lineb_config_default=. Purpose: Fill out with paper defaults for the given force tolerances, ABI minor 46. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_lineb_solve=. Purpose: Optimize a fixed-energy tunneling path and optionally its harmonic quantum TST rate, ABI minor 46. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_lineb_solve_with_kappa= computes the same path and rate with an optional fixed endpoint coefficient. Available from ABI minor 47.
 
 * Types and callbacks
 
