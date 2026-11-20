@@ -13850,6 +13850,25 @@ fn fixed6(value: f64) -> String {
 
 const NETWORK_HEADER: &str = "temperature_K,lattice_A,kind,mechanism,hop,source,target,outcome,dE0_eV,energy_eV,max_force_eV_per_A,index1,forward_basin,backward_basin,product_basin,band_force_eV_per_A,band_top_eV,steps_or_seed,seconds";
 
+/// Use the generated table during a study and the archived test input in a
+/// source checkout. Both contain the full network, including disconnected hops.
+fn read_network_saddles(root: &std::path::Path) -> String {
+    use std::io::Read;
+
+    match std::fs::read_to_string(root.join("defect_pair_network.csv")) {
+        Ok(table) => table,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            let bytes = include_bytes!("data/defect_pair_network.csv.gz");
+            let mut table = String::new();
+            flate2::read::GzDecoder::new(&bytes[..])
+                .read_to_string(&mut table)
+                .expect("decode the archived defect-pair test input");
+            table
+        }
+        Err(err) => panic!("read defect_pair_network.csv: {err}"),
+    }
+}
+
 /// Rows of `defect_pair_network.csv` already written, by temperature, kind
 /// and hop or source.
 fn network_done(text: &str) -> std::collections::HashSet<(i64, String, String)> {
@@ -14509,7 +14528,7 @@ fn assemble_network() {
     let started = Instant::now();
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benchmarks");
     let census = std::fs::read_to_string(root.join("defect_pair_census.csv")).expect("census");
-    let saddles = std::fs::read_to_string(root.join("defect_pair_network.csv")).expect("network");
+    let saddles = read_network_saddles(&root);
     let before =
         std::fs::read_to_string(root.join("defect_pair_converged_volume.csv")).expect("before");
     let rates = converged_rates();
@@ -14792,7 +14811,7 @@ fn network_notes() -> String {
     let census = std::fs::read_to_string(root.join("defect_pair_census.csv")).expect("census");
     let group = rgsaddle::cubic_group();
     let (_, network) = dumbbell_network(EXPLICIT_NORM2);
-    let saddles = std::fs::read_to_string(root.join("defect_pair_network.csv")).expect("network");
+    let saddles = read_network_saddles(&root);
     let volumes =
         std::fs::read_to_string(root.join("defect_pair_network_volume.csv")).expect("volumes");
     let rows: Vec<Vec<&str>> = saddles

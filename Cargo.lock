@@ -1916,6 +1916,7 @@ dependencies = [
  "dlpk",
  "eindir-core",
  "faer",
+ "flate2",
  "libloading",
  "linkcell",
  "minimage",
