@@ -1,6 +1,6 @@
 # Published LI-NEB comparison data
 
-The two CSV files give the calculated HQTST markers in Figures 4 and 5 of
+The Figure 4 and 5 CSV files give the calculated HQTST markers in Figures 4 and 5 of
 [Ásgeirsson, Arnaldsson and Jónsson, JCP 148, 102334 (2018)](https://doi.org/10.1063/1.5007180).
 They are digitizations of the figures. Use the first column as
 `1000 / temperature_in_kelvin`. The ordinates are base-ten logarithms.
@@ -23,3 +23,22 @@ rate. The rgsaddle observable `log_rate_over_reactant` contains the natural
 logarithm of the rate **times** the reactant partition function, in the
 surface's time units. Subtract the matching log partition function, convert
 the rate to inverse seconds, and divide the natural logarithm by `ln(10)`.
+
+## Modified Müller–Brown surface (Figures 2b and 3)
+
+Run `cargo run --example lineb_muller_brown` for the ten-image fixed-energy
+path. The initial band is straight. Its two ends are the inward crossings
+between the minima and the barrier. The potential uses the three additional
+terms in Ásgeirsson's
+[KNARR implementation](https://github.com/RagnarB83/ash/blob/55235ddbc752ddb40aa6213ad81ce7cb44d08262/ash/knarr/KNARRcalculator/mb.py).
+The inferred turning energy, −0.145, comes from evaluating that surface at
+the two endpoints in Figure 2b, with the initial and final minima as axis
+landmarks. The shape of the band between the turning points is optimized.
+
+`figure3_profile.csv` gives the printed relative-energy curve at the eight
+interior-image displacements calculated by the example. The 1594 by 1245
+pixel image on PDF page 8 places displacement 0 and 2 at x = 215.5 and
+1576.5, and energy −0.02 and 0.16 at y = 1088 and 22. At each displacement
+the ordinate is the median of the pixels on the curve. The RMS difference
+between the calculated image energies and these ordinates is 0.00021,
+and the largest absolute difference is 0.00037 (about two vertical pixels).
