@@ -143,3 +143,20 @@ fn a_longer_product_cell_pulls_the_middle_cell_out() {
     assert!((cells[0].0[0][0] - 4.0).abs() < 1e-12);
     assert!((cells[2].0[0][0] - 6.0).abs() < 1e-12);
 }
+
+#[test]
+fn pressure_driven_enthalpy_slope_has_no_climbing_image() {
+    let cells = vec![diagonal(4.0), diagonal(4.5), diagonal(5.0)];
+    let config = BandConfig::default()
+        .with_climbing(Some(rgsaddle::CiConfig::always()))
+        .with_solid(SolidState::new(cells).with_pressure(0.02));
+    let mut session =
+        BandSession::new(config, array![[0., 0., 0.], [0., 0., 0.], [0., 0., 0.]]).unwrap();
+    let report = session
+        .step(&Push {
+            gradient: [0.; 3],
+            stress_xx: 0.,
+        })
+        .unwrap();
+    assert_eq!(report.ci_index, None);
+}

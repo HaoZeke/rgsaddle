@@ -250,6 +250,7 @@ impl Default for CiConfig {
 /// 136, 074103 (2012). The Jacobian is fixed from the mean endpoint
 /// volume when the session is built. Each cell is put in
 /// lower-triangular form, and that image's positions rotate with it.
+/// A climbing image must have higher enthalpy than both endpoints.
 ///
 /// Fields may be added: build it with [`SolidState::new`] and the
 /// `with_*` setters.
@@ -1576,12 +1577,13 @@ fn assemble_solid(
             max_i = i;
         }
     }
-    let climbing = config.climbing.is_some();
-    let armed = climbing && state.armed.load(Ordering::Relaxed);
-    if armed {
-        state.ci_index.store(max_i as i64, Ordering::Relaxed);
-    }
-    let ci_at = armed.then_some(max_i);
+    // A variable-cell band climbs an interior enthalpy barrier.
+    let barrier = enthalpy[max_i] > enthalpy[0].max(enthalpy[n_images - 1]);
+    let armed = config.climbing.is_some() && state.armed.load(Ordering::Relaxed);
+    let ci_at = (armed && barrier).then_some(max_i);
+    state
+        .ci_index
+        .store(ci_at.map_or(-1, |i| i as i64), Ordering::Relaxed);
     let spring = config.spring.at_energies(enthalpy.view());
     let mut joint = Array1::zeros(x.len());
     let mut cartesian = Array1::zeros(x.len());
@@ -1609,6 +1611,7 @@ fn assemble_solid(
         *slot.get_or_insert(max_component)
     };
     if let Some(ci) = &config.climbing
+        && barrier
         && !armed
         && (max_component < baseline * ci.trigger_factor || max_component < ci.trigger_force)
     {
