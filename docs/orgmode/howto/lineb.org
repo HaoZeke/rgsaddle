@@ -51,7 +51,7 @@ let rate = hqtst_rate(&surface, &path, beads)?;
 
 =beads= replicas are placed at equal imaginary times along the path. The ring-polymer Hessian is applied block by block from Hessian-vector products at the =beads / 2 + 1= distinct replicas, and its log-determinant comes from Lanczos with the zero mode and any rigid modes deflated. Without an analytic =hessian_vector= each product is a central difference, so the rate costs =(beads / 2 + 1) (1 + 2 dof)= force calls. =log_rate_over_reactant= is =ln(k Z_r)= on the surface's own energy zero. On a total energy far from zero =rate_over_reactant= overflows or underflows while the log stays finite.
 
-For the interpolated rate, Householder reflections move the bead permutation mode and any whole-ring rigid modes onto coordinate axes. The eigenvalues of the symmetric block on the remaining axes give the fluctuation determinant, including its unstable mode.
+For the interpolated rate, the solver eliminates successive bead blocks from the ring Hessian. It retains the closing bead, the permutation direction and any whole-ring rigid directions in a border. The gauge Gram determinant removes the dependence on gauge-vector normalization. Summing the signed pivot inertias gives the number of unstable modes in the projected space. For a fixed molecular size the cost grows linearly with the bead count. An ill-conditioned bead pivot selects a dense Householder projection and symmetric eigensolve.
 
 The paper's interpolated finite-difference Hessian is built with the =lineb-oracle= feature as =hqtst_rate_interpolated_hessian=, for tests and benches. On Müller-Brown at 64 replicas the replica products take 165 force calls and the oracle 92, and the two logs of the rate differ by 4.0e-4.
 

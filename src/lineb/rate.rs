@@ -18,10 +18,10 @@
 //! spectrum on the complement of the gauge modes comes from the shared
 //! full-reorthogonalization Lanczos. Surface cost is linear in `P`.
 //!
-//! The paper's finite-difference Hessians at the LI-NEB images, cubic
-//! interpolation, and dense spectrum are compiled with the
-//! `lineb-oracle` feature for tests and benches. They are not part of
-//! the default build.
+//! With the `lineb-oracle` feature, image Hessians are interpolated onto
+//! the ring. A bordered block elimination computes the projected log
+//! absolute determinant and negative-mode count. An ill-conditioned
+//! bead pivot selects the dense orthogonal projection.
 //!
 //! The rate times the reactant partition function is Richardson's
 //! ring-polymer instanton expression (Int. Rev. Phys. Chem. 37, 171
