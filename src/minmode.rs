@@ -3376,6 +3376,25 @@ impl MinModeSession {
         (*x == self.x).then_some(&certificate.index)
     }
 
+    /// The certified lowest mode at the current position when a
+    /// converged saddle certificate is present, oriented along
+    /// [`MinModeSession::mode`], or [`MinModeSession::mode`] itself. A
+    /// certificate whose budget ran out first holds an unresolved Ritz
+    /// vector, which is not the mode.
+    pub(crate) fn plane_mode(&self) -> Array1<f64> {
+        if let Some((x, certificate)) = &self.saddle.certified
+            && *x == self.x
+            && certificate.index.converged
+            && let Some(vector) = certificate.vectors.first()
+        {
+            if vector.dot(&self.mode) < 0.0 {
+                return vector.mapv(|v| -v);
+            }
+            return vector.clone();
+        }
+        self.mode.clone()
+    }
+
     /// Pushes off a saddle of higher index over the session.
     #[must_use]
     pub fn saddle_escapes(&self) -> usize {
