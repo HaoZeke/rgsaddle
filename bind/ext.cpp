@@ -1734,6 +1734,8 @@ struct LinebResultPy {
   std::int64_t measure_calls = 0;
   std::int64_t dynamics_calls = 0;
   std::int64_t rate_calls = 0;
+  std::optional<std::int64_t> negative_modes;
+  std::optional<std::int64_t> modes;
   rgsaddle_lineb_counts_t counts{};
 };
 
@@ -1778,6 +1780,7 @@ LinebResultPy lineb_solve_python(nb::callable fn, Matrix positions, Vector atom_
       static_cast<std::size_t>(n_images) * static_cast<std::size_t>(n_atoms) * 3u;
   std::vector<double> optimized(count, 0.0);
   rgsaddle_lineb_result_t result{};
+  std::int64_t negative_modes = -1, modes = -1;
   rgsaddle_lineb_counts_t counts{};
   rgbind::CallContext ctx;
   ConnectCallback state{&fn, &ctx};
@@ -1787,9 +1790,9 @@ LinebResultPy lineb_solve_python(nb::callable fn, Matrix positions, Vector atom_
     const uint32_t options = (linear_seed ? RGSADDLE_LINEB_LINEAR_SEED : 0u) |
                              (endpoint_convergence ? RGSADDLE_LINEB_ENDPOINT_CONVERGENCE : 0u) |
                              (projected_verlet ? RGSADDLE_LINEB_PROJECTED_VERLET : 0u);
-    status = rgsaddle_lineb_solve_counted(&cfg, n_images, n_atoms, positions.data(), atom_masses.data(),
+    status = rgsaddle_lineb_solve_counted_diagnostics(&cfg, n_images, n_atoms, positions.data(), atom_masses.data(),
                                   molecular ? 1 : 0, energy, max_steps, beads, connect_python_surface,
-                                  &state, optimized.data(), &result, endpoint_kappa ? &*endpoint_kappa : nullptr, options, &counts);
+                                  &state, optimized.data(), &result, endpoint_kappa ? &*endpoint_kappa : nullptr, options, &counts, &negative_modes, &modes);
   }
   if (ctx.has_error()) {
     ctx.rethrow_if_set();
@@ -1815,6 +1818,8 @@ LinebResultPy lineb_solve_python(nb::callable fn, Matrix positions, Vector atom_
   out.dynamics_calls = result.dynamics_calls;
   out.rate_calls = result.rate_calls;
   out.counts = counts;
+  if (negative_modes >= 0) out.negative_modes = negative_modes;
+  if (modes >= 0) out.modes = modes;
   return out;
 }
 
@@ -1978,6 +1983,10 @@ NB_MODULE(_core, m) {
       .def_prop_ro("log_rate_over_reactant",
                    [](const LinebResultPy &report) { return report.log_rate_over_reactant; },
                    "ln(k Z_r), or NaN when beads is 0.")
+      .def_ro("negative_modes", &LinebResultPy::negative_modes,
+              "Number of negative retained fluctuation eigenvalues, or None without a rate.")
+      .def_ro("modes", &LinebResultPy::modes,
+              "Fluctuation eigenvalues retained after gauge projection, or None without a rate.")
       .def_prop_ro("iterations", [](const LinebResultPy &report) { return report.iterations; },
                    "Optimizer steps taken.")
       .def_prop_ro("surface_calls", [](const LinebResultPy &report) {

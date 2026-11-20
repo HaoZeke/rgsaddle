@@ -2045,6 +2045,23 @@ rgsaddle_status_t rgsaddle_lineb_solve_counted(const rgsaddle_lineb_config_t *cf
                                        rgsaddle_lineb_result_t *out, const double *endpoint_kappa, uint32_t options,
                                        rgsaddle_lineb_counts_t *counts);
 
+
+#define RGSADDLE_HAS_LINEB_RATE_DIAGNOSTICS 1
+
+/** Counted solve with the number of negative and total retained fluctuation
+ * modes. Each optional output points to a distinct int64_t. A path-only
+ * solve or error sets the requested mode counts to -1. */
+rgsaddle_status_t rgsaddle_lineb_solve_counted_diagnostics(const rgsaddle_lineb_config_t *cfg,
+                                       int64_t n_images, int64_t n_atoms,
+                                       const double *positions,
+                                       const double *atom_masses,
+                                       int32_t molecular, double energy,
+                                       int64_t max_steps, int64_t beads,
+                                       rgsaddle_surface_fn surface, void *user,
+                                       double *optimized_positions,
+                                       rgsaddle_lineb_result_t *out, const double *endpoint_kappa, uint32_t options,
+                                       rgsaddle_lineb_counts_t *counts, int64_t *negative_modes, int64_t *modes);
+
 #ifdef __cplusplus
 }
 #endif

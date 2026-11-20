@@ -330,6 +330,65 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve_counted(
     options: u32,
     counts: *mut RgsaddleLinebCounts,
 ) -> i32 {
+    unsafe {
+        rgsaddle_lineb_solve_counted_diagnostics(
+            cfg,
+            n_images,
+            n_atoms,
+            positions,
+            atom_masses,
+            molecular,
+            energy,
+            max_steps,
+            beads,
+            surface,
+            user,
+            optimized_positions,
+            out,
+            endpoint_kappa,
+            options,
+            counts,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    }
+}
+
+/// Solve with per-phase counts and the inertia of the retained fluctuation operator.
+/// A path-only solve or an error writes -1 to each requested mode count.
+///
+/// # Safety
+/// Follows [`rgsaddle_lineb_solve_counted`]. Each non-null diagnostic pointer must
+/// refer to distinct writable storage for one signed 64-bit integer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_lineb_solve_counted_diagnostics(
+    cfg: *const RgsaddleLinebConfig,
+    n_images: i64,
+    n_atoms: i64,
+    positions: *const f64,
+    atom_masses: *const f64,
+    molecular: i32,
+    energy: f64,
+    max_steps: i64,
+    beads: i64,
+    surface: Option<RgsaddleSurfaceFn>,
+    user: *mut c_void,
+    optimized_positions: *mut f64,
+    out: *mut RgsaddleLinebResult,
+    endpoint_kappa: *const f64,
+    options: u32,
+    counts: *mut RgsaddleLinebCounts,
+    negative_modes: *mut i64,
+    modes: *mut i64,
+) -> i32 {
+    let mut negative_modes = unsafe { negative_modes.as_mut() };
+    let mut modes = unsafe { modes.as_mut() };
+    if let Some(value) = negative_modes.as_deref_mut() {
+        *value = -1;
+    }
+    if let Some(value) = modes.as_deref_mut() {
+        *value = -1;
+    }
     let counts = unsafe { counts.as_mut() };
     let mut discarded = RgsaddleLinebCounts::default();
     let counts = counts.unwrap_or(&mut discarded);
@@ -510,6 +569,12 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve_counted(
             out.log_rate_over_reactant = rate.log_rate_over_reactant;
             out.rate_calls = as_i64(rate.evaluations);
             counts.rate = out.rate_calls;
+            if let Some(value) = negative_modes {
+                *value = as_i64(rate.negative_modes);
+            }
+            if let Some(value) = modes {
+                *value = as_i64(rate.modes);
+            }
             RGSADDLE_OK
         }
         Err(err) => fail(&err),
