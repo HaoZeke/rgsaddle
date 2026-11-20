@@ -1,0 +1,2 @@
+Bibliography DOI metadata now matches Crossref for AFIR, Simons–Nichols, and IDPP citations.
+The MethodsX entry for image-dependent pair potential initialization had no confirmed registry title at DOI assignment time and is not cited until a DOI is published.
