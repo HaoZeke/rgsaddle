@@ -5,9 +5,10 @@ use std::slice;
 
 use ndarray::{Array1, Array2};
 
+use super::stencil::{clear_last_error, fail, set_last_error};
 use super::{
     CSurface, RGSADDLE_INVALID_PARAMETER, RGSADDLE_NULL_REPORT, RGSADDLE_NULL_SURFACE, RGSADDLE_OK,
-    RGSADDLE_SHAPE, RGSADDLE_STALLED, RgsaddleSurfaceFn, status_of,
+    RGSADDLE_SHAPE, RGSADDLE_STALLED, RgsaddleSurfaceFn,
 };
 use crate::lineb::{LinebConfig, LinebSession, LinebStatus, Masses, hqtst_rate};
 
@@ -100,9 +101,9 @@ fn masses_from_c(atom_masses: &[f64], molecular: i32) -> Result<Masses, i32> {
                     expanded[3 * atom + axis] = mass;
                 }
             }
-            Masses::coordinates(expanded.view()).map_err(|err| status_of(&err))
+            Masses::coordinates(expanded.view()).map_err(|err| fail(&err))
         }
-        1 => Masses::molecule(atom_masses).map_err(|err| status_of(&err)),
+        1 => Masses::molecule(atom_masses).map_err(|err| fail(&err)),
         _ => Err(RGSADDLE_INVALID_PARAMETER),
     }
 }
@@ -176,6 +177,7 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve(
     optimized_positions: *mut f64,
     out: *mut RgsaddleLinebResult,
 ) -> i32 {
+    clear_last_error();
     if cfg.is_null()
         || positions.is_null()
         || atom_masses.is_null()
@@ -259,17 +261,17 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve(
     };
     let mut session = match LinebSession::new(config, masses, cartesian, energy) {
         Ok(session) => session,
-        Err(err) => return status_of(&err),
+        Err(err) => return fail(&err),
     };
     let report = match session.run(&cs, max_steps_usize) {
         Ok(report) => report,
-        Err(err) => return status_of(&err),
+        Err(err) => return fail(&err),
     };
     out.iterations = as_i64(report.iteration);
     out.optimizer_calls = as_i64(report.evaluations);
     let cartesian = match session.cartesian() {
         Ok(cartesian) => cartesian,
-        Err(err) => return status_of(&err),
+        Err(err) => return fail(&err),
     };
     // The session owns its input by this point. An in-place caller can
     // therefore use its seed buffer for the optimized coordinates.
@@ -278,11 +280,15 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve(
         *dst = *src;
     }
     if report.status != LinebStatus::Converged {
+        set_last_error(&format!(
+            "LI-NEB exhausted {} iterations: nudged force {} (tolerance {}), perpendicular force {} (tolerance {})",
+            report.iteration, report.opt_max, cfg.opt_tol, report.perp_max, cfg.perp_tol
+        ));
         return RGSADDLE_STALLED;
     }
     let path = match session.path(&cs) {
         Ok(path) => path,
-        Err(err) => return status_of(&err),
+        Err(err) => return fail(&err),
     };
     for (dst, src) in optimized.iter_mut().zip(path.cartesian.iter()) {
         *dst = *src;
@@ -306,6 +312,6 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve(
             out.rate_calls = as_i64(rate.evaluations);
             RGSADDLE_OK
         }
-        Err(err) => status_of(&err),
+        Err(err) => fail(&err),
     }
 }

@@ -57,14 +57,14 @@ fn c_string(text: &str) -> CString {
     unsafe { CString::from_vec_unchecked(bytes) }
 }
 
-fn set_last_error(text: &str) {
+pub(super) fn set_last_error(text: &str) {
     let owned = c_string(text);
     LAST_ERROR.with(|slot| {
         *slot.borrow_mut() = owned;
     });
 }
 
-fn clear_last_error() {
+pub(super) fn clear_last_error() {
     set_last_error("");
 }
 
@@ -202,7 +202,7 @@ fn guard_ptr<T>(body: impl FnOnce() -> *mut T) -> *mut T {
     }
 }
 
-fn fail(err: &SaddleError) -> i32 {
+pub(super) fn fail(err: &SaddleError) -> i32 {
     set_last_error(&err.to_string());
     status_of(err)
 }
@@ -258,7 +258,7 @@ fn write_report(out: *mut RgsaddleStencilReport, report: &StencilReport) -> i32 
 }
 
 /// # Safety
-/// The returned pointer is valid until the next stencil call on this thread.
+/// The returned pointer is valid until the next stencil call or LI-NEB solve on this thread.
 #[unsafe(no_mangle)]
 pub extern "C" fn rgsaddle_last_error() -> *const c_char {
     LAST_ERROR.with(|slot| slot.borrow().as_ptr())
