@@ -28,7 +28,7 @@ extern "C" {
 #endif
 
 #define RGSADDLE_ABI_MAJOR 1u
-#define RGSADDLE_ABI_MINOR 45u
+#define RGSADDLE_ABI_MINOR 46u
 
 /**
  * Band config flags bit 0. When set, each evaluation calls the surface
@@ -1928,6 +1928,72 @@ rgsaddle_status_t rgsaddle_band_free_end_residual(const RgsaddleBand *band,
  * free-end band, or 0 for NULL, ABI minor 45.
  */
 int64_t rgsaddle_band_free_end_cuts(const RgsaddleBand *band);
+
+/**
+ * Fixed-energy LI-NEB controls for rgsaddle_lineb_solve, ABI minor 46.
+ * Initialize with rgsaddle_lineb_config_default before changing fields.
+ * Units are the caller's. opt_tol and perp_tol are absolute force norms
+ * in mass-weighted coordinates.
+ */
+typedef struct {
+  double opt_tol;
+  double perp_tol;
+  double spring;
+  double endpoint_scale;
+  double time_step;
+  double max_move;
+  double turning_width;
+  double hbar;
+  double boltzmann;
+  int64_t quadrature_pairs;
+} rgsaddle_lineb_config_t;
+
+/**
+ * Path, temperature and rate summary from rgsaddle_lineb_solve, ABI
+ * minor 46. log_rate_over_reactant is NaN when beads was 0.
+ */
+typedef struct {
+  double action;
+  double half_period;
+  double half_period_dynamics;
+  double temperature;
+  double temperature_dynamics;
+  double log_rate_over_reactant;
+  int64_t iterations;
+  int64_t optimizer_calls;
+  int64_t measure_calls;
+  int64_t dynamics_calls;
+  int64_t rate_calls;
+} rgsaddle_lineb_result_t;
+
+/**
+ * Fill out with paper defaults for the given force tolerances, ABI
+ * minor 46. Returns RGSADDLE_INVALID_PARAMETER when out is NULL.
+ */
+rgsaddle_status_t rgsaddle_lineb_config_default(double opt_tol, double perp_tol,
+                                                rgsaddle_lineb_config_t *out);
+
+/**
+ * Optimize a fixed-energy tunneling path and optionally its harmonic
+ * quantum TST rate, ABI minor 46. Positions are contiguous image, atom,
+ * xyz (n_images * n_atoms * 3). atom_masses holds n_atoms positive
+ * masses: molecular 0 expands each mass to the three Cartesian
+ * coordinates without rigid alignment; molecular 1 uses quaternion
+ * molecule alignment. beads 0 returns the path only and writes NaN into
+ * log_rate_over_reactant; beads must be 0 or at least 2. An unconverged
+ * path returns RGSADDLE_STALLED after writing the last images into
+ * optimized_positions. Reuses the host surface callback through
+ * CSurface and LinebConfig validation.
+ */
+rgsaddle_status_t rgsaddle_lineb_solve(const rgsaddle_lineb_config_t *cfg,
+                                       int64_t n_images, int64_t n_atoms,
+                                       const double *positions,
+                                       const double *atom_masses,
+                                       int32_t molecular, double energy,
+                                       int64_t max_steps, int64_t beads,
+                                       rgsaddle_surface_fn surface, void *user,
+                                       double *optimized_positions,
+                                       rgsaddle_lineb_result_t *out);
 
 #ifdef __cplusplus
 }

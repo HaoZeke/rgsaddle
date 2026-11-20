@@ -5,7 +5,7 @@
 #include <stddef.h>
 
 _Static_assert(RGSADDLE_ABI_MAJOR == 1u, "main ABI major");
-_Static_assert(RGSADDLE_ABI_MINOR == 45u, "ABI minor");
+_Static_assert(RGSADDLE_ABI_MINOR == 46u, "ABI minor");
 _Static_assert(RGSADDLE_BAND_NO_MIN_MODE == (1ull << 3), "band flag bit 3");
 _Static_assert(RGSADDLE_BAND_SPLINE_REPARAM == (1ull << 4), "band flag bit 4");
 _Static_assert(RGSADDLE_BAND_STRING == (1ull << 5), "band flag bit 5");
@@ -552,5 +552,68 @@ _Static_assert(_Generic(&rgsaddle_band_free_end_residual, abi45_signature_rgsadd
 typedef int64_t (*abi45_signature_rgsaddle_band_free_end_cuts)(
     const RgsaddleBand *band);
 _Static_assert(_Generic(&rgsaddle_band_free_end_cuts, abi45_signature_rgsaddle_band_free_end_cuts: 1, default: 0), "rgsaddle_band_free_end_cuts signature");
+
+typedef struct {
+  double opt_tol;
+  double perp_tol;
+  double spring;
+  double endpoint_scale;
+  double time_step;
+  double max_move;
+  double turning_width;
+  double hbar;
+  double boltzmann;
+  int64_t quadrature_pairs;
+} abi46_rgsaddle_lineb_config_t;
+_Static_assert(sizeof(rgsaddle_lineb_config_t) == sizeof(abi46_rgsaddle_lineb_config_t), "rgsaddle_lineb_config_t size");
+_Static_assert(_Alignof(rgsaddle_lineb_config_t) == _Alignof(abi46_rgsaddle_lineb_config_t), "rgsaddle_lineb_config_t alignment");
+_Static_assert(offsetof(rgsaddle_lineb_config_t, opt_tol) == offsetof(abi46_rgsaddle_lineb_config_t, opt_tol), "rgsaddle_lineb_config_t.opt_tol");
+_Static_assert(offsetof(rgsaddle_lineb_config_t, perp_tol) == offsetof(abi46_rgsaddle_lineb_config_t, perp_tol), "rgsaddle_lineb_config_t.perp_tol");
+_Static_assert(offsetof(rgsaddle_lineb_config_t, spring) == offsetof(abi46_rgsaddle_lineb_config_t, spring), "rgsaddle_lineb_config_t.spring");
+_Static_assert(offsetof(rgsaddle_lineb_config_t, endpoint_scale) == offsetof(abi46_rgsaddle_lineb_config_t, endpoint_scale), "rgsaddle_lineb_config_t.endpoint_scale");
+_Static_assert(offsetof(rgsaddle_lineb_config_t, time_step) == offsetof(abi46_rgsaddle_lineb_config_t, time_step), "rgsaddle_lineb_config_t.time_step");
+_Static_assert(offsetof(rgsaddle_lineb_config_t, max_move) == offsetof(abi46_rgsaddle_lineb_config_t, max_move), "rgsaddle_lineb_config_t.max_move");
+_Static_assert(offsetof(rgsaddle_lineb_config_t, turning_width) == offsetof(abi46_rgsaddle_lineb_config_t, turning_width), "rgsaddle_lineb_config_t.turning_width");
+_Static_assert(offsetof(rgsaddle_lineb_config_t, hbar) == offsetof(abi46_rgsaddle_lineb_config_t, hbar), "rgsaddle_lineb_config_t.hbar");
+_Static_assert(offsetof(rgsaddle_lineb_config_t, boltzmann) == offsetof(abi46_rgsaddle_lineb_config_t, boltzmann), "rgsaddle_lineb_config_t.boltzmann");
+_Static_assert(offsetof(rgsaddle_lineb_config_t, quadrature_pairs) == offsetof(abi46_rgsaddle_lineb_config_t, quadrature_pairs), "rgsaddle_lineb_config_t.quadrature_pairs");
+
+typedef struct {
+  double action;
+  double half_period;
+  double half_period_dynamics;
+  double temperature;
+  double temperature_dynamics;
+  double log_rate_over_reactant;
+  int64_t iterations;
+  int64_t optimizer_calls;
+  int64_t measure_calls;
+  int64_t dynamics_calls;
+  int64_t rate_calls;
+} abi46_rgsaddle_lineb_result_t;
+_Static_assert(sizeof(rgsaddle_lineb_result_t) == sizeof(abi46_rgsaddle_lineb_result_t), "rgsaddle_lineb_result_t size");
+_Static_assert(_Alignof(rgsaddle_lineb_result_t) == _Alignof(abi46_rgsaddle_lineb_result_t), "rgsaddle_lineb_result_t alignment");
+_Static_assert(offsetof(rgsaddle_lineb_result_t, action) == offsetof(abi46_rgsaddle_lineb_result_t, action), "rgsaddle_lineb_result_t.action");
+_Static_assert(offsetof(rgsaddle_lineb_result_t, half_period) == offsetof(abi46_rgsaddle_lineb_result_t, half_period), "rgsaddle_lineb_result_t.half_period");
+_Static_assert(offsetof(rgsaddle_lineb_result_t, half_period_dynamics) == offsetof(abi46_rgsaddle_lineb_result_t, half_period_dynamics), "rgsaddle_lineb_result_t.half_period_dynamics");
+_Static_assert(offsetof(rgsaddle_lineb_result_t, temperature) == offsetof(abi46_rgsaddle_lineb_result_t, temperature), "rgsaddle_lineb_result_t.temperature");
+_Static_assert(offsetof(rgsaddle_lineb_result_t, temperature_dynamics) == offsetof(abi46_rgsaddle_lineb_result_t, temperature_dynamics), "rgsaddle_lineb_result_t.temperature_dynamics");
+_Static_assert(offsetof(rgsaddle_lineb_result_t, log_rate_over_reactant) == offsetof(abi46_rgsaddle_lineb_result_t, log_rate_over_reactant), "rgsaddle_lineb_result_t.log_rate_over_reactant");
+_Static_assert(offsetof(rgsaddle_lineb_result_t, iterations) == offsetof(abi46_rgsaddle_lineb_result_t, iterations), "rgsaddle_lineb_result_t.iterations");
+_Static_assert(offsetof(rgsaddle_lineb_result_t, optimizer_calls) == offsetof(abi46_rgsaddle_lineb_result_t, optimizer_calls), "rgsaddle_lineb_result_t.optimizer_calls");
+_Static_assert(offsetof(rgsaddle_lineb_result_t, measure_calls) == offsetof(abi46_rgsaddle_lineb_result_t, measure_calls), "rgsaddle_lineb_result_t.measure_calls");
+_Static_assert(offsetof(rgsaddle_lineb_result_t, dynamics_calls) == offsetof(abi46_rgsaddle_lineb_result_t, dynamics_calls), "rgsaddle_lineb_result_t.dynamics_calls");
+_Static_assert(offsetof(rgsaddle_lineb_result_t, rate_calls) == offsetof(abi46_rgsaddle_lineb_result_t, rate_calls), "rgsaddle_lineb_result_t.rate_calls");
+
+typedef rgsaddle_status_t (*abi46_signature_rgsaddle_lineb_config_default)(
+    double opt_tol, double perp_tol, rgsaddle_lineb_config_t *out);
+_Static_assert(_Generic(&rgsaddle_lineb_config_default, abi46_signature_rgsaddle_lineb_config_default: 1, default: 0), "rgsaddle_lineb_config_default signature");
+
+typedef rgsaddle_status_t (*abi46_signature_rgsaddle_lineb_solve)(
+    const rgsaddle_lineb_config_t *cfg, int64_t n_images, int64_t n_atoms,
+    const double *positions, const double *atom_masses, int32_t molecular,
+    double energy, int64_t max_steps, int64_t beads, rgsaddle_surface_fn surface,
+    void *user, double *optimized_positions, rgsaddle_lineb_result_t *out);
+_Static_assert(_Generic(&rgsaddle_lineb_solve, abi46_signature_rgsaddle_lineb_solve: 1, default: 0), "rgsaddle_lineb_solve signature");
 
 #endif

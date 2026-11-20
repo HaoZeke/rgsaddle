@@ -1,0 +1,3 @@
+~rgsaddle_lineb_config_default~ and ~rgsaddle_lineb_solve~ expose fixed-energy LI-NEB and harmonic quantum TST through the C ABI at minor 46.
+~molecular~ 0 expands atom masses onto Cartesian coordinates without alignment; ~molecular~ 1 uses quaternion molecule alignment.
+~beads~ 0 returns the path only with a NaN ~log_rate_over_reactant~; an unconverged search returns ~RGSADDLE_STALLED~.

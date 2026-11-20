@@ -36,7 +36,7 @@ use crate::tangent::TangentKind;
 /// The RGSADDLE ABI MAJOR.
 pub const RGSADDLE_ABI_MAJOR: u32 = 1;
 /// The RGSADDLE ABI MINOR.
-pub const RGSADDLE_ABI_MINOR: u32 = 45;
+pub const RGSADDLE_ABI_MINOR: u32 = 46;
 
 /// A band, min-mode or OCI-NEB config of this minor or newer certifies
 /// the saddle index at convergence by default.
@@ -2201,6 +2201,8 @@ pub unsafe extern "C" fn rgsaddle_idpp_path(
 
 mod indexk;
 pub use indexk::*;
+mod lineb;
+pub use lineb::*;
 mod sessions;
 pub use sessions::*;
 mod quickmin;
