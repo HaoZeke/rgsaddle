@@ -63,6 +63,10 @@ def test_lineb_solve_path_only_returns_nan_rate() -> None:
     assert result.measure_calls >= 1
     assert result.dynamics_calls >= 1
     assert result.rate_calls == 0
+    phases = result.surface_calls
+    assert phases["seed"] + phases["optimization"] == result.optimizer_calls
+    assert phases["path_preparation"] + phases["quadrature"] == result.measure_calls
+    assert phases["total"] == sum(count for phase, count in phases.items() if phase != "total")
     exact_action = math.pi * (math.sqrt(2.0) - math.sqrt(0.5))
     exact_half = math.pi * math.sqrt(2.0)
     slope = 0.5 * math.sqrt(0.75)

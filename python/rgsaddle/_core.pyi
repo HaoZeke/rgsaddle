@@ -171,6 +171,9 @@ class LinebResult:
         """Optimizer steps taken."""
 
     @property
+    def surface_calls(self) -> dict[str, int]: ...
+
+    @property
     def optimizer_calls(self) -> int:
         """Surface evaluations inside the optimizer."""
 

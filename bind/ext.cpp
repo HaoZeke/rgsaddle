@@ -1734,6 +1734,7 @@ struct LinebResultPy {
   std::int64_t measure_calls = 0;
   std::int64_t dynamics_calls = 0;
   std::int64_t rate_calls = 0;
+  rgsaddle_lineb_counts_t counts{};
 };
 
 LinebResultPy lineb_solve_python(nb::callable fn, Matrix positions, Vector atom_masses, double energy,
@@ -1777,6 +1778,7 @@ LinebResultPy lineb_solve_python(nb::callable fn, Matrix positions, Vector atom_
       static_cast<std::size_t>(n_images) * static_cast<std::size_t>(n_atoms) * 3u;
   std::vector<double> optimized(count, 0.0);
   rgsaddle_lineb_result_t result{};
+  rgsaddle_lineb_counts_t counts{};
   rgbind::CallContext ctx;
   ConnectCallback state{&fn, &ctx};
   rgsaddle_status_t status = RGSADDLE_OK;
@@ -1785,9 +1787,9 @@ LinebResultPy lineb_solve_python(nb::callable fn, Matrix positions, Vector atom_
     const uint32_t options = (linear_seed ? RGSADDLE_LINEB_LINEAR_SEED : 0u) |
                              (endpoint_convergence ? RGSADDLE_LINEB_ENDPOINT_CONVERGENCE : 0u) |
                              (projected_verlet ? RGSADDLE_LINEB_PROJECTED_VERLET : 0u);
-    status = rgsaddle_lineb_solve_options(&cfg, n_images, n_atoms, positions.data(), atom_masses.data(),
+    status = rgsaddle_lineb_solve_counted(&cfg, n_images, n_atoms, positions.data(), atom_masses.data(),
                                   molecular ? 1 : 0, energy, max_steps, beads, connect_python_surface,
-                                  &state, optimized.data(), &result, endpoint_kappa ? &*endpoint_kappa : nullptr, options);
+                                  &state, optimized.data(), &result, endpoint_kappa ? &*endpoint_kappa : nullptr, options, &counts);
   }
   if (ctx.has_error()) {
     ctx.rethrow_if_set();
@@ -1812,6 +1814,7 @@ LinebResultPy lineb_solve_python(nb::callable fn, Matrix positions, Vector atom_
   out.measure_calls = result.measure_calls;
   out.dynamics_calls = result.dynamics_calls;
   out.rate_calls = result.rate_calls;
+  out.counts = counts;
   return out;
 }
 
@@ -1977,6 +1980,18 @@ NB_MODULE(_core, m) {
                    "ln(k Z_r), or NaN when beads is 0.")
       .def_prop_ro("iterations", [](const LinebResultPy &report) { return report.iterations; },
                    "Optimizer steps taken.")
+      .def_prop_ro("surface_calls", [](const LinebResultPy &report) {
+        const auto &c = report.counts;
+        nb::dict calls;
+        calls["seed"] = c.seed;
+        calls["optimization"] = c.optimizer;
+        calls["path_preparation"] = c.preparation;
+        calls["quadrature"] = c.quadrature;
+        calls["dynamics"] = c.dynamics;
+        calls["rate"] = c.rate;
+        calls["total"] = c.seed + c.optimizer + c.preparation + c.quadrature + c.dynamics + c.rate;
+        return calls;
+      }, "Energy and gradient evaluations of individual configurations, by phase.")
       .def_prop_ro("optimizer_calls",
                    [](const LinebResultPy &report) { return report.optimizer_calls; },
                    "Surface evaluations inside the optimizer.")
