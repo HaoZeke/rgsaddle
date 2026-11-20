@@ -16,7 +16,9 @@
  * raise_status maps rgsaddle_status_t. The schedule text does not
  * depend on the worker count. Stencil is the point-search handle.
  * connect runs the double-ended search and releases the GIL around
- * rgsaddle_connect. The link exports PyInit__core.
+ * rgsaddle_connect. lineb_solve runs the fixed-energy LI-NEB path
+ * through the same point-surface trampoline. The link exports
+ * PyInit__core.
  *
  * SurfaceAdapter does not own threads. The caller passes C ABI
  * request rows and the adapter evaluates them on that thread. The
@@ -1717,6 +1719,99 @@ nb::ndarray<nb::numpy, std::uint64_t> copy_u64_vector(const std::vector<std::uin
   return nb::ndarray<nb::numpy, std::uint64_t>(raw, 1, shape, owner);
 }
 
+struct LinebResultPy {
+  std::vector<double> positions;
+  std::int64_t n_images = 0;
+  std::int64_t n_atoms = 0;
+  double action = 0.0;
+  double half_period = 0.0;
+  double half_period_dynamics = 0.0;
+  double temperature = 0.0;
+  double temperature_dynamics = 0.0;
+  double log_rate_over_reactant = 0.0;
+  std::int64_t iterations = 0;
+  std::int64_t optimizer_calls = 0;
+  std::int64_t measure_calls = 0;
+  std::int64_t dynamics_calls = 0;
+  std::int64_t rate_calls = 0;
+};
+
+LinebResultPy lineb_solve_python(nb::callable fn, Matrix positions, Vector atom_masses, double energy,
+                                 double opt_tol, double perp_tol, bool molecular, std::int64_t max_steps,
+                                 std::int64_t beads, double spring, double endpoint_scale, double time_step,
+                                 double max_move, double turning_width, double hbar, double boltzmann,
+                                 std::int64_t quadrature_pairs) {
+  const std::int64_t n_images = static_cast<std::int64_t>(positions.shape(0));
+  const std::int64_t n_atoms = static_cast<std::int64_t>(atom_masses.shape(0));
+  if (n_images < 3 || n_atoms <= 0) {
+    throw nb::value_error("lineb_solve needs at least three images and one atom");
+  }
+  if (molecular && n_atoms < 2) {
+    throw nb::value_error("molecular lineb_solve needs at least two atoms");
+  }
+  if (positions.shape(1) != static_cast<std::size_t>(3 * n_atoms)) {
+    throw nb::value_error("positions must be shaped (n_images, 3 * n_atoms)");
+  }
+  if (max_steps < 1) {
+    throw nb::value_error("max_steps must be positive");
+  }
+  if (beads < 0) {
+    throw nb::value_error("beads must be non-negative");
+  }
+
+  rgsaddle_lineb_config_t cfg{};
+  const rgsaddle_status_t defaults = rgsaddle_lineb_config_default(opt_tol, perp_tol, &cfg);
+  if (defaults != RGSADDLE_OK) {
+    status_error(defaults);
+  }
+  cfg.spring = spring;
+  cfg.endpoint_scale = endpoint_scale;
+  cfg.time_step = time_step;
+  cfg.max_move = max_move;
+  cfg.turning_width = turning_width;
+  cfg.hbar = hbar;
+  cfg.boltzmann = boltzmann;
+  cfg.quadrature_pairs = quadrature_pairs;
+
+  const std::size_t count =
+      static_cast<std::size_t>(n_images) * static_cast<std::size_t>(n_atoms) * 3u;
+  std::vector<double> optimized(count, 0.0);
+  rgsaddle_lineb_result_t result{};
+  rgbind::CallContext ctx;
+  ConnectCallback state{&fn, &ctx};
+  rgsaddle_status_t status = RGSADDLE_OK;
+  {
+    nb::gil_scoped_release release;
+    status = rgsaddle_lineb_solve(&cfg, n_images, n_atoms, positions.data(), atom_masses.data(),
+                                  molecular ? 1 : 0, energy, max_steps, beads, connect_python_surface,
+                                  &state, optimized.data(), &result);
+  }
+  if (ctx.has_error()) {
+    ctx.rethrow_if_set();
+  }
+  if (status != RGSADDLE_OK) {
+    // Unconverged and other failures keep the existing non-success status.
+    raise_status(static_cast<int>(status));
+  }
+
+  LinebResultPy out;
+  out.positions = std::move(optimized);
+  out.n_images = n_images;
+  out.n_atoms = n_atoms;
+  out.action = result.action;
+  out.half_period = result.half_period;
+  out.half_period_dynamics = result.half_period_dynamics;
+  out.temperature = result.temperature;
+  out.temperature_dynamics = result.temperature_dynamics;
+  out.log_rate_over_reactant = result.log_rate_over_reactant;
+  out.iterations = result.iterations;
+  out.optimizer_calls = result.optimizer_calls;
+  out.measure_calls = result.measure_calls;
+  out.dynamics_calls = result.dynamics_calls;
+  out.rate_calls = result.rate_calls;
+  return out;
+}
+
 } // namespace
 
 NB_MODULE(_core, m) {
@@ -1853,6 +1948,64 @@ NB_MODULE(_core, m) {
               "numpy.typing.NDArray[numpy.float64], force_tol: float = 0.001, max_calls: int = 250000, "
               "quench_nodes: bool = True) -> ConnectReport"),
       "Double-ended connect. surface(x) returns (energy, gradient) for one image shaped (1, 3N).");
+
+  nb::class_<LinebResultPy>(m, "LinebResult")
+      .def_prop_ro(
+          "positions",
+          [](const LinebResultPy &report) {
+            return copy_matrix(report.positions, static_cast<std::size_t>(report.n_images),
+                               static_cast<std::size_t>(3 * report.n_atoms));
+          },
+          nb::rv_policy::move, "Optimized images shaped (n_images, 3 * n_atoms).")
+      .def_prop_ro("action", [](const LinebResultPy &report) { return report.action; },
+                   "Spline abbreviated action W.")
+      .def_prop_ro("half_period", [](const LinebResultPy &report) { return report.half_period; },
+                   "Half period from the action energy derivative.")
+      .def_prop_ro("half_period_dynamics",
+                   [](const LinebResultPy &report) { return report.half_period_dynamics; },
+                   "Half period from constrained dynamics along the path.")
+      .def_prop_ro("temperature", [](const LinebResultPy &report) { return report.temperature; },
+                   "Instanton temperature from half_period.")
+      .def_prop_ro("temperature_dynamics",
+                   [](const LinebResultPy &report) { return report.temperature_dynamics; },
+                   "Instanton temperature from half_period_dynamics.")
+      .def_prop_ro("log_rate_over_reactant",
+                   [](const LinebResultPy &report) { return report.log_rate_over_reactant; },
+                   "ln(k Z_r), or NaN when beads is 0.")
+      .def_prop_ro("iterations", [](const LinebResultPy &report) { return report.iterations; },
+                   "Optimizer steps taken.")
+      .def_prop_ro("optimizer_calls",
+                   [](const LinebResultPy &report) { return report.optimizer_calls; },
+                   "Surface evaluations inside the optimizer.")
+      .def_prop_ro("measure_calls", [](const LinebResultPy &report) { return report.measure_calls; },
+                   "Surface evaluations of the action and period quadrature.")
+      .def_prop_ro("dynamics_calls",
+                   [](const LinebResultPy &report) { return report.dynamics_calls; },
+                   "Surface evaluations of the constrained dynamics.")
+      .def_prop_ro("rate_calls", [](const LinebResultPy &report) { return report.rate_calls; },
+                   "Surface evaluations of the harmonic rate, or 0 when beads is 0.");
+
+  m.def(
+      "lineb_solve", &lineb_solve_python, nb::arg("surface"), nb::arg("positions").noconvert(),
+      nb::arg("atom_masses").noconvert(), nb::arg("energy"), nb::arg("opt_tol"), nb::arg("perp_tol"),
+      nb::arg("molecular") = false, nb::arg("max_steps") = static_cast<std::int64_t>(1000),
+      nb::arg("beads") = static_cast<std::int64_t>(0), nb::arg("spring") = 0.1,
+      nb::arg("endpoint_scale") = 0.2, nb::arg("time_step") = 0.1, nb::arg("max_move") = 0.2,
+      nb::arg("turning_width") = 1e-3, nb::arg("hbar") = 1.0, nb::arg("boltzmann") = 1.0,
+      nb::arg("quadrature_pairs") = static_cast<std::int64_t>(4),
+      nb::sig(
+          "def lineb_solve(surface: collections.abc.Callable[..., "
+          "tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]], "
+          "positions: numpy.typing.NDArray[numpy.float64], atom_masses: numpy.typing.NDArray[numpy.float64], "
+          "energy: float, opt_tol: float, perp_tol: float, molecular: bool = False, max_steps: int = 1000, "
+          "beads: int = 0, spring: float = 0.1, endpoint_scale: float = 0.2, time_step: float = 0.1, "
+          "max_move: float = 0.2, turning_width: float = 0.001, hbar: float = 1.0, boltzmann: float = 1.0, "
+          "quadrature_pairs: int = 4) -> LinebResult"),
+      "Fixed-energy LI-NEB path and optional harmonic rate. positions is (n_images, 3N). "
+      "atom_masses is one positive mass per atom; molecular=False expands them to coordinates, "
+      "molecular=True aligns the free molecule. surface(x) is one image shaped (1, 3N). "
+      "beads=0 skips the rate and leaves log_rate_over_reactant as NaN. A calculator exception "
+      "propagates. An unconverged search raises with the C status.");
 
   nb::class_<SessionReport>(m, "SessionReport")
       .def_ro("status", &SessionReport::status, "0 while running, 1 when converged.")

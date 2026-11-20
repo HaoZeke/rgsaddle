@@ -1,0 +1,114 @@
+"""Fixed-energy LI-NEB through the nanobind wrapper."""
+
+from __future__ import annotations
+
+import math
+
+import numpy as np
+import pytest
+
+from rgsaddle import LinebResult, lineb_solve
+
+
+def eckart(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """One-atom Eckart barrier V = sech^2(x) on the first Cartesian coordinate."""
+    row = np.ascontiguousarray(x, dtype=np.float64).reshape(1, -1)
+    coord = row[0, 0]
+    s = 1.0 / math.cosh(coord)
+    energy = np.array([s * s], dtype=np.float64)
+    gradient = np.zeros((1, row.shape[1]), dtype=np.float64)
+    gradient[0, 0] = -2.0 * s * s * math.tanh(coord)
+    return energy, gradient
+
+
+def eckart_seed(n_images: int = 9) -> tuple[np.ndarray, float, float]:
+    energy = 0.25
+    turning = math.acosh(math.sqrt(1.0 / energy))
+    end = 0.5 * turning
+    xs = np.linspace(-end, end, n_images, dtype=np.float64)
+    positions = np.zeros((n_images, 3), dtype=np.float64)
+    positions[:, 0] = xs
+    spacing = turning * 2.0 / (n_images - 1)
+    panels = 8.0
+    endpoint_scale = 0.2
+    tol = endpoint_scale * spacing / (8.0 * panels**4)
+    return positions, energy, tol
+
+
+def test_lineb_solve_path_only_returns_nan_rate() -> None:
+    positions, energy, tol = eckart_seed()
+    masses = np.array([1.0], dtype=np.float64)
+    result = lineb_solve(
+        eckart,
+        positions,
+        masses,
+        energy,
+        tol,
+        tol,
+        molecular=False,
+        max_steps=500,
+        beads=0,
+    )
+    assert isinstance(result, LinebResult)
+    optimized = np.asarray(result.positions, dtype=np.float64)
+    assert optimized.shape == positions.shape
+    assert math.isfinite(result.action)
+    assert math.isfinite(result.half_period)
+    assert math.isfinite(result.half_period_dynamics)
+    assert math.isfinite(result.temperature)
+    assert math.isfinite(result.temperature_dynamics)
+    assert math.isnan(result.log_rate_over_reactant)
+    assert result.iterations >= 1
+    assert result.optimizer_calls >= 1
+    assert result.measure_calls >= 1
+    assert result.dynamics_calls >= 1
+    assert result.rate_calls == 0
+    exact_action = math.pi * (math.sqrt(2.0) - math.sqrt(0.5))
+    exact_half = math.pi * math.sqrt(2.0)
+    slope = 0.5 * math.sqrt(0.75)
+    spacing = float(optimized[-1, 0] - optimized[0, 0]) / (optimized.shape[0] - 1)
+    slack = math.sqrt(spacing / (8.0**4) / slope)
+    assert abs(result.action - exact_action) <= slack
+    assert abs(result.half_period - exact_half) <= slack
+
+
+def test_lineb_solve_rejects_shape_mismatches() -> None:
+    positions = np.zeros((3, 6), dtype=np.float64)
+    masses = np.array([1.0], dtype=np.float64)
+
+    def surface(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        raise AssertionError(x.shape)
+
+    with pytest.raises(ValueError, match="3 \\* n_atoms"):
+        lineb_solve(surface, positions, masses, 0.1, 1e-3, 1e-3, max_steps=1)
+
+    short = np.zeros((2, 3), dtype=np.float64)
+    with pytest.raises(ValueError, match="three images"):
+        lineb_solve(surface, short, masses, 0.1, 1e-3, 1e-3, max_steps=1)
+
+    one_atom = np.zeros((3, 3), dtype=np.float64)
+    with pytest.raises(ValueError, match="two atoms"):
+        lineb_solve(
+            surface,
+            one_atom,
+            masses,
+            0.1,
+            1e-3,
+            1e-3,
+            molecular=True,
+            max_steps=1,
+        )
+
+
+def test_lineb_solve_preserves_callback_exceptions() -> None:
+    positions, energy, tol = eckart_seed(n_images=5)
+    masses = np.array([1.0], dtype=np.float64)
+
+    class Boom(RuntimeError):
+        pass
+
+    def surface(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        raise Boom("lineb-callback")
+
+    with pytest.raises(Boom, match="lineb-callback"):
+        lineb_solve(surface, positions, masses, energy, tol, tol, max_steps=2, beads=0)

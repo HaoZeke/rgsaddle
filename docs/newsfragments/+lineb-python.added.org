@@ -1,0 +1,1 @@
+Python exposes ~rgsaddle.lineb_solve~ and ~LinebResult~ for the fixed-energy LI-NEB path and optional harmonic quantum TST rate, with the same one-image surface trampoline as ~connect~, shape checks on ~(n_images, 3N)~ positions and per-atom masses, and preserved calculator exceptions.
