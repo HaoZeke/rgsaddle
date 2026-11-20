@@ -171,7 +171,10 @@ class LinebResult:
         """Optimizer steps taken."""
 
     @property
-    def surface_calls(self) -> dict[str, int]: ...
+    def surface_calls(self) -> dict[str, int]:
+        """
+        Energy and gradient evaluations of individual configurations, by phase.
+        """
 
     @property
     def optimizer_calls(self) -> int:

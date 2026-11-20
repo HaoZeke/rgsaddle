@@ -1991,7 +1991,8 @@ NB_MODULE(_core, m) {
         calls["rate"] = c.rate;
         calls["total"] = c.seed + c.optimizer + c.preparation + c.quadrature + c.dynamics + c.rate;
         return calls;
-      }, "Energy and gradient evaluations of individual configurations, by phase.")
+      }, nb::sig("def surface_calls(self) -> dict[str, int]"),
+         "Energy and gradient evaluations of individual configurations, by phase.")
       .def_prop_ro("optimizer_calls",
                    [](const LinebResultPy &report) { return report.optimizer_calls; },
                    "Surface evaluations inside the optimizer.")
