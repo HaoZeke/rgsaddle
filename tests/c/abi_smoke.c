@@ -831,7 +831,8 @@ int main(void) {
       return fail(RGSADDLE_SHAPE, "free_end band create");
     }
     double fres = 0.0;
-    if (rgsaddle_band_free_end_residual(fb, &fres) != RGSADDLE_NO_EVALUATION ||
+    if (rgsaddle_band_free_end_residual(fb, NULL) != RGSADDLE_INVALID_PARAMETER ||
+        rgsaddle_band_free_end_residual(fb, &fres) != RGSADDLE_NO_EVALUATION ||
         rgsaddle_band_set_free_end(fb, 2, RGSADDLE_FREE_END_LAST, 1, 0.25, 0,
                                    0.0, 0.001, 2, 1, 1) !=
             RGSADDLE_INVALID_PARAMETER ||

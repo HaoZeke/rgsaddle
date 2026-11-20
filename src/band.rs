@@ -3101,6 +3101,9 @@ impl BandSession {
     pub(crate) fn forget_optimizer(&mut self) {
         self.solver.forget();
         self.clear_string_state();
+        self.free_end_state.endpoint_dt = None;
+        self.free_end_state.prev_end_pos = None;
+        self.free_end_state.prev_end_force = None;
         if let Some(rtr) = &mut self.rtr {
             let gate = self.state.force_gate;
             *rtr = crate::rtr::BandRtr::new(rtr.config, false);
@@ -3218,15 +3221,10 @@ impl BandSession {
     /// reparameterization; with [`BandSession::set_positions`] for the
     /// moved images the next step evaluates only the interior images.
     pub fn restart(&mut self) {
-        self.solver.forget();
-        self.clear_string_state();
+        self.forget_optimizer();
         self.state.restart();
         self.refine = min_mode::RefineState::default();
         self.saddle.forget();
-        if let Some(rtr) = &mut self.rtr {
-            *rtr = crate::rtr::BandRtr::new(rtr.config, false);
-            rtr.set_force_gate(self.state.force_gate);
-        }
     }
 
     /// The last evaluation, if it was taken at the current positions:

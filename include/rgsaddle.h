@@ -1919,7 +1919,8 @@ rgsaddle_status_t rgsaddle_band_set_free_end(
 /**
  * Read the signed target-energy residual `E(x_end) - E_target` from the most
  * recent free-end step into `out`, ABI minor 45. Returns
- * RGSADDLE_NO_EVALUATION when free-end mode is off or before the first step.
+ * RGSADDLE_INVALID_PARAMETER when `out` is NULL, or RGSADDLE_NO_EVALUATION
+ * when free-end mode is off or before the first step.
  */
 rgsaddle_status_t rgsaddle_band_free_end_residual(const RgsaddleBand *band,
                                                   double *out);
