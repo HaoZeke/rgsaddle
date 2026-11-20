@@ -581,19 +581,28 @@ fn image_hessians<S: PointSurface>(
 ) -> Result<Vec<Array2<f64>>, SaddleError> {
     let mut hessians = Vec::with_capacity(images.nrows());
     for row in images.rows() {
-        hessians.push(finite_difference_hessian(surface, masses, row, step)?);
+        let cartesian = masses.to_cartesian(row)?;
+        let block = cartesian_image_hessian(surface, cartesian.view(), step)?;
+        hessians.push(weight_cartesian_hessian(&block, masses)?);
     }
     Ok(hessians)
 }
 
+/// Cartesian energy Hessian from central gradient differences at one image.
+/// Each column uses two gradients in an ordered batch, separated by twice
+/// `step` in the surface's length units. The returned matrix precedes mass
+/// weighting and symmetrization.
 #[cfg(any(test, feature = "lineb-oracle"))]
-fn finite_difference_hessian<S: PointSurface>(
+pub fn cartesian_image_hessian<S: PointSurface>(
     surface: &S,
-    masses: &Masses,
-    weighted: ArrayView1<f64>,
+    cartesian: ArrayView1<f64>,
     step: f64,
 ) -> Result<Array2<f64>, SaddleError> {
-    let cartesian = masses.to_cartesian(weighted)?;
+    if !step.is_finite() || step <= 0.0 || cartesian.is_empty() {
+        return Err(SaddleError::Invalid(
+            "a nonempty image and positive finite displacement are required".into(),
+        ));
+    }
     let dof = cartesian.len();
     let mut displacements = Array2::from_shape_fn((2 * dof, dof), |(_, j)| cartesian[j]);
     for column in 0..dof {
@@ -612,7 +621,10 @@ fn finite_difference_hessian<S: PointSurface>(
             hessian[(row, column)] = (pair[0].1[row] - pair[1].1[row]) / (2.0 * step);
         }
     }
-    weight_cartesian_hessian(&hessian, masses)
+    if hessian.iter().any(|v| !v.is_finite()) {
+        return Err(SaddleError::NonFinite("Cartesian image Hessian"));
+    }
+    Ok(hessian)
 }
 
 #[cfg(any(test, feature = "lineb-oracle"))]

@@ -768,28 +768,29 @@ impl LinebSession {
         Ok(report)
     }
 
-    /// Spline action, both half periods and both temperatures of the
-    /// current images.
-    pub fn path<S: PointSurface>(&self, surface: &S) -> Result<LinebPath, SaddleError> {
-        let measure_calls = AtomicUsize::new(0);
-        let dynamics_calls = AtomicUsize::new(0);
-        let measured = crate::lineb::Counted {
-            surface,
-            calls: &measure_calls,
-        };
-        let dynamics = crate::lineb::Counted {
-            surface,
-            calls: &dynamics_calls,
-        };
+    /// Cartesian image centers with both near-turning endpoints refined to the
+    /// requested energy. These are the centers used by the interpolated rate.
+    pub fn refined_cartesian_images<S: PointSurface>(
+        &self,
+        surface: &S,
+    ) -> Result<Array2<f64>, SaddleError> {
+        let (weighted, _) = self.prepared_images(surface)?;
+        self.cartesian_images(&weighted)
+    }
+
+    fn prepared_images<S: PointSurface>(
+        &self,
+        surface: &S,
+    ) -> Result<(Array2<f64>, f64), SaddleError> {
         let assembly = match &self.held {
             Some(assembly) => assembly.clone(),
             None => {
                 let width = match self.width {
                     Some(width) => width,
-                    None => self.turning_width(&measured)?,
+                    None => self.turning_width(surface)?,
                 };
                 action::assemble(
-                    &measured,
+                    surface,
                     &self.masses,
                     self.weighted.view(),
                     self.energy,
@@ -805,13 +806,38 @@ impl LinebSession {
             }
         };
         let weighted = path::refine_near_turning_endpoints(
-            &measured,
+            surface,
             &self.masses,
             assembly.aligned,
             self.energy,
             self.config.endpoint_restraint(),
             self.config.opt_tol,
         )?;
+        Ok((weighted, assembly.action))
+    }
+
+    fn cartesian_images(&self, weighted: &Array2<f64>) -> Result<Array2<f64>, SaddleError> {
+        let mut cartesian = Array2::zeros(weighted.dim());
+        for (mut row, q) in cartesian.outer_iter_mut().zip(weighted.rows()) {
+            row.assign(&self.masses.to_cartesian(q)?);
+        }
+        Ok(cartesian)
+    }
+
+    /// Spline action, both half periods and both temperatures of the
+    /// current images.
+    pub fn path<S: PointSurface>(&self, surface: &S) -> Result<LinebPath, SaddleError> {
+        let measure_calls = AtomicUsize::new(0);
+        let dynamics_calls = AtomicUsize::new(0);
+        let measured = crate::lineb::Counted {
+            surface,
+            calls: &measure_calls,
+        };
+        let dynamics = crate::lineb::Counted {
+            surface,
+            calls: &dynamics_calls,
+        };
+        let (weighted, discrete_action) = self.prepared_images(&measured)?;
         let preparation = measure_calls.load(Ordering::Relaxed);
         let periods: Periods = path::measure(
             &measured,
@@ -821,16 +847,10 @@ impl LinebSession {
             self.energy,
             self.config.quadrature_pairs,
         )?;
-        let mut cartesian = Array2::zeros(weighted.dim());
-        for i in 0..weighted.nrows() {
-            cartesian
-                .row_mut(i)
-                .assign(&self.masses.to_cartesian(weighted.row(i))?);
-        }
         Ok(LinebPath {
-            cartesian,
+            cartesian: self.cartesian_images(&weighted)?,
             energy: self.energy,
-            discrete_action: assembly.action,
+            discrete_action,
             action: periods.action,
             half_period: periods.half_period,
             half_period_dynamics: periods.half_period_dynamics,
