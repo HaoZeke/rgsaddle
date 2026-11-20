@@ -1225,12 +1225,14 @@ rgsaddle_status_t rgsaddle_idpp_path(int64_t n_images, int64_t n_atoms,
 /**
  * Translation rotation internal coordinates with splicing, ABI minor 46.
  *
- * `initial` and `out` each hold `n_images * 3 * n_atoms` doubles in
- * image major order. The initial path may come from linear or IDPP
- * interpolation. One TRIC system is built per image, low diagnostic
- * segments are interpolated in their internal metrics, and overlapping
- * endpoints are spliced to `splice_tolerance`. The published tolerance
- * is 0.0018 Angstrom.
+ * `initial` and `out` must be non-null buffers owned by the caller, each
+ * holding `n_images * 3 * n_atoms` doubles in image-major order. `initial`
+ * and `out` may be identical for in-place refinement or disjoint; partially
+ * overlapping buffers return `RGSADDLE_INVALID_PARAMETER`. The initial path
+ * may come from linear or IDPP interpolation. One TRIC system is built per
+ * image, low diagnostic segments are interpolated in their internal metrics,
+ * and overlapping endpoints are spliced to `splice_tolerance`. The published
+ * tolerance is 0.0018 Angstrom.
  */
 rgsaddle_status_t rgsaddle_trics_path(
     int64_t n_images, int64_t n_atoms, const double *initial,
