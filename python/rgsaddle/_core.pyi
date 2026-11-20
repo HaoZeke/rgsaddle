@@ -167,6 +167,18 @@ class LinebResult:
         """ln(k Z_r), or NaN when beads is 0."""
 
     @property
+    def negative_modes(self) -> int | None:
+        """
+        Number of negative retained fluctuation eigenvalues, or None without a rate.
+        """
+
+    @property
+    def modes(self) -> int | None:
+        """
+        Fluctuation eigenvalues retained after gauge projection, or None without a rate.
+        """
+
+    @property
     def iterations(self) -> int:
         """Optimizer steps taken."""
 
