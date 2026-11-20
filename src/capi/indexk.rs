@@ -63,11 +63,27 @@ pub struct RgsaddleIndexK {
     k: usize,
 }
 
-struct HostSurface {
+pub(crate) struct HostSurface {
     function: RgsaddleSurfaceFn,
     user: *mut c_void,
     n_atoms: i64,
     hessian: Option<RgsaddleHessianFn>,
+}
+
+impl HostSurface {
+    pub(crate) fn new(
+        function: RgsaddleSurfaceFn,
+        user: *mut c_void,
+        n_atoms: i64,
+        hessian: Option<RgsaddleHessianFn>,
+    ) -> Self {
+        Self {
+            function,
+            user,
+            n_atoms,
+            hessian,
+        }
+    }
 }
 
 unsafe impl Send for HostSurface {}
@@ -144,7 +160,11 @@ fn search_of(config: &RgsaddleIndexKConfig) -> Result<(MinModeConfig, BlockEigen
     Ok((search, block))
 }
 
-fn read_modes(n: usize, k: usize, modes: *const f64) -> Result<Option<Array2<f64>>, i32> {
+pub(crate) fn read_modes(
+    n: usize,
+    k: usize,
+    modes: *const f64,
+) -> Result<Option<Array2<f64>>, i32> {
     if modes.is_null() {
         return Ok(None);
     }
@@ -159,7 +179,7 @@ fn read_modes(n: usize, k: usize, modes: *const f64) -> Result<Option<Array2<f64
     Ok(Some(block))
 }
 
-fn write_modes(modes: ndarray::ArrayView2<f64>, out: &mut [f64]) {
+pub(crate) fn write_modes(modes: ndarray::ArrayView2<f64>, out: &mut [f64]) {
     let (rows, cols) = modes.dim();
     for row in 0..rows {
         for column in 0..cols {
@@ -266,12 +286,7 @@ pub unsafe extern "C" fn rgsaddle_indexk_step(
         return RGSADDLE_NULL_SURFACE;
     };
     let session = unsafe { &mut *session };
-    let host = HostSurface {
-        function,
-        user,
-        n_atoms: session.n_atoms,
-        hessian,
-    };
+    let host = HostSurface::new(function, user, session.n_atoms, hessian);
     match session.session.step(&host) {
         Ok(report) => {
             let out = unsafe { &mut *out };
