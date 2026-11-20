@@ -55,6 +55,10 @@ For the interpolated rate, Householder reflections move the bead permutation mod
 
 The paper's interpolated finite-difference Hessian is built with the =lineb-oracle= feature as =hqtst_rate_interpolated_hessian=, for tests and benches. On Müller-Brown at 64 replicas the replica products take 165 force calls and the oracle 92, and the two logs of the rate differ by 4.0e-4.
 
+For an electronic-structure potential, =hqtst_rate_interpolated_hessian_with_step(surface, path, beads, step)= uses the same Cartesian displacement for every atom. Halving the displacement tests the sensitivity of the fluctuation spectrum to gradient noise. The result records =image_hessian_displacement= in the surface's length units and =negative_modes= on the gauge-deflated ring. A first-order instanton has one unstable mode.
+
+=hqtst_rate_from_image_hessians(surface, path, beads, blocks)= takes one Cartesian energy Hessian per path image in path order. The library mass weights the blocks and interpolates them onto the ring. It issues =beads= additional geometry requests for the replica energies. Measure the cost of the supplied blocks at their provider. For finite differences the cost is =2 * dof * images + beads= geometry requests. A surface implementing =PointSurface::eval_batch= can evaluate the independent displacements for each image and the replica energies in parallel. Return the results in input row order.
+
 * Python
 =LinebResult.surface_calls= gives integer configuration evaluations for =seed=, =optimization=, =path_preparation=, =quadrature=, =dynamics= and =rate=. Their sum is =total=. The rate entry is zero on a path-only run. In C, pass a =rgsaddle_lineb_counts_t= to =rgsaddle_lineb_solve_counted= (ABI minor 50). The combined =optimizer_calls= and =measure_calls= on the original result remain available.
 
