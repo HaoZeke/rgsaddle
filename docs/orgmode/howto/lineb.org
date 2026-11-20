@@ -107,3 +107,32 @@ rgsaddle_status_t st = rgsaddle_lineb_solve(
 
 * Comparing surfaces and rates
 For a surface with fixed substrate atoms, pass the coordinates and masses of the mobile atoms to the solver and reconstruct the full geometry in the surface callback. Use identical substrate coordinates, mass conventions and energy zeros when comparing barriers or rates. Record the image and bead counts, both force tolerances, and the temperature estimator with each result.
+
+* Checking the orbit and reporting a rate
+Repeat the calculation at fixed tunneling energy with more path images and
+more ring replicas independently. The images determine the spatial path,
+whereas the replicas sample that path in imaginary time. Record the
+quadrature temperature at each image resolution. Compare different
+replica counts at the same path and period to isolate the ring
+discretization.
+
+For a ring of =P= Cartesian configurations over a full period =tau=, let
+=dt = tau / P=. With energies, masses, lengths and times in a consistent
+unit system, the discrete stationarity residual at atom =i= and bead =j=
+is
+
+: R[j,i] = grad_V(x[j])[i] + m[i] * (2*x[j,i] - x[j-1,i] - x[j+1,i]) / dt**2
+
+Wrap both neighbor indices around the ring. Use the physical Cartesian
+energy gradient at each stored bead and restrict the check to mobile
+coordinates. Report the maximum absolute component and the RMS residual
+in force units. Inspect the turning-point beads individually. A stable
+logarithmic prefactor and one unstable mode can coexist with a large
+turning-point residual.
+
+For an absolute thermal rate, subtract the logarithm of the reactant
+partition function from =log_rate_over_reactant= using the same energy
+zero, period and unit convention. Account for molecular rotation,
+translation and the number of equivalent reaction paths consistently on
+both sides of the comparison. Convert the inverse time unit to inverse
+seconds before comparing with a published rate.
