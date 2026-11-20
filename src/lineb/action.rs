@@ -178,18 +178,10 @@ pub(crate) fn assemble<S: PointSurface>(
         opt_max = opt_max.max(l2(nudged.view()));
         drive_aligned.row_mut(j).assign(&nudged);
     }
-    for end in [0, n - 1] {
-        let (gap, into) = if end == 0 {
-            (dist[0] - dist[1], unit[0].clone())
-        } else {
-            (dist[n - 2] - dist[n - 3], {
-                let mut inward = unit[n - 2].clone();
-                inward *= -1.0;
-                inward
-            })
-        };
-        let mut spring_force = into;
-        spring_force *= spring * gap;
+    for (end, neighbour) in [(0, 1), (n - 1, n - 2)] {
+        // Equations (20) and (22) use the full adjacent chord. Only
+        // interior images have springs pulling from both sides.
+        let mut spring_force = (&aligned.row(neighbour) - &aligned.row(end)) * spring;
         let f_norm = l2(force.row(end));
         if f_norm <= 0.0 || f_norm.is_nan() {
             return Err(SaddleError::Invalid(
@@ -282,6 +274,22 @@ pub(crate) fn unpack(flat: ArrayView1<f64>, n: usize, dof: usize) -> Array2<f64>
 mod tests {
     use super::*;
     use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
+
+    #[test]
+    fn equally_spaced_endpoints_keep_the_projected_neighbour_spring() {
+        let images = ndarray::array![[-1.0, 0.0], [0.0, 0.25], [1.0, 0.0]];
+        let masses = Masses::coordinates(Array1::ones(2).view()).unwrap();
+        let energy = Valley.eval(images.row(0)).unwrap().0;
+        let spring = 2.0;
+        let band = assemble(&Valley, &masses, images.view(), energy, spring, 1.0, 0.01)
+            .unwrap()
+            .unwrap();
+        for end in [0, 2] {
+            // The surface normal points along x. Equations (20) and (22)
+            // therefore retain the full y component of the adjacent chord.
+            assert!((band.drive[[end, 1]] - spring * 0.25).abs() < f64::EPSILON);
+        }
+    }
 
     /// Eckart barrier in `x` and a harmonic valley in `y`.
     struct Valley;
