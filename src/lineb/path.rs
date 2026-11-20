@@ -896,3 +896,39 @@ pub(crate) fn temperature(half_period: f64, hbar: f64, boltzmann: f64) -> Result
     }
     Ok(value)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndarray::array;
+
+    struct InvertedOscillator;
+
+    impl PointSurface for InvertedOscillator {
+        fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+            Ok(((1. - x[0] * x[0]) * 0.5, array![-x[0]]))
+        }
+    }
+
+    #[test]
+    fn reflected_harmonic_orbit_has_the_physical_turning_point_acceleration() {
+        let images = array![[-1.], [0.], [1.]];
+        let masses = Masses::coordinates(array![1.].view()).unwrap();
+        let curve = Curve::new(images.view()).unwrap();
+        let (_, _, table) = quadrature(&InvertedOscillator, &masses, &curve, 0., 4).unwrap();
+        for beads in [120, 480] {
+            let ring = replicas(images.view(), &table, beads).unwrap();
+            let dt = ring.period / beads as f64;
+            for j in [0, beads / 2] {
+                let x = ring.weighted[(j, 0)];
+                let previous = ring.weighted[((j + beads - 1) % beads, 0)];
+                let next = ring.weighted[((j + 1) % beads, 0)];
+                let acceleration = (previous - x + next - x) / dt.powi(2);
+                assert!(
+                    (acceleration + x).abs() < 0.01,
+                    "P={beads}, x={x}, acceleration={acceleration}"
+                );
+            }
+        }
+    }
+}
