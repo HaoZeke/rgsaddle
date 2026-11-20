@@ -75,6 +75,10 @@ pub struct LinebConfig {
     pub boltzmann: f64,
     /// Force-driven stepper. FIRE 2.0 by default.
     pub method: Method,
+    /// Use piecewise-linear chord coordinates between imaginary-time samples.
+    /// This permits comparison with sampled linear clocks. The default Hermite
+    /// clock uses the physical velocities and stops at each turning point.
+    pub linear_replica_clock: bool,
     /// Simpson pairs on each chord when the period is integrated.
     pub quadrature_pairs: usize,
     /// Fixed-time-step projected velocity Verlet instead of [`Self::method`].
@@ -98,6 +102,7 @@ with_setters!(LinebConfig {
     with_hbar => hbar: val f64,
     with_boltzmann => boltzmann: val f64,
     with_method => method: val Method,
+    with_linear_replica_clock => linear_replica_clock: val bool,
     with_quadrature_pairs => quadrature_pairs: val usize,
     with_projected_verlet => projected_verlet: val bool,
 });
@@ -137,6 +142,7 @@ impl LinebConfig {
             boltzmann: 1.0,
             method: Method::fire(rgmin::FireKind::V2),
             quadrature_pairs: 4,
+            linear_replica_clock: false,
             projected_verlet: false,
         }
     }
@@ -873,13 +879,14 @@ impl LinebSession {
         let (weighted, discrete_action) = self.prepared_images(&measured)?;
         let preparation = measure_calls.load(Ordering::Relaxed);
         let curve = path::Curve::new(weighted.view())?;
-        let (action, half_period, time_table) = path::quadrature(
+        let (action, half_period, mut time_table) = path::quadrature(
             &measured,
             &self.masses,
             &curve,
             self.energy,
             self.config.quadrature_pairs,
         )?;
+        time_table.linear = self.config.linear_replica_clock;
         let (half_period_dynamics, temperature_dynamics) = dynamics_clock(&dynamics, &curve)?;
         Ok(LinebPath {
             cartesian: self.cartesian_images(&weighted)?,

@@ -95,7 +95,11 @@ pub(crate) struct TimeKnot {
     velocity: f64,
 }
 
-pub(crate) type TimeTable = Vec<TimeKnot>;
+#[derive(Clone, Debug)]
+pub(crate) struct TimeTable {
+    knots: Vec<TimeKnot>,
+    pub(crate) linear: bool,
+}
 
 struct Sample {
     energy: f64,
@@ -455,7 +459,14 @@ fn integrate<S: PointSurface>(
         .last_mut()
         .expect("the clock contains its origin")
         .velocity = 0.;
-    Ok((action, half, table))
+    Ok((
+        action,
+        half,
+        TimeTable {
+            knots: table,
+            linear: false,
+        },
+    ))
 }
 
 fn open_integral<S: PointSurface>(
@@ -463,7 +474,7 @@ fn open_integral<S: PointSurface>(
     left: f64,
     right: f64,
     pairs: usize,
-    table: &mut TimeTable,
+    table: &mut Vec<TimeKnot>,
     clock: &mut f64,
 ) -> Result<(f64, f64), SaddleError> {
     let intervals = 2 * pairs;
@@ -603,7 +614,7 @@ fn end_clock<S: PointSurface>(
     level: &Level<'_, S>,
     chord: EndChord,
     pairs: usize,
-) -> Result<TimeTable, SaddleError> {
+) -> Result<Vec<TimeKnot>, SaddleError> {
     let u_max = chord.u_max;
     let panels = (2 * pairs) as f64;
     let panel = u_max / panels;
@@ -864,7 +875,7 @@ pub(crate) struct Replicas {
 /// [`quadrature`] built on the same images.
 pub(crate) fn replicas(
     weighted: ArrayView2<f64>,
-    table: &[TimeKnot],
+    clock: &TimeTable,
     beads: usize,
 ) -> Result<Replicas, SaddleError> {
     if beads < 2 {
@@ -873,6 +884,7 @@ pub(crate) fn replicas(
         ));
     }
     let curve = Curve::new(weighted)?;
+    let table = &clock.knots;
     let half = table.last().map_or(0.0, |knot| knot.time);
     if half <= 0.0 || half.is_nan() {
         return Err(SaddleError::Invalid(
@@ -886,7 +898,7 @@ pub(crate) fn replicas(
     for bead in 0..beads {
         let time = period * bead as f64 / beads as f64;
         let forward = if time <= half { time } else { period - time };
-        let lambda = invert_time(table, forward)?;
+        let lambda = invert_time(table, forward, clock.linear)?;
         out.row_mut(bead).assign(&curve.at(lambda));
         #[cfg(any(test, feature = "lineb-oracle"))]
         parameter.push(lambda);
@@ -899,7 +911,7 @@ pub(crate) fn replicas(
     })
 }
 
-fn invert_time(table: &[TimeKnot], time: f64) -> Result<f64, SaddleError> {
+fn invert_time(table: &[TimeKnot], time: f64, linear: bool) -> Result<f64, SaddleError> {
     let last = table.len() - 1;
     if time <= table[0].time || time.is_nan() {
         return Ok(table[0].lambda);
@@ -924,6 +936,9 @@ fn invert_time(table: &[TimeKnot], time: f64) -> Result<f64, SaddleError> {
         return Err(SaddleError::Invalid(
             "the imaginary-time table stalled between samples".into(),
         ));
+    }
+    if linear {
+        return Ok(left.lambda + (right.lambda - left.lambda) * (time - left.time) / span);
     }
     let t = (time - left.time) / span;
     let u = 1. - t;
