@@ -1,0 +1,1 @@
+Free-end NEB cuts now reset the endpoint step size together with the main band optimizer state, so a remeshed phase does not inherit stale step history.
