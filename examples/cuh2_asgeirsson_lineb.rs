@@ -532,6 +532,8 @@ fn run_mep(
     let config = BandConfig::default()
         // Translation of both H atoms relative to the fixed substrate is physical.
         .with_remove_translation(false)
+        // The energy ladder needs the whole band relaxed around the saddle.
+        .with_min_mode(None)
         .with_force_tol(1.0e-3)
         .with_max_move(0.1)
         .with_climbing(CiConfig::always());
