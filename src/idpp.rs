@@ -22,10 +22,11 @@ use crate::mic::{self, Cell};
 use crate::trics::{TricsConfig, trics_path};
 
 /// Initial Cartesian path supplied to a band or Gaussian process band.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub enum PathInitializer {
     /// Straight minimum image interpolation.
+    #[default]
     Linear,
     /// Image dependent pair potential interpolation.
     Idpp(IdppConfig),
@@ -33,26 +34,15 @@ pub enum PathInitializer {
     Trics(TricsStartConfig),
 }
 
-impl Default for PathInitializer {
-    fn default() -> Self {
-        Self::Linear
-    }
-}
-
 /// Seed path refined by [`PathInitializer::Trics`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub enum TricsSeed {
     /// Straight Cartesian seed.
+    #[default]
     Linear,
     /// IDPP seed.
     Idpp(IdppConfig),
-}
-
-impl Default for TricsSeed {
-    fn default() -> Self {
-        Self::Linear
-    }
 }
 
 /// Controls for a TRICS path initializer.
