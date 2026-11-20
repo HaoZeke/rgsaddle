@@ -62,9 +62,6 @@ fn lineb_c_abi() {
         run.status.success(),
         "lineb C ABI test failed:\nstdout: {stdout}\nstderr: {stderr}"
     );
-    assert!(
-        stdout.contains("RGSADDLE_LINEB_ABI_OK"),
-        "stdout: {stdout}"
-    );
+    assert!(stdout.contains("RGSADDLE_LINEB_ABI_OK"), "stdout: {stdout}");
     let _ = std::fs::remove_file(&out);
 }
