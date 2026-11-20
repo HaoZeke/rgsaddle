@@ -530,6 +530,8 @@ fn run_mep(
         }
     }
     let config = BandConfig::default()
+        // Translation of both H atoms relative to the fixed substrate is physical.
+        .with_remove_translation(false)
         .with_force_tol(1.0e-3)
         .with_max_move(0.1)
         .with_climbing(CiConfig::always());
@@ -562,6 +564,17 @@ fn run_mep(
         .max_by(|(_, a), (_, b)| a.total_cmp(b))
         .unwrap();
     let e_reactant = energies[0];
+    let saddle_force = gradients
+        .row(saddle_i)
+        .iter()
+        .map(|g| g * g)
+        .sum::<f64>()
+        .sqrt();
+    if saddle_i == 0 || saddle_i + 1 == band.nrows() || saddle_force > 2.0e-3 {
+        return Err(format!(
+            "MEP maximum at image {saddle_i} has gradient norm {saddle_force:.6e} eV/Å"
+        ));
+    }
     let barrier = e_saddle - e_reactant;
     let mep_calls = surface.calls() - before;
     println!(
