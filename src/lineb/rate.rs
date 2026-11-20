@@ -794,6 +794,22 @@ fn bordered_ring(
         return Ok(None);
     };
     result.negative_modes = negative;
+    // The bordered determinant also contains det(GᵀG). Its correction makes
+    // the result invariant to the scale and mutual overlap of the gauge columns.
+    if !gauges.is_empty() {
+        let gram = Array2::from_shape_fn((gauges.len(), gauges.len()), |(i, j)| {
+            gauges[i].dot(&gauges[j])
+        });
+        let (metric, _) = crate::eigensolve::exact_eigh(gram.view())?;
+        let largest = metric.iter().copied().fold(0.0_f64, f64::max);
+        if metric
+            .iter()
+            .any(|&value| value <= f64::EPSILON.sqrt() * largest)
+        {
+            return Ok(None);
+        }
+        result.log_abs_det -= metric.iter().map(|v| v.ln()).sum::<f64>();
+    }
     Ok(Some(result))
 }
 
@@ -872,6 +888,24 @@ mod tests {
         ]);
         let dense = projected_log_abs_det(dense_ring(&blocks, 0.5), gauges.clone()).unwrap();
         let schur = bordered_ring(&blocks, 0.5, &gauges).unwrap().unwrap();
+        assert_eq!(schur.negative_modes, dense.negative_modes);
+        assert!((schur.log_abs_det - dense.log_abs_det).abs() < 1e-11);
+    }
+
+    #[test]
+    fn rescaling_and_mixing_gauges_preserves_the_border_determinant() {
+        let blocks = vec![
+            ndarray::array![[2.]],
+            ndarray::array![[4.]],
+            ndarray::array![[1.]],
+            ndarray::array![[-2.]],
+        ];
+        let gauges = vec![
+            ndarray::array![1., 2., 0., 0.],
+            ndarray::array![2., 1., 3., 1.],
+        ];
+        let dense = projected_log_abs_det(dense_ring(&blocks, 0.4), gauges.clone()).unwrap();
+        let schur = bordered_ring(&blocks, 0.4, &gauges).unwrap().unwrap();
         assert_eq!(schur.negative_modes, dense.negative_modes);
         assert!((schur.log_abs_det - dense.log_abs_det).abs() < 1e-11);
     }
