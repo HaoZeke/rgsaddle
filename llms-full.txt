@@ -483,7 +483,7 @@ A failed callback leaves it unchanged.
 Its `rotation_angle_tol` field stops a dimer rotation once the optimal angle falls under this tolerance in radians.
 The Rust default is five degrees, 0 turns the stop off, and a C config stores the value it is given.
 Both fields are read only from a config whose version minor is 5 or newer.
-`RGSADDLE_ABI_MINOR` is 47.
+`RGSADDLE_ABI_MINOR` is 48.
 From minor 24, `rgsaddle_sella_saddle_set_symmetrized_ritz` sets `SellaSaddleConfig::symmetrized_ritz` from 0 or 1.
 It returns `RGSADDLE_INVALID_PARAMETER` for any other value.
 `rgsaddle_sella_saddle_set_small_system_atom_ceiling` (minor 25) sets `SellaSaddleConfig::small_system_atom_ceiling` from 0 or 1.
@@ -3032,7 +3032,7 @@ CMAKE_POLICY_VERSION_MINIMUM=3.5 cargo build --locked --features chemfiles
 
 > Stepping bands, minimum-mode sessions, Sella, IRC, and strings from C and C++
 
-`include/rgsaddle.h` declares the C application binary interface (ABI), major 1, minor 47. It preserves the main band, minimum-mode and index-1 layouts and adds intrinsic reaction coordinate (IRC), Sella, constraint and geometry controls. Include this header rather than duplicating its structures. Check `rgsaddle_abi_stamp` before constructing a session. A meson project takes the headers from the top-level `meson.build`; see [the meson how-to](meson.html).
+`include/rgsaddle.h` declares the C application binary interface (ABI), major 1, minor 48. It preserves the main band, minimum-mode and index-1 layouts and adds intrinsic reaction coordinate (IRC), Sella, constraint and geometry controls. Include this header rather than duplicating its structures. Check `rgsaddle_abi_stamp` before constructing a session. A meson project takes the headers from the top-level `meson.build`; see [the meson how-to](meson.html).
 
 A surface callback returns `rgsaddle_status_t` and receives one `rgsaddle_surface_request_t`. Positions and gradients are image-major Cartesian triples. The host supplies the energy and gradient arrays for every requested image; the library performs no Message Passing Interface (MPI) communication.
 From ABI minor 42, `RGSADDLE_NOT_EQUILIBRATED` and `RGSADDLE_INSUFFICIENT_EFFECTIVE_SAMPLES` report constrained-ensemble tails that fail the drift or effective-sample guards.
@@ -4462,6 +4462,7 @@ The narrative for a session is the C and C++ how-to, not this list.
 - `rgsaddle_lineb_config_default`. Purpose: Fill out with the solver defaults for the given force tolerances, ABI minor 46. Parameters: the declaration. Units: the caller's.
 - `rgsaddle_lineb_solve`. Purpose: Optimize a fixed-energy tunneling path and optionally its harmonic quantum TST rate, ABI minor 46. Parameters: the declaration. Units: the caller's.
 - `rgsaddle_lineb_solve_with_kappa`. Purpose: Solve with fixed endpoint coefficient κ. Parameters: the declaration. Units: the caller's.
+- `rgsaddle_lineb_solve_options`. Purpose: Optimize with a choice of initial path and convergence test. Parameters: the declaration. Units: the caller's.
 
 ## Types and callbacks
 
@@ -4577,6 +4578,8 @@ The narrative for a session is the C and C++ how-to, not this list.
 - `RGSADDLE_STENCIL_QUERY_POSITIONS`. Purpose: Macro constant in include/rgsaddle.h.
 - `RGSADDLE_STENCIL_QUERY_MODE`. Purpose: Macro constant in include/rgsaddle.h.
 - `RGSADDLE_STENCIL_QUERY_CURVATURE`. Purpose: Macro constant in include/rgsaddle.h.
+- `RGSADDLE_LINEB_LINEAR_SEED`. Purpose: Macro constant in include/rgsaddle.h.
+- `RGSADDLE_LINEB_ENDPOINT_CONVERGENCE`. Purpose: Macro constant in include/rgsaddle.h.
 - `RGSADDLE_OK`. Purpose: Enumerator of `rgsaddle_status_t`.
 - `RGSADDLE_NULL_SESSION`. Purpose: Enumerator of `rgsaddle_status_t`.
 - `RGSADDLE_NULL_BAND`. Purpose: Enumerator of `rgsaddle_status_t`.

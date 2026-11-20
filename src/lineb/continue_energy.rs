@@ -133,6 +133,7 @@ pub(super) fn clip_seed<S: PointSurface>(
     masses: &Masses,
     seed: ArrayView2<f64>,
     energy: f64,
+    linear_seed: bool,
 ) -> Result<Option<Array2<f64>>, SaddleError> {
     let last = seed.nrows() - 1;
     let left = surface.eval(seed.row(0))?.0;
@@ -164,7 +165,7 @@ pub(super) fn clip_seed<S: PointSurface>(
         saddle,
         energy,
         seed.nrows(),
-        false,
+        linear_seed,
     )
     .map(Some)
 }

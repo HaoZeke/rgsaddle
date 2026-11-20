@@ -320,14 +320,31 @@ impl LinebSession {
         cartesian: Array2<f64>,
         energy: f64,
     ) -> Result<Self, SaddleError> {
+        Self::from_seed_with_interpolation(surface, config, masses, cartesian, energy, false)
+    }
+
+    /// As in [`Self::from_seed`], with straight interpolation between the
+    /// turning surfaces when `linear_seed` is true and the seed spans both minima.
+    pub fn from_seed_with_interpolation<S: PointSurface>(
+        surface: &S,
+        config: LinebConfig,
+        masses: Masses,
+        cartesian: Array2<f64>,
+        energy: f64,
+        linear_seed: bool,
+    ) -> Result<Self, SaddleError> {
         let mut session = Self::new(config, masses, cartesian.clone(), energy)?;
         let counted = super::Counted {
             surface,
             calls: &session.evaluations,
         };
-        if let Some(seed) =
-            super::continue_energy::clip_seed(&counted, &session.masses, cartesian.view(), energy)?
-        {
+        if let Some(seed) = super::continue_energy::clip_seed(
+            &counted,
+            &session.masses,
+            cartesian.view(),
+            energy,
+            linear_seed,
+        )? {
             for (mut weighted, row) in session.weighted.rows_mut().into_iter().zip(seed.rows()) {
                 weighted.assign(&session.masses.to_weighted(row)?);
             }

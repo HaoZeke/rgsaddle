@@ -28,7 +28,7 @@ extern "C" {
 #endif
 
 #define RGSADDLE_ABI_MAJOR 1u
-#define RGSADDLE_ABI_MINOR 47u
+#define RGSADDLE_ABI_MINOR 48u
 
 /**
  * Band config flags bit 0. When set, each evaluation calls the surface
@@ -2007,6 +2007,22 @@ rgsaddle_status_t rgsaddle_lineb_solve_with_kappa(const rgsaddle_lineb_config_t 
                                        rgsaddle_surface_fn surface, void *user,
                                        double *optimized_positions,
                                        rgsaddle_lineb_result_t *out, const double *endpoint_kappa);
+
+#define RGSADDLE_LINEB_LINEAR_SEED (1u << 0)
+#define RGSADDLE_LINEB_ENDPOINT_CONVERGENCE (1u << 1)
+
+/** Optimize with a choice of initial path and convergence test. Combine
+ * RGSADDLE_LINEB_LINEAR_SEED and RGSADDLE_LINEB_ENDPOINT_CONVERGENCE in
+ * options, or pass zero for the default behavior. ABI minor 48. */
+rgsaddle_status_t rgsaddle_lineb_solve_options(const rgsaddle_lineb_config_t *cfg,
+                                       int64_t n_images, int64_t n_atoms,
+                                       const double *positions,
+                                       const double *atom_masses,
+                                       int32_t molecular, double energy,
+                                       int64_t max_steps, int64_t beads,
+                                       rgsaddle_surface_fn surface, void *user,
+                                       double *optimized_positions,
+                                       rgsaddle_lineb_result_t *out, const double *endpoint_kappa, uint32_t options);
 
 #ifdef __cplusplus
 }

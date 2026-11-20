@@ -221,7 +221,58 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve_with_kappa(
     out: *mut RgsaddleLinebResult,
     endpoint_kappa: *const f64,
 ) -> i32 {
+    // SAFETY: the buffers and coefficient follow the same contract.
+    unsafe {
+        rgsaddle_lineb_solve_options(
+            cfg,
+            n_images,
+            n_atoms,
+            positions,
+            atom_masses,
+            molecular,
+            energy,
+            max_steps,
+            beads,
+            surface,
+            user,
+            optimized_positions,
+            out,
+            endpoint_kappa,
+            0,
+        )
+    }
+}
+
+/// Solve with configurable seed geometry and convergence (ABI minor 48).
+///
+/// # Safety
+/// Pointer lifetimes and sizes follow [`rgsaddle_lineb_solve_with_kappa`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_lineb_solve_options(
+    cfg: *const RgsaddleLinebConfig,
+    n_images: i64,
+    n_atoms: i64,
+    positions: *const f64,
+    atom_masses: *const f64,
+    molecular: i32,
+    energy: f64,
+    max_steps: i64,
+    beads: i64,
+    surface: Option<RgsaddleSurfaceFn>,
+    user: *mut c_void,
+    optimized_positions: *mut f64,
+    out: *mut RgsaddleLinebResult,
+    endpoint_kappa: *const f64,
+    options: u32,
+) -> i32 {
     clear_last_error();
+    const LINEAR_SEED: u32 = 1;
+    const ENDPOINT_CONVERGENCE: u32 = 2;
+    if options & !(LINEAR_SEED | ENDPOINT_CONVERGENCE) != 0 {
+        set_last_error("unknown LI-NEB solver option");
+        return RGSADDLE_INVALID_PARAMETER;
+    }
+    let endpoint_convergence = options & ENDPOINT_CONVERGENCE != 0;
     if cfg.is_null()
         || positions.is_null()
         || atom_masses.is_null()
@@ -312,7 +363,14 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve_with_kappa(
         climbing_request: false,
         rows: Default::default(),
     };
-    let mut session = match LinebSession::from_seed(&cs, config, masses, cartesian, energy) {
+    let mut session = match LinebSession::from_seed_with_interpolation(
+        &cs,
+        config.with_endpoint_convergence(endpoint_convergence),
+        masses,
+        cartesian,
+        energy,
+        options & LINEAR_SEED != 0,
+    ) {
         Ok(session) => session,
         Err(err) => return fail(&err),
     };
@@ -336,7 +394,15 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve_with_kappa(
     if report.status != LinebStatus::Converged {
         set_last_error(&format!(
             "LI-NEB exhausted {} iterations: nudged force {} (tolerance {}), perpendicular force {} (tolerance {})",
-            report.iteration, report.opt_max, cfg.opt_tol, report.perp_max, cfg.perp_tol
+            report.iteration,
+            if endpoint_convergence {
+                report.endpoint_max
+            } else {
+                report.opt_max
+            },
+            cfg.opt_tol,
+            report.perp_max,
+            cfg.perp_tol
         ));
         return RGSADDLE_STALLED;
     }

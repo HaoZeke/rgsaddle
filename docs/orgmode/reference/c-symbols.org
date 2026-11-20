@@ -192,6 +192,7 @@ The narrative for a session is the C and C++ how-to, not this list.
 - =rgsaddle_lineb_config_default=. Purpose: Fill out with the solver defaults for the given force tolerances, ABI minor 46. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_lineb_solve=. Purpose: Optimize a fixed-energy tunneling path and optionally its harmonic quantum TST rate, ABI minor 46. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_lineb_solve_with_kappa=. Purpose: Solve with fixed endpoint coefficient κ. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_lineb_solve_options=. Purpose: Optimize with a choice of initial path and convergence test. Parameters: the declaration. Units: the caller's.
 
 * Types and callbacks
 
@@ -307,6 +308,8 @@ The narrative for a session is the C and C++ how-to, not this list.
 - =RGSADDLE_STENCIL_QUERY_POSITIONS=. Purpose: Macro constant in include/rgsaddle.h.
 - =RGSADDLE_STENCIL_QUERY_MODE=. Purpose: Macro constant in include/rgsaddle.h.
 - =RGSADDLE_STENCIL_QUERY_CURVATURE=. Purpose: Macro constant in include/rgsaddle.h.
+- =RGSADDLE_LINEB_LINEAR_SEED=. Purpose: Macro constant in include/rgsaddle.h.
+- =RGSADDLE_LINEB_ENDPOINT_CONVERGENCE=. Purpose: Macro constant in include/rgsaddle.h.
 - =RGSADDLE_OK=. Purpose: Enumerator of =rgsaddle_status_t=.
 - =RGSADDLE_NULL_SESSION=. Purpose: Enumerator of =rgsaddle_status_t=.
 - =RGSADDLE_NULL_BAND=. Purpose: Enumerator of =rgsaddle_status_t=.
