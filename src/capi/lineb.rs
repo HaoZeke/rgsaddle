@@ -10,7 +10,9 @@ use super::{
     CSurface, RGSADDLE_INVALID_PARAMETER, RGSADDLE_NULL_REPORT, RGSADDLE_NULL_SURFACE, RGSADDLE_OK,
     RGSADDLE_SHAPE, RGSADDLE_STALLED, RgsaddleSurfaceFn,
 };
-use crate::lineb::{LinebConfig, LinebSession, LinebStatus, Masses, hqtst_rate};
+use crate::lineb::{
+    LinebConfig, LinebSession, LinebStatus, Masses, hqtst_rate, hqtst_rate_with_orbit,
+};
 
 /// Fixed-energy LI-NEB controls for [`rgsaddle_lineb_solve`] (ABI minor 46).
 ///
@@ -381,6 +383,84 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve_counted_diagnostics(
     negative_modes: *mut i64,
     modes: *mut i64,
 ) -> i32 {
+    unsafe {
+        rgsaddle_lineb_solve_counted_orbit(
+            cfg,
+            n_images,
+            n_atoms,
+            positions,
+            atom_masses,
+            molecular,
+            energy,
+            max_steps,
+            beads,
+            surface,
+            user,
+            optimized_positions,
+            out,
+            endpoint_kappa,
+            options,
+            counts,
+            negative_modes,
+            modes,
+            std::ptr::null_mut(),
+        )
+    }
+}
+
+/// Caller-owned Cartesian output buffers and discrete force residuals.
+#[repr(C)]
+pub struct RgsaddleLinebOrbit {
+    /// Number of writable doubles in each supplied buffer.
+    pub capacity: usize,
+    /// Optional row-major bead positions.
+    pub positions: *mut f64,
+    /// Optional row-major bead gradient observations.
+    pub gradients: *mut f64,
+    /// Maximum absolute force residual in energy per length.
+    pub max_abs_residual: f64,
+    /// RMS force residual in energy per length.
+    pub rms_residual: f64,
+    /// Bead of the maximum residual, or -1 without a rate.
+    pub max_bead: i64,
+    /// Active Cartesian component of the maximum, or -1 without a rate.
+    pub max_coordinate: i64,
+}
+
+/// Counted solve with optional observations from the rate's surface calls.
+///
+/// # Safety
+/// The arguments obey the counted solve contract. A non-null orbit points to
+/// distinct writable storage. Its optional buffers each hold capacity doubles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_lineb_solve_counted_orbit(
+    cfg: *const RgsaddleLinebConfig,
+    n_images: i64,
+    n_atoms: i64,
+    positions: *const f64,
+    atom_masses: *const f64,
+    molecular: i32,
+    energy: f64,
+    max_steps: i64,
+    beads: i64,
+    surface: Option<RgsaddleSurfaceFn>,
+    user: *mut c_void,
+    optimized_positions: *mut f64,
+    out: *mut RgsaddleLinebResult,
+    endpoint_kappa: *const f64,
+    options: u32,
+    counts: *mut RgsaddleLinebCounts,
+    negative_modes: *mut i64,
+    modes: *mut i64,
+    orbit: *mut RgsaddleLinebOrbit,
+) -> i32 {
+    let mut orbit = unsafe { orbit.as_mut() };
+    if let Some(o) = orbit.as_deref_mut() {
+        o.max_abs_residual = f64::NAN;
+        o.rms_residual = f64::NAN;
+        o.max_bead = -1;
+        o.max_coordinate = -1;
+    }
     let mut negative_modes = unsafe { negative_modes.as_mut() };
     let mut modes = unsafe { modes.as_mut() };
     if let Some(value) = negative_modes.as_deref_mut() {
@@ -438,6 +518,17 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve_counted_diagnostics(
         Some(dof) => dof,
         None => return RGSADDLE_SHAPE,
     };
+    if let Some(o) = orbit.as_deref() {
+        let Some(n) = beads_usize.checked_mul(dof) else {
+            return RGSADDLE_SHAPE;
+        };
+        if std::alloc::Layout::array::<f64>(n).is_err()
+            || ((!o.positions.is_null() || !o.gradients.is_null()) && o.capacity < n)
+        {
+            set_last_error("LI orbit buffer cannot hold all bead coordinates");
+            return RGSADDLE_SHAPE;
+        }
+    }
     let n_values = match n_images_usize.checked_mul(dof) {
         Some(n) if std::alloc::Layout::array::<f64>(n).is_ok() => n,
         _ => return RGSADDLE_SHAPE,
@@ -564,7 +655,26 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve_counted_diagnostics(
         out.rate_calls = 0;
         return RGSADDLE_OK;
     }
-    match hqtst_rate(&cs, &path, beads_usize) {
+    let rate = if let Some(o) = orbit {
+        hqtst_rate_with_orbit(&cs, &path, beads_usize).map(|(rate, observed)| {
+            for (dst, values) in [
+                (o.positions, &observed.positions),
+                (o.gradients, &observed.gradients),
+            ] {
+                if !dst.is_null() {
+                    unsafe { std::ptr::copy_nonoverlapping(values.as_ptr(), dst, values.len()) };
+                }
+            }
+            o.max_abs_residual = observed.max_abs_residual;
+            o.rms_residual = observed.rms_residual;
+            o.max_bead = as_i64(observed.max_bead);
+            o.max_coordinate = as_i64(observed.max_coordinate);
+            rate
+        })
+    } else {
+        hqtst_rate(&cs, &path, beads_usize)
+    };
+    match rate {
         Ok(rate) => {
             out.log_rate_over_reactant = rate.log_rate_over_reactant;
             out.rate_calls = as_i64(rate.evaluations);

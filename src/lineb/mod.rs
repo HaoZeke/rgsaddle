@@ -91,7 +91,7 @@ pub use mass::Masses;
 pub use optimize::{LinebCalls, LinebConfig, LinebPath, LinebReport, LinebSession, LinebStatus};
 #[cfg(any(test, feature = "lineb-oracle"))]
 pub use rate::{cartesian_image_hessian, hqtst_rate_from_image_hessians, hqtst_rate_interpolated_hessian, hqtst_rate_interpolated_hessian_with_step};
-pub use rate::{HqtstRate, hqtst_rate};
+pub use rate::{HqtstRate, LinebRateOrbit, hqtst_rate, hqtst_rate_with_orbit};
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 

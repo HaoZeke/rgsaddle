@@ -88,6 +88,85 @@ pub fn hqtst_rate<S: PointSurface>(
     path: &LinebPath<impl Sized>,
     beads: usize,
 ) -> Result<HqtstRate, SaddleError> {
+    hqtst_rate_observed(surface, path, beads, |_, _, _| {})
+}
+
+/// Equal-time Cartesian configurations and energy gradients sampled for the rate.
+#[derive(Clone, Debug)]
+pub struct LinebRateOrbit {
+    /// Rows cover one full period. The return leg repeats the measured outbound rows.
+    pub positions: Array2<f64>,
+    /// Cartesian gradients in energy per length, in the same order as the positions.
+    pub gradients: Array2<f64>,
+    /// Largest absolute Cartesian component of the discrete equation of motion.
+    pub max_abs_residual: f64,
+    /// RMS residual over all Cartesian components of the ring.
+    pub rms_residual: f64,
+    /// Zero-based bead index of the maximum.
+    pub max_bead: usize,
+    /// Zero-based Cartesian component of the maximum.
+    pub max_coordinate: usize,
+}
+
+/// Evaluate the harmonic rate and retain the bead observations used in it.
+/// This performs the same surface calls as [`hqtst_rate`].
+pub fn hqtst_rate_with_orbit<S: PointSurface>(
+    surface: &S,
+    path: &LinebPath<impl Sized>,
+    beads: usize,
+) -> Result<(HqtstRate, LinebRateOrbit), SaddleError> {
+    let dof = path.masses.dof();
+    let mut measured = Vec::new();
+    let rate = hqtst_rate_observed(surface, path, beads, |_, x, g| {
+        measured.push((x.to_owned(), g.to_owned()));
+    })?;
+    let mut positions = Array2::zeros((beads, dof));
+    let mut gradients = Array2::zeros((beads, dof));
+    for j in 0..beads {
+        let (x, g) = &measured[j.min(beads - j)];
+        positions.row_mut(j).assign(x);
+        gradients.row_mut(j).assign(g);
+    }
+    let spring = (beads as f64 / rate.period).powi(2);
+    let mut rms_norm = 0.0_f64;
+    let mut maximum = (0.0, 0, 0);
+    for j in 0..beads {
+        let prev = (j + beads - 1) % beads;
+        let next = (j + 1) % beads;
+        for k in 0..dof {
+            let x = positions[(j, k)];
+            let curvature = (x - positions[(prev, k)]) + (x - positions[(next, k)]);
+            let residual =
+                gradients[(j, k)] + path.masses.sqrt_mass[k].powi(2) * spring * curvature;
+            if !residual.is_finite() {
+                return Err(SaddleError::NonFinite("replica force residual"));
+            }
+            rms_norm = rms_norm.hypot(residual);
+            if residual.abs() > maximum.0 {
+                maximum = (residual.abs(), j, k);
+            }
+        }
+    }
+    let rms_residual = rms_norm / (positions.len() as f64).sqrt();
+    Ok((
+        rate,
+        LinebRateOrbit {
+            positions,
+            gradients,
+            max_abs_residual: maximum.0,
+            rms_residual,
+            max_bead: maximum.1,
+            max_coordinate: maximum.2,
+        },
+    ))
+}
+
+fn hqtst_rate_observed<S: PointSurface>(
+    surface: &S,
+    path: &LinebPath<impl Sized>,
+    beads: usize,
+    mut observe: impl FnMut(usize, ArrayView1<'_, f64>, ArrayView1<'_, f64>),
+) -> Result<HqtstRate, SaddleError> {
     let calls = AtomicUsize::new(0);
     let counted = crate::lineb::Counted {
         surface,
@@ -103,9 +182,15 @@ pub fn hqtst_rate<S: PointSurface>(
     for bead in 0..distinct {
         let cartesian = path.masses.to_cartesian(replicas.weighted.row(bead))?;
         let (energy, gradient) = counted.eval(cartesian.view())?;
+        if gradient.len() != dof {
+            return Err(SaddleError::Shape(
+                "replica gradient dimensions differ".into(),
+            ));
+        }
         if !energy.is_finite() || gradient.iter().any(|component| !component.is_finite()) {
             return Err(SaddleError::NonFinite("ring-polymer replica"));
         }
+        observe(bead, cartesian.view(), gradient.view());
         energies[bead] = energy;
         energies[(beads - bead) % beads] = energy;
         blocks.push(weighted_block(

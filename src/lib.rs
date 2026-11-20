@@ -168,7 +168,7 @@ pub use lammps::{
 pub use lineb::{cartesian_image_hessian, hqtst_rate_from_image_hessians, hqtst_rate_interpolated_hessian, hqtst_rate_interpolated_hessian_with_step};
 pub use lineb::{
     Continuation, HqtstRate, LinebCalls, LinebConfig, LinebPath, LinebReport, LinebSession,
-    LinebStatus, Masses, continue_from_mep, continue_from_mep_with_observer, hqtst_rate,
+    LinebRateOrbit, LinebStatus, Masses, continue_from_mep, continue_from_mep_with_observer, hqtst_rate, hqtst_rate_with_orbit,
 };
 pub use minmode::{
     ArtNConfig, FiniteDifference, MinModeConfig, MinModeKind, MinModeReport, MinModeSession,
