@@ -318,13 +318,14 @@ impl CuH2Lib {
     unsafe fn open(path: &Path) -> Result<Self, String> {
         let library =
             unsafe { Library::new(path) }.map_err(|e| format!("load {}: {e}", path.display()))?;
-        let ensure: Symbol<EnsureParamsFn> = unsafe { library.get(b"rgpot_cuh2_ensure_params") }
-            .map_err(|e| format!("rgpot_cuh2_ensure_params: {e}"))?;
+        // The workspace-capable ABI exposes an explicit initializer.
+        // The serial force ABI also supports plugins with internal initialization.
+        if let Ok(ensure) = unsafe { library.get::<EnsureParamsFn>(b"rgpot_cuh2_ensure_params") } {
+            unsafe { ensure() };
+        }
         let force: Symbol<ForceFn> = unsafe { library.get(b"rgpot_cuh2_force") }
             .map_err(|e| format!("rgpot_cuh2_force: {e}"))?;
-        let ensure = *ensure;
         let force = *force;
-        unsafe { ensure() };
         Ok(Self {
             _library: library,
             force,
@@ -724,7 +725,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let lib_path = args.lib.ok_or_else(|| {
         "CuH2 stages need --lib PATH or RGPOT_CUH2_LIB pointing at a library exporting \
-         rgpot_cuh2_ensure_params / rgpot_cuh2_force"
+         rgpot_cuh2_force"
             .to_string()
     })?;
     let lib = unsafe { CuH2Lib::open(&lib_path) }?;
