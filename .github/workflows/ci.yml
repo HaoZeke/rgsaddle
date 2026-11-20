@@ -80,6 +80,7 @@ jobs:
           python3 -m pip install 'scikit-build-core>=1.1' 'nanobind>=3.1' 'numpy'
           cargo run --release --example double_well
           cargo run --release --example muller_brown_band -- "$RUNNER_TEMP/muller"
+          cargo run --release --example lineb_muller_brown -- direct ring
           cargo run --release --example minmode_trust
           cargo run --release --example band_scaling -- band 7 1 1 1 fire
           cargo run --release --example band_scaling -- minmode 7 dimer 1
