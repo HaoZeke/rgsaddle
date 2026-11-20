@@ -292,11 +292,17 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve_options(
 #[repr(C)]
 #[derive(Default)]
 pub struct RgsaddleLinebCounts {
+    /// Rows used to bracket, clip, or extend the input seed.
     pub seed: i64,
+    /// Rows evaluated by path optimization steps.
     pub optimizer: i64,
+    /// Rows used to assemble and refine the path before integration.
     pub preparation: i64,
+    /// Rows used in action and imaginary-time quadrature.
     pub quadrature: i64,
+    /// Rows used to construct or advance the trajectory.
     pub dynamics: i64,
+    /// Rows used to evaluate the fluctuation prefactor.
     pub rate: i64,
 }
 
