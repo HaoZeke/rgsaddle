@@ -164,11 +164,15 @@ pub use lammps::{
     LammpsHyperplaneSampler, LammpsSamplerConfig, LammpsSystem, LammpsThermodynamicReference,
     LammpsThermostatKind, LammpsThermostatRecord,
 };
-#[cfg(any(test, feature = "lineb-oracle"))]
-pub use lineb::{cartesian_image_hessian, hqtst_rate_from_image_hessians, hqtst_rate_interpolated_hessian, hqtst_rate_interpolated_hessian_with_step};
 pub use lineb::{
-    Continuation, HqtstRate, LinebCalls, LinebConfig, LinebPath, LinebReport, LinebSession,
-    LinebRateOrbit, LinebStatus, Masses, continue_from_mep, continue_from_mep_with_observer, hqtst_rate, hqtst_rate_with_orbit,
+    Continuation, HqtstRate, LinebCalls, LinebConfig, LinebPath, LinebRateOrbit, LinebReport,
+    LinebSession, LinebStatus, Masses, continue_from_mep, continue_from_mep_with_observer,
+    hqtst_rate, hqtst_rate_with_orbit,
+};
+#[cfg(any(test, feature = "lineb-oracle"))]
+pub use lineb::{
+    cartesian_image_hessian, hqtst_rate_from_image_hessians, hqtst_rate_interpolated_hessian,
+    hqtst_rate_interpolated_hessian_with_step,
 };
 pub use minmode::{
     ArtNConfig, FiniteDifference, MinModeConfig, MinModeKind, MinModeReport, MinModeSession,
