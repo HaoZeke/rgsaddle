@@ -21,11 +21,10 @@ const DEFAULT_BOND_FACTOR: f64 = 1.35;
 const DEFAULT_RANK_TOLERANCE: f64 = 0.000_001;
 const DIFFERENCE_STEP: f64 = 0.000_001;
 const VECTOR_TOLERANCE: f64 = 0.000_000_000_001;
-const JACOBI_SWEEPS_PER_DIMENSION: usize = 24;
 const ANGLE_WARNING_COSINE: f64 = 0.906_307_787_036_649_9;
 const ANGLE_UNSTABLE_COSINE: f64 = 0.965_925_826_289_068_3;
 const ANGLE_FAILURE_COSINE: f64 = 0.996_194_698_091_745_5;
-const LINEAR_ANGLE_COSINE: f64 = 0.95;
+const LINEAR_ANGLE_COSINE: f64 = ANGLE_WARNING_COSINE;
 const OUT_OF_PLANE_COSINE: f64 = 0.95;
 const INVERSION_DAMPING_GROWTH: f64 = 1.2;
 const INVERSION_REJECTION_LIMIT: usize = 5;
@@ -213,11 +212,12 @@ impl TricPrimitive {
         }
     }
 
-    /// Numerical stability level from zero through four.
+    /// Numerical stability level from zero through six.
     ///
     /// Zero is regular. One warns that an angular primitive is close
     /// to linear, two marks it unstable under small perturbations, and
-    /// three marks imminent coordinate failure.
+    /// three or above marks imminent coordinate failure. Out-of-plane
+    /// coordinates sum two adjacent angle scores up to six.
     pub fn diagnostic(&self, positions: ArrayView1<'_, f64>) -> u8 {
         match self {
             Self::Angle(a, b, c) => angular_diagnostic(positions, &[(*a, *b, *c)]),
@@ -230,7 +230,12 @@ impl TricPrimitive {
                 Ok(_) => 0,
                 Err(_) => 3,
             },
-            Self::Translation(_) | Self::Rotation(_) | Self::ScaledRotation(..) => 0,
+            Self::Translation(_) | Self::Rotation(_) | Self::ScaledRotation(..) => {
+                match self.value(positions) {
+                    Ok(_) => 0,
+                    Err(_) => 3,
+                }
+            }
         }
     }
 
@@ -293,7 +298,7 @@ impl TricSystem {
         }
         let primitive_b = primitive_wilson_b(&primitives, reference)?;
         let metric = primitive_b.dot(&primitive_b.t());
-        let basis = nonredundant_basis(&metric, config.rank_tolerance);
+        let basis = nonredundant_basis(&metric, config.rank_tolerance)?;
         if basis.ncols() == 0 {
             return Err(SaddleError::Invalid(
                 "TRIC construction found no independent coordinates".into(),
@@ -353,7 +358,7 @@ impl TricSystem {
             .iter()
             .map(|primitive| primitive.diagnostic(positions))
             .max()
-            .map_or(0, |value| value)
+            .unwrap_or(0)
     }
 
     /// Iteratively invert an internal displacement from `start`.
@@ -373,10 +378,12 @@ impl TricSystem {
         let mut positions = start.to_owned();
         let mut remaining = displacement.to_owned();
         let initial_error = remaining.dot(&remaining).sqrt();
+        if initial_error <= config.tolerance {
+            return Ok(positions);
+        }
         let mut best_error = initial_error;
         let mut damping = 1.0;
         let mut rejected = 0;
-        let mut first_trial = None;
         for _ in 0..config.max_iterations {
             let b = self.wilson_b(positions.view())?;
             let gram = b.dot(&b.t());
@@ -387,9 +394,6 @@ impl TricSystem {
             if trial.iter().any(|value| !value.is_finite()) {
                 return Err(SaddleError::NonFinite("TRIC back transformation"));
             }
-            if first_trial.is_none() {
-                first_trial = Some(trial.clone());
-            }
             let actual = self.difference(trial.view(), positions.view())?;
             let next_remaining = &remaining - &actual;
             let error = next_remaining.dot(&next_remaining).sqrt();
@@ -397,14 +401,9 @@ impl TricSystem {
                 damping *= 0.5;
                 rejected += 1;
                 if rejected >= INVERSION_REJECTION_LIMIT {
-                    return Ok(if best_error < initial_error {
-                        positions
-                    } else {
-                        match first_trial {
-                            Some(trial) => trial,
-                            None => positions,
-                        }
-                    });
+                    return Err(SaddleError::Solver(
+                        "TRIC back transformation rejected five damped steps".into(),
+                    ));
                 }
                 continue;
             }
@@ -413,11 +412,18 @@ impl TricSystem {
             best_error = error;
             rejected = 0;
             damping = (damping * INVERSION_DAMPING_GROWTH).min(1.0);
-            if error <= config.tolerance || max_atom_norm(&step) <= config.tolerance {
+            if error <= config.tolerance {
                 return Ok(positions);
             }
+            if max_atom_norm(&step) <= config.tolerance {
+                return Err(SaddleError::Solver(
+                    "TRIC back transformation stalled before reaching tolerance".into(),
+                ));
+            }
         }
-        Ok(positions)
+        Err(SaddleError::Solver(
+            "TRIC back transformation did not converge".into(),
+        ))
     }
 }
 
@@ -496,8 +502,9 @@ pub fn tric_systems(
 /// Diagnostic matrix `D`.
 ///
 /// Row `i` evaluates the TRIC system built at image `i` on every path
-/// image `j`. Entries range from zero for a regular system to three
-/// for imminent failure.
+/// image `j`. Entries range from zero for a regular system to six
+/// when both adjacent angles of an out-of-plane coordinate are near
+/// linear.
 pub fn diagnostic_matrix(
     systems: &[TricSystem],
     path: ndarray::ArrayView2<'_, f64>,
@@ -548,15 +555,13 @@ pub fn tric_segments(
     }
     let maze_segments = maze_path(diagnostic, threshold)?;
     let splice_length = splice_length(n);
-    let segments = fill_splice_segments(&maze_segments, splice_length, n);
-    Ok(segments
-        .into_iter()
-        .map(|(start, end)| TricsSegment {
-            start,
-            end,
-            system: best_system(diagnostic, start, end),
-        })
-        .collect())
+    Ok(fill_splice_segments_with_systems(
+        &maze_segments,
+        diagnostic,
+        threshold,
+        splice_length,
+        n,
+    ))
 }
 
 /// Refine an initial Cartesian path with TRICS.
@@ -582,6 +587,10 @@ pub fn trics_path(
                 && (0..initial.nrows())
                     .all(|image| diagnostic[(system, image)] <= config.diagnostic_threshold)
         }));
+        candidates.retain(|&system| {
+            (0..initial.nrows())
+                .all(|image| diagnostic[(system, image)] <= config.diagnostic_threshold)
+        });
         let mut first_error = None;
         for system in candidates {
             match interpolate_tric_segment(
@@ -602,10 +611,9 @@ pub fn trics_path(
                 Err(_) => {}
             }
         }
-        return Err(first_error.map_or_else(
-            || SaddleError::Solver("TRICS found no stable coordinate system".into()),
-            |error| error,
-        ));
+        return Err(first_error.unwrap_or_else(|| {
+            SaddleError::Solver("TRICS found no stable coordinate system".into())
+        }));
     }
     splice_path(initial, &systems, segments, config)
 }
@@ -613,7 +621,7 @@ pub fn trics_path(
 fn maze_path(
     diagnostic: ndarray::ArrayView2<'_, u8>,
     threshold: u8,
-) -> Result<Vec<(usize, usize)>, SaddleError> {
+) -> Result<Vec<TricsSegment>, SaddleError> {
     let n = diagnostic.nrows();
     let mut okay = Array2::from_shape_fn((n, n), |index| diagnostic[index] <= threshold);
     if !okay[(0, 0)] || !okay[(n - 1, n - 1)] {
@@ -628,19 +636,13 @@ fn maze_path(
                 if (system == 0 && image == 0) || (system == n - 1 && image == n - 1) {
                     continue;
                 }
-                let blocked = if system == n - 1 {
-                    !previous[(system, image + 1)]
-                } else if system == 0 {
-                    !previous[(system, image - 1)]
-                } else {
-                    image < n - 1
-                        && !previous[(system + 1, image)]
-                        && !previous[(system, image + 1)]
-                        || image > 0
-                            && !previous[(system - 1, image)]
-                            && !previous[(system, image - 1)]
-                };
-                if blocked {
+                let forward_blocked = image < n - 1
+                    && !previous[(system, image + 1)]
+                    && (system + 1 >= n || !previous[(system + 1, image)]);
+                let backward_blocked = image > 0
+                    && !previous[(system, image - 1)]
+                    && (system == 0 || !previous[(system - 1, image)]);
+                if forward_blocked || backward_blocked {
                     okay[(system, image)] = false;
                 }
             }
@@ -650,7 +652,7 @@ fn maze_path(
         }
     }
 
-    let mut candidates: Vec<Option<Vec<(usize, usize)>>> = vec![None; n / 2];
+    let mut candidates: Vec<Option<Vec<TricsSegment>>> = vec![None; (n / 2).max(1)];
     for (size, candidate) in candidates.iter_mut().enumerate() {
         for start in 0..n {
             if let Some(segments) = drive_maze(&okay, start, size, false) {
@@ -681,7 +683,7 @@ fn drive_maze(
     start_system: usize,
     size: usize,
     reverse: bool,
-) -> Option<Vec<(usize, usize)>> {
+) -> Option<Vec<TricsSegment>> {
     let n = okay.nrows();
     let mut system = start_system;
     let mut image = if reverse { n - 1 } else { 0 };
@@ -693,7 +695,8 @@ fn drive_maze(
     let mut segments = Vec::new();
     for _ in 0..=2 * n {
         if (!reverse && image == n - 1) || (reverse && image == 0) {
-            segments.push(if reverse { (0, last) } else { (last, n - 1) });
+            let (start, end) = if reverse { (0, last) } else { (last, n - 1) };
+            segments.push(TricsSegment { start, end, system });
             if reverse {
                 segments.reverse();
             }
@@ -712,11 +715,12 @@ fn drive_maze(
                 image = next_image;
             } else {
                 along_images = false;
-                segments.push(if reverse {
+                let (start, end) = if reverse {
                     (image, last)
                 } else {
                     (last, image)
-                });
+                };
+                segments.push(TricsSegment { start, end, system });
                 last = next_image;
                 system = if reverse {
                     system.checked_sub(1)?
@@ -730,11 +734,11 @@ fn drive_maze(
             } else {
                 system.checked_add(1).filter(|next| *next < n)
             };
-            if let Some(next) = next_system {
-                if maze_square_is_open(okay, next, image, size) {
-                    system = next;
-                    continue;
-                }
+            if let Some(next) = next_system
+                && maze_square_is_open(okay, next, image, size)
+            {
+                system = next;
+                continue;
             }
             along_images = true;
             image = if reverse {
@@ -755,20 +759,21 @@ fn maze_square_is_open(okay: &Array2<bool>, system: usize, image: usize, size: u
     (row_start..row_end).all(|row| (column_start..column_end).all(|column| okay[(row, column)]))
 }
 
-fn keep_maze_candidate(current: &mut Option<Vec<(usize, usize)>>, candidate: Vec<(usize, usize)>) {
+fn keep_maze_candidate(current: &mut Option<Vec<TricsSegment>>, candidate: Vec<TricsSegment>) {
     let replace = match current {
         Some(existing) if candidate.len() > existing.len() => false,
+        Some(existing) if candidate.len() < existing.len() => true,
         Some(existing) => {
             let shortest = candidate
                 .iter()
-                .map(|(start, end)| end - start)
+                .map(|segment| segment.end - segment.start)
                 .min()
-                .map_or(0, |length| length);
+                .unwrap_or(0);
             let existing_shortest = existing
                 .iter()
-                .map(|(start, end)| end - start)
+                .map(|segment| segment.end - segment.start)
                 .min()
-                .map_or(0, |length| length);
+                .unwrap_or(0);
             shortest > existing_shortest
         }
         None => true,
@@ -791,11 +796,19 @@ fn splice_length(n_images: usize) -> usize {
     }
 }
 
-fn merge_segment_pair(segments: &[(usize, usize)], merge_index: usize) -> Vec<(usize, usize)> {
+fn merge_segment_pair(
+    segments: &[TricsSegment],
+    merge_index: usize,
+    diagnostic: ndarray::ArrayView2<'_, u8>,
+    threshold: u8,
+) -> Vec<TricsSegment> {
     let mut merged = Vec::with_capacity(segments.len() - 1);
     for (index, &segment) in segments.iter().enumerate() {
         if index == merge_index {
-            merged.push((segment.0, segments[index + 1].1));
+            let start = segment.start;
+            let end = segments[index + 1].end;
+            let system = best_system(diagnostic, start, end, segment.system, threshold);
+            merged.push(TricsSegment { start, end, system });
         } else if index != merge_index + 1 {
             merged.push(segment);
         }
@@ -803,60 +816,226 @@ fn merge_segment_pair(segments: &[(usize, usize)], merge_index: usize) -> Vec<(u
     merged
 }
 
+#[cfg(test)]
 fn fill_splice_segments(
     segments: &[(usize, usize)],
     splice_length: usize,
     n_images: usize,
 ) -> Vec<(usize, usize)> {
+    let diagnostic = Array2::zeros((n_images, n_images));
+    let typed: Vec<_> = segments
+        .iter()
+        .map(|&(start, end)| TricsSegment {
+            start,
+            end,
+            system: start,
+        })
+        .collect();
+    fill_splice_segments_with_systems(&typed, diagnostic.view(), 0, splice_length, n_images)
+        .into_iter()
+        .map(|segment| (segment.start, segment.end))
+        .collect()
+}
+
+fn fill_splice_segments_with_systems(
+    segments: &[TricsSegment],
+    diagnostic: ndarray::ArrayView2<'_, u8>,
+    threshold: u8,
+    splice_length: usize,
+    n_images: usize,
+) -> Vec<TricsSegment> {
     let mut filled = segments.to_vec();
-    while filled.len() > 1
+    while filled.len() > 2
         && filled
             .iter()
-            .map(|(start, end)| end - start)
+            .map(|segment| segment.end - segment.start)
             .min()
             .is_some_and(|length| length < splice_length)
     {
         let merge_index = (0..filled.len() - 1)
-            .min_by_key(|&index| {
-                merge_segment_pair(&filled, index)
-                    .iter()
-                    .map(|(start, end)| end - start)
-                    .max()
-                    .map_or(0, |length| length)
+            .filter(|&index| {
+                let start = filled[index].start;
+                let end = filled[index + 1].end;
+                (0..diagnostic.nrows()).any(|system| {
+                    (start..=end).all(|image| diagnostic[(system, image)] <= threshold)
+                })
             })
-            .map_or(0, |index| index);
-        filled = merge_segment_pair(&filled, merge_index);
+            .min_by_key(|&index| {
+                merge_segment_pair(&filled, index, diagnostic, threshold)
+                    .iter()
+                    .map(|segment| segment.end - segment.start)
+                    .max()
+                    .unwrap_or(0)
+            });
+        let Some(merge_index) = merge_index else {
+            break;
+        };
+        filled = merge_segment_pair(&filled, merge_index, diagnostic, threshold);
     }
     let half = splice_length / 2;
     let mut spliced: Vec<_> = filled
         .iter()
-        .map(|&(start, end)| (start.saturating_sub(half), (end + half).min(n_images - 1)))
+        .map(|segment| {
+            let start = segment.start.saturating_sub(half);
+            let end = (segment.end + half).min(n_images - 1);
+            TricsSegment {
+                start,
+                end,
+                system: best_system(diagnostic, start, end, segment.system, threshold),
+            }
+        })
         .collect();
-    if spliced.len() > 1 && spliced[1].0 == 0 {
+    if spliced.len() > 2 && spliced[1].start == 0 {
         spliced.remove(0);
         filled.remove(0);
-        filled[0].0 = 0;
+        filled[0].start = 0;
     }
-    if spliced.len() > 1 && spliced[spliced.len() - 2].1 == n_images - 1 {
+    if spliced.len() > 2 && spliced[spliced.len() - 2].end == n_images - 1 {
         spliced.pop();
         filled.pop();
         let last = filled.len() - 1;
-        filled[last].1 = n_images - 1;
+        filled[last].end = n_images - 1;
+    }
+    if spliced.len() == 2 {
+        if n_images >= splice_length + 2
+            && (spliced[1].start == 0
+                || spliced[0].end == n_images - 1
+                || spliced[0].end + 1 - spliced[0].start < splice_length
+                || spliced[1].end + 1 - spliced[1].start < splice_length)
+        {
+            let boundary = filled[0].end.clamp(half, n_images - 2 - half);
+            let first_end = boundary + half;
+            let second_start = boundary + 1 - half;
+            spliced[0] = TricsSegment {
+                start: 0,
+                end: first_end,
+                system: best_system(diagnostic, 0, first_end, filled[0].system, threshold),
+            };
+            spliced[1] = TricsSegment {
+                start: second_start,
+                end: n_images - 1,
+                system: best_system(
+                    diagnostic,
+                    second_start,
+                    n_images - 1,
+                    filled[1].system,
+                    threshold,
+                ),
+            };
+        } else if n_images == 3 {
+            spliced[0] = TricsSegment {
+                start: 0,
+                end: 1,
+                system: best_system(diagnostic, 0, 1, filled[0].system, threshold),
+            };
+            spliced[1] = TricsSegment {
+                start: 1,
+                end: 2,
+                system: best_system(diagnostic, 1, 2, filled[1].system, threshold),
+            };
+        }
     }
     spliced
 }
 
-fn best_system(diagnostic: ndarray::ArrayView2<'_, u8>, start: usize, end: usize) -> usize {
+fn best_system(
+    diagnostic: ndarray::ArrayView2<'_, u8>,
+    start: usize,
+    end: usize,
+    preferred: usize,
+    threshold: u8,
+) -> usize {
+    let n = diagnostic.nrows();
+    if preferred < n && (start..=end).all(|image| diagnostic[(preferred, image)] <= threshold) {
+        return preferred;
+    }
     let midpoint = (start + end) / 2;
-    (start..=end)
+    (0..n)
         .min_by_key(|&system| {
             let level = (start..=end)
                 .map(|image| diagnostic[(system, image)])
                 .max()
-                .map_or(u8::MAX, |value| value);
-            (level, system.abs_diff(midpoint))
+                .unwrap_or(u8::MAX);
+            (
+                level > threshold,
+                level,
+                usize::from(system != preferred),
+                usize::from(!(start..=end).contains(&system)),
+                system.abs_diff(midpoint),
+            )
         })
-        .map_or(start, |system| system)
+        .unwrap_or(start)
+}
+
+fn segment_candidates(
+    segments: &[TricsSegment],
+    systems: &[TricSystem],
+    initial: ndarray::ArrayView2<'_, f64>,
+    threshold: u8,
+) -> Vec<Vec<usize>> {
+    let half = splice_length(initial.nrows()) / 2;
+    segments
+        .iter()
+        .enumerate()
+        .map(|(index, segment)| {
+            let midpoint = (segment.start + segment.end) / 2;
+            let core_start = if index == 0 {
+                segment.start
+            } else {
+                (segment.start + half).min(segment.end)
+            };
+            let core_end = if index + 1 == segments.len() {
+                segment.end
+            } else {
+                segment.end.saturating_sub(half).max(core_start)
+            };
+            let expanded_level = |system: usize| {
+                (segment.start..=segment.end)
+                    .map(|image| systems[system].diagnostic(initial.row(image)))
+                    .max()
+                    .unwrap_or(u8::MAX)
+            };
+            let core_level = |system: usize| {
+                (core_start..=core_end)
+                    .map(|image| systems[system].diagnostic(initial.row(image)))
+                    .max()
+                    .unwrap_or(u8::MAX)
+            };
+            let mut candidates = vec![segment.system];
+            for system in segment.start..=segment.end {
+                if !candidates.contains(&system) {
+                    candidates.push(system);
+                }
+            }
+            let has_strict = candidates
+                .iter()
+                .any(|&system| expanded_level(system) <= threshold);
+            candidates.retain(|&system| {
+                if has_strict {
+                    expanded_level(system) <= threshold
+                } else {
+                    core_level(system) <= threshold && expanded_level(system) < 3
+                }
+            });
+            candidates.sort_by_key(|&system| {
+                let endpoint_priority = if index == 0 && system == segment.start
+                    || index + 1 == segments.len() && system == segment.end
+                {
+                    0
+                } else {
+                    1
+                };
+                (
+                    expanded_level(system),
+                    core_level(system),
+                    endpoint_priority,
+                    usize::from(system != segment.system),
+                    system.abs_diff(midpoint),
+                )
+            });
+            candidates
+        })
+        .collect()
 }
 
 fn splice_path(
@@ -874,31 +1053,14 @@ fn splice_path(
             ]
         })
         .collect();
-    let segment_candidates: Vec<Vec<usize>> = segments
-        .iter()
-        .enumerate()
-        .map(|(index, segment)| {
-            let midpoint = (segment.start + segment.end) / 2;
-            let mut candidates: Vec<_> = (segment.start..=segment.end).collect();
-            candidates.sort_by_key(|&system| {
-                let level = (segment.start..=segment.end)
-                    .map(|image| systems[system].diagnostic(initial.row(image)))
-                    .max()
-                    .map_or(u8::MAX, |value| value);
-                let endpoint_priority = if index == 0 && system == segment.start
-                    || index + 1 == segments.len() && system == segment.end
-                {
-                    0
-                } else {
-                    1
-                };
-                (endpoint_priority, level, system.abs_diff(midpoint))
-            });
-            candidates
-        })
-        .collect();
+    let segment_candidates =
+        segment_candidates(&segments, systems, initial, config.diagnostic_threshold);
     let mut interpolated = Vec::new();
-    let splice_length = splice_length(initial.nrows());
+    let splice_length = segments
+        .windows(2)
+        .map(|pair| pair[0].end + 1 - pair[1].start)
+        .min()
+        .unwrap_or_else(|| splice_length(initial.nrows()));
     let mut damping = 1.0;
     let mut last_mismatch = f64::INFINITY;
     let mut decrease_streak = 0;
@@ -1104,7 +1266,8 @@ fn check_trics_config(config: &TricsConfig) -> Result<(), SaddleError> {
         || config.max_splice_iterations == 0
     {
         return Err(SaddleError::Invalid(
-            "TRICS needs a diagnostic from zero to three and positive splice controls".into(),
+            "TRICS needs a diagnostic threshold from zero to six and positive splice controls"
+                .into(),
         ));
     }
     Ok(())
@@ -1216,7 +1379,13 @@ fn distance_derivative(
     right: usize,
 ) -> Result<Array1<f64>, SaddleError> {
     let vector = sub(atom(positions, left)?, atom(positions, right)?);
-    let unit = scale(vector, 1.0 / norm(vector));
+    let length = norm(vector);
+    if length <= VECTOR_TOLERANCE {
+        return Err(SaddleError::Invalid(
+            "TRIC distance has coincident atoms".into(),
+        ));
+    }
+    let unit = scale(vector, 1.0 / length);
     let mut derivative = Array1::zeros(positions.len());
     for axis in 0..3 {
         derivative[3 * left + axis] = unit[axis];
@@ -1296,9 +1465,9 @@ fn angular_diagnostic(positions: ArrayView1<'_, f64>, angles: &[(usize, usize, u
             return 3;
         };
         let cosine = value.cos().abs();
-        let level = if cosine >= ANGLE_FAILURE_COSINE {
+        let level = if cosine > ANGLE_FAILURE_COSINE {
             3
-        } else if cosine >= ANGLE_UNSTABLE_COSINE {
+        } else if cosine > ANGLE_UNSTABLE_COSINE {
             2
         } else if cosine >= ANGLE_WARNING_COSINE {
             1
@@ -1523,7 +1692,7 @@ fn solve_metric(
             "TRIC linear solve dimensions differ".into(),
         ));
     }
-    let (values, vectors) = symmetric_eigen(matrix);
+    let (values, vectors) = crate::eigensolve::exact_eigh(matrix.view())?;
     let mut solution = Array1::zeros(n);
     for (mode, &value) in values.iter().enumerate() {
         if value.abs() <= tolerance {
@@ -1545,14 +1714,12 @@ fn cap_atom_step(mut step: Array1<f64>, max_move: f64) -> Array1<f64> {
 }
 
 fn max_atom_norm(step: &Array1<f64>) -> f64 {
-    step.as_slice()
-        .map(|values| {
-            values
-                .chunks(3)
-                .map(|atom| atom.iter().map(|value| value * value).sum::<f64>().sqrt())
-                .fold(0.0_f64, f64::max)
-        })
-        .map_or(0.0, |value| value)
+    step.as_slice().map_or(0.0, |values| {
+        values
+            .chunks(3)
+            .map(|atom| atom.iter().map(|value| value * value).sum::<f64>().sqrt())
+            .fold(0.0_f64, f64::max)
+    })
 }
 
 fn validate_bonds(
@@ -1698,40 +1865,37 @@ fn molecular_primitives(
             for [b, c, d] in permutations {
                 let first_cosine = angle(reference, center, b, c)?.cos().abs();
                 let second_cosine = angle(reference, b, c, d)?.cos().abs();
-                if first_cosine > LINEAR_ANGLE_COSINE || second_cosine > LINEAR_ANGLE_COSINE {
+                if first_cosine > OUT_OF_PLANE_COSINE || second_cosine > OUT_OF_PLANE_COSINE {
                     continue;
                 }
                 let normals = angle_normal(reference, center, b, c).and_then(|first| {
                     angle_normal(reference, b, c, d).map(|second| (first, second))
                 });
-                if let Ok((first, second)) = normals {
-                    if dot(first, second).abs() >= OUT_OF_PLANE_COSINE {
-                        let span =
-                            distance(reference, center, b)?.max(distance(reference, center, c)?);
-                        candidates.push((b, c, d, span));
-                    }
+                if let Ok((first, second)) = normals
+                    && dot(first, second).abs() >= OUT_OF_PLANE_COSINE
+                {
+                    let span = distance(reference, center, b)?.max(distance(reference, center, c)?);
+                    candidates.push((b, c, d, span));
                 }
             }
             if let Some(maximum) = candidates
                 .iter()
                 .map(|candidate| candidate.3)
                 .max_by(f64::total_cmp)
-            {
-                if let Some(&(b, c, d, _)) = candidates
+                && let Some(&(b, c, d, _)) = candidates
                     .iter()
                     .find(|candidate| candidate.3 >= 0.8 * maximum)
-                {
-                    primitives.retain(|primitive| {
-                        !matches!(
-                            primitive,
-                            TricPrimitive::Angle(left, middle, right)
-                                if *middle == center
-                                    && ((*left == b && *right == c)
-                                        || (*left == c && *right == b))
-                        )
-                    });
-                    primitives.push(TricPrimitive::OutOfPlane(center, b, c, d));
-                }
+            {
+                primitives.retain(|primitive| {
+                    !matches!(
+                        primitive,
+                        TricPrimitive::Angle(left, middle, right)
+                            if *middle == center
+                                && ((*left == b && *right == c)
+                                    || (*left == c && *right == b))
+                    )
+                });
+                primitives.push(TricPrimitive::OutOfPlane(center, b, c, d));
             }
         }
     }
@@ -1787,8 +1951,8 @@ fn radius_of_gyration(positions: &Array2<f64>) -> f64 {
     (squared / count).sqrt()
 }
 
-fn nonredundant_basis(metric: &Array2<f64>, tolerance: f64) -> Array2<f64> {
-    let (values, vectors) = symmetric_eigen(metric);
+fn nonredundant_basis(metric: &Array2<f64>, tolerance: f64) -> Result<Array2<f64>, SaddleError> {
+    let (values, vectors) = crate::eigensolve::exact_eigh(metric.view())?;
     let mut indices: Vec<usize> = (0..values.len())
         .filter(|&index| values[index].abs() > tolerance)
         .collect();
@@ -1798,60 +1962,10 @@ fn nonredundant_basis(metric: &Array2<f64>, tolerance: f64) -> Array2<f64> {
             None => Ordering::Equal,
         },
     );
-    Array2::from_shape_fn((metric.nrows(), indices.len()), |(row, column)| {
-        vectors[(row, indices[column])]
-    })
-}
-
-fn symmetric_eigen(matrix: &Array2<f64>) -> (Vec<f64>, Array2<f64>) {
-    let n = matrix.nrows();
-    let mut work = matrix.clone();
-    let mut vectors = Array2::eye(n);
-    for _ in 0..n.saturating_mul(JACOBI_SWEEPS_PER_DIMENSION) {
-        let mut p = 0;
-        let mut q = 0;
-        let mut largest = 0.0_f64;
-        for row in 0..n {
-            for column in row + 1..n {
-                let value = work[(row, column)].abs();
-                if value > largest {
-                    largest = value;
-                    p = row;
-                    q = column;
-                }
-            }
-        }
-        if largest <= VECTOR_TOLERANCE {
-            break;
-        }
-        let app = work[(p, p)];
-        let aqq = work[(q, q)];
-        let apq = work[(p, q)];
-        let angle = 0.5 * (2.0 * apq).atan2(aqq - app);
-        let (sine, cosine) = angle.sin_cos();
-        for row in 0..n {
-            if row == p || row == q {
-                continue;
-            }
-            let arp = work[(row, p)];
-            let arq = work[(row, q)];
-            work[(row, p)] = cosine * arp - sine * arq;
-            work[(p, row)] = work[(row, p)];
-            work[(row, q)] = sine * arp + cosine * arq;
-            work[(q, row)] = work[(row, q)];
-        }
-        work[(p, p)] = cosine * cosine * app - 2.0 * sine * cosine * apq + sine * sine * aqq;
-        work[(q, q)] = sine * sine * app + 2.0 * sine * cosine * apq + cosine * cosine * aqq;
-        work[(p, q)] = 0.0;
-        work[(q, p)] = 0.0;
-        for row in 0..n {
-            let vrp = vectors[(row, p)];
-            let vrq = vectors[(row, q)];
-            vectors[(row, p)] = cosine * vrp - sine * vrq;
-            vectors[(row, q)] = sine * vrp + cosine * vrq;
-        }
-    }
-    ((0..n).map(|index| work[(index, index)]).collect(), vectors)
+    Ok(Array2::from_shape_fn(
+        (metric.nrows(), indices.len()),
+        |(row, column)| vectors[(row, indices[column])],
+    ))
 }
 
 #[cfg(test)]
@@ -2185,5 +2299,272 @@ mod tests {
             let step = &pair[1] - &pair[0];
             assert!(step.dot(&step).sqrt() < 1.0);
         }
+    }
+
+    #[test]
+    fn large_basis_eigensolver_builds_fifty_plus_primitives() {
+        let n_atoms = 20;
+        let mut coords = Vec::with_capacity(3 * n_atoms);
+        for index in 0..n_atoms {
+            let t = index as f64 * 0.7;
+            coords.push(1.5 * t.cos() + 0.05 * index as f64);
+            coords.push(1.5 * t.sin());
+            coords.push(0.9 * index as f64);
+        }
+        let start = Array1::from_vec(coords);
+        let bonds: Vec<(usize, usize)> = (0..n_atoms - 1).map(|i| (i, i + 1)).collect();
+        let config = TricConfig::default().with_bonds(Some(bonds));
+        let system = TricSystem::new(start.view(), &config).unwrap();
+        assert!(
+            system.primitives().len() >= 50,
+            "expected >= 50 primitives, got {}",
+            system.primitives().len()
+        );
+        let u_gram = system.basis().t().dot(system.basis());
+        assert_eq!(u_gram.nrows(), 3 * n_atoms);
+        for row in 0..u_gram.nrows() {
+            for col in 0..u_gram.ncols() {
+                let expected = if row == col { 1.0 } else { 0.0 };
+                assert!(
+                    (u_gram[(row, col)] - expected).abs() < 1e-10,
+                    "u_gram[({row}, {col})] = {}, expected {expected}",
+                    u_gram[(row, col)]
+                );
+            }
+        }
+        let wilson = system.wilson_b(start.view()).unwrap();
+        let gram = wilson.dot(&wilson.t());
+        assert_eq!(gram.nrows(), 3 * n_atoms);
+        for row in 0..gram.nrows() {
+            assert!(gram[(row, row)] > 1e-6);
+            for col in 0..gram.ncols() {
+                if row != col {
+                    assert!(
+                        gram[(row, col)].abs() < 1e-8,
+                        "off-diagonal gram[({row}, {col})] = {}",
+                        gram[(row, col)]
+                    );
+                }
+            }
+        }
+        let mut target = start.clone();
+        target[0] += 0.01;
+        target[4] -= 0.01;
+        target[3 * (n_atoms - 1) + 2] += 0.015;
+        let displacement = system.difference(target.view(), start.view()).unwrap();
+        let recovered = system
+            .back_transform(
+                start.view(),
+                displacement.view(),
+                &TricInversionConfig::default(),
+            )
+            .unwrap();
+        let diff = &recovered - &target;
+        assert!(diff.dot(&diff).sqrt() < 1e-5);
+    }
+
+    #[test]
+    fn back_transform_rejects_nonconvergent_or_worsening_steps() {
+        let start = array![0.0, 0.0, 0.0, 0.96, 0.0, 0.0, -0.24, 0.93, 0.0];
+        let target = array![0.25, -0.15, 0.1, 1.15, 0.2, -0.1, -0.05, 1.08, 0.15];
+        let config = TricConfig::default().with_bonds(Some(vec![(0, 1), (0, 2)]));
+        let system = TricSystem::new(start.view(), &config).unwrap();
+        let displacement = system.difference(target.view(), start.view()).unwrap();
+
+        let one_iter = TricInversionConfig::default()
+            .with_max_iterations(1)
+            .with_tolerance(1e-12)
+            .with_max_atom_move(0.01);
+        assert!(matches!(
+            system.back_transform(start.view(), displacement.view(), &one_iter),
+            Err(SaddleError::Solver(_))
+        ));
+
+        let tiny_move = TricInversionConfig::default()
+            .with_max_iterations(32)
+            .with_tolerance(1e-4)
+            .with_max_atom_move(1e-7);
+        assert!(matches!(
+            system.back_transform(start.view(), displacement.view(), &tiny_move),
+            Err(SaddleError::Solver(_))
+        ));
+
+        let near_linear = array![-1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.999_999, 0.001, 0.0];
+        let mut impossible = Array1::zeros(system.basis().ncols());
+        for (idx, primitive) in system.primitives().iter().enumerate() {
+            if matches!(primitive, TricPrimitive::Angle(1, 0, 2)) {
+                for mode in 0..system.basis().ncols() {
+                    impossible[mode] = -system.basis()[(idx, mode)];
+                }
+            }
+        }
+        let strict = TricInversionConfig::default()
+            .with_max_iterations(10)
+            .with_tolerance(1e-8)
+            .with_max_atom_move(0.5);
+        assert!(matches!(
+            system.back_transform(near_linear.view(), impossible.view(), &strict),
+            Err(SaddleError::Solver(_))
+        ));
+    }
+
+    #[test]
+    fn distance_gradient_and_diagnostics_guard_singular_geometries() {
+        let coincident = array![0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        assert!(matches!(
+            TricPrimitive::Distance(0, 1).derivative(coincident.view()),
+            Err(SaddleError::Invalid(_))
+        ));
+        assert_eq!(
+            TricPrimitive::Distance(0, 1).diagnostic(coincident.view()),
+            3
+        );
+
+        let valid = array![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let invalid_short = array![0.0, 0.0, 0.0];
+        let translation =
+            TricPrimitive::Translation(Translation::new(vec![0, 1, 2], CartAxis::X).unwrap());
+        assert_eq!(translation.diagnostic(valid.view()), 0);
+        assert_eq!(translation.diagnostic(invalid_short.view()), 3);
+
+        let refpos = array![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let rotation =
+            TricPrimitive::Rotation(Rotation::new(vec![0, 1, 2], CartAxis::Z, refpos).unwrap());
+        assert_eq!(rotation.diagnostic(valid.view()), 0);
+        assert_eq!(rotation.diagnostic(invalid_short.view()), 3);
+
+        let path = array![
+            [0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.1, 0.0, 0.0]
+        ];
+        assert!(
+            trics_path(
+                path.view(),
+                &TricsConfig::default().with_diagnostic_threshold(6)
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            trics_path(
+                path.view(),
+                &TricsConfig::default().with_diagnostic_threshold(7)
+            ),
+            Err(SaddleError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn angle_diagnostic_threshold_matches_linear_bend_switch_boundary() {
+        let config = TricConfig::default().with_bonds(Some(vec![(0, 1), (1, 2)]));
+        let below_rad = (180.0_f64 - 154.9).to_radians();
+        let below = array![
+            -1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            below_rad.cos(),
+            below_rad.sin(),
+            0.0
+        ];
+        let sys_below = TricSystem::new(below.view(), &config).unwrap();
+        assert!(
+            sys_below
+                .primitives()
+                .iter()
+                .any(|p| matches!(p, TricPrimitive::Angle(0, 1, 2)))
+        );
+        assert!(
+            !sys_below
+                .primitives()
+                .iter()
+                .any(|p| matches!(p, TricPrimitive::LinearBend { .. }))
+        );
+        assert_eq!(sys_below.diagnostic(below.view()), 0);
+
+        let above_rad = (180.0_f64 - 155.1).to_radians();
+        let above = array![
+            -1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            above_rad.cos(),
+            above_rad.sin(),
+            0.0
+        ];
+        assert_eq!(sys_below.diagnostic(above.view()), 1);
+
+        let sys_above = TricSystem::new(above.view(), &config).unwrap();
+        assert!(
+            sys_above
+                .primitives()
+                .iter()
+                .any(|p| matches!(p, TricPrimitive::LinearBend { .. }))
+        );
+        assert!(
+            !sys_above
+                .primitives()
+                .iter()
+                .any(|p| matches!(p, TricPrimitive::Angle(0, 1, 2)))
+        );
+        assert_eq!(sys_above.diagnostic(above.view()), 0);
+    }
+
+    #[test]
+    fn maze_path_and_candidates_respect_edge_systems_and_thresholds() {
+        let mut diag = Array2::from_elem((8, 8), 3_u8);
+        for col in 0..=5 {
+            diag[(0, col)] = 0;
+        }
+        for row in 0..=7 {
+            diag[(row, 3)] = 0;
+        }
+        for col in 3..=7 {
+            diag[(7, col)] = 0;
+        }
+        let segments = maze_path(diag.view(), 0).unwrap();
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].system, 0);
+        assert_eq!(segments[1].system, 7);
+
+        let spliced = fill_splice_segments_with_systems(&segments, diag.view(), 0, 2, 8);
+        assert_eq!(spliced.len(), 2);
+
+        let angles = [30.0_f64, 20.0, 0.0, 20.0, 30.0];
+        let mut initial = Array2::zeros((angles.len(), 9));
+        for (image, degrees) in angles.into_iter().enumerate() {
+            let radians = degrees.to_radians();
+            initial.row_mut(image).assign(&array![
+                -1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                radians.cos(),
+                radians.sin(),
+                0.0
+            ]);
+        }
+        let config = TricConfig::default().with_bonds(Some(vec![(0, 1), (1, 2)]));
+        let systems = tric_systems(initial.view(), &config).unwrap();
+        let seg = [TricsSegment {
+            start: 0,
+            end: 2,
+            system: 2,
+        }];
+        let candidates = segment_candidates(&seg, &systems, initial.view(), 0);
+        assert!(!candidates[0].is_empty());
+        for &sys_idx in &candidates[0] {
+            let max_diag = (0..=2)
+                .map(|img| systems[sys_idx].diagnostic(initial.row(img)))
+                .max()
+                .unwrap();
+            assert_eq!(max_diag, 0);
+        }
+        assert!(!candidates[0].contains(&0));
     }
 }
