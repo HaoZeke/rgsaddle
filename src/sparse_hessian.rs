@@ -30,8 +30,8 @@
 //! at the recovery point.
 
 use ndarray::{Array1, Array2, ArrayView1};
-use rgmin::ApplyHessian;
 use rgmin::vecops::axpy;
+use rgmin::ApplyHessian;
 
 use crate::eigensolve::exact_eigh;
 use crate::error::SaddleError;
@@ -1608,7 +1608,35 @@ pub(crate) fn lanczos_spectrum(
             "the Lanczos spectrum needs a non-empty operator".into(),
         ));
     }
-    Ok(lanczos_full(&apply, n, n)?.values)
+    let projection = lanczos_projection(&apply, n)?;
+    if projection.diagonal.len() != n {
+        return Err(SaddleError::Solver("incomplete Lanczos spectrum".into()));
+    }
+    #[cfg(feature = "faer")]
+    {
+        use faer::diag::{DiagMut, DiagRef};
+        use faer::dyn_stack::{MemBuffer, MemStack};
+        use faer::linalg::{evd::tridiagonal_self_adjoint_evd, temp_mat_scratch};
+
+        // The values-only QR iteration needs two real work columns.
+        let mut storage = MemBuffer::new(temp_mat_scratch::<f64>(n, 1).array(2));
+        let mut values = vec![0.0; n];
+        tridiagonal_self_adjoint_evd(
+            DiagRef::from_slice(&projection.diagonal),
+            DiagRef::from_slice(&projection.off_diagonal),
+            DiagMut::from_slice_mut(&mut values),
+            None,
+            faer::Par::Seq,
+            MemStack::new(&mut storage),
+            Default::default(),
+        )
+        .map_err(|_| SaddleError::Solver("tridiagonal spectrum did not converge".into()))?;
+        Ok(Array1::from(values))
+    }
+    #[cfg(not(feature = "faer"))]
+    {
+        Ok(exact_eigh(projection.matrix().view())?.0)
+    }
 }
 
 fn lanczos_lowest(
@@ -1623,43 +1651,73 @@ fn lanczos_lowest(
     }
 }
 
-fn lanczos_full(
+struct LanczosProjection {
+    basis: Vec<Array1<f64>>,
+    diagonal: Vec<f64>,
+    off_diagonal: Vec<f64>,
+}
+
+impl LanczosProjection {
+    fn matrix(&self) -> Array2<f64> {
+        let mut matrix = Array2::from_diag(&ArrayView1::from(self.diagonal.as_slice()));
+        for (j, &beta) in self.off_diagonal.iter().enumerate() {
+            matrix[(j, j + 1)] = beta;
+            matrix[(j + 1, j)] = beta;
+        }
+        matrix
+    }
+}
+
+fn lanczos_projection(
     apply: &impl Fn(ArrayView1<f64>) -> Array1<f64>,
     n: usize,
-    k: usize,
-) -> Result<LowestEigenpairs, SaddleError> {
+) -> Result<LanczosProjection, SaddleError> {
     let m = n;
     let mut basis: Vec<Array1<f64>> = Vec::with_capacity(m);
     basis.push(lanczos_start(n));
-    let mut t = Array2::zeros((m, m));
+    let mut diagonal = Vec::with_capacity(m);
+    let mut off_diagonal = Vec::with_capacity(m - 1);
     for j in 0..m {
         let mut w = apply(basis[j].view());
         if w.len() != n {
             return Err(SaddleError::Shape("Hessian action length changed".into()));
         }
         let alpha = reorthogonalise(&mut w, &basis[..=j]);
-        t[(j, j)] = alpha;
+        diagonal.push(alpha);
         if j + 1 == m {
             break;
         }
         let beta = fixed_dot(w.view(), w.view()).sqrt();
         if beta <= 1e-12 * (1.0 + alpha.abs()) {
             match orthogonal_direction(&basis[..=j], n) {
-                Some(next) => basis.push(next),
-                None => {
-                    t = t.slice(ndarray::s![..=j, ..=j]).to_owned();
-                    break;
+                Some(next) => {
+                    off_diagonal.push(0.0);
+                    basis.push(next);
                 }
+                None => break,
             }
         } else {
             w.mapv_inplace(|a| a / beta);
-            t[(j, j + 1)] = beta;
-            t[(j + 1, j)] = beta;
+            off_diagonal.push(beta);
             basis.push(w);
         }
     }
+    Ok(LanczosProjection {
+        basis,
+        diagonal,
+        off_diagonal,
+    })
+}
+
+fn lanczos_full(
+    apply: &impl Fn(ArrayView1<f64>) -> Array1<f64>,
+    n: usize,
+    k: usize,
+) -> Result<LowestEigenpairs, SaddleError> {
+    let projection = lanczos_projection(apply, n)?;
+    let (vals, vecs) = exact_eigh(projection.matrix().view())?;
+    let basis = projection.basis;
     let m = basis.len();
-    let (vals, vecs) = exact_eigh(t.view())?;
     let take = k.min(m);
     let mut out_vals = Array1::zeros(take);
     let mut out_vecs = Array2::zeros((n, take));
@@ -1936,7 +1994,7 @@ fn lanczos_start(n: usize) -> Array1<f64> {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use ndarray::{Array1, Array2, array};
+    use ndarray::{array, Array1, Array2};
 
     use super::*;
     use crate::eigensolve::exact_eigh;
@@ -3373,9 +3431,7 @@ mod tests {
 
     #[test]
     fn gupta_matches_a_finite_difference_hessian() {
-        let coords = array![
-            0.0, 0.0, 0.0, 1.15, 0.0, 0.0, 0.4, 1.05, 0.05, 1.05, 0.95, 0.15,
-        ];
+        let coords = array![0.0, 0.0, 0.0, 1.15, 0.0, 0.0, 0.4, 1.05, 0.05, 1.05, 0.95, 0.15,];
         let params = GuptaParams::demo();
         let surface = Gupta::new(params, None);
         let (energy, gradient) = surface.eval(coords.view()).unwrap();
@@ -3471,6 +3527,25 @@ mod tests {
         assert!((SparseHessianOpts::default().step - 1e-4).abs() < 1e-15);
         assert!(lj_err[4] <= lj_err[3] && lj_err[4] <= lj_err[5]);
         assert!(gupta_err[4] <= gupta_err[3] && gupta_err[4] <= gupta_err[5]);
+    }
+
+    #[test]
+    fn full_spectrum_retains_multiplicities_without_ritz_vector_evaluations() {
+        let diagonal = ndarray::array![-3., 1., 1., 1., 2., 2., 2., 5.];
+        let calls = std::cell::Cell::new(0);
+        let values = lanczos_spectrum(
+            |v| {
+                calls.set(calls.get() + 1);
+                &diagonal * &v
+            },
+            diagonal.len(),
+        )
+        .unwrap();
+        assert_eq!(calls.get(), diagonal.len());
+        assert_eq!(values.len(), diagonal.len());
+        for (value, expected) in values.iter().zip(diagonal) {
+            assert!((value - expected).abs() < 1e-12);
+        }
     }
 
     #[test]
