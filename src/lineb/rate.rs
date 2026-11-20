@@ -179,12 +179,54 @@ pub fn hqtst_rate_interpolated_hessian_with_step<S: PointSurface>(
         surface,
         calls: &calls,
     };
+    let hessians = image_hessians(&counted, &path.masses, path.weighted.view(), step)?;
+    interpolated_rate(
+        surface,
+        path,
+        beads,
+        &hessians,
+        Some(step),
+        calls.load(Ordering::Relaxed),
+    )
+}
+
+/// Interpolate independently measured Cartesian energy Hessians at the ordered
+/// LI-NEB images. The blocks use energy per squared input length. The rate's
+/// evaluation count includes replica energies and excludes creation of the
+/// supplied Hessians.
+#[cfg(any(test, feature = "lineb-oracle"))]
+pub fn hqtst_rate_from_image_hessians<S: PointSurface>(
+    surface: &S,
+    path: &LinebPath,
+    beads: usize,
+    cartesian_hessians: &[Array2<f64>],
+) -> Result<HqtstRate, SaddleError> {
+    if cartesian_hessians.len() != path.weighted.nrows() {
+        return Err(SaddleError::Shape(
+            "one Cartesian Hessian per path image is required".into(),
+        ));
+    }
+    let weighted = cartesian_hessians
+        .iter()
+        .map(|h| weight_cartesian_hessian(h, &path.masses))
+        .collect::<Result<Vec<_>, _>>()?;
+    interpolated_rate(surface, path, beads, &weighted, None, 0)
+}
+
+#[cfg(any(test, feature = "lineb-oracle"))]
+fn interpolated_rate<S: PointSurface>(
+    surface: &S,
+    path: &LinebPath,
+    beads: usize,
+    hessians: &[Array2<f64>],
+    step: Option<f64>,
+    setup_evaluations: usize,
+) -> Result<HqtstRate, SaddleError> {
     let replicas = path::replicas(path.weighted.view(), &path.time_table, beads)?;
     let kappa = spring_constant(replicas.period, path.hbar, beads)?;
-    let hessians = image_hessians(&counted, &path.masses, path.weighted.view(), step)?;
     let curve = Curve::new(path.weighted.view())?;
     let dense = interpolated_ring(
-        &hessians,
+        hessians,
         curve.knots(),
         &replicas.parameter,
         replicas.weighted.ncols(),
@@ -196,7 +238,7 @@ pub fn hqtst_rate_interpolated_hessian_with_step<S: PointSurface>(
     for (mut point, row) in coordinates.outer_iter_mut().zip(replicas.weighted.rows()) {
         point.assign(&path.masses.to_cartesian(row)?);
     }
-    let observations = counted.eval_batch(coordinates.view())?;
+    let observations = surface.eval_batch(coordinates.view())?;
     if observations.len() != beads {
         return Err(SaddleError::Shape(
             "ring surface returned a different number of replicas".into(),
@@ -220,8 +262,8 @@ pub fn hqtst_rate_interpolated_hessian_with_step<S: PointSurface>(
         &energies,
         replicas.period,
         spectrum,
-        Some(step),
-        calls.load(Ordering::Relaxed),
+        step,
+        setup_evaluations + beads,
     )
 }
 
@@ -569,6 +611,23 @@ fn finite_difference_hessian<S: PointSurface>(
         for row in 0..dof {
             hessian[(row, column)] = (pair[0].1[row] - pair[1].1[row]) / (2.0 * step);
         }
+    }
+    weight_cartesian_hessian(&hessian, masses)
+}
+
+#[cfg(any(test, feature = "lineb-oracle"))]
+fn weight_cartesian_hessian(
+    hessian: &Array2<f64>,
+    masses: &Masses,
+) -> Result<Array2<f64>, SaddleError> {
+    let dof = masses.dof();
+    if hessian.dim() != (dof, dof) {
+        return Err(SaddleError::Shape(
+            "Cartesian Hessian dimensions must match the geometry".into(),
+        ));
+    }
+    if hessian.iter().any(|v| !v.is_finite()) {
+        return Err(SaddleError::NonFinite("Cartesian image Hessian"));
     }
     let mut weighted_hessian = Array2::zeros((dof, dof));
     for row in 0..dof {
