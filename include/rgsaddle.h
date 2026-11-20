@@ -2062,6 +2062,38 @@ rgsaddle_status_t rgsaddle_lineb_solve_counted_diagnostics(const rgsaddle_lineb_
                                        rgsaddle_lineb_result_t *out, const double *endpoint_kappa, uint32_t options,
                                        rgsaddle_lineb_counts_t *counts, int64_t *negative_modes, int64_t *modes);
 
+#define RGSADDLE_HAS_LINEB_ORBIT 1
+
+/** Opt-in observations from the rate's own surface calls. Each supplied buffer
+ * has capacity doubles, at least beads * 3 * n_atoms. Positions are Cartesian
+ * lengths and gradients are energy per length. Rows on the return leg repeat
+ * the measured outbound coordinates and gradients. The maximum and RMS
+ * discrete equation-of-motion residuals are in energy per length. Indices are
+ * zero-based. With no rate, summary values are NaN and indices are -1. */
+typedef struct {
+    size_t capacity;
+    double *positions;
+    double *gradients;
+    double max_abs_residual;
+    double rms_residual;
+    int64_t max_bead;
+    int64_t max_coordinate;
+} rgsaddle_lineb_orbit_t;
+
+/** Counted solve with optional bead observations. Distinct non-null output
+ * buffers are caller-owned. A null orbit uses the ordinary counted solve. */
+rgsaddle_status_t rgsaddle_lineb_solve_counted_orbit(const rgsaddle_lineb_config_t *cfg,
+                                       int64_t n_images, int64_t n_atoms,
+                                       const double *positions,
+                                       const double *atom_masses,
+                                       int32_t molecular, double energy,
+                                       int64_t max_steps, int64_t beads,
+                                       rgsaddle_surface_fn surface, void *user,
+                                       double *optimized_positions,
+                                       rgsaddle_lineb_result_t *out, const double *endpoint_kappa, uint32_t options,
+                                       rgsaddle_lineb_counts_t *counts, int64_t *negative_modes, int64_t *modes,
+                                       rgsaddle_lineb_orbit_t *orbit);
+
 #ifdef __cplusplus
 }
 #endif
