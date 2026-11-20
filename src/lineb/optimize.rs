@@ -299,6 +299,11 @@ pub struct LinebSession {
 }
 
 impl LinebSession {
+    /// Number of completed optimizer iterations, including the last stalled step.
+    pub fn iteration(&self) -> usize {
+        self.iteration
+    }
+
     /// Prepare a single energy from a full reaction path or a turning-point seed.
     /// If both endpoints lie below the requested energy, trim the seed to the
     /// two crossings around its highest image and retain its image count.

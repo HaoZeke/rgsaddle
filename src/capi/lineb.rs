@@ -316,12 +316,9 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve_with_kappa(
         Ok(session) => session,
         Err(err) => return fail(&err),
     };
-    let report = match session.run(&cs, max_steps_usize) {
-        Ok(report) => report,
-        Err(err) => return fail(&err),
-    };
-    out.iterations = as_i64(report.iteration);
-    out.optimizer_calls = as_i64(report.evaluations);
+    let outcome = session.run(&cs, max_steps_usize);
+    out.iterations = as_i64(session.iteration());
+    out.optimizer_calls = as_i64(cs.rows.load(std::sync::atomic::Ordering::Relaxed));
     let cartesian = match session.cartesian() {
         Ok(cartesian) => cartesian,
         Err(err) => return fail(&err),
@@ -332,6 +329,10 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve_with_kappa(
     for (dst, src) in optimized.iter_mut().zip(cartesian.iter()) {
         *dst = *src;
     }
+    let report = match outcome {
+        Ok(report) => report,
+        Err(err) => return fail(&err),
+    };
     if report.status != LinebStatus::Converged {
         set_last_error(&format!(
             "LI-NEB exhausted {} iterations: nudged force {} (tolerance {}), perpendicular force {} (tolerance {})",
