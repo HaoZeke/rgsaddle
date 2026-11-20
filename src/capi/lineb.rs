@@ -192,7 +192,7 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve(
     if n_images < 3 || n_atoms < 1 {
         return RGSADDLE_SHAPE;
     }
-    if max_steps < 0 || beads < 0 || beads == 1 {
+    if max_steps < 1 || beads < 0 || beads == 1 {
         return RGSADDLE_INVALID_PARAMETER;
     }
     let Ok(n_images_usize) = usize::try_from(n_images) else {
@@ -212,15 +212,14 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve(
         None => return RGSADDLE_SHAPE,
     };
     let n_values = match n_images_usize.checked_mul(dof) {
-        Some(n) => n,
-        None => return RGSADDLE_SHAPE,
+        Some(n) if std::alloc::Layout::array::<f64>(n).is_ok() => n,
+        _ => return RGSADDLE_SHAPE,
     };
 
     // SAFETY: pointers non-null; lengths checked above.
     let cfg = unsafe { &*cfg };
     let positions = unsafe { slice::from_raw_parts(positions, n_values) };
     let atom_masses = unsafe { slice::from_raw_parts(atom_masses, n_atoms_usize) };
-    let optimized = unsafe { slice::from_raw_parts_mut(optimized_positions, n_values) };
     let out = unsafe { &mut *out };
 
     *out = RgsaddleLinebResult {
@@ -272,6 +271,9 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve(
         Ok(cartesian) => cartesian,
         Err(err) => return status_of(&err),
     };
+    // The session owns its input by this point. An in-place caller can
+    // therefore use its seed buffer for the optimized coordinates.
+    let optimized = unsafe { slice::from_raw_parts_mut(optimized_positions, n_values) };
     for (dst, src) in optimized.iter_mut().zip(cartesian.iter()) {
         *dst = *src;
     }
