@@ -42,6 +42,26 @@ fn eckart_force_tolerance() -> (f64, LinebConfig) {
     (tol, draft.with_opt_tol(tol).with_perp_tol(tol))
 }
 
+#[test]
+fn endpoint_convergence_allows_nonuniform_interior_spacing() {
+    let turning = 2.0_f64.acosh();
+    let seed = ndarray::array![[-turning], [0.25 * turning], [turning]];
+    let masses = Masses::coordinates(Array1::ones(1).view()).unwrap();
+    let energy = Eckart.eval(seed.row(0)).unwrap().0;
+    let tolerance = 1e-8;
+    for (endpoint_only, expected) in [
+        (false, LinebStatus::Running),
+        (true, LinebStatus::Converged),
+    ] {
+        let cfg = LinebConfig::new(tolerance, tolerance).with_endpoint_convergence(endpoint_only);
+        let mut session = LinebSession::new(cfg, masses.clone(), seed.clone(), energy).unwrap();
+        let step = session.step(&Eckart).unwrap();
+        assert!(step.endpoint_max < tolerance && step.perp_max < tolerance);
+        assert!(step.opt_max > tolerance);
+        assert_eq!(step.status, expected);
+    }
+}
+
 fn eckart_path() -> rgsaddle::LinebPath {
     let turning = (1.0 / 0.25_f64).sqrt().acosh();
     let images = Array2::from_shape_fn((9, 1), |(i, _)| {
