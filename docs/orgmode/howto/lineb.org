@@ -57,6 +57,8 @@ The paper's interpolated finite-difference Hessian is built with the =lineb-orac
 
 For an electronic-structure potential, =hqtst_rate_interpolated_hessian_with_step(surface, path, beads, step)= uses the same Cartesian displacement for every atom. Halving the displacement tests the sensitivity of the fluctuation spectrum to gradient noise. The result records =image_hessian_displacement= in the surface's length units and =negative_modes= on the gauge-deflated ring. A first-order instanton has one unstable mode.
 
+With the =lineb-oracle= feature, =cartesian_image_hessian(surface, cartesian, step)= measures one Cartesian energy Hessian. It evaluates the positive and negative displacement along each coordinate in one ordered batch. The matrix contains the raw gradient differences before symmetrization or mass weighting.
+
 =hqtst_rate_from_image_hessians(surface, path, beads, blocks)= takes one Cartesian energy Hessian per path image in path order. The library mass weights the blocks and interpolates them onto the ring. It issues =beads= additional geometry requests for the replica energies. Measure the cost of the supplied blocks at their provider. For finite differences the cost is =2 * dof * images + beads= geometry requests. A surface implementing =PointSurface::eval_batch= can evaluate the independent displacements for each image and the replica energies in parallel. Return the results in input row order.
 
 * Python
