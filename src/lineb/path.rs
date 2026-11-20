@@ -406,8 +406,8 @@ pub(crate) fn measure<Q: PointSurface, D: PointSurface>(
 }
 
 /// Action, half period and the `(λ, t)` time table from one pass of
-/// samples. Interior chords add to the table by the trapezoid rule on
-/// the Simpson samples; end chords add their adaptive clock.
+/// samples. Interior chords use Simpson's duration and split it between
+/// adjacent samples in proportion to their trapezoidal durations.
 fn integrate<S: PointSurface>(
     level: &Level<'_, S>,
     pairs: usize,
@@ -457,7 +457,7 @@ fn open_integral<S: PointSurface>(
     let h = (right - left) / intervals as f64;
     let mut action = 0.0;
     let mut half = 0.0;
-    let mut previous_rate = 0.0;
+    let mut rates = [0.0; 3];
     for i in 0..=intervals {
         let weight = simpson_weight(i, intervals);
         let lambda = left + h * i as f64;
@@ -470,11 +470,20 @@ fn open_integral<S: PointSurface>(
         let rate = sample.speed / sample.sigma;
         action += weight * sample.sigma * sample.speed;
         half += weight * rate;
-        if i > 0 {
-            *clock += 0.5 * (previous_rate + rate) * h;
+        if i == 0 {
+            rates[0] = rate;
+        } else if i % 2 == 1 {
+            rates[1] = rate;
+        } else {
+            rates[2] = rate;
+            let [a, b, c] = rates;
+            let duration = (a + 4.0 * b + c) * h / 3.0;
+            let midpoint = *clock + duration * (a + b) / (a + 2.0 * b + c);
+            table.push((lambda - h, midpoint));
+            *clock += duration;
             table.push((lambda, *clock));
+            rates[0] = c;
         }
-        previous_rate = rate;
     }
     Ok((action * h / 3.0, half * h / 3.0))
 }
