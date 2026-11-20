@@ -51,3 +51,14 @@ minima to the two calculated minima gives RMS image-centre differences
 of 0.49% and 0.22% of the panel width for the left and right paths.
 This comparison uses the panel coordinates because Figure 2 has no
 labelled coordinate axes.
+
+Pass `direct ring` to write the 50 Cartesian beads around the closed orbit.
+The return half retraces the outward path, giving 26 distinct sites.
+In the supplied Figure 3 raster, `figure3_ring_centres.csv` records 38
+separate red markers, including the extremal marker at displacement 2.
+These are eight-connected components with red channel at least 210 and
+green and blue at most 15, excluding the legend. Their areas fall between
+307 and 416 pixels around the 362-pixel legend marker. The overlapping
+1793-pixel cluster near displacement zero is excluded. The published
+marker locations and the calculated bead locations therefore differ even
+though the underlying ten-image energy profile agrees closely.
