@@ -1,12 +1,9 @@
 /// Directory that holds a freshly linked `librgsaddle.so` matching this
 /// test binary's active features and profile.
 ///
-/// `cargo test` compiles integration tests against the `rlib` without
-/// uplifting `librgsaddle.so` into `target/<profile>`, so a prior
-/// `cargo build --features capi` would leave a stale `capi` only shared
-/// library behind when `cargo test --features capi,ohtst` runs. Invoking
-/// `cargo build --lib` with the active feature set refreshes
-/// `target/<profile>/librgsaddle.so` before the C compiler links against it.
+/// C consumers link against a dedicated Cargo target directory. This keeps
+/// the nested library build from replacing the outer test profile's rlib
+/// while rustdoc still needs it and its matching dependency metadata.
 fn cdylib_dir() -> std::path::PathBuf {
     static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
     DIR.get_or_init(build_fresh_cdylib).clone()
@@ -43,6 +40,12 @@ fn active_features() -> Vec<&'static str> {
     }
     if cfg!(feature = "faer") {
         features.push("faer");
+    }
+    if cfg!(feature = "lineb-oracle") {
+        features.push("lineb-oracle");
+    }
+    if cfg!(feature = "pafi-repro") {
+        features.push("pafi-repro");
     }
     features
 }
@@ -97,15 +100,13 @@ fn build_fresh_cdylib() -> std::path::PathBuf {
         (parent.to_path_buf(), None)
     };
 
+    let features = active_features();
+    let target_dir = target_dir.join("abi-tests").join(features.join("_"));
+    let profile_dir = match &target_triple {
+        Some(triple) => target_dir.join(triple).join(&profile_name),
+        None => target_dir.join(&profile_name),
+    };
     let lib_path = profile_dir.join("librgsaddle.so");
-    match std::fs::remove_file(&lib_path) {
-        Ok(()) => {}
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => panic!(
-            "failed to remove stale cdylib at {}: {err}",
-            lib_path.display()
-        ),
-    }
 
     let cargo = match std::env::var_os("CARGO") {
         Some(bin) => bin,
@@ -120,7 +121,6 @@ fn build_fresh_cdylib() -> std::path::PathBuf {
         .arg("--no-default-features")
         .arg("--target-dir")
         .arg(&target_dir);
-    let features = active_features();
     if !features.is_empty() {
         cmd.arg("--features").arg(features.join(","));
     }
