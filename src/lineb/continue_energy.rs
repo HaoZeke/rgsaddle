@@ -112,6 +112,48 @@ pub fn continue_from_mep<S: PointSurface>(
     Ok(paths)
 }
 
+/// A minimum-to-minimum seed includes classically allowed tails on both
+/// sides. Keep the barrier segment between the crossings of the target energy.
+pub(super) fn clip_seed<S: PointSurface>(
+    surface: &S,
+    masses: &Masses,
+    seed: ArrayView2<f64>,
+    energy: f64,
+) -> Result<Option<Array2<f64>>, SaddleError> {
+    let last = seed.nrows() - 1;
+    let left = surface.eval(seed.row(0))?.0;
+    if !left.is_finite() {
+        return Err(SaddleError::NonFinite("reactant seed energy"));
+    }
+    if left >= energy {
+        return Ok(None);
+    }
+    let right = surface.eval(seed.row(last))?.0;
+    if !right.is_finite() {
+        return Err(SaddleError::NonFinite("product seed energy"));
+    }
+    if right >= energy {
+        return Ok(None);
+    }
+    let mut energies = vec![left];
+    energies.extend(image_energies(
+        surface,
+        seed.slice(ndarray::s![1..last, ..]),
+    )?);
+    energies.push(right);
+    let saddle = highest(&energies)?;
+    bracket(
+        surface,
+        masses,
+        seed,
+        &energies,
+        saddle,
+        energy,
+        seed.nrows(),
+    )
+    .map(Some)
+}
+
 fn image_energies<S: PointSurface>(
     surface: &S,
     images: ArrayView2<f64>,
@@ -483,6 +525,19 @@ mod tests {
 
         let mep = array![[-1.0, 0.0], [0.0, 1.0], [1.0, 0.0]];
         let masses = Masses::coordinates(array![1.0, 1.0].view()).unwrap();
+        let session = LinebSession::from_seed(
+            &Ridge,
+            LinebConfig::new(0.01, 0.01),
+            masses.clone(),
+            mep.clone(),
+            0.5,
+        )
+        .unwrap();
+        let clipped = session.cartesian().unwrap();
+        for end in [0, 2] {
+            assert!((Ridge.eval(clipped.row(end)).unwrap().0 - 0.5).abs() < 1e-14);
+        }
+        assert!((clipped[[1, 1]] - 1.0).abs() < 1e-14);
         let energies = image_energies(&Ridge, mep.view()).unwrap();
         let seed = bracket(&Ridge, &masses, mep.view(), &energies, 1, 0.5, 3).unwrap();
         assert!(l2((&seed.row(1) - &mep.row(1)).view()) < 1e-12);

@@ -299,6 +299,31 @@ pub struct LinebSession {
 }
 
 impl LinebSession {
+    /// Prepare a single energy from a full reaction path or a turning-point seed.
+    /// If both endpoints lie below the requested energy, trim the seed to the
+    /// two crossings around its highest image and retain its image count.
+    pub fn from_seed<S: PointSurface>(
+        surface: &S,
+        config: LinebConfig,
+        masses: Masses,
+        cartesian: Array2<f64>,
+        energy: f64,
+    ) -> Result<Self, SaddleError> {
+        let mut session = Self::new(config, masses, cartesian.clone(), energy)?;
+        let counted = super::Counted {
+            surface,
+            calls: &session.evaluations,
+        };
+        if let Some(seed) =
+            super::continue_energy::clip_seed(&counted, &session.masses, cartesian.view(), energy)?
+        {
+            for (mut weighted, row) in session.weighted.rows_mut().into_iter().zip(seed.rows()) {
+                weighted.assign(&session.masses.to_weighted(row)?);
+            }
+        }
+        Ok(session)
+    }
+
     /// `cartesian` has one image per row, in the same coordinates the
     /// surface evaluates. Every image must lie strictly above `energy`.
     pub fn new(

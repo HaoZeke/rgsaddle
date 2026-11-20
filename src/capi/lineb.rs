@@ -312,7 +312,7 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve_with_kappa(
         climbing_request: false,
         rows: Default::default(),
     };
-    let mut session = match LinebSession::new(config, masses, cartesian, energy) {
+    let mut session = match LinebSession::from_seed(&cs, config, masses, cartesian, energy) {
         Ok(session) => session,
         Err(err) => return fail(&err),
     };
