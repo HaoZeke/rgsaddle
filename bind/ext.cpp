@@ -1740,7 +1740,7 @@ LinebResultPy lineb_solve_python(nb::callable fn, Matrix positions, Vector atom_
                                  double opt_tol, double perp_tol, bool molecular, std::int64_t max_steps,
                                  std::int64_t beads, double spring, double endpoint_scale, double time_step,
                                  double max_move, double turning_width, double hbar, double boltzmann,
-                                 std::int64_t quadrature_pairs, std::optional<double> endpoint_kappa, bool linear_seed, bool endpoint_convergence) {
+                                 std::int64_t quadrature_pairs, std::optional<double> endpoint_kappa, bool linear_seed, bool endpoint_convergence, bool projected_verlet) {
   const std::int64_t n_images = static_cast<std::int64_t>(positions.shape(0));
   const std::int64_t n_atoms = static_cast<std::int64_t>(atom_masses.shape(0));
   if (n_images < 3 || n_atoms <= 0) {
@@ -1783,7 +1783,8 @@ LinebResultPy lineb_solve_python(nb::callable fn, Matrix positions, Vector atom_
   {
     nb::gil_scoped_release release;
     const uint32_t options = (linear_seed ? RGSADDLE_LINEB_LINEAR_SEED : 0u) |
-                             (endpoint_convergence ? RGSADDLE_LINEB_ENDPOINT_CONVERGENCE : 0u);
+                             (endpoint_convergence ? RGSADDLE_LINEB_ENDPOINT_CONVERGENCE : 0u) |
+                             (projected_verlet ? RGSADDLE_LINEB_PROJECTED_VERLET : 0u);
     status = rgsaddle_lineb_solve_options(&cfg, n_images, n_atoms, positions.data(), atom_masses.data(),
                                   molecular ? 1 : 0, energy, max_steps, beads, connect_python_surface,
                                   &state, optimized.data(), &result, endpoint_kappa ? &*endpoint_kappa : nullptr, options);
@@ -1996,6 +1997,7 @@ NB_MODULE(_core, m) {
       nb::arg("turning_width") = 1e-3, nb::arg("hbar") = 1.0, nb::arg("boltzmann") = 1.0,
       nb::arg("quadrature_pairs") = static_cast<std::int64_t>(4), nb::arg("endpoint_kappa") = nb::none(),
       nb::arg("linear_seed") = false, nb::arg("endpoint_convergence") = false,
+      nb::arg("projected_verlet") = false,
       nb::sig(
           "def lineb_solve(surface: collections.abc.Callable[..., "
           "tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]], "
@@ -2003,7 +2005,7 @@ NB_MODULE(_core, m) {
           "energy: float, opt_tol: float, perp_tol: float, molecular: bool = False, max_steps: int = 1000, "
           "beads: int = 0, spring: float = 0.1, endpoint_scale: float = 0.2, time_step: float = 0.1, "
           "max_move: float = 0.2, turning_width: float = 0.001, hbar: float = 1.0, boltzmann: float = 1.0, "
-          "quadrature_pairs: int = 4, endpoint_kappa: float | None = None, linear_seed: bool = False, endpoint_convergence: bool = False) -> LinebResult"),
+          "quadrature_pairs: int = 4, endpoint_kappa: float | None = None, linear_seed: bool = False, endpoint_convergence: bool = False, projected_verlet: bool = False) -> LinebResult"),
       "Fixed-energy LI-NEB path and optional harmonic rate. positions is (n_images, 3N). "
       "atom_masses is one positive mass per atom; molecular=False expands them to coordinates, "
       "molecular=True aligns the free molecule. surface(x) is one image shaped (1, 3N). "

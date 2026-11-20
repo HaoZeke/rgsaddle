@@ -243,7 +243,8 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve_with_kappa(
     }
 }
 
-/// Solve with configurable seed geometry and convergence (ABI minor 48).
+/// Solve with configurable seed geometry, convergence, and integrator
+/// (ABI minor 48; projected Verlet from minor 49).
 ///
 /// # Safety
 /// Pointer lifetimes and sizes follow [`rgsaddle_lineb_solve_with_kappa`].
@@ -268,11 +269,13 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve_options(
     clear_last_error();
     const LINEAR_SEED: u32 = 1;
     const ENDPOINT_CONVERGENCE: u32 = 2;
-    if options & !(LINEAR_SEED | ENDPOINT_CONVERGENCE) != 0 {
+    const PROJECTED_VERLET: u32 = 4;
+    if options & !(LINEAR_SEED | ENDPOINT_CONVERGENCE | PROJECTED_VERLET) != 0 {
         set_last_error("unknown LI-NEB solver option");
         return RGSADDLE_INVALID_PARAMETER;
     }
     let endpoint_convergence = options & ENDPOINT_CONVERGENCE != 0;
+    let projected_verlet = options & PROJECTED_VERLET != 0;
     if cfg.is_null()
         || positions.is_null()
         || atom_masses.is_null()
@@ -363,9 +366,12 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve_options(
         climbing_request: false,
         rows: Default::default(),
     };
+    let config = config
+        .with_endpoint_convergence(endpoint_convergence)
+        .with_projected_verlet(projected_verlet);
     let mut session = match LinebSession::from_seed_with_interpolation(
         &cs,
-        config.with_endpoint_convergence(endpoint_convergence),
+        config,
         masses,
         cartesian,
         energy,

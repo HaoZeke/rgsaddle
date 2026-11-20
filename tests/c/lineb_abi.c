@@ -160,17 +160,20 @@ int main(void) {
   const long long iterations = (long long)result.iterations;
   seed_path(pos);
   for (int i = 0; i < N_IMAGES; ++i) pos[i * DOF] *= 4.0;
-  if (rgsaddle_lineb_solve_options(&cfg, N_IMAGES, N_ATOMS, pos, masses, 0, 0.25,
-                                  200, 0, surface, NULL, out_pos, &result, &kappa,
-                                  RGSADDLE_LINEB_LINEAR_SEED | RGSADDLE_LINEB_ENDPOINT_CONVERGENCE)
-      != RGSADDLE_OK) {
-    return fail("linear seed between turning points", RGSADDLE_SOLVER);
-  }
   const double turning = acosh(2.0);
-  if (fabs(out_pos[0] + turning) > 1e-9 ||
-      fabs(out_pos[(N_IMAGES - 1) * DOF] - turning) > 1e-9) {
-    fprintf(stderr, "Eckart endpoints differ from analytic turning points\n");
-    return 1;
+  const uint32_t integrators[] = {0, RGSADDLE_LINEB_PROJECTED_VERLET};
+  for (size_t i = 0; i < sizeof integrators / sizeof integrators[0]; ++i) {
+    const uint32_t options = RGSADDLE_LINEB_LINEAR_SEED |
+                             RGSADDLE_LINEB_ENDPOINT_CONVERGENCE | integrators[i];
+    const rgsaddle_status_t rc = rgsaddle_lineb_solve_options(
+        &cfg, N_IMAGES, N_ATOMS, pos, masses, 0, 0.25, 200, 0,
+        surface, NULL, out_pos, &result, &kappa, options);
+    if (rc != RGSADDLE_OK) return fail("linear seed between turning points", rc);
+    if (fabs(out_pos[0] + turning) > 1e-9 ||
+        fabs(out_pos[(N_IMAGES - 1) * DOF] - turning) > 1e-9) {
+      fprintf(stderr, "Eckart endpoints differ from analytic turning points\n");
+      return 1;
+    }
   }
   kappa = NAN;
   if (rgsaddle_lineb_solve_with_kappa(&cfg, N_IMAGES, N_ATOMS, pos, masses, 0, 0.25,
