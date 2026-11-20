@@ -126,6 +126,14 @@ quadrature temperature at each image resolution. Compare different
 replica counts at the same path and period to isolate the ring
 discretization.
 
+The inverse time map uses monotone cubic Hermite interpolation. The
+spline speed comes from the tunneling energy at each quadrature knot
+and vanishes at both turning points. The reflected orbit therefore
+has a continuous velocity at each turn. For comparisons,
+=with_linear_replica_clock(true)= selects piecewise-linear interpolation
+on the same time knots. Vary =with_quadrature_pairs= independently of
+the bead count to check the resolution of the time integral.
+
 For a ring of =P= Cartesian configurations over a full period =tau=, let
 =dt = tau / P=. With energies, masses, lengths and times in a consistent
 unit system, the discrete stationarity residual at atom =i= and bead =j=

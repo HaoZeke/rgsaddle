@@ -5,7 +5,7 @@
 rgsaddle is system-agnostic and unit-agnostic: surfaces supply energies, gradients, and optional cell stresses or directional Hessian actions in the caller's units.
 
 - Documentation site: https://omnipotentrpc.github.io/rgsaddle/
-- Full LLM context: https://omnipotentrpc.github.io/rgsaddle/llms-full.txt (repo root `llms-full.txt`)
+- Full documentation: https://omnipotentrpc.github.io/rgsaddle/llms-full.txt (repo root `llms-full.txt`)
 - Rust API docs: https://docs.rs/rgsaddle
 - Repository: https://github.com/OmniPotentRPC/rgsaddle
 
@@ -41,6 +41,7 @@ rgsaddle is system-agnostic and unit-agnostic: surfaces supply energies, gradien
 - [Recover a sparse Hessian](https://omnipotentrpc.github.io/rgsaddle/howto/sparse-hessian.html): Direct Curtis-Powell-Reid sparse Hessian recovery by distance-2 colouring (`docs/orgmode/howto/sparse-hessian.org`)
 - [Use Sella steppers and sessions](https://omnipotentrpc.github.io/rgsaddle/howto/sella.html): P-RFO, restricted P-RFO, Index1Session, Sella sessions, internal coordinates, cell charts, and SAMD (`docs/orgmode/howto/sella.org`)
 - [Drive an IRC session](https://omnipotentrpc.github.io/rgsaddle/howto/irc.html): Intrinsic reaction coordinate (IRC) integration with SellaSphere, GS2, and Morokuma steps (`docs/orgmode/howto/irc.org`)
+- [Find an optimal tunneling path with LI-NEB](https://omnipotentrpc.github.io/rgsaddle/howto/lineb.html): Fixed-energy tunneling paths, imaginary-time replicas, fluctuation spectra, and thermal rates (`docs/orgmode/howto/lineb.org`)
 - [Read a molecular frame](https://omnipotentrpc.github.io/rgsaddle/howto/io.html): Reading and writing CON frames and restart bands (`docs/orgmode/howto/io.org`)
 - [Use the C and C++ interfaces](https://omnipotentrpc.github.io/rgsaddle/howto/c-abi.html): Stepping bands, minimum-mode sessions, Sella, IRC, and strings from C and C++ (`docs/orgmode/howto/c-abi.org`)
 - [Use the headers from a meson project](https://omnipotentrpc.github.io/rgsaddle/howto/meson.html): Consuming rgsaddle headers from Meson wrap-git or pkg-config (`docs/orgmode/howto/meson.org`)
