@@ -28,7 +28,7 @@ extern "C" {
 #endif
 
 #define RGSADDLE_ABI_MAJOR 1u
-#define RGSADDLE_ABI_MINOR 45u
+#define RGSADDLE_ABI_MINOR 46u
 
 /**
  * Band config flags bit 0. When set, each evaluation calls the surface
@@ -116,6 +116,9 @@ extern "C" {
  * index reads it here, and an MPI host can give that one image every
  * rank. rgsaddle_ocineb_step sends its climbing image to the point
  * surface as a plain one-geometry request and does not set the bit.
+ * From minor 46 a dynamic NEB refresh of one image sets
+ * RGSADDLE_REQ_ONE_IMAGE without this bit. n_images is the band
+ * length and image is that image's band index.
  */
 #define RGSADDLE_REQ_CLIMBING_IMAGE (1ull << 1)
 
@@ -305,6 +308,9 @@ const char *rgsaddle_thermodynamic_derivative_observable(void);
  * image carried (endpoints 0 and band - 1 appear only on the first
  * evaluation), positions and gradients are 3 * n_atoms, energies is
  * one value, and n_images is the length of the band.
+ * From ABI minor 46 a dynamic NEB step sends this request, without
+ * RGSADDLE_REQ_CLIMBING_IMAGE, for an interior image a neighbour
+ * pulled back over its threshold.
  *
  * While the min-mode refinement runs (ABI minor 21, see
  * RGSADDLE_BAND_NO_MIN_MODE) each request carries the climbing image
@@ -1928,6 +1934,50 @@ rgsaddle_status_t rgsaddle_band_free_end_residual(const RgsaddleBand *band,
  * free-end band, or 0 for NULL, ABI minor 45.
  */
 int64_t rgsaddle_band_free_end_cuts(const RgsaddleBand *band);
+
+/**
+ * Dynamic NEB (Lindgren, Kastlunger and Peterson, J. Chem. Theory
+ * Comput. 15, 5787 (2019); ASE 3.29 DyNEB). ABI minor 46.
+ * `enabled` 0 clears it and ignores fmax and scale_fmax. `enabled` 1
+ * leaves an image in place once the largest per-atom norm of its
+ * projected force is strictly below `fmax`, scaled by
+ * `fmax * (1 + distance * scale_fmax)` where distance is the Euclidean
+ * norm of the coordinate difference from the highest-energy image.
+ * A converged image keeps its last energy and force and stays in the
+ * spring and the tangent. It is evaluated again when a neighbour moves
+ * enough that the projected force exceeds that threshold. The highest
+ * energy image is never given a zero force. The default band, with
+ * this unset, evaluates every image.
+ *
+ * Refused on a solid-state band, a free-end band, the simplified string
+ * method, and the trust-region stepper.
+ * Returns RGSADDLE_NULL_BAND for a null band, and
+ * RGSADDLE_INVALID_PARAMETER for enabled other than 0 or 1, a
+ * non-finite fmax or scale_fmax, or a band that cannot use it.
+ */
+rgsaddle_status_t rgsaddle_band_set_dynamic(RgsaddleBand *band, int32_t enabled,
+                                            double fmax, double scale_fmax);
+
+/**
+ * ASE 3.29 DyNEB mask, ABI minor 46. `positions`, `energies` and
+ * `forces` are the whole band, image-major, `n_images * 3 * n_atoms`
+ * for the coordinates and the forces. Interior force rows whose
+ * largest per-atom norm is strictly below
+ * `fmax * (1 + distance * scale_fmax)` are set to zero, except the
+ * highest-energy image, whose force is kept. `distance` does not use
+ * the minimum image. `frozen`, when non-null, receives `n_images`
+ * bytes: 1 when that image would not be moved (the force after this
+ * mask is strictly below `fmax`). Both endpoints are 1.
+ *
+ * Returns RGSADDLE_SHAPE for a null pointer, fewer than 3 images or a
+ * non-positive atom count, RGSADDLE_NON_FINITE for a non-finite input,
+ * and RGSADDLE_INVALID_PARAMETER for a non-finite fmax or scale_fmax.
+ */
+rgsaddle_status_t rgsaddle_dyneb_mask(int64_t n_images, int64_t n_atoms,
+                                      const double *positions,
+                                      const double *energies, double *forces,
+                                      double fmax, double scale_fmax,
+                                      uint8_t *frozen);
 
 #ifdef __cplusplus
 }

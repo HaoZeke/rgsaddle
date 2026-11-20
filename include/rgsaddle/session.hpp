@@ -276,6 +276,11 @@ public:
         return rgsaddle_band_free_end_cuts(handle_);
     }
 
+    // Dynamic NEB, ABI minor 46. enabled false clears it.
+    void set_dynamic(bool enabled, double fmax = 0.05, double scale_fmax = 0.0) {
+        check(rgsaddle_band_set_dynamic(handle_, enabled ? 1 : 0, fmax, scale_fmax));
+    }
+
     [[nodiscard]] SaddleIndex saddle_index(std::size_t capacity = 8) const {
         rgsaddle_saddle_index_t out{};
         std::vector<double> curvatures(capacity);

@@ -3902,6 +3902,35 @@ pub unsafe extern "C" fn rgsaddle_band_free_end_cuts(band: *const RgsaddleBand) 
     band.session.free_end_cuts() as i64
 }
 
+/// Dynamic NEB on the band (ABI minor 46). `enabled` 0 clears it.
+///
+/// # Safety
+/// `band` is a live session or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_band_set_dynamic(
+    band: *mut RgsaddleBand,
+    enabled: i32,
+    fmax: f64,
+    scale_fmax: f64,
+) -> i32 {
+    if band.is_null() {
+        return RGSADDLE_NULL_BAND;
+    }
+    let dynamic = match enabled {
+        0 => None,
+        1 => Some(
+            crate::DynamicNeb::default()
+                .with_fmax(fmax)
+                .with_scale_fmax(scale_fmax),
+        ),
+        _ => return RGSADDLE_INVALID_PARAMETER,
+    };
+    match unsafe { (*band).session.set_dynamic(dynamic) } {
+        Ok(()) => RGSADDLE_OK,
+        Err(e) => status_of(&e),
+    }
+}
+
 /// # Safety
 /// `session` is a live session or null. `enabled` is 0 or 1.
 #[unsafe(no_mangle)]

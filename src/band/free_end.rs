@@ -240,6 +240,12 @@ pub(super) fn check_free_end(
             "free-end adaptive NEB cannot be combined with the simplified string method".into(),
         ));
     }
+    if config.dynamic.is_some() {
+        return Err(SaddleError::Invalid(
+            "free-end adaptive NEB evaluates its own stepper; dynamic NEB is for the fixed-end NEB"
+                .into(),
+        ));
+    }
     if !matches!(config.spring, SpringKind::Uniform { .. }) {
         return Err(SaddleError::Invalid(
             "free-end adaptive NEB requires a uniform spring".into(),

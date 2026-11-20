@@ -213,6 +213,11 @@ def project_band(positions: numpy.typing.NDArray[numpy.float64], energies: numpy
     Project an evaluated band. Returns (forces, ci_index). forces is flat, one row per image including zero endpoints, in the ASE force convention. climb selects the interior image by the endpoint-slope rule on this call; a higher endpoint that slopes into the band does not climb. Units are the caller's. k is energy per length squared. fixed is one uint8 per atom, 1 for a fixed atom (ABI minor 39): its force rows are zero, tangents and springs use the free atoms, and the mean force stays. The endpoints must agree on every fixed atom.
     """
 
+def dyneb_mask(positions: numpy.typing.NDArray[numpy.float64], energies: numpy.typing.NDArray[numpy.float64], forces: numpy.typing.NDArray[numpy.float64], fmax: float, scale_fmax: float) -> tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.uint8]]:
+    """
+    ASE 3.29 DyNEB mask on a whole band (image-major positions, energies and projected forces). Returns (forces, frozen). An interior image whose largest per-atom force norm is strictly below fmax * (1 + distance * scale_fmax) is zeroed, except the highest-energy image. frozen is one uint8 per image, 1 when the optimizer would leave it in place.
+    """
+
 def reparametrize(positions: numpy.typing.NDArray[numpy.float64], scheme: str = 'linear', anchor: int | None = None, cell: numpy.typing.NDArray[numpy.float64] | None = None) -> numpy.typing.NDArray[numpy.float64]:
     """
     Place the interior images of a band at equal arc length and return the new band. scheme 'linear' places them on the polyline; 'not-a-knot' (or 'spline') on the not-a-knot cubic spline through the images in their arc length (E, Ren and Vanden-Eijnden 2007). The first and last rows, and an interior anchor, do not move. cell is the 3x3 row-major cell; the chords are then minimum images. No surface is evaluated.
