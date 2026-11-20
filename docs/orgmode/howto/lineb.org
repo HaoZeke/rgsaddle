@@ -141,6 +141,21 @@ is
 
 : R[j,i] = grad_V(x[j])[i] + m[i] * (2*x[j,i] - x[j-1,i] - x[j+1,i]) / dt**2
 
+Request =return_orbit=True= when calling =lineb_solve= with a positive
+=beads= value. The optional =result.orbit= contains =positions= and
+=gradients=, both shaped =(beads, 3 * n_atoms)=. The return leg repeats
+the exact coordinates and gradients of the outbound measurements.
+=orbit.max_abs_residual= and =orbit.rms_residual= are in energy per
+length. =orbit.max_bead= and =orbit.max_coordinate= are zero-based.
+A path-only solve returns =None=. The rate evaluation count is the
+same with or without the observations.
+
+The C entry point =rgsaddle_lineb_solve_counted_orbit= accepts a nullable
+=rgsaddle_lineb_orbit_t=; each supplied coordinate or gradient buffer
+must hold =beads * 3 * n_atoms= doubles. A caller requesting only the
+summary may leave both buffer pointers null. In Rust, use
+=hqtst_rate_with_orbit= to obtain the rate and its measured ring.
+
 Wrap both neighbor indices around the ring. Use the physical Cartesian
 energy gradient at each stored bead and restrict the check to mobile
 coordinates. Report the maximum absolute component and the RMS residual

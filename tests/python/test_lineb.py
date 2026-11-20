@@ -150,3 +150,39 @@ def test_lineb_solve_preserves_callback_exceptions() -> None:
 
     with pytest.raises(Boom, match="lineb-callback"):
         lineb_solve(surface, positions, masses, energy, tol, tol, max_steps=2, beads=0)
+
+
+@pytest.mark.parametrize("beads", [7, 8])
+def test_rate_orbit_uses_measured_coordinates_without_surface_calls(beads: int) -> None:
+    positions, energy, tol = eckart_seed()
+    masses = np.array([2.0])
+    observed = {}
+
+    def surface(x):
+        value, grad = eckart(x)
+        transverse = x.reshape(1, 3)[:, 1:]
+        grad[:, 1:] = 2 * transverse
+        observed[x.tobytes()] = grad.copy().reshape(-1)
+        return value + (transverse**2).sum(), grad
+
+    args = (surface, positions, masses, energy, tol, tol)
+    plain = lineb_solve(*args, max_steps=500, beads=beads)
+    observed.clear()
+    result = lineb_solve(*args, max_steps=500, beads=beads, return_orbit=True)
+    assert plain.orbit is None
+    assert result.surface_calls == plain.surface_calls
+    assert result.log_rate_over_reactant == plain.log_rate_over_reactant
+    orbit = result.orbit
+    assert orbit is not None
+    q = orbit.positions
+    assert q.shape == (beads, 3)
+    for row, gradient in zip(q, orbit.gradients, strict=True):
+        np.testing.assert_array_equal(observed[row.tobytes()], gradient)
+    np.testing.assert_array_equal(q[1:], q[:0:-1])
+    dt = 2 * result.half_period / beads
+    residual = orbit.gradients + masses[0] * (
+        (q - np.roll(q, 1, axis=0)) + (q - np.roll(q, -1, axis=0))
+    ) / dt**2
+    assert orbit.max_abs_residual == pytest.approx(np.abs(residual).max(), abs=1e-13)
+    assert orbit.rms_residual == pytest.approx(np.sqrt(np.mean(residual**2)), abs=1e-13)
+    assert abs(residual[orbit.max_bead, orbit.max_coordinate]) == pytest.approx(orbit.max_abs_residual)
