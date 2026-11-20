@@ -42,7 +42,7 @@ use super::optimize::LinebPath;
 use super::path;
 #[cfg(any(test, feature = "lineb-oracle"))]
 use super::path::Curve;
-#[cfg(any(test, feature = "lineb-oracle"))]
+#[cfg(all(any(test, feature = "lineb-oracle"), not(feature = "faer")))]
 use crate::eigensolve::exact_eigh;
 use crate::error::SaddleError;
 use crate::linalg::numerical_hvp;
@@ -167,7 +167,8 @@ pub fn hqtst_rate_interpolated_hessian<S: PointSurface>(
         replicas.weighted.ncols(),
         kappa,
     )?;
-    let log_abs_det = dense_kept_log_abs_det(dense.view(), &replicas.weighted, &path.masses)?;
+    let gauges = gauge_modes(&replicas.weighted, &path.masses)?;
+    let log_abs_det = projected_log_abs_det(dense, gauges)?;
     let mut energies = Vec::with_capacity(beads);
     for row in replicas.weighted.rows() {
         let cartesian = path.masses.to_cartesian(row)?;
@@ -552,30 +553,60 @@ fn interpolated_ring(
     Ok(ring)
 }
 
+/// Log absolute determinant of the symmetric ring Hessian restricted to
+/// the orthogonal complement of the gauge modes. Each Householder similarity
+/// moves one gauge onto a coordinate axis. The trailing principal block is
+/// the Hessian on the retained space, including any unstable directions.
 #[cfg(any(test, feature = "lineb-oracle"))]
-fn dense_kept_log_abs_det(
-    ring: ArrayView2<f64>,
-    beads: &Array2<f64>,
-    masses: &Masses,
+fn projected_log_abs_det(
+    mut ring: Array2<f64>,
+    mut gauges: Vec<Array1<f64>>,
 ) -> Result<f64, SaddleError> {
-    let gauges = gauge_modes(beads, masses)?;
-    let basis = fluctuation_basis(ring.nrows(), &gauges)?;
-    let dim = basis.ncols();
-    let mut reduced = Array2::zeros((dim, dim));
-    for column in 0..dim {
-        let image = ring.dot(&basis.column(column));
-        for row in 0..dim {
-            reduced[(row, column)] = basis.column(row).dot(&image);
+    let removed = gauges.len();
+    if removed >= ring.nrows() {
+        return Err(SaddleError::Invalid(
+            "the fluctuation space is empty".into(),
+        ));
+    }
+    for axis in 0..removed {
+        let mut reflector = gauges[axis].slice(s![axis..]).to_owned();
+        let norm = l2(reflector.view());
+        if !(norm.is_finite() && norm > 0.) {
+            return Err(SaddleError::Invalid(
+                "dependent fluctuation gauge modes".into(),
+            ));
+        }
+        reflector[0] += norm.copysign(reflector[0]);
+        reflector /= l2(reflector.view());
+
+        for gauge in &mut gauges[axis + 1..] {
+            let mut tail = gauge.slice_mut(s![axis..]);
+            let projection = reflector.dot(&tail);
+            tail.scaled_add(-2. * projection, &reflector);
+        }
+        // For H = I - 2vvᵀ, HAH = A - vwᵀ - wvᵀ,
+        // where w = 2(Av - (vᵀAv)v).
+        let mut block = ring.slice_mut(s![axis.., axis..]);
+        let mut w = block.dot(&reflector);
+        let along = reflector.dot(&w);
+        w.scaled_add(-along, &reflector);
+        w *= 2.;
+        for (i, mut row) in block.outer_iter_mut().enumerate() {
+            row.scaled_add(-reflector[i], &w);
+            row.scaled_add(-w[i], &reflector);
         }
     }
-    for row in 0..dim {
-        for column in row + 1..dim {
-            let mean = 0.5 * (reduced[(row, column)] + reduced[(column, row)]);
-            reduced[(row, column)] = mean;
-            reduced[(column, row)] = mean;
-        }
-    }
-    let (values, _) = exact_eigh(reduced.view())?;
+    let kept = ring.slice(s![removed.., removed..]);
+    #[cfg(feature = "faer")]
+    let values = {
+        let n = kept.nrows();
+        let matrix = faer::Mat::from_fn(n, n, |i, j| 0.5 * (kept[(i, j)] + kept[(j, i)]));
+        matrix
+            .self_adjoint_eigenvalues(faer::Side::Lower)
+            .map_err(|_| SaddleError::Solver("ring Hessian eigensolver did not converge".into()))?
+    };
+    #[cfg(not(feature = "faer"))]
+    let values = exact_eigh(kept)?.0;
     let mut sum = 0.0;
     for value in values.iter() {
         if *value == 0.0 || !value.is_finite() {
@@ -591,47 +622,30 @@ fn dense_kept_log_abs_det(
     Ok(sum)
 }
 
-/// Orthonormal basis of the complement of `gauges`, one column each.
-#[cfg(any(test, feature = "lineb-oracle"))]
-fn fluctuation_basis(length: usize, gauges: &[Array1<f64>]) -> Result<Array2<f64>, SaddleError> {
-    let dim = length.checked_sub(gauges.len()).ok_or_else(|| {
-        SaddleError::Invalid("more gauge modes than ring-polymer coordinates".into())
-    })?;
-    if dim < 1 {
-        return Err(SaddleError::Invalid(
-            "the fluctuation space is empty".into(),
-        ));
-    }
-    let resolved = f64::EPSILON * ((gauges.len() + dim) as f64).powi(2);
-    let mut basis = Array2::zeros((length, dim));
-    let mut filled = 0;
-    for axis in 0..length {
-        let mut probe = Array1::zeros(length);
-        probe[axis] = 1.0;
-        project(&mut probe, gauges);
-        for column in 0..filled {
-            let coeff = basis.column(column).dot(&probe);
-            probe.scaled_add(-coeff, &basis.column(column));
-        }
-        project(&mut probe, gauges);
-        let norm = l2(probe.view());
-        if norm > resolved {
-            probe /= norm;
-            basis.column_mut(filled).assign(&probe);
-            filled += 1;
-            if filled == dim {
-                return Ok(basis);
-            }
-        }
-    }
-    Err(SaddleError::Invalid(
-        "the fluctuation space closed before every mode was found".into(),
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dense_projection_removes_gauges_coupled_to_an_indefinite_block() {
+        let basis = ndarray::array![
+            [1., 1., 1., 1.],
+            [1., -1., 1., -1.],
+            [1., 1., -1., -1.],
+            [1., -1., -1., 1.]
+        ] * 0.5;
+        let blocks = ndarray::array![
+            [2., 3., 0.6, 0.7],
+            [3., 4., -1., 0.],
+            [0.6, -1., -3., 0.5],
+            [0.7, 0., 0.5, 2.]
+        ];
+        let matrix = basis.dot(&blocks).dot(&basis.t());
+        let gauges = vec![basis.column(0).to_owned(), basis.column(1).to_owned()];
+        let value = projected_log_abs_det(matrix, gauges).unwrap();
+        // The retained 2x2 block has determinant -6.25.
+        assert!((value - 6.25_f64.ln()).abs() < 64. * f64::EPSILON);
+    }
 
     /// A free ring's spring Hessian has eigenvalues
     /// `4 κ sin²(π k / P)` on each coordinate. Removing the constant
