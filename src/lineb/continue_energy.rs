@@ -33,9 +33,12 @@ pub struct Continuation {
     /// Optimizer step budget at each energy. A level still running after
     /// it is an error.
     pub max_steps: usize,
+    /// Interpolate the initial seed along the chord between its two MEP crossings.
+    pub linear_seed: bool,
 }
 
 with_setters!(Continuation {
+    with_linear_seed => linear_seed: val bool,
     with_delta => delta: val f64,
     with_images => images: val usize,
     with_levels => levels: val usize,
@@ -50,6 +53,7 @@ impl Continuation {
             images,
             levels,
             max_steps: 1000,
+            linear_seed: false,
         }
     }
 
@@ -82,6 +86,7 @@ pub fn continue_from_mep<S: PointSurface>(
         images,
         levels,
         max_steps,
+        linear_seed,
     } = ladder;
     if mep.nrows() < 3 || mep.ncols() != masses.dof() {
         return Err(SaddleError::Shape(
@@ -92,7 +97,16 @@ pub fn continue_from_mep<S: PointSurface>(
     let saddle = highest(&energies)?;
     let mut paths = Vec::with_capacity(levels);
     let mut energy = energies[saddle] - delta;
-    let mut seed = bracket(surface, masses, mep, &energies, saddle, energy, images)?;
+    let mut seed = bracket(
+        surface,
+        masses,
+        mep,
+        &energies,
+        saddle,
+        energy,
+        images,
+        linear_seed,
+    )?;
     for level in 0..levels {
         let mut session = LinebSession::new(config.clone(), masses.clone(), seed.clone(), energy)?;
         let report = session.run(surface, max_steps)?;
@@ -150,6 +164,7 @@ pub(super) fn clip_seed<S: PointSurface>(
         saddle,
         energy,
         seed.nrows(),
+        false,
     )
     .map(Some)
 }
@@ -192,6 +207,7 @@ fn bracket<S: PointSurface>(
     saddle: usize,
     target: f64,
     images: usize,
+    linear_seed: bool,
 ) -> Result<Array2<f64>, SaddleError> {
     let left = crossing_toward_start(energies, saddle, target)?;
     let right = crossing_toward_end(energies, saddle, target)?;
@@ -205,8 +221,10 @@ fn bracket<S: PointSurface>(
         energies[left + 1],
         target,
     )?);
-    for index in (left + 1)..=right {
-        weighted.push(masses.to_weighted(mep.row(index))?);
+    if !linear_seed {
+        for index in (left + 1)..=right {
+            weighted.push(masses.to_weighted(mep.row(index))?);
+        }
     }
     weighted.push(onto_segment(
         surface,
@@ -539,7 +557,10 @@ mod tests {
         }
         assert!((clipped[[1, 1]] - 1.0).abs() < 1e-14);
         let energies = image_energies(&Ridge, mep.view()).unwrap();
-        let seed = bracket(&Ridge, &masses, mep.view(), &energies, 1, 0.5, 3).unwrap();
+        let seed = bracket(&Ridge, &masses, mep.view(), &energies, 1, 0.5, 3, false).unwrap();
+        let chord = bracket(&Ridge, &masses, mep.view(), &energies, 1, 0.5, 3, true).unwrap();
+        let midpoint = (&seed.row(0) + &seed.row(2)) * 0.5;
+        assert!(l2((&chord.row(1) - &midpoint).view()) < 1e-12);
         assert!(l2((&seed.row(1) - &mep.row(1)).view()) < 1e-12);
     }
 
