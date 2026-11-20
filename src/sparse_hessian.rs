@@ -30,8 +30,8 @@
 //! at the recovery point.
 
 use ndarray::{Array1, Array2, ArrayView1};
-use rgmin::vecops::axpy;
 use rgmin::ApplyHessian;
+use rgmin::vecops::axpy;
 
 use crate::eigensolve::exact_eigh;
 use crate::error::SaddleError;
@@ -1994,7 +1994,7 @@ fn lanczos_start(n: usize) -> Array1<f64> {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use ndarray::{array, Array1, Array2};
+    use ndarray::{Array1, Array2, array};
 
     use super::*;
     use crate::eigensolve::exact_eigh;
@@ -3431,7 +3431,9 @@ mod tests {
 
     #[test]
     fn gupta_matches_a_finite_difference_hessian() {
-        let coords = array![0.0, 0.0, 0.0, 1.15, 0.0, 0.0, 0.4, 1.05, 0.05, 1.05, 0.95, 0.15,];
+        let coords = array![
+            0.0, 0.0, 0.0, 1.15, 0.0, 0.0, 0.4, 1.05, 0.05, 1.05, 0.95, 0.15,
+        ];
         let params = GuptaParams::demo();
         let surface = Gupta::new(params, None);
         let (energy, gradient) = surface.eval(coords.view()).unwrap();

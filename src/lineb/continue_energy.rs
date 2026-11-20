@@ -560,9 +560,11 @@ mod tests {
     fn saved_turning_points_can_straddle_the_target_by_roundoff() {
         let masses = Masses::coordinates(array![1.0].view()).unwrap();
         let seed = array![[1.0 - f64::EPSILON], [2.0], [1.0 + f64::EPSILON]];
-        assert!(clip_seed(&Ramp, &masses, seed.view(), 1.0, false)
-            .unwrap()
-            .is_none());
+        assert!(
+            clip_seed(&Ramp, &masses, seed.view(), 1.0, false)
+                .unwrap()
+                .is_none()
+        );
     }
 
     struct Well;
