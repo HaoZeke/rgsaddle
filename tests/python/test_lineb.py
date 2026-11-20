@@ -58,6 +58,7 @@ def test_lineb_solve_path_only_returns_nan_rate() -> None:
     assert math.isfinite(result.temperature)
     assert math.isfinite(result.temperature_dynamics)
     assert math.isnan(result.log_rate_over_reactant)
+    assert result.modes is None and result.negative_modes is None
     assert result.iterations >= 1
     assert result.optimizer_calls >= 1
     assert result.measure_calls >= 1
@@ -95,6 +96,8 @@ def test_rate_uses_the_same_energy_zero_as_the_reactant_partition() -> None:
     shifted = solve(0.125)
     assert math.isfinite(base.log_rate_over_reactant)
     assert base.rate_calls > 0
+    assert base.modes == 8 * 3 - 1
+    assert base.negative_modes == 1
     assert shifted.temperature == pytest.approx(base.temperature, rel=1e-7)
     # In the default reduced units k_B = 1, and k Z_r carries exp(-βV).
     difference = shifted.log_rate_over_reactant - base.log_rate_over_reactant

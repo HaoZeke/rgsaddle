@@ -186,6 +186,14 @@ int main(void) {
       return 1;
     }
   }
+  int64_t negative_modes = 5, modes = 10;
+  const rgsaddle_status_t diagnostics = rgsaddle_lineb_solve_counted_diagnostics(
+      &cfg, N_IMAGES, N_ATOMS, pos, masses, 0, 0.25, 200, 0,
+      surface, NULL, out_pos, &result, &kappa, RGSADDLE_LINEB_LINEAR_SEED, NULL,
+      &negative_modes, &modes);
+  if (diagnostics != RGSADDLE_OK || negative_modes != -1 || modes != -1) {
+    return fail("path-only solve has no measured fluctuation spectrum", diagnostics);
+  }
   kappa = NAN;
   if (rgsaddle_lineb_solve_with_kappa(&cfg, N_IMAGES, N_ATOMS, pos, masses, 0, 0.25,
                                       200, 0, surface, NULL, out_pos, &result, &kappa)
