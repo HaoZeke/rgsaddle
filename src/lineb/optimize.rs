@@ -37,6 +37,9 @@ pub struct LinebConfig {
     pub spring: f64,
     /// `κ |f|` for the endpoint equipotential force.
     pub endpoint_scale: f64,
+    /// Fixed coefficient κ of (V − E) along the unit surface force.
+    /// When set, this replaces the gradient-normalized endpoint scale.
+    pub endpoint_kappa: Option<f64>,
     /// Stop when every nudged force's norm is at most this.
     pub opt_tol: f64,
     /// Stop when every interior perpendicular action gradient's norm is
@@ -87,7 +90,20 @@ with_setters!(LinebConfig {
 });
 
 impl LinebConfig {
-    /// Paper spring and endpoint scale, time step 0.1, unit `ℏ` and
+    /// Use a constant endpoint coefficient as in Eqs. (19) and (21).
+    pub fn with_endpoint_kappa(mut self, kappa: f64) -> Self {
+        self.endpoint_kappa = Some(kappa);
+        self
+    }
+
+    fn endpoint_restraint(&self) -> action::EndpointRestraint {
+        match self.endpoint_kappa {
+            Some(kappa) => action::EndpointRestraint::Fixed(kappa),
+            None => action::EndpointRestraint::Normalized(self.endpoint_scale),
+        }
+    }
+
+    /// Gradient-normalized endpoint force, time step 0.1, unit `ℏ` and
     /// `k_B`, FIRE 2.0.
     ///
     /// `opt_tol` stops the nudged force and `perp_tol` stops the
@@ -97,6 +113,7 @@ impl LinebConfig {
         Self {
             spring: 0.1,
             endpoint_scale: 0.2,
+            endpoint_kappa: None,
             opt_tol,
             perp_tol,
             time_step: 0.1,
@@ -117,7 +134,7 @@ impl LinebConfig {
                 "the tunneling spring must be finite and positive".into(),
             ));
         }
-        if !(self.endpoint_scale.is_finite() && self.endpoint_scale > 0.0) {
+        if !self.endpoint_restraint().is_valid() {
             return Err(SaddleError::Invalid(
                 "the endpoint scale must be finite and positive".into(),
             ));
@@ -432,7 +449,7 @@ impl LinebSession {
                     images.view(),
                     energy,
                     config.spring,
-                    config.endpoint_scale,
+                    config.endpoint_restraint(),
                     width,
                 );
                 let mut state = outcome.lock().unwrap_or_else(|e| e.into_inner());
@@ -501,7 +518,7 @@ impl LinebSession {
                             action::unpack(x.view(), n, dof).view(),
                             energy,
                             config.spring,
-                            config.endpoint_scale,
+                            config.endpoint_restraint(),
                             width,
                         )?
                         .ok_or_else(|| {
@@ -579,7 +596,7 @@ impl LinebSession {
                     self.weighted.view(),
                     self.energy,
                     self.config.spring,
-                    self.config.endpoint_scale,
+                    self.config.endpoint_restraint(),
                     width,
                 )?
                 .ok_or_else(|| {
@@ -594,7 +611,7 @@ impl LinebSession {
             &self.masses,
             assembly.aligned,
             self.energy,
-            self.config.endpoint_scale,
+            self.config.endpoint_restraint(),
             self.config.opt_tol,
         )?;
         let periods: Periods = path::measure(

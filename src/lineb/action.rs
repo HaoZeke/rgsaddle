@@ -38,6 +38,26 @@ use crate::projection::{ProjectionKind, force_perp};
 use crate::spring::SpringKind;
 use crate::tangent::{TangentKind, compute_tangent};
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum EndpointRestraint {
+    Normalized(f64),
+    Fixed(f64),
+}
+
+impl EndpointRestraint {
+    pub(crate) fn coefficient(self, gradient_norm: f64) -> f64 {
+        match self {
+            Self::Normalized(scale) => scale / gradient_norm,
+            Self::Fixed(kappa) => kappa,
+        }
+    }
+
+    pub(crate) fn is_valid(self) -> bool {
+        let coefficient = self.coefficient(1.0);
+        coefficient.is_finite() && coefficient > 0.0
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Assembly {
     /// Mass-weighted images after the rigid alignment, the geometry of
@@ -57,7 +77,7 @@ pub(crate) fn assemble<S: PointSurface>(
     weighted: ArrayView2<f64>,
     energy: f64,
     spring: f64,
-    endpoint_scale: f64,
+    restraint: EndpointRestraint,
     width: f64,
 ) -> Result<Option<Assembly>, SaddleError> {
     let n = weighted.nrows();
@@ -70,8 +90,7 @@ pub(crate) fn assemble<S: PointSurface>(
     if !(energy.is_finite()
         && spring.is_finite()
         && spring > 0.0
-        && endpoint_scale.is_finite()
-        && endpoint_scale > 0.0
+        && restraint.is_valid()
         && width.is_finite()
         && width > 0.0)
     {
@@ -192,7 +211,7 @@ pub(crate) fn assemble<S: PointSurface>(
         f_hat /= f_norm;
         let parallel = f_hat.dot(&spring_force);
         spring_force.scaled_add(-parallel, &f_hat);
-        let kappa = endpoint_scale / f_norm;
+        let kappa = restraint.coefficient(f_norm);
         spring_force.scaled_add(kappa * (energies[end] - energy), &f_hat);
         opt_max = opt_max.max(l2(spring_force.view()));
         drive_aligned.row_mut(end).assign(&spring_force);
@@ -281,13 +300,45 @@ mod tests {
         let masses = Masses::coordinates(Array1::ones(2).view()).unwrap();
         let energy = Valley.eval(images.row(0)).unwrap().0;
         let spring = 2.0;
-        let band = assemble(&Valley, &masses, images.view(), energy, spring, 1.0, 0.01)
-            .unwrap()
-            .unwrap();
+        let band = assemble(
+            &Valley,
+            &masses,
+            images.view(),
+            energy,
+            spring,
+            EndpointRestraint::Normalized(1.0),
+            0.01,
+        )
+        .unwrap()
+        .unwrap();
         for end in [0, 2] {
             // The surface normal points along x. Equations (20) and (22)
             // therefore retain the full y component of the adjacent chord.
             assert!((band.drive[[end, 1]] - spring * 0.25).abs() < f64::EPSILON);
+        }
+    }
+
+    #[test]
+    fn fixed_endpoint_force_tracks_energy_error_at_both_ends() {
+        let images = ndarray::array![[-1.0, 0.0], [0.0, 0.0], [1.5, 0.0]];
+        let masses = Masses::coordinates(Array1::ones(2).view()).unwrap();
+        let target = 0.25;
+        let kappa = 2.0;
+        let band = assemble(
+            &Valley,
+            &masses,
+            images.view(),
+            target,
+            0.1,
+            EndpointRestraint::Fixed(kappa),
+            0.01,
+        )
+        .unwrap()
+        .unwrap();
+        for end in [0, 2] {
+            let (energy, gradient) = Valley.eval(images.row(end)).unwrap();
+            let expected = -gradient[0].signum() * kappa * (energy - target);
+            assert!((band.drive[[end, 0]] - expected).abs() < 1e-14);
         }
     }
 
@@ -321,9 +372,17 @@ mod tests {
         let endpoint = 0.2;
         let width = 1e-3;
         let assemble_at = |images: ArrayView2<f64>| {
-            assemble(&Valley, &masses, images, energy, spring, endpoint, width)
-                .unwrap()
-                .unwrap()
+            assemble(
+                &Valley,
+                &masses,
+                images,
+                energy,
+                spring,
+                EndpointRestraint::Normalized(endpoint),
+                width,
+            )
+            .unwrap()
+            .unwrap()
         };
         let assembly = assemble_at(images.view());
         for image in 1..images.nrows() - 1 {

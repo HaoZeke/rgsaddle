@@ -183,7 +183,7 @@ fn simpson_weight(i: usize, intervals: usize) -> f64 {
 
 /// Move each end image onto `V = E` along the local full surface
 /// gradient when that end is already within the optimizer's
-/// equipotential residual `endpoint_scale |V − E| / |f| ≤ opt_tol`.
+/// equipotential residual `κ |V − E| ≤ opt_tol`.
 /// Ends farther from the turning surface are left alone so
 /// [`crate::lineb::optimize::LinebSession::path`] keeps its previous
 /// behavior on bands that are not near-turning. Both signs of `V − E`
@@ -193,7 +193,7 @@ pub(crate) fn refine_near_turning_endpoints<S: PointSurface>(
     masses: &Masses,
     mut weighted: Array2<f64>,
     energy: f64,
-    endpoint_scale: f64,
+    restraint: super::action::EndpointRestraint,
     opt_tol: f64,
 ) -> Result<Array2<f64>, SaddleError> {
     let last = weighted.nrows() - 1;
@@ -203,7 +203,7 @@ pub(crate) fn refine_near_turning_endpoints<S: PointSurface>(
             masses,
             weighted.row(end).to_owned(),
             energy,
-            endpoint_scale,
+            restraint,
             opt_tol,
         )?;
         weighted.row_mut(end).assign(&refined);
@@ -216,7 +216,7 @@ fn refine_endpoint_to_energy<S: PointSurface>(
     masses: &Masses,
     point: Array1<f64>,
     energy: f64,
-    endpoint_scale: f64,
+    restraint: super::action::EndpointRestraint,
     opt_tol: f64,
 ) -> Result<Array1<f64>, SaddleError> {
     let (potential, gradient) = eval_endpoint(surface, masses, point.view())?;
@@ -227,7 +227,7 @@ fn refine_endpoint_to_energy<S: PointSurface>(
         return Ok(point);
     }
     // Far from a converged turning point: leave the image for measure.
-    if endpoint_scale * gap0.abs() / norm > opt_tol {
+    if restraint.coefficient(norm) * gap0.abs() > opt_tol {
         return Ok(point);
     }
     if gap0 == 0.0 {
