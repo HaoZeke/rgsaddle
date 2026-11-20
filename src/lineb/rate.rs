@@ -64,6 +64,10 @@ pub struct HqtstRate {
     pub bead_action: f64,
     /// `Σ ln|λ|` over the kept eigenvalues of the ring-polymer Hessian.
     pub log_abs_det: f64,
+    /// Number of strictly negative eigenvalues on the gauge-deflated space.
+    pub negative_modes: usize,
+    /// Cartesian displacement of the image-Hessian central difference, in the input length units.
+    pub image_hessian_displacement: Option<f64>,
     /// How many eigenvalues that sum keeps.
     pub modes: usize,
     /// `ln(k Z_r)`.
@@ -113,7 +117,7 @@ pub fn hqtst_rate<S: PointSurface>(
         )?);
     }
     let gauges = gauge_modes(&replicas.weighted, &path.masses)?;
-    let log_abs_det = deflated_log_abs_det(beads * dof, &gauges, |vector| {
+    let spectrum = deflated_log_abs_det(beads * dof, &gauges, |vector| {
         let mut out = Array1::zeros(vector.len());
         for bead in 0..beads {
             let previous = if bead == 0 { beads - 1 } else { bead - 1 };
@@ -135,7 +139,8 @@ pub fn hqtst_rate<S: PointSurface>(
         &replicas.weighted,
         &energies,
         replicas.period,
-        log_abs_det,
+        spectrum,
+        None,
         calls.load(Ordering::Relaxed),
     )
 }
@@ -150,6 +155,25 @@ pub fn hqtst_rate_interpolated_hessian<S: PointSurface>(
     path: &LinebPath,
     beads: usize,
 ) -> Result<HqtstRate, SaddleError> {
+    let step = coordinate_scale(path.weighted.iter().copied())?;
+    hqtst_rate_interpolated_hessian_with_step(surface, path, beads, step)
+}
+
+/// Interpolate image Hessians obtained using a prescribed positive Cartesian
+/// displacement. The two gradients for each column are separated by twice
+/// this displacement, independent of the displaced atom's mass.
+#[cfg(any(test, feature = "lineb-oracle"))]
+pub fn hqtst_rate_interpolated_hessian_with_step<S: PointSurface>(
+    surface: &S,
+    path: &LinebPath,
+    beads: usize,
+    step: f64,
+) -> Result<HqtstRate, SaddleError> {
+    if !step.is_finite() || step <= 0.0 {
+        return Err(SaddleError::Invalid(
+            "the image Hessian displacement must be finite and positive".into(),
+        ));
+    }
     let calls = std::sync::atomic::AtomicUsize::new(0);
     let counted = crate::lineb::Counted {
         surface,
@@ -157,7 +181,6 @@ pub fn hqtst_rate_interpolated_hessian<S: PointSurface>(
     };
     let replicas = path::replicas(path.weighted.view(), &path.time_table, beads)?;
     let kappa = spring_constant(replicas.period, path.hbar, beads)?;
-    let step = coordinate_scale(path.weighted.iter().copied())?;
     let hessians = image_hessians(&counted, &path.masses, path.weighted.view(), step)?;
     let curve = Curve::new(path.weighted.view())?;
     let dense = interpolated_ring(
@@ -168,7 +191,7 @@ pub fn hqtst_rate_interpolated_hessian<S: PointSurface>(
         kappa,
     )?;
     let gauges = gauge_modes(&replicas.weighted, &path.masses)?;
-    let log_abs_det = projected_log_abs_det(dense, gauges)?;
+    let spectrum = projected_log_abs_det(dense, gauges)?;
     let mut energies = Vec::with_capacity(beads);
     for row in replicas.weighted.rows() {
         let cartesian = path.masses.to_cartesian(row)?;
@@ -183,7 +206,8 @@ pub fn hqtst_rate_interpolated_hessian<S: PointSurface>(
         &replicas.weighted,
         &energies,
         replicas.period,
-        log_abs_det,
+        spectrum,
+        Some(step),
         calls.load(Ordering::Relaxed),
     )
 }
@@ -193,9 +217,14 @@ fn finish(
     beads: &Array2<f64>,
     energies: &[f64],
     period: f64,
-    log_abs_det: f64,
+    spectrum: FluctuationSpectrum,
+    image_hessian_displacement: Option<f64>,
     evaluations: usize,
 ) -> Result<HqtstRate, SaddleError> {
+    let FluctuationSpectrum {
+        log_abs_det,
+        negative_modes,
+    } = spectrum;
     let bead_action = bead_action(beads, energies, period, path.hbar)?;
     let line_action = (2.0 * path.action + path.energy * period) / path.hbar;
     let modes = beads.len() - gauge_modes(beads, &path.masses)?.len();
@@ -206,6 +235,8 @@ fn finish(
         line_action,
         bead_action,
         log_abs_det,
+        negative_modes,
+        image_hessian_displacement,
         modes,
         log_rate_over_reactant: log_rate,
         rate_over_reactant: if log_rate > f64::MAX.ln() {
@@ -427,6 +458,34 @@ fn project(vector: &mut Array1<f64>, directions: &[Array1<f64>]) {
     }
 }
 
+struct FluctuationSpectrum {
+    log_abs_det: f64,
+    negative_modes: usize,
+}
+
+fn summarize_spectrum<'a>(
+    values: impl Iterator<Item = &'a f64>,
+) -> Result<FluctuationSpectrum, SaddleError> {
+    let mut log_abs_det = 0.0;
+    let mut negative_modes = 0;
+    for &value in values {
+        if value == 0.0 || !value.is_finite() {
+            return Err(SaddleError::Invalid(
+                "a kept ring-polymer eigenvalue vanishes or is nonfinite".into(),
+            ));
+        }
+        log_abs_det += value.abs().ln();
+        negative_modes += usize::from(value < 0.);
+    }
+    if !log_abs_det.is_finite() {
+        return Err(SaddleError::NonFinite("fluctuation determinant"));
+    }
+    Ok(FluctuationSpectrum {
+        log_abs_det,
+        negative_modes,
+    })
+}
+
 /// `Σ ln|λ|` of `apply` on the complement of the orthonormal `gauges`.
 ///
 /// The spectrum is that of `Π A Π + G Gᵀ`, `Π = I − G Gᵀ`: the operator
@@ -436,7 +495,7 @@ fn deflated_log_abs_det(
     length: usize,
     gauges: &[Array1<f64>],
     apply: impl Fn(ArrayView1<f64>) -> Array1<f64>,
-) -> Result<f64, SaddleError> {
+) -> Result<FluctuationSpectrum, SaddleError> {
     if gauges.len() >= length {
         return Err(SaddleError::Invalid(
             "the fluctuation space is empty".into(),
@@ -455,19 +514,7 @@ fn deflated_log_abs_det(
         },
         length,
     )?;
-    let mut sum = 0.0;
-    for value in values.iter() {
-        if *value == 0.0 || !value.is_finite() {
-            return Err(SaddleError::Invalid(
-                "the fluctuation operator has a vanishing eigenvalue".into(),
-            ));
-        }
-        sum += value.abs().ln();
-    }
-    if !sum.is_finite() {
-        return Err(SaddleError::NonFinite("fluctuation determinant"));
-    }
-    Ok(sum)
+    summarize_spectrum(values.iter())
 }
 
 #[cfg(any(test, feature = "lineb-oracle"))]
@@ -561,7 +608,7 @@ fn interpolated_ring(
 fn projected_log_abs_det(
     mut ring: Array2<f64>,
     mut gauges: Vec<Array1<f64>>,
-) -> Result<f64, SaddleError> {
+) -> Result<FluctuationSpectrum, SaddleError> {
     let removed = gauges.len();
     if removed >= ring.nrows() {
         return Err(SaddleError::Invalid(
@@ -607,19 +654,7 @@ fn projected_log_abs_det(
     };
     #[cfg(not(feature = "faer"))]
     let values = exact_eigh(kept)?.0;
-    let mut sum = 0.0;
-    for value in values.iter() {
-        if *value == 0.0 || !value.is_finite() {
-            return Err(SaddleError::Invalid(
-                "a kept ring-polymer eigenvalue vanishes".into(),
-            ));
-        }
-        sum += value.abs().ln();
-    }
-    if !sum.is_finite() {
-        return Err(SaddleError::NonFinite("fluctuation determinant"));
-    }
-    Ok(sum)
+    summarize_spectrum(values.iter())
 }
 
 #[cfg(test)]
@@ -644,7 +679,8 @@ mod tests {
         let gauges = vec![basis.column(0).to_owned(), basis.column(1).to_owned()];
         let value = projected_log_abs_det(matrix, gauges).unwrap();
         // The retained 2x2 block has determinant -6.25.
-        assert!((value - 6.25_f64.ln()).abs() < 64. * f64::EPSILON);
+        assert_eq!(value.negative_modes, 1);
+        assert!((value.log_abs_det - 6.25_f64.ln()).abs() < 64. * f64::EPSILON);
     }
 
     /// A free ring's spring Hessian has eigenvalues
@@ -667,7 +703,9 @@ mod tests {
         let mut constant = Array1::zeros(beads * dof);
         constant.fill(1.0);
         constant /= l2(constant.view());
-        let log_det = deflated_log_abs_det(beads, &[constant], apply).unwrap();
+        let log_det = deflated_log_abs_det(beads, &[constant], apply)
+            .unwrap()
+            .log_abs_det;
         let expected = (beads - 1) as f64 * kappa.ln() + 2.0 * (beads as f64).ln();
         // Relative to the expected log-determinant.
         let scale = expected.abs();
@@ -686,7 +724,7 @@ mod tests {
         let apply = |vector: ArrayView1<f64>| {
             Array1::from_iter((0..n).map(|index| (index + 1) as f64 * vector[index]))
         };
-        let log_det = deflated_log_abs_det(n, &[], apply).unwrap();
+        let log_det = deflated_log_abs_det(n, &[], apply).unwrap().log_abs_det;
         let expected: f64 = (1..=n).map(|k| (k as f64).ln()).sum();
         // Relative to the expected log-determinant.
         let scale = expected.abs();

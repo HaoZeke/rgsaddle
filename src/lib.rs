@@ -165,7 +165,7 @@ pub use lammps::{
     LammpsThermostatKind, LammpsThermostatRecord,
 };
 #[cfg(any(test, feature = "lineb-oracle"))]
-pub use lineb::hqtst_rate_interpolated_hessian;
+pub use lineb::{hqtst_rate_interpolated_hessian, hqtst_rate_interpolated_hessian_with_step};
 pub use lineb::{
     Continuation, HqtstRate, LinebCalls, LinebConfig, LinebPath, LinebReport, LinebSession,
     LinebStatus, Masses, continue_from_mep, continue_from_mep_with_observer, hqtst_rate,
