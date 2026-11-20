@@ -40,6 +40,8 @@ pub struct LinebConfig {
     /// Fixed coefficient κ of (V − E) along the unit surface force.
     /// When set, this replaces the gradient-normalized endpoint scale.
     pub endpoint_kappa: Option<f64>,
+    /// Apply opt_tol only to the endpoints, and perp_tol to interior images.
+    pub endpoint_convergence: bool,
     /// Stop when every nudged force's norm is at most this.
     pub opt_tol: f64,
     /// Stop when every interior perpendicular action gradient's norm is
@@ -77,6 +79,7 @@ pub struct LinebConfig {
 
 with_setters!(LinebConfig {
     with_spring => spring: val f64,
+    with_endpoint_convergence => endpoint_convergence: val bool,
     with_endpoint_scale => endpoint_scale: val f64,
     with_opt_tol => opt_tol: val f64,
     with_perp_tol => perp_tol: val f64,
@@ -114,6 +117,7 @@ impl LinebConfig {
             spring: 0.1,
             endpoint_scale: 0.2,
             endpoint_kappa: None,
+            endpoint_convergence: false,
             opt_tol,
             perp_tol,
             time_step: 0.1,
@@ -202,6 +206,8 @@ pub struct LinebReport {
     pub perp_max: f64,
     /// Largest norm of a nudged force, endpoints included.
     pub opt_max: f64,
+    /// Largest nudged force norm at either endpoint.
+    pub endpoint_max: f64,
     /// Steps completed, counting this one.
     pub iteration: usize,
     /// Surface evaluations inside optimizer steps so far.
@@ -567,13 +573,18 @@ impl LinebSession {
         self.weighted = action::unpack(x.view(), n, dof);
         self.iteration += 1;
         self.held = Some(assembly.clone());
-        let converged = assembly.perp_max <= config.perp_tol && assembly.opt_max <= config.opt_tol;
+        let tested_force = if config.endpoint_convergence {
+            assembly.endpoint_max
+        } else {
+            assembly.opt_max
+        };
+        let converged = assembly.perp_max <= config.perp_tol && tested_force <= config.opt_tol;
         if (displacement <= 0.0 || displacement.is_nan()) && !converged {
             return Err(SaddleError::Stalled(format!(
-                "tunneling path unchanged at energy {} on iteration {}: nudged force {} (tolerance {}), perpendicular force {} (tolerance {})",
+                "tunneling path unchanged at energy {} on iteration {}: tested nudged force {} (tolerance {}), perpendicular force {} (tolerance {})",
                 self.energy,
                 self.iteration,
-                assembly.opt_max,
+                tested_force,
                 config.opt_tol,
                 assembly.perp_max,
                 config.perp_tol
@@ -588,6 +599,7 @@ impl LinebSession {
             action: assembly.action,
             perp_max: assembly.perp_max,
             opt_max: assembly.opt_max,
+            endpoint_max: assembly.endpoint_max,
             iteration: self.iteration,
             evaluations: self.evaluations.load(Ordering::Relaxed),
         })

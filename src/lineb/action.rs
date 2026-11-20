@@ -69,6 +69,7 @@ pub(crate) struct Assembly {
     pub action: f64,
     pub perp_max: f64,
     pub opt_max: f64,
+    pub endpoint_max: f64,
 }
 
 pub(crate) fn assemble<S: PointSurface>(
@@ -197,6 +198,7 @@ pub(crate) fn assemble<S: PointSurface>(
         opt_max = opt_max.max(l2(nudged.view()));
         drive_aligned.row_mut(j).assign(&nudged);
     }
+    let mut endpoint_max = 0.0_f64;
     for (end, neighbour) in [(0, 1), (n - 1, n - 2)] {
         // Equations (20) and (22) use the full adjacent chord. Only
         // interior images have springs pulling from both sides.
@@ -213,7 +215,7 @@ pub(crate) fn assemble<S: PointSurface>(
         spring_force.scaled_add(-parallel, &f_hat);
         let kappa = restraint.coefficient(f_norm);
         spring_force.scaled_add(kappa * (energies[end] - energy), &f_hat);
-        opt_max = opt_max.max(l2(spring_force.view()));
+        endpoint_max = endpoint_max.max(l2(spring_force.view()));
         drive_aligned.row_mut(end).assign(&spring_force);
     }
 
@@ -237,7 +239,8 @@ pub(crate) fn assemble<S: PointSurface>(
         drive,
         action,
         perp_max,
-        opt_max,
+        opt_max: opt_max.max(endpoint_max),
+        endpoint_max,
     }))
 }
 

@@ -112,8 +112,8 @@ pub fn continue_from_mep<S: PointSurface>(
         let report = session.run(surface, max_steps)?;
         if report.status != LinebStatus::Converged {
             return Err(SaddleError::Stalled(format!(
-                "tunneling path at energy {energy} did not converge in {max_steps} steps, nudged force {}, perpendicular {}",
-                report.opt_max, report.perp_max
+                "tunneling path at energy {energy} did not converge in {max_steps} steps, nudged force {}, endpoint {}, perpendicular {}",
+                report.opt_max, report.endpoint_max, report.perp_max
             )));
         }
         let path = session.path(surface)?;
