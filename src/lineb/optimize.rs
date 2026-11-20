@@ -243,6 +243,20 @@ pub struct LinebPath {
     pub(crate) boltzmann: f64,
 }
 
+impl LinebPath {
+    /// Place a full ring of replicas at equal intervals of imaginary time.
+    /// Each row contains one Cartesian geometry, with the first turning
+    /// point at row zero. The return leg retraces the outbound spline.
+    pub fn cartesian_replicas(&self, beads: usize) -> Result<Array2<f64>, SaddleError> {
+        let mut ring = path::replicas(self.weighted.view(), &self.time_table, beads)?.weighted;
+        for mut row in ring.rows_mut() {
+            let cartesian = self.masses.to_cartesian(row.view())?;
+            row.assign(&cartesian);
+        }
+        Ok(ring)
+    }
+}
+
 /// Fixed-energy line-integral nudged elastic band.
 ///
 /// Images are stored in mass-weighted coordinates. Every image moves,

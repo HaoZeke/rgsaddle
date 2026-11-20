@@ -86,7 +86,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .into());
     }
-    let path = solver.cartesian()?;
+    let path = match std::env::args().nth(2).as_deref() {
+        None => solver.cartesian()?,
+        Some("ring") => solver.path(&ModifiedMullerBrown)?.cartesian_replicas(50)?,
+        _ => return Err("the optional second argument is ring".into()),
+    };
     let mut displacement = 0.0;
     println!("image,x,y,displacement,relative_energy");
     for (i, q) in path.outer_iter().enumerate() {
