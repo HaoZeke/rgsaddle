@@ -84,6 +84,7 @@ while report.status != BandStatus::Converged {
    howto/pafi-ohtst-restarting
    howto/pafi-ohtst-parallel-sampling
    howto/pafi-ohtst-checking-convergence
+   howto/lineb
    howto/sparse-hessian
    howto/sella
    howto/irc
