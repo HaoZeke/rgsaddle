@@ -1719,7 +1719,19 @@ nb::ndarray<nb::numpy, std::uint64_t> copy_u64_vector(const std::vector<std::uin
   return nb::ndarray<nb::numpy, std::uint64_t>(raw, 1, shape, owner);
 }
 
+struct LinebOrbitPy {
+  std::size_t beads = 0;
+  std::size_t dof = 0;
+  std::vector<double> positions;
+  std::vector<double> gradients;
+  double max_abs_residual = 0.;
+  double rms_residual = 0.;
+  std::int64_t max_bead = -1;
+  std::int64_t max_coordinate = -1;
+};
+
 struct LinebResultPy {
+  std::optional<LinebOrbitPy> orbit;
   std::vector<double> positions;
   std::int64_t n_images = 0;
   std::int64_t n_atoms = 0;
@@ -1743,7 +1755,7 @@ LinebResultPy lineb_solve_python(nb::callable fn, Matrix positions, Vector atom_
                                  double opt_tol, double perp_tol, bool molecular, std::int64_t max_steps,
                                  std::int64_t beads, double spring, double endpoint_scale, double time_step,
                                  double max_move, double turning_width, double hbar, double boltzmann,
-                                 std::int64_t quadrature_pairs, std::optional<double> endpoint_kappa, bool linear_seed, bool endpoint_convergence, bool projected_verlet) {
+                                 std::int64_t quadrature_pairs, std::optional<double> endpoint_kappa, bool linear_seed, bool endpoint_convergence, bool projected_verlet, bool return_orbit) {
   const std::int64_t n_images = static_cast<std::int64_t>(positions.shape(0));
   const std::int64_t n_atoms = static_cast<std::int64_t>(atom_masses.shape(0));
   if (n_images < 3 || n_atoms <= 0) {
@@ -1778,6 +1790,21 @@ LinebResultPy lineb_solve_python(nb::callable fn, Matrix positions, Vector atom_
 
   const std::size_t count =
       static_cast<std::size_t>(n_images) * static_cast<std::size_t>(n_atoms) * 3u;
+  LinebResultPy out;
+  rgsaddle_lineb_orbit_t descriptor{};
+  if (return_orbit && beads > 0) {
+    auto &orbit = out.orbit.emplace();
+    orbit.beads = static_cast<std::size_t>(beads);
+    orbit.dof = positions.shape(1);
+    if (orbit.beads > orbit.positions.max_size() / orbit.dof) {
+      throw nb::value_error("LI orbit is too large");
+    }
+    descriptor.capacity = orbit.beads * orbit.dof;
+    orbit.positions.resize(descriptor.capacity);
+    orbit.gradients.resize(descriptor.capacity);
+    descriptor.positions = orbit.positions.data();
+    descriptor.gradients = orbit.gradients.data();
+  }
   std::vector<double> optimized(count, 0.0);
   rgsaddle_lineb_result_t result{};
   std::int64_t negative_modes = -1, modes = -1;
@@ -1790,9 +1817,9 @@ LinebResultPy lineb_solve_python(nb::callable fn, Matrix positions, Vector atom_
     const uint32_t options = (linear_seed ? RGSADDLE_LINEB_LINEAR_SEED : 0u) |
                              (endpoint_convergence ? RGSADDLE_LINEB_ENDPOINT_CONVERGENCE : 0u) |
                              (projected_verlet ? RGSADDLE_LINEB_PROJECTED_VERLET : 0u);
-    status = rgsaddle_lineb_solve_counted_diagnostics(&cfg, n_images, n_atoms, positions.data(), atom_masses.data(),
+    status = rgsaddle_lineb_solve_counted_orbit(&cfg, n_images, n_atoms, positions.data(), atom_masses.data(),
                                   molecular ? 1 : 0, energy, max_steps, beads, connect_python_surface,
-                                  &state, optimized.data(), &result, endpoint_kappa ? &*endpoint_kappa : nullptr, options, &counts, &negative_modes, &modes);
+                                  &state, optimized.data(), &result, endpoint_kappa ? &*endpoint_kappa : nullptr, options, &counts, &negative_modes, &modes, out.orbit ? &descriptor : nullptr);
   }
   if (ctx.has_error()) {
     ctx.rethrow_if_set();
@@ -1802,7 +1829,12 @@ LinebResultPy lineb_solve_python(nb::callable fn, Matrix positions, Vector atom_
     raise_status(static_cast<int>(status));
   }
 
-  LinebResultPy out;
+  if (out.orbit) {
+    out.orbit->max_abs_residual = descriptor.max_abs_residual;
+    out.orbit->rms_residual = descriptor.rms_residual;
+    out.orbit->max_bead = descriptor.max_bead;
+    out.orbit->max_coordinate = descriptor.max_coordinate;
+  }
   out.positions = std::move(optimized);
   out.n_images = n_images;
   out.n_atoms = n_atoms;
@@ -1960,7 +1992,18 @@ NB_MODULE(_core, m) {
               "quench_nodes: bool = True) -> ConnectReport"),
       "Double-ended connect. surface(x) returns (energy, gradient) for one image shaped (1, 3N).");
 
+  nb::class_<LinebOrbitPy>(m, "LinebOrbit")
+      .def_prop_ro("positions", [](const LinebOrbitPy &o) { return copy_matrix(o.positions, o.beads, o.dof); },
+                   nb::rv_policy::move, "Measured Cartesian positions over one imaginary-time period.")
+      .def_prop_ro("gradients", [](const LinebOrbitPy &o) { return copy_matrix(o.gradients, o.beads, o.dof); },
+                   nb::rv_policy::move, "Cartesian energy gradients paired with the measured positions.")
+      .def_ro("max_abs_residual", &LinebOrbitPy::max_abs_residual)
+      .def_ro("rms_residual", &LinebOrbitPy::rms_residual)
+      .def_ro("max_bead", &LinebOrbitPy::max_bead)
+      .def_ro("max_coordinate", &LinebOrbitPy::max_coordinate);
+
   nb::class_<LinebResultPy>(m, "LinebResult")
+      .def_ro("orbit", &LinebResultPy::orbit, "Bead observations when requested for a rate.")
       .def_prop_ro(
           "positions",
           [](const LinebResultPy &report) {
@@ -2022,7 +2065,7 @@ NB_MODULE(_core, m) {
       nb::arg("turning_width") = 1e-3, nb::arg("hbar") = 1.0, nb::arg("boltzmann") = 1.0,
       nb::arg("quadrature_pairs") = static_cast<std::int64_t>(4), nb::arg("endpoint_kappa") = nb::none(),
       nb::arg("linear_seed") = false, nb::arg("endpoint_convergence") = false,
-      nb::arg("projected_verlet") = false,
+      nb::arg("projected_verlet") = false, nb::arg("return_orbit") = false,
       nb::sig(
           "def lineb_solve(surface: collections.abc.Callable[..., "
           "tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]], "
@@ -2030,7 +2073,7 @@ NB_MODULE(_core, m) {
           "energy: float, opt_tol: float, perp_tol: float, molecular: bool = False, max_steps: int = 1000, "
           "beads: int = 0, spring: float = 0.1, endpoint_scale: float = 0.2, time_step: float = 0.1, "
           "max_move: float = 0.2, turning_width: float = 0.001, hbar: float = 1.0, boltzmann: float = 1.0, "
-          "quadrature_pairs: int = 4, endpoint_kappa: float | None = None, linear_seed: bool = False, endpoint_convergence: bool = False, projected_verlet: bool = False) -> LinebResult"),
+          "quadrature_pairs: int = 4, endpoint_kappa: float | None = None, linear_seed: bool = False, endpoint_convergence: bool = False, projected_verlet: bool = False, return_orbit: bool = False) -> LinebResult"),
       "Fixed-energy LI-NEB path and optional harmonic rate. positions is (n_images, 3N). "
       "atom_masses is one positive mass per atom; molecular=False expands them to coordinates, "
       "molecular=True aligns the free molecule. surface(x) is one image shaped (1, 3N). "
