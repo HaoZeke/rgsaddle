@@ -72,6 +72,31 @@ def test_lineb_solve_path_only_returns_nan_rate() -> None:
     assert abs(result.half_period - exact_half) <= slack
 
 
+def test_rate_uses_the_same_energy_zero_as_the_reactant_partition() -> None:
+    positions, energy, tol = eckart_seed()
+
+    def solve(offset: float) -> LinebResult:
+        def confined(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+            value, grad = eckart(x)
+            transverse = x.reshape(1, 3)[:, 1:]
+            grad[:, 1:] = 2 * transverse
+            return value + offset + (transverse**2).sum(), grad
+
+        return lineb_solve(
+            confined, positions, np.ones(1), energy + offset, tol, tol,
+            molecular=False, max_steps=500, beads=8,
+        )
+
+    base = solve(0.0)
+    shifted = solve(0.125)
+    assert math.isfinite(base.log_rate_over_reactant)
+    assert base.rate_calls > 0
+    assert shifted.temperature == pytest.approx(base.temperature, rel=1e-7)
+    # In the default reduced units k_B = 1, and k Z_r carries exp(-βV).
+    difference = shifted.log_rate_over_reactant - base.log_rate_over_reactant
+    assert difference == pytest.approx(-0.125 / base.temperature, rel=1e-6)
+
+
 def test_lineb_solve_rejects_shape_mismatches() -> None:
     positions = np.zeros((3, 6), dtype=np.float64)
     masses = np.array([1.0], dtype=np.float64)
