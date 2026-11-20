@@ -19,3 +19,13 @@ reactant-normalized single-hop rate to diffusivity using equation (29),
 `D = 9.13e-17 * k`, with `k` in inverse seconds and `D` in cm²/s.
 `python compare_targets.py` checks this conversion against the hop geometry.
 The digitized HQTST diffusivities are in [the Figure 5 table](../figure5_hqtst.csv).
+
+The Quantum ESPRESSO reconstruction uses PW91 with the Vanderbilt ultrasoft
+datasets for Ta and H distributed by Quantum ESPRESSO. This changes the
+ionic potentials relative to the paper's PAW calculation. Under `open_qe/`,
+run `python fetch_pseudopotentials.py` and `python generate_qe_inputs.py`.
+From each generated case directory run `pw.x -in pw.scf.in` for a fixed
+geometry or `pw.x -in pw.relax.in` for an ionic relaxation. The endpoint
+and midpoint cases use the same reciprocal mesh and cutoff. A midpoint
+energy gives a trial barrier. Establishing a saddle also requires a
+stationary geometry and one unstable vibrational mode along the hop.

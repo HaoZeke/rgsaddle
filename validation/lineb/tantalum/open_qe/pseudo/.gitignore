@@ -1,0 +1,6 @@
+# Fetched UPF bodies (redistributable, but large); SHA256SUMS is tracked.
+*.UPF
+*.upf
+*.txt
+!SHA256SUMS
+!README.md
