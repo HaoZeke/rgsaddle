@@ -487,7 +487,9 @@ impl LinebSession {
                     return Err(err);
                 }
                 Trial::Outside(attempted) => {
-                    self.solver.forget_evaluation();
+                    // The optimizer has advanced its velocity or curvature history
+                    // to the rejected trial. Restart it at the accepted coordinates.
+                    self.solver.forget();
                     x.assign(&before);
                     let shorter = 0.5 * cap.min(attempted);
                     if shorter <= 0.0 || shorter.is_nan() {
@@ -538,8 +540,13 @@ impl LinebSession {
         let converged = assembly.perp_max <= config.perp_tol && assembly.opt_max <= config.opt_tol;
         if (displacement <= 0.0 || displacement.is_nan()) && !converged {
             return Err(SaddleError::Stalled(format!(
-                "tunneling path unchanged with nudged force {} above {}",
-                assembly.opt_max, config.opt_tol
+                "tunneling path unchanged at energy {} on iteration {}: nudged force {} (tolerance {}), perpendicular force {} (tolerance {})",
+                self.energy,
+                self.iteration,
+                assembly.opt_max,
+                config.opt_tol,
+                assembly.perp_max,
+                config.perp_tol
             )));
         }
         Ok(LinebReport {
