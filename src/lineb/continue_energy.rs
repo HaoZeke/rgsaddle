@@ -146,15 +146,23 @@ pub(super) fn clip_seed<S: PointSurface>(
     if !left.is_finite() {
         return Err(SaddleError::NonFinite("reactant seed energy"));
     }
-    if left >= energy {
-        return Ok(None);
-    }
     let right = surface.eval(seed.row(last))?.0;
     if !right.is_finite() {
         return Err(SaddleError::NonFinite("product seed energy"));
     }
-    if right >= energy {
+    // A saved turning point can straddle E within the resolution of the PES.
+    let resolution = super::path::energy_roundoff(energy);
+    if (left >= energy || right >= energy)
+        && energy - left <= resolution
+        && energy - right <= resolution
+    {
         return Ok(None);
+    }
+    if left > energy || right > energy {
+        let side = if left > energy { "reactant" } else { "product" };
+        return Err(SaddleError::Invalid(format!(
+            "seed lacks a {side}-side crossing of the tunneling energy {energy}: endpoint energies {left} and {right}"
+        )));
     }
     let mut energies = vec![left];
     energies.extend(image_energies(
@@ -534,6 +542,27 @@ mod tests {
         fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
             Ok((x[0], array![1.0]))
         }
+    }
+
+    #[test]
+    fn a_one_sided_seed_reports_the_missing_crossing_in_either_direction() {
+        let masses = Masses::coordinates(array![1.0].view()).unwrap();
+        for (path, side) in [
+            (array![[-1.0], [0.5], [1.0]], "product"),
+            (array![[1.0], [0.5], [-1.0]], "reactant"),
+        ] {
+            let result = clip_seed(&Ramp, &masses, path.view(), 0.0, false);
+            assert!(matches!(result, Err(SaddleError::Invalid(message)) if message.contains(side)));
+        }
+    }
+
+    #[test]
+    fn saved_turning_points_can_straddle_the_target_by_roundoff() {
+        let masses = Masses::coordinates(array![1.0].view()).unwrap();
+        let seed = array![[1.0 - f64::EPSILON], [2.0], [1.0 + f64::EPSILON]];
+        assert!(clip_seed(&Ramp, &masses, seed.view(), 1.0, false)
+            .unwrap()
+            .is_none());
     }
 
     struct Well;

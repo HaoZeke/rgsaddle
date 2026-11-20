@@ -633,6 +633,10 @@ fn end_clock<S: PointSurface>(
 /// clock allows for.
 const ENERGY_ULPS: f64 = 64.0;
 
+pub(super) fn energy_roundoff(energy: f64) -> f64 {
+    ENERGY_ULPS * f64::EPSILON * energy.abs()
+}
+
 /// Simpson on `[s0, s1]`, and the bound on its change from an error of
 /// `ENERGY_ULPS · ε · |E|` in every sampled `V`.
 fn simpson_s<S: PointSurface>(
@@ -641,7 +645,7 @@ fn simpson_s<S: PointSurface>(
     s0: f64,
     s1: f64,
 ) -> Result<(f64, f64), SaddleError> {
-    let delta_v = ENERGY_ULPS * f64::EPSILON * level.energy.abs();
+    let delta_v = energy_roundoff(level.energy);
     let mid = 0.5 * (s0 + s1);
     let mut acc = 0.0;
     let mut rounding = 0.0;
