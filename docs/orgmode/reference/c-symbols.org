@@ -189,8 +189,8 @@ The narrative for a session is the C and C++ how-to, not this list.
 - =rgsaddle_band_set_free_end=. Purpose: Enable, replace, or clear the free-end adaptive NEB (FEA-NEB) of Zhang, Zhang, Ye, and Zheng, J. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_band_free_end_residual=. Purpose: Read the signed target-energy residual `E(x_end) - E_target` from the most recent free-end step into `out`, ABI minor 45. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_band_free_end_cuts=. Purpose: Number of adaptive cut-and-remesh refinements performed so far on a free-end band, or 0 for NULL, ABI minor 45. Parameters: the declaration. Units: the caller's.
-- =rgsaddle_lineb_config_default=. Purpose: Fill out with the solver defaults for the given force tolerances, ABI minor 46. Parameters: the declaration. Units: the caller's.
-- =rgsaddle_lineb_solve=. Purpose: Optimize a fixed-energy tunneling path and optionally its harmonic quantum TST rate, ABI minor 46. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_lineb_config_default=. Purpose: Fill out with the solver defaults for the given force tolerances, ABI minor 47. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_lineb_solve=. Purpose: Optimize a fixed-energy tunneling path and optionally its harmonic quantum TST rate, ABI minor 47. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_lineb_solve_with_kappa=. Purpose: Solve with fixed endpoint coefficient κ. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_lineb_solve_options=. Purpose: Optimize with a choice of initial path, convergence test, and integrator. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_lineb_solve_counted=. Purpose: Same inputs as solve_options, with optional detailed counters. Parameters: the declaration. Units: the caller's.
@@ -262,8 +262,8 @@ The narrative for a session is the C and C++ how-to, not this list.
 - =rgsaddle_growing_string_phase_t=. Purpose: Phase of a growing string session, ABI minor 44.
 - =rgsaddle_growing_string_config_t=. Purpose: Configuration of rgsaddle_growing_string_create, ABI minor 44.
 - =rgsaddle_free_end_side_t=. Purpose: Which terminal image moves on the target-energy level set, ABI minor 45.
-- =rgsaddle_lineb_config_t=. Purpose: Fixed-energy LI-NEB controls for rgsaddle_lineb_solve, ABI minor 46.
-- =rgsaddle_lineb_result_t=. Purpose: Path, temperature and rate summary from rgsaddle_lineb_solve, ABI minor 46.
+- =rgsaddle_lineb_config_t=. Purpose: Fixed-energy LI-NEB controls for rgsaddle_lineb_solve, ABI minor 47.
+- =rgsaddle_lineb_result_t=. Purpose: Path, temperature and rate summary from rgsaddle_lineb_solve, ABI minor 47.
 - =rgsaddle_lineb_counts_t=. Purpose: Disjoint configuration evaluations for one successful solve.
 - =rgsaddle_lineb_orbit_t=. Purpose: Opt-in observations from the rate's own surface calls.
 - =rgsaddle_hyperplane_emit_fn=. Purpose: Callback typedef in include/rgsaddle.h.
@@ -313,6 +313,7 @@ The narrative for a session is the C and C++ how-to, not this list.
 - =RGSADDLE_STENCIL_QUERY_POSITIONS=. Purpose: Macro constant in include/rgsaddle.h.
 - =RGSADDLE_STENCIL_QUERY_MODE=. Purpose: Macro constant in include/rgsaddle.h.
 - =RGSADDLE_STENCIL_QUERY_CURVATURE=. Purpose: Macro constant in include/rgsaddle.h.
+- =RGSADDLE_HAS_LINEB=. Purpose: Macro constant in include/rgsaddle.h.
 - =RGSADDLE_LINEB_LINEAR_SEED=. Purpose: Macro constant in include/rgsaddle.h.
 - =RGSADDLE_LINEB_ENDPOINT_CONVERGENCE=. Purpose: Macro constant in include/rgsaddle.h.
 - =RGSADDLE_LINEB_PROJECTED_VERLET=. Purpose: Macro constant in include/rgsaddle.h.

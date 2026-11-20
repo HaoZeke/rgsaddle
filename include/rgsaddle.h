@@ -28,7 +28,7 @@ extern "C" {
 #endif
 
 #define RGSADDLE_ABI_MAJOR 1u
-#define RGSADDLE_ABI_MINOR 50u
+#define RGSADDLE_ABI_MINOR 47u
 
 /**
  * Band config flags bit 0. When set, each evaluation calls the surface
@@ -583,7 +583,9 @@ typedef struct {
    * angle falls under this (radians). The Rust default is five degrees
    * (Kästner and Sherwood, J. Chem. Phys. 128, 014106 (2008); eOn
    * converged_angle). Zero disables the angle test. A C caller stores
-   * the value it writes; ignored when version.minor < 5.
+   * the value it writes, so a positive value also stops the rotation
+   * under a rotation_tol tighter than 1e-4; ignored when
+   * version.minor < 5.
    */
   double rotation_angle_tol;
   /** Minor 5: rgsaddle_difference_t for the Hessian actions. */
@@ -1307,12 +1309,15 @@ rgsaddle_status_t rgsaddle_minmode_set_highs(RgsaddleMinMode *session, int32_t e
  * With the window on, a rotation also stops after one iteration once
  * the rotational force is under 1 (eOn torque_max). `window` 1 turns it
  * on, 0 turns it off, and -1, the state of a new session, turns it on
- * exactly when rotation_tol is at least 1e-4. eOn's improved dimer is
- * rotation_tol = torque_min with 0. From ABI minor 41 a Lanczos session
- * reads it too: with the window on, an estimate stops once two Krylov
- * vectors leave the Ritz residual under 1, and 0 restores the estimate
- * that runs to its residual. Other values return
- * RGSADDLE_INVALID_PARAMETER and leave the session unchanged.
+ * when rotation_tol is at least 1e-4 and either the estimator is
+ * Lanczos or the improved dimer angle test is disabled
+ * (rotation_angle_tol <= 0). From ABI minor 46 an improved dimer with
+ * positive rotation_angle_tol leaves the classic window off unless
+ * `window` is 1. From ABI minor 41 a Lanczos session reads it too: with the window
+ * on, an estimate stops once two Krylov vectors leave the Ritz residual
+ * under 1, and 0 restores the estimate that runs to its residual.
+ * Other values return RGSADDLE_INVALID_PARAMETER and leave the session
+ * unchanged.
  */
 rgsaddle_status_t rgsaddle_minmode_set_torque_window(RgsaddleMinMode *session,
                                                      int32_t window);
@@ -1931,8 +1936,10 @@ rgsaddle_status_t rgsaddle_band_free_end_residual(const RgsaddleBand *band,
  */
 int64_t rgsaddle_band_free_end_cuts(const RgsaddleBand *band);
 
+#define RGSADDLE_HAS_LINEB 1
+
 /**
- * Fixed-energy LI-NEB controls for rgsaddle_lineb_solve, ABI minor 46.
+ * Fixed-energy LI-NEB controls for rgsaddle_lineb_solve, ABI minor 47.
  * Initialize with rgsaddle_lineb_config_default before changing fields.
  * Units are the caller's. opt_tol and perp_tol are absolute force norms
  * in mass-weighted coordinates.
@@ -1952,7 +1959,7 @@ typedef struct {
 
 /**
  * Path, temperature and rate summary from rgsaddle_lineb_solve, ABI
- * minor 46. log_rate_over_reactant is NaN when beads was 0.
+ * minor 47. log_rate_over_reactant is NaN when beads was 0.
  */
 typedef struct {
   double action;
@@ -1970,14 +1977,14 @@ typedef struct {
 
 /**
  * Fill out with the solver defaults for the given force tolerances, ABI
- * minor 46. Returns RGSADDLE_INVALID_PARAMETER when out is NULL.
+ * minor 47. Returns RGSADDLE_INVALID_PARAMETER when out is NULL.
  */
 rgsaddle_status_t rgsaddle_lineb_config_default(double opt_tol, double perp_tol,
                                                 rgsaddle_lineb_config_t *out);
 
 /**
  * Optimize a fixed-energy tunneling path and optionally its harmonic
- * quantum TST rate, ABI minor 46. Positions are contiguous image, atom,
+ * quantum TST rate, ABI minor 47. Positions are contiguous image, atom,
  * xyz (n_images * n_atoms * 3). atom_masses holds n_atoms positive
  * masses: molecular 0 expands each mass to the three Cartesian
  * coordinates without rigid alignment; molecular 1 uses quaternion
@@ -2016,8 +2023,8 @@ rgsaddle_status_t rgsaddle_lineb_solve_with_kappa(const rgsaddle_lineb_config_t 
 /** Optimize with a choice of initial path, convergence test, and
  * integrator. Combine RGSADDLE_LINEB_LINEAR_SEED,
  * RGSADDLE_LINEB_ENDPOINT_CONVERGENCE, and
- * RGSADDLE_LINEB_PROJECTED_VERLET (ABI minor 49) in options, or pass
- * zero for the default behavior. ABI minor 48. */
+ * RGSADDLE_LINEB_PROJECTED_VERLET (ABI minor 47) in options, or pass
+ * zero for the default behavior. ABI minor 47. */
 rgsaddle_status_t rgsaddle_lineb_solve_options(const rgsaddle_lineb_config_t *cfg,
                                        int64_t n_images, int64_t n_atoms,
                                        const double *positions,
@@ -2033,7 +2040,7 @@ typedef struct {
   int64_t seed, optimizer, preparation, quadrature, dynamics, rate;
 } rgsaddle_lineb_counts_t;
 
-/** Same inputs as solve_options, with optional detailed counters. ABI minor 50. */
+/** Same inputs as solve_options, with optional detailed counters. ABI minor 47. */
 rgsaddle_status_t rgsaddle_lineb_solve_counted(const rgsaddle_lineb_config_t *cfg,
                                        int64_t n_images, int64_t n_atoms,
                                        const double *positions,

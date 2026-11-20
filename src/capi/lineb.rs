@@ -14,7 +14,7 @@ use crate::lineb::{
     LinebConfig, LinebSession, LinebStatus, Masses, hqtst_rate, hqtst_rate_with_orbit,
 };
 
-/// Fixed-energy LI-NEB controls for [`rgsaddle_lineb_solve`] (ABI minor 46).
+/// Fixed-energy LI-NEB controls for [`rgsaddle_lineb_solve`] (ABI minor 47).
 ///
 /// Field order matches `rgsaddle_lineb_config_t` in `include/rgsaddle.h`.
 /// Start from [`rgsaddle_lineb_config_default`].
@@ -46,7 +46,7 @@ pub struct RgsaddleLinebConfig {
 }
 
 /// Path, temperature and rate summary from [`rgsaddle_lineb_solve`]
-/// (ABI minor 46).
+/// (ABI minor 47).
 ///
 /// Field order matches `rgsaddle_lineb_result_t` in `include/rgsaddle.h`.
 #[repr(C)]
@@ -115,7 +115,7 @@ fn as_i64(value: usize) -> i64 {
 }
 
 /// Fill `out` with the solver defaults for the given force tolerances
-/// (ABI minor 46).
+/// (ABI minor 47).
 ///
 /// # Safety
 /// `out` must be a valid writable pointer or null.
@@ -148,7 +148,7 @@ pub unsafe extern "C" fn rgsaddle_lineb_config_default(
 }
 
 /// Optimize a fixed-energy tunneling path and optionally its HQ-TST rate
-/// (ABI minor 46).
+/// (ABI minor 47).
 ///
 /// Positions are contiguous image, atom, xyz (`n_images * n_atoms * 3`).
 /// `atom_masses` holds `n_atoms` positive masses: when `molecular` is 0
@@ -246,7 +246,7 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve_with_kappa(
 }
 
 /// Solve with configurable seed geometry, convergence, and integrator
-/// (ABI minor 48; projected Verlet from minor 49).
+/// (ABI minor 47).
 ///
 /// # Safety
 /// Pointer lifetimes and sizes follow [`rgsaddle_lineb_solve_with_kappa`].
