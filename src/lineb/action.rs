@@ -111,11 +111,23 @@ pub(crate) fn assemble<S: PointSurface>(
 
     let mut energies = Array1::zeros(n);
     let mut force = Array2::zeros((n, dof));
+    // The surface sees the stored Cartesian geometries. Alignment is a
+    // gauge: the energy matches, and the force is rotated below. The images
+    // are independent, so they go to the surface as one batch and a
+    // provider may evaluate them concurrently.
+    let mut cartesian = Array2::zeros((n, dof));
     for i in 0..n {
-        // The surface sees the stored Cartesian geometry. Alignment is a
-        // gauge: the energy matches, and the force is rotated below.
-        let x = masses.to_cartesian(weighted.row(i))?;
-        let (v, gradient) = surface.eval(x.view())?;
+        cartesian
+            .row_mut(i)
+            .assign(&masses.to_cartesian(weighted.row(i))?);
+    }
+    let observations = surface.eval_batch(cartesian.view())?;
+    if observations.len() != n {
+        return Err(SaddleError::Shape(
+            "the surface must return one observation per image".into(),
+        ));
+    }
+    for (i, (v, gradient)) in observations.into_iter().enumerate() {
         if !v.is_finite() || gradient.iter().any(|g| !g.is_finite()) {
             return Err(SaddleError::NonFinite("tunneling image"));
         }
