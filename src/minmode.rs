@@ -13,7 +13,7 @@ use std::f64::consts::PI;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use ndarray::{Array1, Array2, ArrayView1, Zip};
+use ndarray::{Array1, Array2, ArrayView1, ArrayView2, Zip};
 use rgmin::{Accept, Control, Method, Oracle, Solver};
 
 use crate::error::SaddleError;
@@ -27,6 +27,16 @@ use crate::saddle_index::{
 pub trait PointSurface: Sync {
     /// Energy and Cartesian gradient at `x`, in the host's units.
     fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError>;
+
+    /// Independent geometries, one per row, with results in the same order.
+    /// Providers may execute the geometries together or concurrently.
+    fn eval_batch(&self, points: ArrayView2<f64>) -> Result<Vec<(f64, Array1<f64>)>, SaddleError> {
+        points
+            .rows()
+            .into_iter()
+            .map(|row| self.eval(row))
+            .collect()
+    }
 
     /// Optional analytic Cartesian Hessian action. None selects gradient differences.
     fn hessian_vector(

@@ -192,10 +192,23 @@ pub fn hqtst_rate_interpolated_hessian_with_step<S: PointSurface>(
     )?;
     let gauges = gauge_modes(&replicas.weighted, &path.masses)?;
     let spectrum = projected_log_abs_det(dense, gauges)?;
+    let mut coordinates = Array2::zeros(replicas.weighted.dim());
+    for (mut point, row) in coordinates.outer_iter_mut().zip(replicas.weighted.rows()) {
+        point.assign(&path.masses.to_cartesian(row)?);
+    }
+    let observations = counted.eval_batch(coordinates.view())?;
+    if observations.len() != beads {
+        return Err(SaddleError::Shape(
+            "ring surface returned a different number of replicas".into(),
+        ));
+    }
     let mut energies = Vec::with_capacity(beads);
-    for row in replicas.weighted.rows() {
-        let cartesian = path.masses.to_cartesian(row)?;
-        let (energy, gradient) = counted.eval(cartesian.view())?;
+    for (energy, gradient) in observations {
+        if gradient.len() != coordinates.ncols() {
+            return Err(SaddleError::Shape(
+                "ring surface gradient length differs from the geometry".into(),
+            ));
+        }
         if !energy.is_finite() || gradient.iter().any(|component| !component.is_finite()) {
             return Err(SaddleError::NonFinite("ring-polymer replica"));
         }
@@ -540,16 +553,21 @@ fn finite_difference_hessian<S: PointSurface>(
 ) -> Result<Array2<f64>, SaddleError> {
     let cartesian = masses.to_cartesian(weighted)?;
     let dof = cartesian.len();
-    let mut hessian = Array2::zeros((dof, dof));
+    let mut displacements = Array2::from_shape_fn((2 * dof, dof), |(_, j)| cartesian[j]);
     for column in 0..dof {
-        let mut plus = cartesian.clone();
-        let mut minus = cartesian.clone();
-        plus[column] += step;
-        minus[column] -= step;
-        let (_, gradient_plus) = surface.eval(plus.view())?;
-        let (_, gradient_minus) = surface.eval(minus.view())?;
+        displacements[(2 * column, column)] += step;
+        displacements[(2 * column + 1, column)] -= step;
+    }
+    let samples = surface.eval_batch(displacements.view())?;
+    if samples.len() != 2 * dof || samples.iter().any(|(_, g)| g.len() != dof) {
+        return Err(SaddleError::Shape(
+            "image Hessian gradient batch dimensions differ from the displacements".into(),
+        ));
+    }
+    let mut hessian = Array2::zeros((dof, dof));
+    for (column, pair) in samples.chunks_exact(2).enumerate() {
         for row in 0..dof {
-            hessian[(row, column)] = (gradient_plus[row] - gradient_minus[row]) / (2.0 * step);
+            hessian[(row, column)] = (pair[0].1[row] - pair[1].1[row]) / (2.0 * step);
         }
     }
     let mut weighted_hessian = Array2::zeros((dof, dof));

@@ -28,7 +28,7 @@
 //! `π (√2 − √(1/2))`.
 //!
 //! ```
-//! use ndarray::{Array1, Array2, ArrayView1};
+//! use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
 //! use rgsaddle::{
 //!     LinebConfig, LinebSession, LinebStatus, Masses, PointSurface, SaddleError,
 //! };
@@ -95,7 +95,7 @@ pub use rate::{HqtstRate, hqtst_rate};
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use ndarray::{Array1, Array2, ArrayView1};
+use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
 
 use crate::error::SaddleError;
 use crate::minmode::PointSurface;
@@ -111,6 +111,11 @@ impl<S: PointSurface> PointSurface for Counted<'_, S> {
     fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
         self.calls.fetch_add(1, Ordering::Relaxed);
         self.surface.eval(x)
+    }
+
+    fn eval_batch(&self, points: ArrayView2<f64>) -> Result<Vec<(f64, Array1<f64>)>, SaddleError> {
+        self.calls.fetch_add(points.nrows(), Ordering::Relaxed);
+        self.surface.eval_batch(points)
     }
 
     fn hessian_vector(
