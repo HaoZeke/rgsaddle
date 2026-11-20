@@ -3158,6 +3158,27 @@ mod tests {
         assert_eq!(oracle_pairs(&points, None, range), pattern_pairs(&open));
     }
 
+    #[test]
+    fn unwrapped_orthorhombic_positions_find_every_pair() {
+        let cell = Cell::ortho(30.0, 28.0, 26.0).unwrap();
+        let widths = cell.widths();
+        let range = 2.5;
+        let mut raw = Vec::new();
+        for atom in 0..150u64 {
+            for axis in 0..3u64 {
+                let image = (u01(11, 3 * atom + axis) * 7.0).floor() - 3.0;
+                raw.push((u01(12, 3 * atom + axis) + image) * widths[axis as usize]);
+            }
+        }
+        let positions = Array1::from(raw);
+        let points = coords_of(positions.view());
+        let brute = oracle_pairs(&points, Some(&cell), range);
+        assert!(!brute.is_empty());
+        let pattern =
+            SparsityPattern::from_positions(positions.view(), Some(&cell), range, 0.0).unwrap();
+        assert_eq!(brute, pattern_pairs(&pattern));
+    }
+
     fn pattern_pairs(pattern: &SparsityPattern) -> std::collections::BTreeSet<(usize, usize)> {
         let mut pairs = std::collections::BTreeSet::new();
         for i in 0..pattern.n_atoms() {
