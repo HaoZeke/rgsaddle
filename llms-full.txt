@@ -3154,6 +3154,21 @@ is
 
     R[j,i] = grad_V(x[j])[i] + m[i] * (2*x[j,i] - x[j-1,i] - x[j+1,i]) / dt**2
 
+Request =return_orbit=True= when calling `lineb_solve` with a positive
+`beads` value. The optional `LinebOrbit` returned as `result.orbit` contains `positions` and
+`gradients`, both shaped `(beads, 3 * n_atoms)`. The return leg repeats
+the exact coordinates and gradients of the outbound measurements.
+`orbit.max_abs_residual` and `orbit.rms_residual` are in energy per
+length. `orbit.max_bead` and `orbit.max_coordinate` are zero-based.
+A path-only solve returns `None`. The rate evaluation count is the
+same with or without the observations.
+
+The C entry point `rgsaddle_lineb_solve_counted_orbit` accepts a nullable
+`rgsaddle_lineb_orbit_t`; each supplied coordinate or gradient buffer
+must hold `beads * 3 * n_atoms` doubles. A caller requesting only the
+summary may leave both buffer pointers null. In Rust, use
+`hqtst_rate_with_orbit` to obtain the rate and its `LinebRateOrbit`.
+
 Wrap both neighbor indices around the ring. Use the physical Cartesian
 energy gradient at each stored bead and restrict the check to mobile
 coordinates. Report the maximum absolute component and the RMS residual
@@ -4627,6 +4642,7 @@ The narrative for a session is the C and C++ how-to, not this list.
 - `rgsaddle_lineb_solve_options`. Purpose: Optimize with a choice of initial path, convergence test, and integrator. Parameters: the declaration. Units: the caller's.
 - `rgsaddle_lineb_solve_counted`. Purpose: Same inputs as solve_options, with optional detailed counters. Parameters: the declaration. Units: the caller's.
 - `rgsaddle_lineb_solve_counted_diagnostics`. Purpose: Counted solve with the number of negative and total retained fluctuation modes. Parameters: the declaration. Units: the caller's.
+- `rgsaddle_lineb_solve_counted_orbit`. Purpose: Counted solve with optional bead observations. Parameters: the declaration. Units: the caller's.
 
 ## Types and callbacks
 
@@ -4696,6 +4712,7 @@ The narrative for a session is the C and C++ how-to, not this list.
 - `rgsaddle_lineb_config_t`. Purpose: Fixed-energy LI-NEB controls for rgsaddle_lineb_solve, ABI minor 46.
 - `rgsaddle_lineb_result_t`. Purpose: Path, temperature and rate summary from rgsaddle_lineb_solve, ABI minor 46.
 - `rgsaddle_lineb_counts_t`. Purpose: Disjoint configuration evaluations for one successful solve.
+- `rgsaddle_lineb_orbit_t`. Purpose: Opt-in observations from the rate's own surface calls.
 - `rgsaddle_hyperplane_emit_fn`. Purpose: Callback typedef in include/rgsaddle.h.
 - `rgsaddle_sample_hyperplane_fn`. Purpose: Callback typedef in include/rgsaddle.h.
 - `rgsaddle_surface_fn`. Purpose: Callback typedef in include/rgsaddle.h.
@@ -4747,6 +4764,7 @@ The narrative for a session is the C and C++ how-to, not this list.
 - `RGSADDLE_LINEB_ENDPOINT_CONVERGENCE`. Purpose: Macro constant in include/rgsaddle.h.
 - `RGSADDLE_LINEB_PROJECTED_VERLET`. Purpose: Macro constant in include/rgsaddle.h.
 - `RGSADDLE_HAS_LINEB_RATE_DIAGNOSTICS`. Purpose: Macro constant in include/rgsaddle.h.
+- `RGSADDLE_HAS_LINEB_ORBIT`. Purpose: Macro constant in include/rgsaddle.h.
 - `RGSADDLE_OK`. Purpose: Enumerator of `rgsaddle_status_t`.
 - `RGSADDLE_NULL_SESSION`. Purpose: Enumerator of `rgsaddle_status_t`.
 - `RGSADDLE_NULL_BAND`. Purpose: Enumerator of `rgsaddle_status_t`.
