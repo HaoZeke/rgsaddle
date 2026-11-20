@@ -225,7 +225,7 @@ fn interpolated_rate<S: PointSurface>(
     let replicas = path::replicas(path.weighted.view(), &path.time_table, beads)?;
     let kappa = spring_constant(replicas.period, path.hbar, beads)?;
     let curve = Curve::new(path.weighted.view())?;
-    let dense = interpolated_ring(
+    let blocks = interpolated_blocks(
         hessians,
         curve.knots(),
         &replicas.parameter,
@@ -233,7 +233,7 @@ fn interpolated_rate<S: PointSurface>(
         kappa,
     )?;
     let gauges = gauge_modes(&replicas.weighted, &path.masses)?;
-    let spectrum = projected_log_abs_det(dense, gauges)?;
+    let spectrum = ring_spectrum(&blocks, kappa, gauges)?;
     let mut coordinates = Array2::zeros(replicas.weighted.dim());
     for (mut point, row) in coordinates.outer_iter_mut().zip(replicas.weighted.rows()) {
         point.assign(&path.masses.to_cartesian(row)?);
@@ -653,13 +653,13 @@ fn weight_cartesian_hessian(
 }
 
 #[cfg(any(test, feature = "lineb-oracle"))]
-fn interpolated_ring(
+fn interpolated_blocks(
     hessians: &[Array2<f64>],
     knots: &[f64],
     parameters: &[f64],
     dof: usize,
     kappa: f64,
-) -> Result<Array2<f64>, SaddleError> {
+) -> Result<Vec<Array2<f64>>, SaddleError> {
     let mut elements = Vec::with_capacity(dof * dof);
     for row in 0..dof {
         for column in 0..dof {
@@ -670,23 +670,131 @@ fn interpolated_ring(
             elements.push(Spline::new(knots, &values));
         }
     }
-    let count = parameters.len();
+    Ok(parameters
+        .iter()
+        .map(|&lambda| {
+            let mut block =
+                Array2::from_shape_fn((dof, dof), |(r, c)| elements[r * dof + c].value(lambda));
+            block.diag_mut().mapv_inplace(|value| value + 2. * kappa);
+            block
+        })
+        .collect())
+}
+
+#[cfg(any(test, feature = "lineb-oracle"))]
+fn dense_ring(blocks: &[Array2<f64>], kappa: f64) -> Array2<f64> {
+    let count = blocks.len();
+    let dof = blocks[0].nrows();
     let mut ring = Array2::zeros((count * dof, count * dof));
-    for bead in 0..count {
-        let lambda = parameters[bead];
-        let previous = if bead == 0 { count - 1 } else { bead - 1 };
-        let next = if bead + 1 == count { 0 } else { bead + 1 };
-        for row in 0..dof {
-            for column in 0..dof {
-                let curvature = elements[row * dof + column].value(lambda);
-                ring[(bead * dof + row, bead * dof + column)] = curvature;
+    for (i, block) in blocks.iter().enumerate() {
+        let start = i * dof;
+        ring.slice_mut(s![start..start + dof, start..start + dof])
+            .assign(block);
+        for neighbour in [(i + 1) % count, (i + count - 1) % count] {
+            for r in 0..dof {
+                ring[(start + r, neighbour * dof + r)] -= kappa;
             }
-            ring[(bead * dof + row, bead * dof + row)] += 2.0 * kappa;
-            ring[(bead * dof + row, previous * dof + row)] -= kappa;
-            ring[(bead * dof + row, next * dof + row)] -= kappa;
         }
     }
-    Ok(ring)
+    ring
+}
+
+#[cfg(any(test, feature = "lineb-oracle"))]
+fn ring_spectrum(
+    blocks: &[Array2<f64>],
+    kappa: f64,
+    gauges: Vec<Array1<f64>>,
+) -> Result<FluctuationSpectrum, SaddleError> {
+    if let Some(spectrum) = bordered_ring(blocks, kappa, &gauges)? {
+        return Ok(spectrum);
+    }
+    projected_log_abs_det(dense_ring(blocks, kappa), gauges)
+}
+
+/// For orthonormal gauge columns G, the bordered Hessian [A G; Gᵀ 0]
+/// has the projected log absolute determinant and one extra positive and
+/// negative eigenvalue per gauge. Eliminate each bead except the last one;
+/// keeping that bead and the gauges in the border closes the periodic chain.
+/// A poorly conditioned block requests the full symmetric projection.
+#[cfg(any(test, feature = "lineb-oracle"))]
+fn bordered_ring(
+    blocks: &[Array2<f64>],
+    kappa: f64,
+    gauges: &[Array1<f64>],
+) -> Result<Option<FluctuationSpectrum>, SaddleError> {
+    let last = blocks.len() - 1;
+    let dof = blocks[0].nrows();
+    let width = dof + gauges.len();
+    let mut border = Array2::zeros((width, width));
+    border.slice_mut(s![..dof, ..dof]).assign(&blocks[last]);
+    for (g, gauge) in gauges.iter().enumerate() {
+        for i in 0..dof {
+            let value = gauge[last * dof + i];
+            border[(i, dof + g)] = value;
+            border[(dof + g, i)] = value;
+        }
+    }
+    let mut update = Array2::<f64>::zeros((dof, dof));
+    let mut coupling = Array2::<f64>::zeros((dof, width));
+    let mut result = FluctuationSpectrum {
+        log_abs_det: 0.,
+        negative_modes: 0,
+    };
+    for (i, block) in blocks[..last].iter().enumerate() {
+        let pivot = block - &update;
+        for (g, gauge) in gauges.iter().enumerate() {
+            for r in 0..dof {
+                coupling[(r, dof + g)] += gauge[i * dof + r];
+            }
+        }
+        // The two spring links both reach the anchor when there are two beads.
+        for linked in [i == 0, i + 1 == last] {
+            if linked {
+                for r in 0..dof {
+                    coupling[(r, r)] -= kappa;
+                }
+            }
+        }
+        let (values, vectors) = crate::eigensolve::exact_eigh(pivot.view())?;
+        let scale = values
+            .iter()
+            .chain(coupling.iter())
+            .fold(kappa, |a, &b| a.max(b.abs()));
+        if values
+            .iter()
+            .any(|&value| value.abs() <= f64::EPSILON.sqrt() * scale)
+        {
+            return Ok(None);
+        }
+        let contribution = summarize_spectrum(values.iter())?;
+        result.log_abs_det += contribution.log_abs_det;
+        result.negative_modes += contribution.negative_modes;
+        let mut scaled = vectors.clone();
+        for (mut column, &value) in scaled.columns_mut().into_iter().zip(&values) {
+            column /= value;
+        }
+        let inverse = scaled.dot(&vectors.t());
+        let solved = inverse.dot(&coupling);
+        border -= &coupling.t().dot(&solved);
+        coupling = solved * kappa;
+        update = inverse * (kappa * kappa);
+    }
+    let (values, _) = crate::eigensolve::exact_eigh(border.view())?;
+    let largest = values.iter().fold(0.0_f64, |scale, &x| scale.max(x.abs()));
+    if values
+        .iter()
+        .any(|&x| x.abs() <= f64::EPSILON * (width as f64) * largest)
+    {
+        return Ok(None);
+    }
+    let tail = summarize_spectrum(values.iter())?;
+    result.log_abs_det += tail.log_abs_det;
+    let Some(negative) = (result.negative_modes + tail.negative_modes).checked_sub(gauges.len())
+    else {
+        return Ok(None);
+    };
+    result.negative_modes = negative;
+    Ok(Some(result))
 }
 
 /// Log absolute determinant of the symmetric ring Hessian restricted to
