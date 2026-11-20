@@ -164,9 +164,7 @@ class LinebResult:
 
     @property
     def log_rate_over_reactant(self) -> float:
-        """
-        ln(k Z_r), or NaN when beads is 0.
-        """
+        """ln(k Z_r), or NaN when beads is 0."""
 
     @property
     def iterations(self) -> int:
@@ -186,9 +184,7 @@ class LinebResult:
 
     @property
     def rate_calls(self) -> int:
-        """
-        Surface evaluations of the harmonic rate, or 0 when beads is 0.
-        """
+        """Surface evaluations of the harmonic rate, or 0 when beads is 0."""
 
 def lineb_solve(surface: Callable[..., tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]], positions: numpy.typing.NDArray[numpy.float64], atom_masses: numpy.typing.NDArray[numpy.float64], energy: float, opt_tol: float, perp_tol: float, molecular: bool = False, max_steps: int = 1000, beads: int = 0, spring: float = 0.1, endpoint_scale: float = 0.2, time_step: float = 0.1, max_move: float = 0.2, turning_width: float = 0.001, hbar: float = 1.0, boltzmann: float = 1.0, quadrature_pairs: int = 4) -> LinebResult:
     """
