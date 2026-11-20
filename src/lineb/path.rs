@@ -14,7 +14,7 @@
 //! read the temperature of an optimal tunneling path. The closed orbit
 //! has period `τ = 2` half periods and temperature `ℏ / (k_B τ)`.
 
-use ndarray::{Array1, Array2, ArrayView2};
+use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
 
 use super::action::l2;
 use super::mass::Masses;
@@ -179,6 +179,196 @@ fn simpson_weight(i: usize, intervals: usize) -> f64 {
     } else {
         2.0
     }
+}
+
+/// Move each end image onto `V = E` along the local full surface
+/// gradient when that end is already within the optimizer's
+/// equipotential residual `endpoint_scale |V − E| / |f| ≤ opt_tol`.
+/// Ends farther from the turning surface are left alone so
+/// [`crate::lineb::optimize::LinebSession::path`] keeps its previous
+/// behavior on bands that are not near-turning. Both signs of `V − E`
+/// are corrected by the same Newton / bracketed root.
+pub(crate) fn refine_near_turning_endpoints<S: PointSurface>(
+    surface: &S,
+    masses: &Masses,
+    mut weighted: Array2<f64>,
+    energy: f64,
+    endpoint_scale: f64,
+    opt_tol: f64,
+) -> Result<Array2<f64>, SaddleError> {
+    let last = weighted.nrows() - 1;
+    for end in [0, last] {
+        let refined = refine_endpoint_to_energy(
+            surface,
+            masses,
+            weighted.row(end).to_owned(),
+            energy,
+            endpoint_scale,
+            opt_tol,
+        )?;
+        weighted.row_mut(end).assign(&refined);
+    }
+    Ok(weighted)
+}
+
+fn refine_endpoint_to_energy<S: PointSurface>(
+    surface: &S,
+    masses: &Masses,
+    point: Array1<f64>,
+    energy: f64,
+    endpoint_scale: f64,
+    opt_tol: f64,
+) -> Result<Array1<f64>, SaddleError> {
+    let (potential, gradient) = eval_endpoint(surface, masses, point.view())?;
+    let gap0 = potential - energy;
+    let force = masses.weighted_force(gradient.view())?;
+    let norm = l2(force.view());
+    if norm <= 0.0 || norm.is_nan() {
+        return Ok(point);
+    }
+    // Far from a converged turning point: leave the image for measure.
+    if endpoint_scale * gap0.abs() / norm > opt_tol {
+        return Ok(point);
+    }
+    if gap0 == 0.0 {
+        return Ok(point);
+    }
+
+    // Root of V(q₀ + s f̂) − E along the local force direction. At s = 0
+    // the directional derivative is −|f|, so the Newton step is
+    // s = (V − E) / |f| for either sign of the residual.
+    let mut hat = force;
+    hat /= norm;
+    let mut s = gap0 / norm;
+    let mut s_below: Option<(f64, f64)> = None;
+    let mut s_above: Option<(f64, f64)> = None;
+    note_bracket(&mut s_below, &mut s_above, 0.0, gap0);
+
+    for _ in 0..64 {
+        let mut trial = point.clone();
+        trial.scaled_add(s, &hat);
+        let (trial_v, trial_g) = eval_endpoint(surface, masses, trial.view())?;
+        let trial_gap = trial_v - energy;
+        if trial_gap == 0.0 {
+            return Ok(trial);
+        }
+        note_bracket(&mut s_below, &mut s_above, s, trial_gap);
+        if let (Some((lo, _)), Some((hi, _))) = (s_below, s_above) {
+            return Ok(root_along_ray(
+                surface, masses, &point, &hat, lo, hi, energy,
+            )?);
+        }
+        let trial_force = masses.weighted_force(trial_g.view())?;
+        // g(s) = V − E, g' = ∇_q V · f̂ = −f · f̂.
+        let deriv = -trial_force.dot(&hat);
+        if deriv == 0.0 || deriv.is_nan() {
+            break;
+        }
+        let next = s - trial_gap / deriv;
+        if next == s || next.is_nan() {
+            break;
+        }
+        s = next;
+    }
+    // A one-sided Newton sequence can stall short of E; the doubled
+    // first step crosses when the directional derivative keeps its sign.
+    if s_below.is_none() || s_above.is_none() {
+        let probe = 2.0 * (gap0 / norm);
+        if probe != 0.0 && !probe.is_nan() {
+            let mut trial = point.clone();
+            trial.scaled_add(probe, &hat);
+            let (trial_v, _) = eval_endpoint(surface, masses, trial.view())?;
+            let trial_gap = trial_v - energy;
+            if trial_gap == 0.0 {
+                return Ok(trial);
+            }
+            note_bracket(&mut s_below, &mut s_above, probe, trial_gap);
+        }
+    }
+    if let (Some((lo, _)), Some((hi, _))) = (s_below, s_above) {
+        return Ok(root_along_ray(
+            surface, masses, &point, &hat, lo, hi, energy,
+        )?);
+    }
+    Ok(point)
+}
+
+fn note_bracket(below: &mut Option<(f64, f64)>, above: &mut Option<(f64, f64)>, s: f64, gap: f64) {
+    if gap < 0.0 {
+        *below = Some((s, gap));
+    } else if gap > 0.0 {
+        *above = Some((s, gap));
+    }
+}
+
+fn root_along_ray<S: PointSurface>(
+    surface: &S,
+    masses: &Masses,
+    origin: &Array1<f64>,
+    hat: &Array1<f64>,
+    mut s_lo: f64,
+    mut s_hi: f64,
+    energy: f64,
+) -> Result<Array1<f64>, SaddleError> {
+    let at = |s: f64| -> Result<(Array1<f64>, f64), SaddleError> {
+        let mut q = origin.clone();
+        q.scaled_add(s, hat);
+        let (v, _) = eval_endpoint(surface, masses, q.view())?;
+        Ok((q, v - energy))
+    };
+    let (_, mut gap_lo) = at(s_lo)?;
+    let (_, mut gap_hi) = at(s_hi)?;
+    for _ in 0..64 {
+        let mid = 0.5 * (s_lo + s_hi);
+        if mid == s_lo || mid == s_hi || mid.is_nan() {
+            if gap_lo == 0.0 {
+                return Ok(at(s_lo)?.0);
+            }
+            if gap_hi == 0.0 {
+                return Ok(at(s_hi)?.0);
+            }
+            return Ok(if gap_hi > 0.0 {
+                at(s_hi)?.0
+            } else {
+                at(s_lo)?.0
+            });
+        }
+        let (q, gap) = at(mid)?;
+        if gap == 0.0 {
+            return Ok(q);
+        }
+        if gap < 0.0 {
+            s_lo = mid;
+            gap_lo = gap;
+        } else {
+            s_hi = mid;
+            gap_hi = gap;
+        }
+    }
+    // The collapsed bracket is one float; prefer the evaluated side on
+    // V = E, then the side above E so end-chord samples keep σ > 0.
+    if gap_lo == 0.0 {
+        Ok(at(s_lo)?.0)
+    } else if gap_hi == 0.0 {
+        Ok(at(s_hi)?.0)
+    } else if gap_hi > 0.0 {
+        Ok(at(s_hi)?.0)
+    } else {
+        Ok(at(s_lo)?.0)
+    }
+}
+
+fn eval_endpoint<S: PointSurface>(
+    surface: &S,
+    masses: &Masses,
+    weighted: ArrayView1<f64>,
+) -> Result<(f64, Array1<f64>), SaddleError> {
+    let x = masses.to_cartesian(weighted)?;
+    let (potential, gradient) = surface.eval(x.view())?;
+    if !potential.is_finite() || gradient.iter().any(|component| !component.is_finite()) {
+        return Err(SaddleError::NonFinite("turning endpoint"));
+    }
+    Ok((potential, gradient))
 }
 
 /// Action, both half periods and the imaginary-time table. `pairs` is

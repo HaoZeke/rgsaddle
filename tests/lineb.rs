@@ -250,6 +250,60 @@ fn turning_knots_at_both_ends_give_the_harmonic_half_period() {
     );
 }
 
+/// Force-converged ends can sit a few `10⁻⁷` above and below `E`. The
+/// end below makes end-chord samples with `u > 0` see `σ = 0`. Refining
+/// those near-turning ends onto `V = E` along the full surface gradient
+/// before measure recovers the period; a band whose ends are far below
+/// `E` still fails as before.
+#[test]
+fn near_turning_endpoints_are_refined_onto_v_equals_e_before_measure() {
+    let energy = 0.5;
+    // Residuals matching the modified Müller–Brown direct-ring failure:
+    // one end below `E`, one above, both inside a `10⁻⁵` force tolerance.
+    let left = -(1.0 - 1.14e-6);
+    let right = 1.0 + 2.4e-7;
+    let images = Array2::from_shape_fn((9, 1), |(i, _)| left + (right - left) * i as f64 / 8.0);
+    let (v_left, _) = Parabola.eval(images.row(0)).unwrap();
+    let (v_right, _) = Parabola.eval(images.row(8)).unwrap();
+    assert!(v_left - energy > 0.0, "{}", v_left - energy);
+    assert!(v_right - energy < 0.0, "{}", v_right - energy);
+    let session = LinebSession::new(
+        LinebConfig::new(1e-5, 1e-5),
+        Masses::coordinates(Array1::ones(1).view()).unwrap(),
+        images,
+        energy,
+    )
+    .unwrap();
+    let path = session.path(&Parabola).unwrap();
+    let (v0, _) = Parabola.eval(path.cartesian.row(0)).unwrap();
+    let (vn, _) = Parabola
+        .eval(path.cartesian.row(path.cartesian.nrows() - 1))
+        .unwrap();
+    assert_eq!(v0, energy);
+    assert_eq!(vn, energy);
+    let panels = (2 * path_pairs()) as f64;
+    let slack = (2.0 / 8.0 / panels.powi(4)).sqrt();
+    assert!(
+        (path.half_period - std::f64::consts::PI).abs() <= slack,
+        "{}",
+        path.half_period
+    );
+
+    let deep = Array2::from_shape_fn((9, 1), |(i, _)| -1.1 + 2.2 * i as f64 / 8.0);
+    let invalid = LinebSession::new(
+        LinebConfig::new(1e-5, 1e-5),
+        Masses::coordinates(Array1::ones(1).view()).unwrap(),
+        deep,
+        energy,
+    )
+    .unwrap();
+    let err = invalid.path(&Parabola).unwrap_err();
+    assert!(
+        matches!(&err, SaddleError::Invalid(message) if message.contains("vanishes")),
+        "{err}"
+    );
+}
+
 /// The inverted parabola lowered by `SHIFT`, a total energy far below
 /// zero.
 struct LoweredParabola;

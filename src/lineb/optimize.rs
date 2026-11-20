@@ -589,19 +589,27 @@ impl LinebSession {
                 })?
             }
         };
+        let weighted = path::refine_near_turning_endpoints(
+            &measured,
+            &self.masses,
+            assembly.aligned,
+            self.energy,
+            self.config.endpoint_scale,
+            self.config.opt_tol,
+        )?;
         let periods: Periods = path::measure(
             &measured,
             &dynamics,
             &self.masses,
-            assembly.aligned.view(),
+            weighted.view(),
             self.energy,
             self.config.quadrature_pairs,
         )?;
-        let mut cartesian = Array2::zeros(assembly.aligned.dim());
-        for i in 0..assembly.aligned.nrows() {
+        let mut cartesian = Array2::zeros(weighted.dim());
+        for i in 0..weighted.nrows() {
             cartesian
                 .row_mut(i)
-                .assign(&self.masses.to_cartesian(assembly.aligned.row(i))?);
+                .assign(&self.masses.to_cartesian(weighted.row(i))?);
         }
         Ok(LinebPath {
             cartesian,
@@ -625,7 +633,7 @@ impl LinebSession {
                 measure: measure_calls.load(Ordering::Relaxed),
                 dynamics: dynamics_calls.load(Ordering::Relaxed),
             },
-            weighted: assembly.aligned,
+            weighted,
             time_table: periods.time_table,
             masses: self.masses.clone(),
             #[cfg(test)]
