@@ -1,0 +1,8 @@
+! B3LYP def2-SV(P) GCP(DFT/SV(P)) NEB-TS NumFreq TightSCF
+%pal nprocs 2 end
+%maxcore 1000
+%neb
+  NEB_END_XYZFILE "03_product_opt.xyz"
+  NImages 10
+end
+* xyzfile 0 1 01_reactant_opt.xyz

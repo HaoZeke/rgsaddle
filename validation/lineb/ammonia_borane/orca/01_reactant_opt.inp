@@ -1,0 +1,4 @@
+! B3LYP def2-SV(P) GCP(DFT/SV(P)) OPT TightSCF
+%pal nprocs 2 end
+%maxcore 1000
+* xyzfile 0 1 ../geometries/reactant_staggered_c3v.xyz
