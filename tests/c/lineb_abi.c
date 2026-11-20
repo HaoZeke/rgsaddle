@@ -194,6 +194,24 @@ int main(void) {
   if (diagnostics != RGSADDLE_OK || negative_modes != -1 || modes != -1) {
     return fail("path-only solve has no measured fluctuation spectrum", diagnostics);
   }
+  double orbit_positions[3] = {1.0, 2.0, 3.0};
+  rgsaddle_lineb_orbit_t orbit = {.capacity = 3, .positions = orbit_positions};
+  int64_t checked_rows = 0;
+  const rgsaddle_status_t short_buffer = rgsaddle_lineb_solve_counted_orbit(
+      &cfg, N_IMAGES, N_ATOMS, pos, masses, 0, 0.25, 200, 8,
+      surface, &checked_rows, out_pos, &result, &kappa, 0, NULL, NULL, NULL, &orbit);
+  if (short_buffer != RGSADDLE_SHAPE || checked_rows != 0 || orbit_positions[0] != 1.0) {
+    return fail("orbit buffer capacity validated before surface evaluation", short_buffer);
+  }
+  const rgsaddle_status_t path_without_orbit = rgsaddle_lineb_solve_counted_orbit(
+      &cfg, N_IMAGES, N_ATOMS, pos, masses, 0, 0.25, 200, 0,
+      surface, NULL, out_pos, &result, &kappa, RGSADDLE_LINEB_LINEAR_SEED,
+      NULL, NULL, NULL, &orbit);
+  if (path_without_orbit != RGSADDLE_OK || !isnan(orbit.max_abs_residual) ||
+      !isnan(orbit.rms_residual) || orbit.max_bead != -1 || orbit.max_coordinate != -1 ||
+      result.rate_calls != 0 || orbit_positions[0] != 1.0) {
+    return fail("path-only solve preserves caller's orbit buffers", path_without_orbit);
+  }
   kappa = NAN;
   if (rgsaddle_lineb_solve_with_kappa(&cfg, N_IMAGES, N_ATOMS, pos, masses, 0, 0.25,
                                       200, 0, surface, NULL, out_pos, &result, &kappa)
