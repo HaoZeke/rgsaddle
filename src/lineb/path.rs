@@ -87,8 +87,15 @@ impl Curve {
     }
 }
 
-/// `(λ, t)` samples of the imaginary time along a spline, in path order.
-pub(crate) type TimeTable = Vec<(f64, f64)>;
+/// Chord coordinate, cumulative imaginary time, and dλ/dt from the path momentum.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TimeKnot {
+    lambda: f64,
+    time: f64,
+    velocity: f64,
+}
+
+pub(crate) type TimeTable = Vec<TimeKnot>;
 
 struct Sample {
     energy: f64,
@@ -399,7 +406,11 @@ fn integrate<S: PointSurface>(
 ) -> Result<(f64, f64, TimeTable), SaddleError> {
     let mut action = 0.0;
     let mut half = 0.0;
-    let mut table = vec![(0.0, 0.0)];
+    let mut table = vec![TimeKnot {
+        lambda: 0.,
+        time: 0.,
+        velocity: 0.,
+    }];
     let mut clock = 0.0;
     let knots = &level.curve.knots;
     let last = knots.len() - 1;
@@ -409,11 +420,12 @@ fn integrate<S: PointSurface>(
             let chord = EndChord::new(left, right, j == 0)?;
             action += end_action(level, chord, pairs)?;
             let samples = end_clock(level, chord, pairs)?;
-            let gained = samples.last().map(|(_, period)| *period).ok_or_else(|| {
+            let gained = samples.last().map(|knot| knot.time).ok_or_else(|| {
                 SaddleError::Invalid("the end chord produced no period samples".into())
             })?;
-            for (lambda, period) in samples.into_iter().skip(1) {
-                table.push((lambda, clock + period));
+            for mut knot in samples.into_iter().skip(1) {
+                knot.time += clock;
+                table.push(knot);
             }
             clock += gained;
             half += gained;
@@ -427,6 +439,22 @@ fn integrate<S: PointSurface>(
     if !(action.is_finite() && half.is_finite() && half > 0.0) {
         return Err(SaddleError::NonFinite("tunneling period"));
     }
+    // A Hermite interval is monotone when both endpoint slopes lie in
+    // [0, 3 Δλ/Δt]. Limit each shared knot against both adjacent intervals
+    // to retain a continuous velocity. The orbit stands still at each turn.
+    for i in 0..table.len() - 1 {
+        let dt = table[i + 1].time - table[i].time;
+        let dl = table[i + 1].lambda - table[i].lambda;
+        if dt > 0. && dl >= 0. {
+            let bound = 3. * dl / dt;
+            table[i].velocity = table[i].velocity.min(bound);
+            table[i + 1].velocity = table[i + 1].velocity.min(bound);
+        }
+    }
+    table
+        .last_mut()
+        .expect("the clock contains its origin")
+        .velocity = 0.;
     Ok((action, half, table))
 }
 
@@ -435,7 +463,7 @@ fn open_integral<S: PointSurface>(
     left: f64,
     right: f64,
     pairs: usize,
-    table: &mut Vec<(f64, f64)>,
+    table: &mut TimeTable,
     clock: &mut f64,
 ) -> Result<(f64, f64), SaddleError> {
     let intervals = 2 * pairs;
@@ -464,9 +492,17 @@ fn open_integral<S: PointSurface>(
             let [a, b, c] = rates;
             let duration = (a + 4.0 * b + c) * h / 3.0;
             let midpoint = *clock + duration * (a + b) / (a + 2.0 * b + c);
-            table.push((lambda - h, midpoint));
+            table.push(TimeKnot {
+                lambda: lambda - h,
+                time: midpoint,
+                velocity: 1. / b,
+            });
             *clock += duration;
-            table.push((lambda, *clock));
+            table.push(TimeKnot {
+                lambda,
+                time: *clock,
+                velocity: 1. / c,
+            });
             rates[0] = c;
         }
     }
@@ -567,14 +603,18 @@ fn end_clock<S: PointSurface>(
     level: &Level<'_, S>,
     chord: EndChord,
     pairs: usize,
-) -> Result<Vec<(f64, f64)>, SaddleError> {
+) -> Result<TimeTable, SaddleError> {
     let u_max = chord.u_max;
     let panels = (2 * pairs) as f64;
     let panel = u_max / panels;
     let tol = (chord.right - chord.left) / panels.powi(4);
     let mut s = 0.0;
     let mut period = 0.0;
-    let mut out = vec![(chord.lambda(0.0), 0.0)];
+    let mut out = vec![TimeKnot {
+        lambda: chord.lambda(0.),
+        time: 0.,
+        velocity: 0.,
+    }];
     while u_max > s {
         let mut du = panel.min(u_max - s);
         loop {
@@ -583,10 +623,10 @@ fn end_clock<S: PointSurface>(
                     "the end-chord period step underflowed".into(),
                 ));
             }
-            let (coarse, coarse_rounding) = simpson_s(level, chord, s, s + du)?;
+            let (coarse, coarse_rounding, _) = simpson_s(level, chord, s, s + du)?;
             let mid = s + 0.5 * du;
-            let (left, left_rounding) = simpson_s(level, chord, s, mid)?;
-            let (right, right_rounding) = simpson_s(level, chord, mid, s + du)?;
+            let (left, left_rounding, _) = simpson_s(level, chord, s, mid)?;
+            let (right, right_rounding, velocity) = simpson_s(level, chord, mid, s + du)?;
             let fine = left + right;
             let allowance = tol * du / u_max + coarse_rounding + left_rounding + right_rounding;
             if (fine - coarse).abs() <= allowance {
@@ -598,7 +638,11 @@ fn end_clock<S: PointSurface>(
                 }
                 period += fine + (fine - coarse) / 15.0;
                 s = next;
-                out.push((chord.lambda(s), period));
+                out.push(TimeKnot {
+                    lambda: chord.lambda(s),
+                    time: period,
+                    velocity,
+                });
                 break;
             }
             du *= 0.5;
@@ -622,11 +666,12 @@ fn simpson_s<S: PointSurface>(
     chord: EndChord,
     s0: f64,
     s1: f64,
-) -> Result<(f64, f64), SaddleError> {
+) -> Result<(f64, f64, f64), SaddleError> {
     let delta_v = energy_roundoff(level.energy);
     let mid = 0.5 * (s0 + s1);
     let mut acc = 0.0;
     let mut rounding = 0.0;
+    let mut velocity = 0.;
     for (s, weight) in [(s0, 1.0), (mid, 4.0), (s1, 1.0)] {
         let taken = level.sample(chord.lambda(s))?;
         // The spline coordinate can round to the turning knot even when
@@ -641,13 +686,14 @@ fn simpson_s<S: PointSurface>(
         } else {
             chord.u(s)
         };
+        velocity = taken.sigma / taken.speed;
         let rate = end_rate(&taken, u, chord.from_start)?;
         acc += weight * rate;
         if taken.sigma > 0.0 {
             rounding += weight * rate * delta_v / (taken.sigma * taken.sigma);
         }
     }
-    Ok((acc * (s1 - s0) / 6.0, rounding * (s1 - s0) / 6.0))
+    Ok((acc * (s1 - s0) / 6.0, rounding * (s1 - s0) / 6.0, velocity))
 }
 
 /// Fourth-order Runge–Kutta with step doubling. A step is accepted when
@@ -818,7 +864,7 @@ pub(crate) struct Replicas {
 /// [`quadrature`] built on the same images.
 pub(crate) fn replicas(
     weighted: ArrayView2<f64>,
-    table: &[(f64, f64)],
+    table: &[TimeKnot],
     beads: usize,
 ) -> Result<Replicas, SaddleError> {
     if beads < 2 {
@@ -827,7 +873,7 @@ pub(crate) fn replicas(
         ));
     }
     let curve = Curve::new(weighted)?;
-    let half = table.last().map_or(0.0, |(_, time)| *time);
+    let half = table.last().map_or(0.0, |knot| knot.time);
     if half <= 0.0 || half.is_nan() {
         return Err(SaddleError::Invalid(
             "the path has no imaginary-time duration".into(),
@@ -853,33 +899,37 @@ pub(crate) fn replicas(
     })
 }
 
-fn invert_time(table: &[(f64, f64)], time: f64) -> Result<f64, SaddleError> {
+fn invert_time(table: &[TimeKnot], time: f64) -> Result<f64, SaddleError> {
     let last = table.len() - 1;
-    if time <= table[0].1 || time.is_nan() {
-        return Ok(table[0].0);
+    if time <= table[0].time || time.is_nan() {
+        return Ok(table[0].lambda);
     }
-    if time >= table[last].1 || time.is_nan() {
-        return Ok(table[last].0);
+    if time >= table[last].time || time.is_nan() {
+        return Ok(table[last].lambda);
     }
     let mut lo = 0;
     let mut hi = last;
     while hi - lo > 1 {
         let mid = (lo + hi) / 2;
-        if table[mid].1 <= time || table[mid].1.is_nan() {
+        if table[mid].time <= time || table[mid].time.is_nan() {
             lo = mid;
         } else {
             hi = mid;
         }
     }
-    let (lambda_left, time_left) = table[lo];
-    let (lambda_right, time_right) = table[hi];
-    let span = time_right - time_left;
+    let left = table[lo];
+    let right = table[hi];
+    let span = right.time - left.time;
     if span <= 0.0 || span.is_nan() {
         return Err(SaddleError::Invalid(
             "the imaginary-time table stalled between samples".into(),
         ));
     }
-    Ok(lambda_left + (lambda_right - lambda_left) * (time - time_left) / span)
+    let t = (time - left.time) / span;
+    let u = 1. - t;
+    Ok(left.lambda
+        + t * t * (3. - 2. * t) * (right.lambda - left.lambda)
+        + span * t * u * (u * left.velocity - t * right.velocity))
 }
 
 /// `ℏ / (k_B τ)` for a full period `τ = 2` half periods.
