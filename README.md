@@ -227,8 +227,9 @@ its Polak-Ribiere rotational history across translations. Lanczos
 stops on the Ritz residual; `FiniteDifference::Central` is available
 for the actions, and `rotation_angle_tol` stops a dimer rotation whose
 optimal angle falls under it (five degrees by default; zero disables
-the test). A non-negative curvature takes one full per-atom `max_move`
-along the mode, and a mode turn inside 45 degrees keeps the translator
+the test). A non-negative curvature takes one global `max_move` along
+the normalized mode before applying the atom cap, and a mode turn inside
+45 degrees keeps the translator
 memory. Both sessions refuse line-searched methods: the
 oracle value beside a projected or inverted force is not its
 potential.

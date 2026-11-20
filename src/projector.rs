@@ -329,7 +329,7 @@ impl Hyperplane {
 
     /// The plane through a minimum-mode session's position and mode.
     pub fn from_min_mode(session: &MinModeSession) -> Result<Self, SaddleError> {
-        Self::new(session.position().to_owned(), session.mode().to_owned())
+        Self::new(session.position().to_owned(), session.plane_mode())
     }
 
     /// The plane through `position` normal to an estimated lowest mode.

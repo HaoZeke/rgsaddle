@@ -260,10 +260,12 @@ pub struct MinModeConfig {
     pub difference: FiniteDifference,
     /// Rotation stops when the rotational force `|H v - (v.H v) v|`
     /// falls under this. The default is 1e-4. At that value and any
-    /// looser one, the dimer also stops after one rotation once the
-    /// rotational force is under 1, and Lanczos once two vectors leave
-    /// the Ritz residual under 1. A tighter value keeps driving the
-    /// residual, and the torque window stays out of that loop.
+    /// looser one, a dimer with its angle test disabled also stops after
+    /// one rotation once the rotational force is under 1. Lanczos stops
+    /// once two vectors leave the Ritz residual under 1. The improved
+    /// dimer default uses the angle test instead. A tighter value keeps
+    /// driving the residual, and the torque window stays out of that
+    /// loop.
     /// [`MinModeSession::set_torque_window`] turns the window on or off
     /// whatever this value is. Lanczos
     /// uses the same number as the Ritz residual. With no host relative
@@ -274,8 +276,8 @@ pub struct MinModeConfig {
     /// `converged_angle`, five degrees
     /// ([`DEFAULT_ROTATION_ANGLE_TOL`]; Kästner and Sherwood, J. Chem.
     /// Phys. 128, 014106 (2008), doi:10.1063/1.2815812). Zero disables
-    /// the angle test. The classic torque window still applies at the
-    /// stock residual; see `rotation_finished`.
+    /// the angle test and restores the inferred classic torque window
+    /// at the stock residual; see `rotation_finished`.
     pub rotation_angle_tol: f64,
     /// Most dimer rotations, or Lanczos actions, in one estimate.
     pub max_rotations: usize,
@@ -820,10 +822,26 @@ fn rotate_dimer<S: PointSurface>(
             .for_each(|t, &d| *t = d / dir_norm);
         // dC/dphi at phi = 0 is 2 h.theta (negative along a descent
         // direction). The trial angle is the Kastner-Sherwood guess
-        // from a harmonic model, kept inside (1e-4, pi/4].
+        // from a harmonic model, kept inside (1e-4, pi/4]. eOn's
+        // ImprovedDimer::compute (client/ImprovedDimer.cpp) checks
+        // |phi_prime| <= phi_tol before rotating to tau_prime and
+        // evaluating the trial force. A caller that explicitly
+        // tightened rotation_tol below the stock residual while
+        // leaving rotation_angle_tol at its default still drives the
+        // residual down to rotation_tol.
         let b1 = h.dot(&theta);
-        let phi1 = (0.5 * (b1.abs() / (curvature.abs() + 1e-300)).atan())
-            .clamp(MIN_TRIAL_ANGLE, 0.25 * PI);
+        let phi_trial = 0.5 * (b1.abs() / (curvature.abs() + 1e-300)).atan();
+        let angle_stop = config.rotation_angle_tol > 0.0
+            && (config.rotation_tol >= STOCK_ROTATION_TOL
+                || config.rotation_angle_tol != DEFAULT_ROTATION_ANGLE_TOL);
+        if angle_stop && phi_trial <= config.rotation_angle_tol {
+            if rotations == 0 {
+                keep(&mut force_prev, &mut force);
+                keep(&mut dir_prev, &mut dir);
+            }
+            break;
+        }
+        let phi1 = phi_trial.clamp(MIN_TRIAL_ANGLE, 0.25 * PI);
         let (trial_sin, trial_cos) = (phi1.sin(), phi1.cos());
         Zip::from(&mut n1)
             .and(&n)
@@ -950,7 +968,7 @@ fn normalize_in_place(v: &mut Array1<f64>) {
 
 /// Classic dimer torque window plus the residual and the rotation cap.
 ///
-/// eOn stops when the torque is under `torque_min`, or after
+/// eOn's classic dimer stops when the torque is under `torque_min`, or after
 /// `rotations_min` (one) once the torque has fallen under `torque_max`
 /// (1 eV/Å²). [`STOCK_ROTATION_TOL`] plays the role of a loose
 /// `torque_min`: the window is on. A tighter `rotation_tol` is a request
@@ -973,24 +991,21 @@ fn rotation_finished(
 }
 
 /// Whether the classic torque window applies: `torque_window` when it
-/// is `Some`, otherwise exactly when `rotation_tol` is at least
-/// [`STOCK_ROTATION_TOL`].
+/// is `Some`, otherwise when `rotation_tol` is at least
+/// [`STOCK_ROTATION_TOL`] and either this is Lanczos or the improved
+/// dimer angle test is disabled.
 fn torque_window_on(config: &MinModeConfig, torque_window: Option<bool>) -> bool {
-    torque_window.unwrap_or(config.rotation_tol + 1e-12 >= STOCK_ROTATION_TOL)
+    match torque_window {
+        Some(window) => window,
+        None => {
+            (config.kind == MinModeKind::Lanczos || config.rotation_angle_tol <= 0.0)
+                && config.rotation_tol >= STOCK_ROTATION_TOL
+        }
+    }
 }
 
-/// Climb along `mode` by one full per-atom `max_move`.
-///
-/// Henkelman and Jónsson, J. Chem. Phys. 111, 7010 (1999),
-/// doi:10.1063/1.480097: while the curvature is not negative the search
-/// moves on the mode alone. eOn's L-BFGS takes that as a full
-/// `max_move` step when the secant curvature is negative
-/// (`maxAtomMotionApplied` of `1000 * f`, client/LBFGS.cpp): the largest
-/// atom moves by `max_move`, not by a fraction of the force. The sign is
-/// the energy gradient's, so the step increases the energy along the
-/// mode. A vanishing parallel part still leaves along `mode`: a
-/// stationary point with non-negative curvature is a minimum, not a
-/// saddle.
+/// Climb along `mode` by one global `max_move` followed by the per-atom
+/// cap.
 pub(crate) fn convex_displacement(
     position: ArrayView1<f64>,
     gradient: ArrayView1<f64>,
@@ -1002,14 +1017,32 @@ pub(crate) fn convex_displacement(
     for (slot, component) in trial.iter_mut().zip(mode.iter()) {
         *slot += sign * component;
     }
-    scale_to_atom_cap(position, &mut trial, max_move);
+    scale_to_global_cap(position, &mut trial, max_move);
+    shorten_to_atom_cap(position, &mut trial, max_move);
     trial
 }
 
-/// Rescale the displacement so its largest per-atom (xyz triple) length
-/// equals `cap`. A trailing partial triple counts as one more atom,
-/// matching rgmin `scale_step_atom` and eOn `maxAtomMotionApplied`. The
-/// direction is unchanged; a step shorter than the cap is lengthened.
+/// Rescale the displacement so its Euclidean norm equals `cap`.
+fn scale_to_global_cap(origin: ArrayView1<f64>, trial: &mut Array1<f64>, cap: f64) {
+    if !(cap.is_finite() && cap > 0.0) {
+        return;
+    }
+    let n = trial.len();
+    let mut norm2 = 0.0;
+    for k in 0..n {
+        let d = trial[k] - origin[k];
+        norm2 += d * d;
+    }
+    let norm = norm2.sqrt();
+    if norm > 0.0 {
+        let scale = cap / norm;
+        for k in 0..n {
+            trial[k] = origin[k] + scale * (trial[k] - origin[k]);
+        }
+    }
+}
+
+/// Return the largest per-atom (xyz triple) displacement.
 fn largest_atom_move(origin: ArrayView1<f64>, trial: ArrayView1<f64>) -> f64 {
     let n = trial.len();
     let mut max_atom = 0.0;
@@ -1034,20 +1067,6 @@ fn largest_atom_move(origin: ArrayView1<f64>, trial: ArrayView1<f64>) -> f64 {
         max_atom = max_atom.max(r2.sqrt());
     }
     max_atom
-}
-
-fn scale_to_atom_cap(origin: ArrayView1<f64>, trial: &mut Array1<f64>, cap: f64) {
-    if !(cap.is_finite() && cap > 0.0) {
-        return;
-    }
-    let max_atom = largest_atom_move(origin, trial.view());
-    if max_atom > 0.0 {
-        let scale = cap / max_atom;
-        let n = trial.len();
-        for k in 0..n {
-            trial[k] = origin[k] + scale * (trial[k] - origin[k]);
-        }
-    }
 }
 
 /// `origin - FIRE_EMPTY_SCALE * eff`, shortened so no atom moves by
@@ -1100,7 +1119,7 @@ fn curvature_scale(curvature: f64) -> Option<f64> {
 /// Stiffness past which FIRE's opening timestep of 1 is unstable.
 /// Symplectic Euler wants `dt < 2/sqrt(|λ|)`, so `|λ| > 4` is already
 /// past that timestep.
-const FIRE_CURVATURE_FLOOR: f64 = 25.0;
+const FIRE_CURVATURE_FLOOR: f64 = 4.0;
 /// Force evaluations with no real drop before a probe is allowed.
 /// A short plateau still belongs to FIRE. The vacancy cycle does not
 /// leave, so two thousand flat steps is the signal.
@@ -1945,12 +1964,13 @@ impl MinModeSession {
     /// one iteration once the rotational force is under 1 (eOn
     /// `torque_max`), and a Lanczos estimate stops once two vectors
     /// leave the Ritz residual, the rotational force of the Ritz
-    /// vector, under 1. `None`, the default, keeps the window on exactly
-    /// when `rotation_tol` is at least the stock 1e-4, and for Lanczos
-    /// only while no [`MinModeSession::set_lanczos_rel_tol`] is set.
-    /// eOn's improved dimer stops on `torque_min` (0.1) with no window,
-    /// which is `rotation_tol` 0.1 and `Some(false)`. `Some(false)` is
-    /// also the Lanczos estimate that runs to its residual.
+    /// vector, under 1. `None`, the default, keeps the window on for a
+    /// dimer exactly when its angle test is disabled and `rotation_tol`
+    /// is at least the stock 1e-4. Lanczos keeps the window only while
+    /// no [`MinModeSession::set_lanczos_rel_tol`] is set.
+    /// eOn's improved dimer uses its angle criterion with no torque
+    /// window. `Some(false)` also makes a Lanczos estimate run to its
+    /// residual.
     pub fn set_torque_window(&mut self, window: Option<bool>) {
         self.torque_window = window;
     }
@@ -2805,7 +2825,8 @@ impl MinModeSession {
 
     /// A short probe step out of a stiff FIRE limit cycle.
     ///
-    /// FIRE 2.0 keeps timestep 1 through its initial delay (Guénolé,
+    /// FIRE 2.0 keeps its opening timestep through its initial delay
+    /// (Guénolé,
     /// Nöhring, Vaid, Houllé, Xie, Prakash, and Bitzek, Comput. Mater.
     /// Sci. 175, 109584 (2020), doi:10.1016/j.commatsci.2020.109584).
     /// The reflected force is Equation 3 of Goswami, Gunde, and
@@ -3255,6 +3276,22 @@ impl MinModeSession {
         (*x == self.x).then_some(&certificate.index)
     }
 
+    /// The certified lowest mode at the current position when a saddle
+    /// certificate is present, oriented along [`MinModeSession::mode`],
+    /// or [`MinModeSession::mode`] itself.
+    pub(crate) fn plane_mode(&self) -> Array1<f64> {
+        if let Some((x, certificate)) = &self.saddle.certified
+            && *x == self.x
+            && let Some(vector) = certificate.vectors.first()
+        {
+            if vector.dot(&self.mode) < 0.0 {
+                return vector.mapv(|v| -v);
+            }
+            return vector.clone();
+        }
+        self.mode.clone()
+    }
+
     /// Pushes off a saddle of higher index over the session.
     #[must_use]
     pub fn saddle_escapes(&self) -> usize {
@@ -3444,9 +3481,9 @@ impl MinModeSession {
         // once the curvature is negative. The mode estimate for this
         // step is the one just refreshed; Lanczos and the dimer share it,
         // and so do L-BFGS and FIRE. A non-negative curvature takes one
-        // full per-atom max_move along the mode, the step eOn's L-BFGS
-        // takes when the secant curvature is negative. The basin
-        // constraint keeps the solver: its force is not that pure climb.
+        // global max_move along the mode, followed by eOn's per-atom
+        // cap. The basin constraint keeps the solver: its force is not
+        // that pure climb.
         let tau = self.mode.clone();
         let translation_curvature = curvature;
         let full_climb = translation_curvature >= 0.0
@@ -3460,8 +3497,23 @@ impl MinModeSession {
             && ((lbfgs && !self.lbfgs_seeded && self.solver.pair_count() == 0)
                 || (fire && !self.solver_stepped));
         let (x, at_new) = if full_climb {
-            let climbed =
-                convex_displacement(self.x.view(), g0.view(), tau.view(), self.config.max_move);
+            // Within half a step of the 1D parabola minimum along `tau`
+            // (`g0 . tau + 0.5 * lambda * max_move >= 0`), a step along
+            // `+tau` already climbs in energy; flipping `tau` on a
+            // sub-step relaxation residual reverses the caller's
+            // oriented seed across the well.
+            let climb_gradient =
+                if g0.dot(&tau) + 0.5 * translation_curvature * self.config.max_move >= 0.0 {
+                    tau.view()
+                } else {
+                    g0.view()
+                };
+            let climbed = convex_displacement(
+                self.x.view(),
+                climb_gradient,
+                tau.view(),
+                self.config.max_move,
+            );
             let (energy, gradient) = counted.eval(climbed.view())?;
             // The cached inverted force belongs to the old centre. The
             // pairs and the FIRE velocity stay for the concave region.
@@ -3889,14 +3941,18 @@ mod tests {
     }
 
     #[test]
-    fn torque_window_follows_rotation_tol_until_it_is_set() {
+    fn improved_dimer_does_not_infer_the_classic_torque_window() {
         let stock = MinModeConfig::default();
         let eon = MinModeConfig::default().with_rotation_tol(0.1);
         let tight = MinModeConfig::default().with_rotation_tol(1e-6);
+        let classic = MinModeConfig::default().with_rotation_angle_tol(0.0);
+        let lanczos = MinModeConfig::default().with_kind(MinModeKind::Lanczos);
         // A rotational force of 0.5 after one rotation is inside the window.
-        assert!(super::rotation_finished(&stock, None, 0.5, 1));
-        assert!(super::rotation_finished(&eon, None, 0.5, 1));
+        assert!(!super::rotation_finished(&stock, None, 0.5, 1));
+        assert!(!super::rotation_finished(&eon, None, 0.5, 1));
         assert!(!super::rotation_finished(&tight, None, 0.5, 1));
+        assert!(super::rotation_finished(&classic, None, 0.5, 1));
+        assert!(super::rotation_finished(&lanczos, None, 0.5, 1));
         assert!(!super::rotation_finished(&eon, Some(false), 0.5, 1));
         assert!(super::rotation_finished(&tight, Some(true), 0.5, 1));
         // The window needs one rotation and a force under 1.
@@ -3910,6 +3966,44 @@ mod tests {
             0.5,
             eon.max_rotations
         ));
+    }
+
+    #[test]
+    fn positive_climb_limits_the_global_mode_step() {
+        let component = 0.5_f64.sqrt();
+        let position = array![0.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        let gradient = array![1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        let mode = array![component, 0.0, 0.0, component, 0.0, 0.0];
+        let trial = super::convex_displacement(position.view(), gradient.view(), mode.view(), 0.2);
+        let step = &trial - &position;
+        assert_abs_diff_eq!(step.dot(&step).sqrt(), 0.2, epsilon = 1e-15);
+        assert!(super::largest_atom_move(position.view(), trial.view()) < 0.2);
+    }
+
+    #[test]
+    fn minimum_mode_fire_opens_at_the_eon_timestep() {
+        let session = MinModeSession::new(
+            MinModeConfig::default(),
+            array![0.0, 0.0, 0.0],
+            array![1.0, 0.0, 0.0],
+        )
+        .unwrap();
+        assert_eq!(session.fire_dt, 1.0);
+        assert_eq!(session.lanczos_rel_tol, None);
+    }
+
+    #[test]
+    fn improved_dimer_skips_trial_evaluation_inside_angle_tol() {
+        let angle = 2.0_f64.to_radians();
+        let mut session = MinModeSession::new(
+            MinModeConfig::default(),
+            array![0.3, 0.2, 0.1, 0.4],
+            array![angle.cos(), angle.sin(), 0.0, 0.0],
+        )
+        .unwrap();
+        let estimate = session.estimate_mode(&AnisotropicQuadratic).unwrap();
+        assert_eq!(estimate.rotations, 0);
+        assert_eq!(estimate.evaluations, 2);
     }
 
     fn dimer_rotations(rotation_tol: f64, window: Option<bool>) -> (usize, Array1<f64>) {

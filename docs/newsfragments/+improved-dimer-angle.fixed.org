@@ -1,0 +1,13 @@
+Improved dimer rotation now uses its five degree trial and fitted angle
+stop by default instead of also inferring the classic torque window, and
+checks the initial trial angle against ~rotation_angle_tol~ before
+evaluating the trial rotation.
+The angle criterion follows Heyden, Bell, and Keil, J. Chem. Phys. 123,
+224101 (2005), doi:10.1063/1.2104507, and Kästner and Sherwood,
+J. Chem. Phys. 128, 014106 (2008), doi:10.1063/1.2815812.
+Set ~rotation_angle_tol~ to zero to infer the classic window, or use
+~MinModeSession::set_torque_window~ to select it explicitly.
+The positive curvature climb now limits the normalized global mode step
+before applying the per atom cap, matching eOn conjugate gradients, and
+preserves the seed mode orientation when the parallel gradient is within
+half a step of the mode minimum.
