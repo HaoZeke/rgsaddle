@@ -43,6 +43,8 @@ faer = ["dep:faer"]
 # Finite-difference Hessians that compare the matrix-free tunneling rate.
 # Off the default build. Tests and benches that call it request it.
 lineb-oracle = []
+# H2/Cu(110) Ásgeirsson LI-NEB harness: oracle rates + FFI to rgpot CuH2.
+cuh2-lineb = ["lineb-oracle", "dep:libloading"]
 
 [dependencies]
 dlpk = { version = "0.1.5", features = ["ndarray"] }
@@ -120,6 +122,10 @@ required-features = ["lineb-oracle"]
 name = "lineb"
 harness = false
 required-features = ["lineb-oracle"]
+
+[[example]]
+name = "cuh2_asgeirsson_lineb"
+required-features = ["cuh2-lineb"]
 
 [profile.dev.package.faer]
 opt-level = 3

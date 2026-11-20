@@ -1,0 +1,51 @@
+{
+  "sources": {
+    "eon_adsorbed_min2.con": {
+      "upstream": "TheochemUI/eOn",
+      "path": "client/unit_tests/data/systems/cuh2_neb_test/min2_0Cu.con",
+      "role": "associative-desorption reactant (dissociated H on Cu(110)); Cu isFixed=1, H free"
+    },
+    "eon_desorbed_min1.con": {
+      "upstream": "TheochemUI/eOn",
+      "path": "client/unit_tests/data/systems/cuh2_neb_test/min1_0Cu.con",
+      "role": "associative-desorption product (molecular H2 above surface); same Cu lattice as min2"
+    },
+    "eon_init.con": {
+      "upstream": "TheochemUI/eOn",
+      "path": "client/unit_tests/data/systems/cuh2_neb_test/init.con",
+      "role": "NEB init near desorbed; same 216 Cu + 2 H cell"
+    },
+    "rgpot_tmp.con": {
+      "upstream": "OmniPotentRPC/rgpot",
+      "path": "CppCore/rgpot/CuH2/tmp.con",
+      "role": "canonical rgpot CuH2 unit-test fixture; H geometry near classical TS (HH\u22481.34 \u00c5)"
+    },
+    "fortran_cuh2_tmp.con": {
+      "upstream": "TheochemUI/fortran_cuh2_src",
+      "path": "tmp.con",
+      "role": "original fortcuh2 demo geometry (matches eOn desorbed HH/height to printed precision)"
+    }
+  },
+  "files": {
+    "eon_adsorbed_min2.con": {
+      "sha256": "35d726945bf6136a8733ab678f5b55581ddbabf0ff6c0fe6659189bf3cdb6969",
+      "bytes": 6534
+    },
+    "eon_desorbed_min1.con": {
+      "sha256": "b546dd3b77472778e0da2f402784d63f7d2618c318a934595ef2895098662fdb",
+      "bytes": 6534
+    },
+    "eon_init.con": {
+      "sha256": "69e083be3b619bc27ca32360dbf004799f0c10a404be66de15a2cec39ca9bfcd",
+      "bytes": 6534
+    },
+    "fortran_cuh2_tmp.con": {
+      "sha256": "69e083be3b619bc27ca32360dbf004799f0c10a404be66de15a2cec39ca9bfcd",
+      "bytes": 6534
+    },
+    "rgpot_tmp.con": {
+      "sha256": "0b38e2d4ea51e03268fff61f4ae939809cef03a94195f6bbfb9d3c5bdbc143cb",
+      "bytes": 12988
+    }
+  }
+}
