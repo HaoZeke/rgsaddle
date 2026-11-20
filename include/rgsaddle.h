@@ -1514,6 +1514,7 @@ typedef struct {
   uint64_t evaluations;
 } rgsaddle_stencil_report_t;
 
+/** Diagnostic for the calling thread. Copy before the next stencil or LI-NEB call. */
 const char *rgsaddle_last_error(void);
 
 rgsaddle_stencil_config_t *rgsaddle_stencil_config_new(int32_t preset);
@@ -1967,7 +1968,7 @@ typedef struct {
 } rgsaddle_lineb_result_t;
 
 /**
- * Fill out with paper defaults for the given force tolerances, ABI
+ * Fill out with the solver defaults for the given force tolerances, ABI
  * minor 46. Returns RGSADDLE_INVALID_PARAMETER when out is NULL.
  */
 rgsaddle_status_t rgsaddle_lineb_config_default(double opt_tol, double perp_tol,

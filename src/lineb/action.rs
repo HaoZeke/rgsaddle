@@ -26,7 +26,7 @@
 //! and adds the parallel spring `k (|q_next − q| − |q − q_prev|) τ`.
 //! An endpoint keeps only the part of its spring orthogonal to the
 //! physical force and is pulled onto `V = E` by `κ (V − E) f̂`, with
-//! `κ |f|` equal to the configured endpoint scale.
+//! either fixed `κ` or fixed `κ |f|` according to the endpoint restraint.
 
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
 

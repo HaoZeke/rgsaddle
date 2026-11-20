@@ -146,7 +146,7 @@ The narrative for a session is the C and C++ how-to, not this list.
 - =rgsaddle_band_set_fixed_atoms=. Purpose: Per-atom fixed mask shared by every image, ABI minor 39. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_band_set_zoom=. Purpose: Zoom-NEB, eOn's zoom_* keys. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_band_set_string=. Purpose: Select the simplified string method on the band, ABI minor 44. Parameters: the declaration. Units: the caller's.
-- =rgsaddle_last_error=. Purpose: Declared in include/rgsaddle.h. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_last_error=. Purpose: Diagnostic for the calling thread. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_stencil_config_new=. Purpose: Declared in include/rgsaddle.h. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_stencil_config_set_f64=. Purpose: Declared in include/rgsaddle.h. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_stencil_config_set_i64=. Purpose: Declared in include/rgsaddle.h. Parameters: the declaration. Units: the caller's.
@@ -189,9 +189,9 @@ The narrative for a session is the C and C++ how-to, not this list.
 - =rgsaddle_band_set_free_end=. Purpose: Enable, replace, or clear the free-end adaptive NEB (FEA-NEB) of Zhang, Zhang, Ye, and Zheng, J. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_band_free_end_residual=. Purpose: Read the signed target-energy residual `E(x_end) - E_target` from the most recent free-end step into `out`, ABI minor 45. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_band_free_end_cuts=. Purpose: Number of adaptive cut-and-remesh refinements performed so far on a free-end band, or 0 for NULL, ABI minor 45. Parameters: the declaration. Units: the caller's.
-- =rgsaddle_lineb_config_default=. Purpose: Fill out with paper defaults for the given force tolerances, ABI minor 46. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_lineb_config_default=. Purpose: Fill out with the solver defaults for the given force tolerances, ABI minor 46. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_lineb_solve=. Purpose: Optimize a fixed-energy tunneling path and optionally its harmonic quantum TST rate, ABI minor 46. Parameters: the declaration. Units: the caller's.
-- =rgsaddle_lineb_solve_with_kappa= computes the same path and rate with an optional fixed endpoint coefficient. Available from ABI minor 47.
+- =rgsaddle_lineb_solve_with_kappa=. Purpose: Solve with fixed endpoint coefficient κ. Parameters: the declaration. Units: the caller's.
 
 * Types and callbacks
 
