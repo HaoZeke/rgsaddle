@@ -194,6 +194,7 @@ The narrative for a session is the C and C++ how-to, not this list.
 - =rgsaddle_lineb_solve_with_kappa=. Purpose: Solve with fixed endpoint coefficient κ. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_lineb_solve_options=. Purpose: Optimize with a choice of initial path, convergence test, and integrator. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_lineb_solve_counted=. Purpose: Same inputs as solve_options, with optional detailed counters. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_lineb_solve_counted_diagnostics=. Purpose: Counted solve with the number of negative and total retained fluctuation modes. Parameters: the declaration. Units: the caller's.
 
 * Types and callbacks
 
@@ -313,6 +314,7 @@ The narrative for a session is the C and C++ how-to, not this list.
 - =RGSADDLE_LINEB_LINEAR_SEED=. Purpose: Macro constant in include/rgsaddle.h.
 - =RGSADDLE_LINEB_ENDPOINT_CONVERGENCE=. Purpose: Macro constant in include/rgsaddle.h.
 - =RGSADDLE_LINEB_PROJECTED_VERLET=. Purpose: Macro constant in include/rgsaddle.h.
+- =RGSADDLE_HAS_LINEB_RATE_DIAGNOSTICS=. Purpose: Macro constant in include/rgsaddle.h.
 - =RGSADDLE_OK=. Purpose: Enumerator of =rgsaddle_status_t=.
 - =RGSADDLE_NULL_SESSION=. Purpose: Enumerator of =rgsaddle_status_t=.
 - =RGSADDLE_NULL_BAND=. Purpose: Enumerator of =rgsaddle_status_t=.

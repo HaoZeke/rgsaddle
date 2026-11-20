@@ -66,6 +66,14 @@ With the =lineb-oracle= feature, =cartesian_image_hessian(surface, cartesian, st
 
 =rgsaddle.lineb_solve(surface, positions, atom_masses, energy, opt_tol, perp_tol, molecular=False, max_steps=1000, beads=0, ...)= is the run-to-completion binding (=howto/python=). =positions= is =(n_images, 3N)=, =atom_masses= is one mass per atom, and =surface(x)= is the one-image =(energy, gradient)= callback used by =connect=. =molecular=False= expands each atom mass to three coordinates; =molecular=True= aligns the free molecule. =beads=0= returns the path only with =log_rate_over_reactant= set to NaN. =LinebResult= exposes the optimized =positions=, the quadrature temperature =temperature= and the constrained-dynamics estimate =temperature_dynamics=, their half periods, the log rate, and the per-phase call counts. A calculator exception propagates; an unconverged search raises with the C status.
 
+For a rate calculation, =LinebResult.modes= gives the number of retained
+fluctuation eigenvalues and =LinebResult.negative_modes= counts those below
+zero. A first-order instanton has one retained negative eigenvalue. Both
+properties are =None= for a path-only solve. C consumers can check for
+=RGSADDLE_HAS_LINEB_RATE_DIAGNOSTICS= and pass the two optional =int64_t=
+outputs to =rgsaddle_lineb_solve_counted_diagnostics=. Each receives =-1=
+when the rate is unavailable.
+
 For the Cu example in the 2018 paper, pass =linear_seed=True= and =endpoint_convergence=True= to =lineb_solve= with a full MEP and the converted =spring= and =endpoint_kappa=. The first flag selects a straight path between the two energy crossings. The second applies the endpoint and perpendicular force tolerances separately. Pass =projected_verlet=True= (Rust =with_projected_verlet(true)=, C ~RGSADDLE_LINEB_PROJECTED_VERLET~) to select the projected Verlet band integrator.
 
 The following dimensionless Eckart barrier has turning points at
