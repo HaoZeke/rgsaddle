@@ -165,9 +165,8 @@ impl ImageInterpolation for IdppInterpolation {
     }
 }
 
-/// TRICS midpoint constructed from a three-image segment.
+/// TRICS midpoint constructed from a seven-image segment.
 struct TricsInterpolation {
-    linear: LinearInterpolation,
     config: TricsStartConfig,
 }
 
@@ -180,10 +179,7 @@ impl TricsInterpolation {
                 "AutoNEB TRICS interpolation needs unwrapped free space coordinates".into(),
             ));
         }
-        Ok(Self {
-            linear: LinearInterpolation::new(cell),
-            config,
-        })
+        Ok(Self { config })
     }
 }
 
@@ -200,22 +196,18 @@ impl ImageInterpolation for TricsInterpolation {
                 "TRICS interpolation needs a segment after row {after}"
             )));
         }
-        let path = match initialize_path(
+        let path = initialize_path(
             chain.row(after),
             chain.row(after + 1),
             TRICS_INSERTION_IMAGES,
             None,
             &PathInitializer::Trics(self.config.clone()),
-        ) {
-            Ok(path) => path,
-            Err(SaddleError::Solver(_)) => {
-                return self.linear.insert(chain, energies, after);
-            }
-            Err(error) => return Err(error),
-        };
+        )?;
         let middle = path.row(TRICS_INSERTION_IMAGES / 2);
         if middle == chain.row(after) || middle == chain.row(after + 1) {
-            return self.linear.insert(chain, energies, after);
+            return Err(SaddleError::Solver(
+                "TRICS interpolation produced a degenerate midpoint".into(),
+            ));
         }
         Ok(middle.to_owned())
     }
@@ -2534,5 +2526,37 @@ mod tests {
         );
         assert!(rows[0].1 > 0.0);
         assert!(join_median > Duration::ZERO || join_pool.threads == 1);
+    }
+
+    #[test]
+    fn trics_interpolation_does_not_silently_fall_back_to_linear() {
+        let chain = array![
+            [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -0.3, 0.95, 0.2]
+        ];
+        let impossible_config = crate::TricsStartConfig::default().with_trics(
+            crate::TricsConfig::default().with_inversion(
+                crate::TricInversionConfig::default()
+                    .with_max_iterations(1)
+                    .with_tolerance(1e-14)
+                    .with_max_atom_move(1e-8),
+            ),
+        );
+        let interpolant = TricsInterpolation::new(None, impossible_config).unwrap();
+        assert!(matches!(
+            interpolant.insert(chain.view(), &[None, None], 0),
+            Err(SaddleError::Solver(_))
+        ));
+
+        let same_chain = array![
+            [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+        ];
+        let default_interpolant =
+            TricsInterpolation::new(None, crate::TricsStartConfig::default()).unwrap();
+        assert!(matches!(
+            default_interpolant.insert(same_chain.view(), &[None, None], 0),
+            Err(SaddleError::Solver(_))
+        ));
     }
 }
