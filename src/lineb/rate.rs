@@ -207,7 +207,11 @@ fn finish(
         log_abs_det,
         modes,
         log_rate_over_reactant: log_rate,
-        rate_over_reactant: log_rate.exp(),
+        rate_over_reactant: if log_rate > f64::MAX.ln() {
+            f64::INFINITY
+        } else {
+            log_rate.exp()
+        },
         evaluations,
     })
 }
