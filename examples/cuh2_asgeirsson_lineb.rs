@@ -553,8 +553,7 @@ fn run_mep(
     let band = session.positions().to_owned();
     let mut energies = Array1::zeros(band.nrows());
     let mut gradients = Array2::zeros(band.raw_dim());
-    surface
-        .eval(band.view(), &mut energies, &mut gradients)
+    BandSurface::eval(surface, band.view(), &mut energies, &mut gradients)
         .map_err(|e| e.to_string())?;
     let (saddle_i, &e_saddle) = energies
         .iter()
