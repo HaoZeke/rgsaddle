@@ -1,0 +1,9 @@
+# Licensed VASP potentials — never commit bodies; titles live in POTCAR.TITEL.
+POTCAR
+**/POTCAR
+OUTCAR
+vasprun.xml
+CHGCAR
+WAVECAR
+CONTCAR
+*.gz

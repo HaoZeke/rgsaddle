@@ -1,0 +1,46 @@
+{
+  "status": "reconstructed",
+  "doi": "10.1063/1.5007180",
+  "a0_A": 3.32,
+  "supercell_A": 6.64,
+  "Td_A_frac_supercell": [
+    0.25,
+    0.125,
+    0.0
+  ],
+  "Td_B_frac_supercell": [
+    0.125,
+    0.25,
+    0.0
+  ],
+  "Td_A_cart_A": [
+    1.66,
+    0.83,
+    0.0
+  ],
+  "Td_B_cart_A": [
+    0.83,
+    1.66,
+    0.0
+  ],
+  "mobile_ta_indices_0based": [
+    0,
+    1,
+    3,
+    4,
+    8
+  ],
+  "kpoints": [
+    3,
+    3,
+    3
+  ],
+  "encut_eV": 250,
+  "xc": "PW91",
+  "targets": {
+    "Ea_eV": 0.2,
+    "Ea_frozen5_delta_eV": 0.004,
+    "Tc_K": 180.0,
+    "D_over_k_cm2": 9.13e-17
+  }
+}

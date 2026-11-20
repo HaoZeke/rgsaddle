@@ -1,0 +1,59 @@
+# Quantitative targets from Ásgeirsson, Arnaldsson, Jónsson,
+# J. Chem. Phys. 148, 102334 (2018) §III B (DOI 10.1063/1.5007180).
+# All values are taken from the published text, not from a re-run.
+
+[provenance]
+doi = "10.1063/1.5007180"
+section = "III B"
+title = "H atom diffusion in Ta crystal"
+code = "VASP"
+input_status = "reconstructed"
+
+[functional]
+# Paper text: "PW91 functional" — not PBE.
+paper_xc = "PW91"
+paper_gga_tag = "91"
+# PBE (GGA = PE) is a common modern default; it is NOT what §III B used.
+not_paper_xc = "PBE"
+paw = true
+encut_eV = 250.0
+encut_Ry = 18.4
+
+[cell]
+# "cubic cell of 16 Ta atoms and one H atom" → 2×2×2 conventional BCC.
+n_ta = 16
+n_h = 1
+conventional_a0_A = 3.32
+experimental_a0_A = 3.31
+supercell_repeat = [2, 2, 2]
+kpoints_monkhorst_pack = [3, 3, 3]
+
+[sites]
+# Adjacent tetrahedral (Td) interstitial sites; l = a0 * sqrt(2) / 4.
+jump = "Td–Td"
+l_Td_Td_A = 1.17
+n_equivalent_paths = 4
+lattice_dimension = 3
+
+[barrier]
+# NEB MEP maximum; fully relaxed host.
+Ea_eV = 0.20
+# Freeze all but the five Ta surrounding the two Td sites: +0.004 eV.
+Ea_frozen5_delta_eV = 0.004
+Tc_K = 180.0
+
+[diffusion_normalization]
+# D(T) = n * l^2 / (2 d) * k(T)
+# Paper quotes D(T) = 9.13e-17 * k(T)  with D in cm^2/s and k in 1/s.
+prefactor_cm2 = 9.13e-17
+l_A = 1.17
+n = 4
+d = 3
+
+[comparison]
+# Fig. 5: HQTST vs Grosky-effect and NMR experiments; no fitted parameters.
+figure = 5
+notes = [
+  "HQTST agrees with Grosky (high T) and NMR (low T) combination argued by Messer et al.",
+  "Classical HTST underestimates the rate well above Tc = 180 K.",
+]
