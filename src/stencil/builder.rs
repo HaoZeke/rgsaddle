@@ -17,8 +17,8 @@ use rgmin::{Accept, Control, FireKind, Method, Oracle, Solver};
 use crate::error::SaddleError;
 use crate::force::ForceGate;
 use crate::minmode::{
-    ArtNConfig, FiniteDifference, MinModeConfig, MinModeKind, MinModeSession, MinModeStatus,
-    convex_displacement, translated_gradient,
+    ArtNConfig, ClimbCap, FiniteDifference, MinModeConfig, MinModeKind, MinModeSession,
+    MinModeStatus, climb_displacement, translated_gradient,
 };
 /// Error text [`BandBuilder::build`] returns until `feat/band-methods-zoom` lands.
 pub const BAND_PRESET_SEAM: &str = "band presets stay on feat/band-methods-zoom";
@@ -218,7 +218,7 @@ pub struct PointBuilder {
     mode: Option<Array1<f64>>,
     dr: f64,
     rotation_tol: f64,
-    rotation_angle_tol: f64,
+    rotation_angle_tol: Option<f64>,
     max_rotations: usize,
     krylov_dim: usize,
     force_tol: f64,
@@ -290,7 +290,7 @@ impl Stencil {
             mode: None,
             dr: 1e-3,
             rotation_tol: 1e-4,
-            rotation_angle_tol: crate::minmode::DEFAULT_ROTATION_ANGLE_TOL,
+            rotation_angle_tol: None,
             max_rotations: 20,
             krylov_dim: 12,
             force_tol: 1e-3,
@@ -404,8 +404,9 @@ impl PointBuilder {
     }
 
     /// The dimer also stops when one rotation's angle falls under this many radians. Zero disables that test.
+    /// Unset, it is five degrees at the stock `rotation_tol` and off under a tighter one.
     pub fn rotation_angle_tol(mut self, rotation_angle_tol: f64) -> Self {
-        self.rotation_angle_tol = rotation_angle_tol;
+        self.rotation_angle_tol = Some(rotation_angle_tol);
         self
     }
 
@@ -626,7 +627,6 @@ fn mode_session(builder: &PointBuilder, mode: Array1<f64>) -> Result<MinModeSess
         .with_dr(builder.dr)
         .with_difference(FiniteDifference::Forward)
         .with_rotation_tol(builder.rotation_tol)
-        .with_rotation_angle_tol(builder.rotation_angle_tol)
         .with_max_rotations(builder.max_rotations)
         .with_krylov_dim(builder.krylov_dim)
         .with_force_tol(builder.force_tol)
@@ -634,6 +634,9 @@ fn mode_session(builder: &PointBuilder, mode: Array1<f64>) -> Result<MinModeSess
         .with_method(Method::fire(FireKind::V2))
         .with_seed_curvature(false)
         .with_saddle_check(None);
+    if let Some(rotation_angle_tol) = builder.rotation_angle_tol {
+        config = config.with_rotation_angle_tol(rotation_angle_tol);
+    }
     if builder.preset == Preset::Art || builder.artn.is_some() {
         let artn = builder.artn.clone().unwrap_or_else(|| {
             ArtNConfig::default()
@@ -726,11 +729,13 @@ fn eigen_step<S: crate::minmode::PointSurface>(
     }
     let tau = engine.mode.clone();
     if curvature >= 0.0 && engine.max_move.is_finite() && engine.max_move > 0.0 {
-        let climbed = convex_displacement(
+        let climbed = climb_displacement(
             engine.x.view(),
             gradient.view(),
             tau.view(),
+            curvature,
             engine.max_move,
+            ClimbCap::Atom,
         );
         let (_energy, _gradient) = surface.eval(climbed.view())?;
         calls.fetch_add(1, Ordering::Relaxed);

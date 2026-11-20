@@ -28,7 +28,7 @@ extern "C" {
 #endif
 
 #define RGSADDLE_ABI_MAJOR 1u
-#define RGSADDLE_ABI_MINOR 45u
+#define RGSADDLE_ABI_MINOR 46u
 
 /**
  * Band config flags bit 0. When set, each evaluation calls the surface
@@ -583,7 +583,9 @@ typedef struct {
    * angle falls under this (radians). The Rust default is five degrees
    * (Kästner and Sherwood, J. Chem. Phys. 128, 014106 (2008); eOn
    * converged_angle). Zero disables the angle test. A C caller stores
-   * the value it writes; ignored when version.minor < 5.
+   * the value it writes, so a positive value also stops the rotation
+   * under a rotation_tol tighter than 1e-4; ignored when
+   * version.minor < 5.
    */
   double rotation_angle_tol;
   /** Minor 5: rgsaddle_difference_t for the Hessian actions. */
@@ -1307,12 +1309,15 @@ rgsaddle_status_t rgsaddle_minmode_set_highs(RgsaddleMinMode *session, int32_t e
  * With the window on, a rotation also stops after one iteration once
  * the rotational force is under 1 (eOn torque_max). `window` 1 turns it
  * on, 0 turns it off, and -1, the state of a new session, turns it on
- * exactly when rotation_tol is at least 1e-4. eOn's improved dimer is
- * rotation_tol = torque_min with 0. From ABI minor 41 a Lanczos session
- * reads it too: with the window on, an estimate stops once two Krylov
- * vectors leave the Ritz residual under 1, and 0 restores the estimate
- * that runs to its residual. Other values return
- * RGSADDLE_INVALID_PARAMETER and leave the session unchanged.
+ * when rotation_tol is at least 1e-4 and either the estimator is
+ * Lanczos or the improved dimer angle test is disabled
+ * (rotation_angle_tol <= 0). From ABI minor 46 an improved dimer with
+ * positive rotation_angle_tol leaves the classic window off unless
+ * `window` is 1. From ABI minor 41 a Lanczos session reads it too: with the window
+ * on, an estimate stops once two Krylov vectors leave the Ritz residual
+ * under 1, and 0 restores the estimate that runs to its residual.
+ * Other values return RGSADDLE_INVALID_PARAMETER and leave the session
+ * unchanged.
  */
 rgsaddle_status_t rgsaddle_minmode_set_torque_window(RgsaddleMinMode *session,
                                                      int32_t window);

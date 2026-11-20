@@ -327,9 +327,16 @@ impl Hyperplane {
         Ok(plane)
     }
 
-    /// The plane through a minimum-mode session's position and mode.
+    /// The plane through a minimum-mode session's position, normal to
+    /// its lowest mode.
+    ///
+    /// When the session holds a converged saddle-index certificate for
+    /// its current position ([`MinModeConfig::saddle_check`]), the normal
+    /// is that certificate's lowest Ritz vector, oriented along
+    /// [`MinModeSession::mode`]. Otherwise, including a certificate whose
+    /// action budget ran out, it is [`MinModeSession::mode`].
     pub fn from_min_mode(session: &MinModeSession) -> Result<Self, SaddleError> {
-        Self::new(session.position().to_owned(), session.mode().to_owned())
+        Self::new(session.position().to_owned(), session.plane_mode())
     }
 
     /// The plane through `position` normal to an estimated lowest mode.
@@ -752,6 +759,60 @@ mod tests {
             vector: ArrayView1<f64>,
         ) -> Result<Option<Array1<f64>>, SaddleError> {
             Ok(Some(&array![1.0, 2.0, 4.0, 8.0] * &vector))
+        }
+    }
+
+    /// `V = 0.5 (-x^2 + 2 y^2 + 5 z^2)`, a saddle at the origin.
+    struct IndexOneSaddle;
+
+    impl PointSurface for IndexOneSaddle {
+        fn eval(&self, q: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+            let gradient = &array![-1.0, 2.0, 5.0] * &q;
+            Ok((0.5 * q.dot(&gradient), gradient))
+        }
+    }
+
+    /// The plane of a session converged at the saddle with its mode two
+    /// degrees off the negative axis, and that session mode.
+    fn plane_at_the_saddle(check: crate::SaddleIndexCheck) -> (Array1<f64>, Array1<f64>, bool) {
+        let angle = 2.0_f64.to_radians();
+        let config = MinModeConfig::default()
+            .with_rotation_tol(1.0)
+            .with_saddle_check(check);
+        let mut session = MinModeSession::new(
+            config,
+            array![0.0, 0.0, 0.0],
+            array![angle.cos(), angle.sin(), 0.0],
+        )
+        .unwrap();
+        let report = session.step(&IndexOneSaddle).unwrap();
+        assert_eq!(report.status, crate::MinModeStatus::Converged);
+        let converged = report.saddle_index.expect("certified").converged;
+        let plane = Hyperplane::from_min_mode(&session).unwrap();
+        (
+            plane.normal().to_owned(),
+            session.mode().to_owned(),
+            converged,
+        )
+    }
+
+    #[test]
+    fn min_mode_plane_prefers_only_a_converged_certificate() {
+        let (normal, mode, converged) = plane_at_the_saddle(crate::SaddleIndexCheck::default());
+        assert!(converged);
+        assert!(mode[1].abs() > 1e-2, "{mode}");
+        assert!(normal[0] > 1.0 - 1e-10, "{normal}");
+
+        // Two actions leave a Ritz vector inside a Krylov space that does
+        // not yet fill the three free directions.
+        let exhausted = crate::SaddleIndexCheck::default()
+            .with_block(1)
+            .with_max_actions(2)
+            .with_residual_tol(1e-12);
+        let (normal, mode, converged) = plane_at_the_saddle(exhausted);
+        assert!(!converged);
+        for (a, b) in normal.iter().zip(mode.iter()) {
+            assert!((a - b).abs() < 1e-14, "{normal} against {mode}");
         }
     }
 

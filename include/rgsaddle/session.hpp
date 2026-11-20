@@ -363,7 +363,10 @@ public:
     void set_highs(bool enabled) {
         check(rgsaddle_minmode_set_highs(handle_, enabled ? 1 : 0));
     }
-    // -1 infers the window from rotation_tol, 0 turns it off, 1 on.
+    // -1 infers the window: on when rotation_tol is at least 1e-4 and
+    // the session is Lanczos or a dimer with rotation_angle_tol 0. A
+    // dimer with a positive rotation_angle_tol stays off unless 1.
+    // 0 turns it off, 1 on.
     void set_torque_window(int window) {
         check(rgsaddle_minmode_set_torque_window(handle_, window));
     }
