@@ -58,6 +58,33 @@ The paper's interpolated finite-difference Hessian is built with the =lineb-orac
 
 For the Cu example in the 2018 paper, pass =linear_seed=True= and =endpoint_convergence=True= to =lineb_solve= with a full MEP and the converted =spring= and =endpoint_kappa=. The first flag selects a straight path between the two energy crossings. The second applies the endpoint and perpendicular force tolerances separately.
 
+The following dimensionless Eckart barrier has turning points at
+=x = ±arccosh(2)= when =E = 0.25=. Only the first coordinate enters the
+potential. The callback returns an energy for each input row and the
+Cartesian energy gradient with the same shape as the coordinates.
+
+#+begin_src python
+import numpy as np
+from rgsaddle import lineb_solve
+
+def barrier(x):
+    energy = 1.0 / np.cosh(x[:, 0])**2
+    gradient = np.zeros_like(x)
+    gradient[:, 0] = -2.0 * energy * np.tanh(x[:, 0])
+    return energy, gradient
+
+seed = np.zeros((9, 3))
+seed[:, 0] = np.linspace(-2.0, 2.0, len(seed))
+path = lineb_solve(
+    barrier, seed, np.ones(1), energy=0.25, opt_tol=1e-5, perp_tol=1e-5,
+    endpoint_kappa=0.2, linear_seed=True, endpoint_convergence=True,
+)
+np.testing.assert_allclose(
+    np.asarray(path.positions)[[0, -1], 0], np.array([-1, 1]) * np.arccosh(2)
+)
+print(path.action, path.temperature)
+#+end_src
+
 * C ABI
 #+begin_src c
 rgsaddle_lineb_config_t cfg;
