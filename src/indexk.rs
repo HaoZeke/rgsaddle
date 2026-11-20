@@ -599,6 +599,7 @@ impl BlockSession {
                 direction.view(),
                 direction.view(),
                 self.config.search.max_move,
+                crate::minmode::ClimbCap::Atom,
             );
             calls.fetch_add(1, Ordering::Relaxed);
             let (energy, gradient) = surface.eval(climbed.view())?;
