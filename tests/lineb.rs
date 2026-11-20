@@ -251,6 +251,15 @@ fn constant_hessian_log_dets_agree() {
     let roundoff = entry_noise * direct.modes as f64;
     let blocks = vec![Array2::from_elem((1, 1), -curvature); path.cartesian.nrows()];
     let analytic = hqtst_rate_from_image_hessians(&Parabola, &path, beads, &blocks).unwrap();
+    let quadrature = session.quadrature_path(&Parabola).unwrap();
+    let independent =
+        hqtst_rate_from_image_hessians(&Parabola, &quadrature, beads, &blocks).unwrap();
+    assert_eq!(quadrature.calls.dynamics, 0);
+    assert_eq!(quadrature.temperature, path.temperature);
+    assert_eq!(
+        independent.log_rate_over_reactant,
+        analytic.log_rate_over_reactant
+    );
     assert_eq!(analytic.evaluations, beads);
     assert_eq!(analytic.negative_modes, oracle.negative_modes);
     assert!(

@@ -15,7 +15,7 @@ use rgmin::{Accept, Control, Method, Oracle, Solver, quickmin_project};
 
 use super::action;
 use super::mass::Masses;
-use super::path::{self, Periods};
+use super::path;
 use crate::band::check_force_driven;
 use crate::error::SaddleError;
 use crate::minmode::PointSurface;
@@ -268,7 +268,7 @@ impl LinebCalls {
 
 /// A converged (or inspected) optimal tunneling path and both periods.
 #[derive(Clone, Debug)]
-pub struct LinebPath {
+pub struct LinebPath<D = f64> {
     /// Cartesian images of the aligned mass-weighted path.
     pub cartesian: Array2<f64>,
     /// Tunneling energy.
@@ -280,11 +280,11 @@ pub struct LinebPath {
     /// `−∂W/∂E` along the spline, one way.
     pub half_period: f64,
     /// Half-period constrained dynamics along the same spline.
-    pub half_period_dynamics: f64,
+    pub half_period_dynamics: D,
     /// `ℏ / (k_B τ)` from [`Self::half_period`].
     pub temperature: f64,
     /// `ℏ / (k_B τ)` from [`Self::half_period_dynamics`].
-    pub temperature_dynamics: f64,
+    pub temperature_dynamics: D,
     /// Surface evaluations by phase.
     pub calls: LinebCalls,
     pub(crate) weighted: Array2<f64>,
@@ -297,7 +297,7 @@ pub struct LinebPath {
     pub(crate) boltzmann: f64,
 }
 
-impl LinebPath {
+impl<D> LinebPath<D> {
     /// Place a full ring of replicas at equal intervals of imaginary time.
     /// Each row contains one Cartesian geometry, with the first turning
     /// point at row zero. The return leg retraces the outbound spline.
@@ -827,6 +827,39 @@ impl LinebSession {
     /// Spline action, both half periods and both temperatures of the
     /// current images.
     pub fn path<S: PointSurface>(&self, surface: &S) -> Result<LinebPath, SaddleError> {
+        self.measured_path(surface, |counted, curve| {
+            let period = path::dynamics(
+                counted,
+                &self.masses,
+                curve,
+                self.energy,
+                self.config.quadrature_pairs,
+            )?;
+            Ok((
+                period,
+                path::temperature(period, self.config.hbar, self.config.boltzmann)?,
+            ))
+        })
+    }
+
+    /// Spline action, quadrature temperature, and the imaginary-time ring at
+    /// the current images. The independent constrained-dynamics observables
+    /// carry the unit type. This path supports the same rate evaluators.
+    pub fn quadrature_path<S: PointSurface>(
+        &self,
+        surface: &S,
+    ) -> Result<LinebPath<()>, SaddleError> {
+        self.measured_path(surface, |_, _| Ok(((), ())))
+    }
+
+    fn measured_path<S: PointSurface, D>(
+        &self,
+        surface: &S,
+        dynamics_clock: impl FnOnce(
+            &crate::lineb::Counted<'_, S>,
+            &path::Curve,
+        ) -> Result<(D, D), SaddleError>,
+    ) -> Result<LinebPath<D>, SaddleError> {
         let measure_calls = AtomicUsize::new(0);
         let dynamics_calls = AtomicUsize::new(0);
         let measured = crate::lineb::Counted {
@@ -839,31 +872,24 @@ impl LinebSession {
         };
         let (weighted, discrete_action) = self.prepared_images(&measured)?;
         let preparation = measure_calls.load(Ordering::Relaxed);
-        let periods: Periods = path::measure(
+        let curve = path::Curve::new(weighted.view())?;
+        let (action, half_period, time_table) = path::quadrature(
             &measured,
-            &dynamics,
             &self.masses,
-            weighted.view(),
+            &curve,
             self.energy,
             self.config.quadrature_pairs,
         )?;
+        let (half_period_dynamics, temperature_dynamics) = dynamics_clock(&dynamics, &curve)?;
         Ok(LinebPath {
             cartesian: self.cartesian_images(&weighted)?,
             energy: self.energy,
             discrete_action,
-            action: periods.action,
-            half_period: periods.half_period,
-            half_period_dynamics: periods.half_period_dynamics,
-            temperature: path::temperature(
-                periods.half_period,
-                self.config.hbar,
-                self.config.boltzmann,
-            )?,
-            temperature_dynamics: path::temperature(
-                periods.half_period_dynamics,
-                self.config.hbar,
-                self.config.boltzmann,
-            )?,
+            action,
+            half_period,
+            half_period_dynamics,
+            temperature: path::temperature(half_period, self.config.hbar, self.config.boltzmann)?,
+            temperature_dynamics,
             calls: LinebCalls {
                 seed: self.seed_evaluations,
                 seed_in_optimizer: self.seed_evaluations,
@@ -873,7 +899,7 @@ impl LinebSession {
                 dynamics: dynamics_calls.load(Ordering::Relaxed),
             },
             weighted,
-            time_table: periods.time_table,
+            time_table,
             masses: self.masses.clone(),
             #[cfg(test)]
             quadrature_pairs: self.config.quadrature_pairs,

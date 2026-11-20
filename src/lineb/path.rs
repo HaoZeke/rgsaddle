@@ -90,18 +90,6 @@ impl Curve {
 /// `(λ, t)` samples of the imaginary time along a spline, in path order.
 pub(crate) type TimeTable = Vec<(f64, f64)>;
 
-#[derive(Clone, Debug)]
-pub(crate) struct Periods {
-    /// `∫ √(2(V−E)) ds` along the spline, one way.
-    pub action: f64,
-    /// `∫ ds / √(2(V−E))`, one way. This is `−∂W/∂E`.
-    pub half_period: f64,
-    /// Travel time of the constrained dynamics from one end to the other.
-    pub half_period_dynamics: f64,
-    /// `(λ, t)` samples of the imaginary time along the spline.
-    pub time_table: TimeTable,
-}
-
 struct Sample {
     energy: f64,
     gap: f64,
@@ -378,38 +366,28 @@ fn eval_endpoint<S: PointSurface>(
     Ok((potential, gradient))
 }
 
-/// Action, both half periods and the imaginary-time table. `pairs` is
-/// the number of Simpson pairs on each chord. The quadrature and the
-/// time table call `quadrature`; the constrained dynamics calls
-/// `dynamics`, so the two costs can be counted apart.
-pub(crate) fn measure<Q: PointSurface, D: PointSurface>(
-    quadrature: &Q,
-    dynamics_surface: &D,
+/// Spline action, quadrature half-period, and the replica imaginary-time table.
+pub(super) fn quadrature<S: PointSurface>(
+    surface: &S,
     masses: &Masses,
-    weighted: ArrayView2<f64>,
+    curve: &Curve,
     energy: f64,
     pairs: usize,
-) -> Result<Periods, SaddleError> {
+) -> Result<(f64, f64, TimeTable), SaddleError> {
     if pairs < 1 {
         return Err(SaddleError::Invalid(
             "the period quadrature needs at least one Simpson pair per chord".into(),
         ));
     }
-    let curve = Curve::new(weighted)?;
-    let level = Level {
-        surface: quadrature,
-        masses,
-        curve: &curve,
-        energy,
-    };
-    let (action, half_period, time_table) = integrate(&level, pairs)?;
-    let half_period_dynamics = dynamics(dynamics_surface, masses, &curve, energy, pairs)?;
-    Ok(Periods {
-        action,
-        half_period,
-        half_period_dynamics,
-        time_table,
-    })
+    integrate(
+        &Level {
+            surface,
+            masses,
+            curve,
+            energy,
+        },
+        pairs,
+    )
 }
 
 /// Action, half period and the `(λ, t)` time table from one pass of
@@ -683,7 +661,7 @@ fn simpson_s<S: PointSurface>(
 /// the particle short of the knot. A turn within the summed allowance of
 /// the accepted steps closes the gap `r` at the turning-point time
 /// `√(2r/|a|)`.
-fn dynamics<S: PointSurface>(
+pub(super) fn dynamics<S: PointSurface>(
     surface: &S,
     masses: &Masses,
     curve: &Curve,
@@ -837,7 +815,7 @@ pub(crate) struct Replicas {
 
 /// Replicas at `t_j = j τ / P`. The return half retraces the spline.
 /// The period is twice the last time in `table`, the time table that
-/// [`measure`] built on the same images.
+/// [`quadrature`] built on the same images.
 pub(crate) fn replicas(
     weighted: ArrayView2<f64>,
     table: &[(f64, f64)],

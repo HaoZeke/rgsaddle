@@ -85,7 +85,7 @@ pub struct HqtstRate {
 /// replicas. `beads` is `P` in `t_j = j τ / P`.
 pub fn hqtst_rate<S: PointSurface>(
     surface: &S,
-    path: &LinebPath,
+    path: &LinebPath<impl Sized>,
     beads: usize,
 ) -> Result<HqtstRate, SaddleError> {
     let calls = AtomicUsize::new(0);
@@ -152,7 +152,7 @@ pub fn hqtst_rate<S: PointSurface>(
 #[cfg(any(test, feature = "lineb-oracle"))]
 pub fn hqtst_rate_interpolated_hessian<S: PointSurface>(
     surface: &S,
-    path: &LinebPath,
+    path: &LinebPath<impl Sized>,
     beads: usize,
 ) -> Result<HqtstRate, SaddleError> {
     let step = coordinate_scale(path.weighted.iter().copied())?;
@@ -165,7 +165,7 @@ pub fn hqtst_rate_interpolated_hessian<S: PointSurface>(
 #[cfg(any(test, feature = "lineb-oracle"))]
 pub fn hqtst_rate_interpolated_hessian_with_step<S: PointSurface>(
     surface: &S,
-    path: &LinebPath,
+    path: &LinebPath<impl Sized>,
     beads: usize,
     step: f64,
 ) -> Result<HqtstRate, SaddleError> {
@@ -197,7 +197,7 @@ pub fn hqtst_rate_interpolated_hessian_with_step<S: PointSurface>(
 #[cfg(any(test, feature = "lineb-oracle"))]
 pub fn hqtst_rate_from_image_hessians<S: PointSurface>(
     surface: &S,
-    path: &LinebPath,
+    path: &LinebPath<impl Sized>,
     beads: usize,
     cartesian_hessians: &[Array2<f64>],
 ) -> Result<HqtstRate, SaddleError> {
@@ -216,7 +216,7 @@ pub fn hqtst_rate_from_image_hessians<S: PointSurface>(
 #[cfg(any(test, feature = "lineb-oracle"))]
 fn interpolated_rate<S: PointSurface>(
     surface: &S,
-    path: &LinebPath,
+    path: &LinebPath<impl Sized>,
     beads: usize,
     hessians: &[Array2<f64>],
     step: Option<f64>,
@@ -268,7 +268,7 @@ fn interpolated_rate<S: PointSurface>(
 }
 
 fn finish(
-    path: &LinebPath,
+    path: &LinebPath<impl Sized>,
     beads: &Array2<f64>,
     energies: &[f64],
     period: f64,
@@ -420,7 +420,7 @@ fn weighted_block<S: PointSurface>(
 
 /// `ε^{1/3}` times the Cartesian length of the path: the roundoff-optimal
 /// central step for a gradient difference on a path of that length.
-fn difference_step(path: &LinebPath) -> Result<f64, SaddleError> {
+fn difference_step(path: &LinebPath<impl Sized>) -> Result<f64, SaddleError> {
     let mut length = 0.0;
     for j in 1..path.cartesian.nrows() {
         let chord = &path.cartesian.row(j) - &path.cartesian.row(j - 1);
