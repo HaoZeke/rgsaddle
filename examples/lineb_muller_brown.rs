@@ -41,10 +41,16 @@ impl PointSurface for ModifiedMullerBrown {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let start = [0.91155623, 0.18294581];
-    let end = [-0.55822363, 1.44172584];
-    // Turning energy inferred from both endpoints of Figure 2(b).
-    let energy = -0.145;
+    let left = [-0.55822363, 1.44172584];
+    let intermediate = [-0.05249907, 0.46720533];
+    let right = [0.91155623, 0.18294581];
+    // The turning energies are inferred from the endpoints in Figure 2.
+    let (start, end, energy) = match std::env::args().nth(1).as_deref() {
+        None | Some("direct") => (right, left, -0.145),
+        Some("left") => (left, intermediate, -0.079),
+        Some("right") => (intermediate, right, -0.079),
+        _ => return Err("choose direct, left, or right".into()),
+    };
     let on_line = |t: f64| Array1::from_shape_fn(2, |j| start[j] + t * (end[j] - start[j]));
     // Place each end at the inward crossing. At the minimum itself the
     // energy gradient vanishes and does not select a turning direction.
