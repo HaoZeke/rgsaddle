@@ -244,7 +244,7 @@ RGPOT_BUILD = "scalar kernels, fast neighbour list on, Fortran pots on"
 
 BUILD_PINS = (
     ("linkcell", "0.3.5 with rgsaddle, 0.3.11 with eOn"),
-    ("minimage", "0.1.2 with rgsaddle, 0.1.4 with eOn"),
+    ("minimage", "0.1.4 with rgsaddle and with eOn"),
     ("rgmin", "0.6.0"),
     ("readcon-core", "0.20.0"),
 )
