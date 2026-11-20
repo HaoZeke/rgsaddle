@@ -163,7 +163,7 @@ fn bracket<S: PointSurface>(
         energies[left + 1],
         target,
     )?);
-    for index in (left + 1)..right {
+    for index in (left + 1)..=right {
         weighted.push(masses.to_weighted(mep.row(index))?);
     }
     weighted.push(onto_segment(
@@ -470,6 +470,23 @@ mod tests {
     }
 
     struct Well;
+
+    #[test]
+    fn seed_follows_the_bend_between_adjacent_crossings() {
+        struct Ridge;
+
+        impl PointSurface for Ridge {
+            fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+                Ok((1.0 - x[0].powi(2), array![-2.0 * x[0], 0.0]))
+            }
+        }
+
+        let mep = array![[-1.0, 0.0], [0.0, 1.0], [1.0, 0.0]];
+        let masses = Masses::coordinates(array![1.0, 1.0].view()).unwrap();
+        let energies = image_energies(&Ridge, mep.view()).unwrap();
+        let seed = bracket(&Ridge, &masses, mep.view(), &energies, 1, 0.5, 3).unwrap();
+        assert!(l2((&seed.row(1) - &mep.row(1)).view()) < 1e-12);
+    }
 
     impl PointSurface for Well {
         fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
