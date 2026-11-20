@@ -4,12 +4,14 @@
 //! [`LinebSession::run`] repeats `step`. FIRE, L-BFGS (accepted on the
 //! step, because the nudged force is not the gradient of the action),
 //! Barzilai–Borwein, quick-min and ODE12r are the force-driven methods.
+//! [`LinebConfig::with_projected_verlet`] opts into a fixed-time-step
+//! projected velocity Verlet that uses [`rgmin::quickmin_project`].
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
-use rgmin::{Accept, Control, Method, Oracle, Solver};
+use rgmin::{Accept, Control, Method, Oracle, Solver, quickmin_project};
 
 use super::action;
 use super::mass::Masses;
@@ -75,6 +77,13 @@ pub struct LinebConfig {
     pub method: Method,
     /// Simpson pairs on each chord when the period is integrated.
     pub quadrature_pairs: usize,
+    /// Fixed-time-step projected velocity Verlet instead of [`Self::method`].
+    ///
+    /// Off by default. When set, each step is velocity Verlet at
+    /// [`Self::time_step`] with the velocity replaced by
+    /// [`rgmin::quickmin_project`] after the kick. Feasible-set retries,
+    /// force caching, and surface-error returns match the default path.
+    pub projected_verlet: bool,
 }
 
 with_setters!(LinebConfig {
@@ -90,6 +99,7 @@ with_setters!(LinebConfig {
     with_boltzmann => boltzmann: val f64,
     with_method => method: val Method,
     with_quadrature_pairs => quadrature_pairs: val usize,
+    with_projected_verlet => projected_verlet: val bool,
 });
 
 impl LinebConfig {
@@ -127,6 +137,7 @@ impl LinebConfig {
             boltzmann: 1.0,
             method: Method::fire(rgmin::FireKind::V2),
             quadrature_pairs: 4,
+            projected_verlet: false,
         }
     }
 }
@@ -300,6 +311,8 @@ pub struct LinebSession {
     /// Assembly at [`Self::weighted`], when the last step ended on a
     /// point it had evaluated.
     held: Option<action::Assembly>,
+    /// Velocity for [`LinebConfig::projected_verlet`]. Unused otherwise.
+    velocity: Array1<f64>,
     evaluations: AtomicUsize,
     iteration: usize,
 }
@@ -399,6 +412,7 @@ impl LinebSession {
             solver.set_accept(Accept::Step);
             solver.set_lbfgs_neb_guards(true);
         }
+        let velocity = Array1::zeros(if config.projected_verlet { dof } else { 0 });
         Ok(Self {
             config,
             masses,
@@ -409,6 +423,7 @@ impl LinebSession {
             cap_held: false,
             width: None,
             held: None,
+            velocity,
             evaluations: AtomicUsize::new(0),
             iteration: 0,
         })
@@ -463,19 +478,34 @@ impl LinebSession {
     /// that left the set, until it lands inside or no shorter step moves.
     /// Any other error from the surface or the assembly is returned.
     pub fn step<S: PointSurface>(&mut self, surface: &S) -> Result<LinebReport, SaddleError> {
+        let width = match self.width {
+            Some(width) => width,
+            None => {
+                let width = self.turning_width(&crate::lineb::Counted {
+                    surface,
+                    calls: &self.evaluations,
+                })?;
+                self.width = Some(width);
+                width
+            }
+        };
+        if self.config.projected_verlet {
+            self.step_projected_verlet(surface, width)
+        } else {
+            self.step_solver(surface, width)
+        }
+    }
+
+    fn step_solver<S: PointSurface>(
+        &mut self,
+        surface: &S,
+        width: f64,
+    ) -> Result<LinebReport, SaddleError> {
         let n = self.weighted.nrows();
         let dof = self.weighted.ncols();
         let flat_dof = n * dof;
         let calls = &self.evaluations;
         let counted = crate::lineb::Counted { surface, calls };
-        let width = match self.width {
-            Some(width) => width,
-            None => {
-                let width = self.turning_width(&counted)?;
-                self.width = Some(width);
-                width
-            }
-        };
         if self.cap_held {
             self.solver.set_maxmove(f64::INFINITY);
             self.cap.install(&mut self.solver);
@@ -585,9 +615,87 @@ impl LinebSession {
                 }
             }
         };
-        let delta = &x - &before;
-        let displacement = action::l2(delta.view());
-        self.weighted = action::unpack(x.view(), n, dof);
+        self.finish_step(before.view(), x.view(), assembly)
+    }
+
+    /// Fixed-`Δt` projected velocity Verlet on the nudged force.
+    ///
+    /// Half-kick, drift under the configured displacement bounds with the
+    /// mid-step velocity rescaled to the step that was taken, evaluate,
+    /// complete the kick, then [`quickmin_project`]. An interior image
+    /// below `E + w` zeros the velocity and retries at half the attempted
+    /// length; a surface error is returned without treating the trial as
+    /// a feasibility failure.
+    fn step_projected_verlet<S: PointSurface>(
+        &mut self,
+        surface: &S,
+        width: f64,
+    ) -> Result<LinebReport, SaddleError> {
+        let before = action::pack(self.weighted.view());
+        let config = &self.config;
+        let dt = config.time_step;
+        let counted = crate::lineb::Counted {
+            surface,
+            calls: &self.evaluations,
+        };
+        let assemble = |images: ArrayView2<'_, f64>| {
+            action::assemble(
+                &counted,
+                &self.masses,
+                images,
+                self.energy,
+                config.spring,
+                config.endpoint_restraint(),
+                width,
+            )
+        };
+        let old = match &self.held {
+            Some(assembly) => action::pack(assembly.drive.view()),
+            None => action::pack(
+                assemble(self.weighted.view())?
+                    .ok_or_else(|| {
+                        SaddleError::Invalid("the starting band is outside the feasible set".into())
+                    })?
+                    .drive
+                    .view(),
+            ),
+        };
+        let half_kick = &old * (0.5 * dt);
+        let mut drift = (&self.velocity + &half_kick) * dt;
+        self.cap.apply(&mut drift);
+        loop {
+            let trial = &before + &drift;
+            let images = action::unpack(trial.view(), self.weighted.nrows(), self.weighted.ncols());
+            if let Some(assembly) = assemble(images.view())? {
+                let new_force = action::pack(assembly.drive.view());
+                let velocity = drift / dt + &new_force * (0.5 * dt);
+                self.velocity = quickmin_project(&velocity, &new_force);
+                return self.finish_step(before.view(), trial.view(), assembly);
+            }
+            // Restart from rest at the accepted band and halve the infeasible move.
+            let limit = 0.5 * action::l2(drift.view());
+            if trial == before || limit <= 0.0 {
+                return Err(SaddleError::Stalled(format!(
+                    "no shorter step keeps the interior images at V >= E + {width}"
+                )));
+            }
+            drift = &half_kick * dt;
+            self.cap.apply(&mut drift);
+            StepCap::Band(limit).apply(&mut drift);
+        }
+    }
+
+    fn finish_step(
+        &mut self,
+        before: ArrayView1<'_, f64>,
+        x: ArrayView1<'_, f64>,
+        assembly: action::Assembly,
+    ) -> Result<LinebReport, SaddleError> {
+        let n = self.weighted.nrows();
+        let dof = self.weighted.ncols();
+        let config = &self.config;
+        let displacement = action::l2((&x - &before).view());
+        self.weighted = action::unpack(x, n, dof);
         self.iteration += 1;
         self.held = Some(assembly.clone());
         let tested_force = if config.endpoint_convergence {
@@ -738,6 +846,24 @@ enum StepCap {
 }
 
 impl StepCap {
+    fn apply(self, drift: &mut Array1<f64>) {
+        let (length, limit) = match self {
+            Self::None => return,
+            Self::Band(limit) => (action::l2(drift.view()), limit),
+            Self::Atom(limit) => {
+                let largest = drift
+                    .exact_chunks(3)
+                    .into_iter()
+                    .map(action::l2)
+                    .fold(0.0, f64::max);
+                (largest, limit)
+            }
+        };
+        if length > limit {
+            *drift *= limit / length;
+        }
+    }
+
     fn install(self, solver: &mut Solver) {
         match self {
             StepCap::None => {}

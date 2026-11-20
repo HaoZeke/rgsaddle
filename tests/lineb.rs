@@ -124,6 +124,30 @@ fn a_surface_error_inside_a_step_is_returned() {
     assert_eq!(surface.calls.load(Ordering::Relaxed), 12);
 }
 
+/// The first drift from rest is one half of dt² times the endpoint force.
+#[test]
+fn projected_verlet_uses_half_kicks_and_reaches_the_turning_points() {
+    let dt = 0.2;
+    let tolerance = 1e-5;
+    let config = LinebConfig::new(tolerance, tolerance)
+        .with_endpoint_kappa(1.0)
+        .with_time_step(dt)
+        .with_projected_verlet(true);
+    let mut session = LinebSession::new(
+        config,
+        Masses::coordinates(Array1::ones(1).view()).unwrap(),
+        ndarray::array![[-0.5], [0.0], [0.5]],
+        0.5,
+    )
+    .unwrap();
+    session.step(&Parabola).unwrap();
+    let force = (1.0 - 0.5 * 0.5_f64.powi(2)) - 0.5;
+    assert!((session.cartesian().unwrap()[[2, 0]] - (0.5 + dt * dt * force / 2.0)).abs() < 1e-14);
+    let report = session.run(&Parabola, 500).unwrap();
+    assert_eq!(report.status, LinebStatus::Converged);
+    assert!((session.cartesian().unwrap()[[2, 0]] - 1.0).abs() < 2.0 * tolerance);
+}
+
 #[test]
 fn eckart_action_period_and_temperature_match_the_closed_form() {
     let energy = 0.25_f64;
