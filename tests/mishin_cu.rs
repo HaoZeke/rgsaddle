@@ -1446,6 +1446,9 @@ fn dumbbell_searches_start_at_the_sheared_minimum() {
             );
             assert_eq!(variable.negative_modes, Some(1));
             assert!(variable.curvature < 0.0 && variable.barrier.is_finite());
+            if gamma == 0.05 {
+                assert_opposite_110_saddle(variable);
+            }
         }
         lines.push(csv_row(gamma, "fixed", &fixed_reactant, Some(&fixed)));
         lines.push(csv_row(
@@ -1465,6 +1468,36 @@ fn dumbbell_searches_start_at_the_sheared_minimum() {
         writeln!(file, "{line}").expect("write copper csv");
     }
     eprintln!("wrote {} rows to {}", lines.len() - 1, path.display());
+}
+
+/// At 5% variable cell the search from the nudged <100> minimum ends on
+/// the index-1 [1-10] dumbbell, the <110> direction opposite to the
+/// shear-aligned switch, 0.9152 eV above the reactant in enthalpy with
+/// the pair 2.1293 Å apart and the cell relaxed back to a shear of
+/// 0.0243 (`benchmarks/solid_dimer_cu.csv`).
+fn assert_opposite_110_saddle(row: &SearchRow) {
+    assert!(!row.switched, "5% variable switched");
+    assert!(
+        (row.enthalpy_barrier - 0.9152).abs() < 1e-3,
+        "5% variable enthalpy barrier {}",
+        row.enthalpy_barrier
+    );
+    assert!(
+        row.angle_110 < 5.0 && row.axis[0] * row.axis[1] < 0.0,
+        "5% variable axis {:?}, {} degrees off <110>",
+        row.axis,
+        row.angle_110
+    );
+    assert!(
+        (row.separation - 2.1293).abs() < 2e-3,
+        "5% variable separation {}",
+        row.separation
+    );
+    assert!(
+        (row.final_shear - 0.0243).abs() < 5e-4,
+        "5% variable final shear {}",
+        row.final_shear
+    );
 }
 
 fn csv_row(shear: f64, method: &str, reactant: &ReactantIndex, row: Option<&SearchRow>) -> String {
