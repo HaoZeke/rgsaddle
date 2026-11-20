@@ -51,6 +51,22 @@ comparisons used as published reference points below.
 
 ## Potential and setup discrepancies
 
+On the eOn endpoint substrate, the climbing band converged to a barrier
+of 0.52874149 eV above the adsorbed state. At the highest image, central
+energy differences at 0.0001 Å agreed with the six analytic force
+components to a Euclidean error of 6.6 × 10⁻⁹ eV/Å. The corresponding
+fixed-energy ladder stopped above its force tolerance on this fixture.
+The 0.469 eV result below uses different frozen copper coordinates.
+
+`direct_ring.py` takes a CuH2 shared library, a CON substrate, the
+calculated `mep.csv`, an output directory, and temperatures in kelvin.
+It solves the discrete imaginary-time stationarity equations at 150 beads,
+starting from the negative mode of the classical saddle. The full Cartesian
+gradient must be below 10⁻⁸ eV/Å componentwise. It identifies the cyclic
+mode by overlap with the bead tangent and requires one remaining negative
+eigenvalue before writing a logarithmic flux. The absolute energy zero of
+the substrate enters this flux and must match the LI-NEB comparison.
+
 ### Potential lineage
 
 - **rgpot `CuH2Pot`** is the Fortran 2018 port of the eOn Cu–H EAM
