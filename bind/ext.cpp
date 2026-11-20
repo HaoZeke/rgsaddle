@@ -1790,7 +1790,7 @@ LinebResultPy lineb_solve_python(nb::callable fn, Matrix positions, Vector atom_
     ctx.rethrow_if_set();
   }
   if (status != RGSADDLE_OK) {
-    // Unconverged and other failures keep the existing non-success status.
+    rgsaddle_py_set_last_error(rgsaddle_last_error());
     raise_status(static_cast<int>(status));
   }
 

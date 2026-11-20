@@ -108,6 +108,11 @@ int main(void) {
   if (stalled != RGSADDLE_STALLED) {
     return fail("unconverged must be STALLED", stalled);
   }
+  if (strstr(rgsaddle_last_error(), "nudged force") == NULL ||
+      strstr(rgsaddle_last_error(), "perpendicular force") == NULL) {
+    fprintf(stderr, "missing convergence detail: %s\n", rgsaddle_last_error());
+    return 1;
+  }
   if (result.iterations < 1 || !isnan(result.log_rate_over_reactant)) {
     fprintf(stderr, "stalled result iterations=%lld log_rate=%g\n",
             (long long)result.iterations, result.log_rate_over_reactant);
@@ -124,6 +129,10 @@ int main(void) {
                            surface, NULL, out_pos, &result);
   if (ok != RGSADDLE_OK) {
     return fail("path-only solve", ok);
+  }
+  if (rgsaddle_last_error()[0] != '\0') {
+    fprintf(stderr, "successful solve retained an error: %s\n", rgsaddle_last_error());
+    return 1;
   }
   if (!isfinite(result.action) || !isfinite(result.half_period) ||
       !isfinite(result.half_period_dynamics) || !isfinite(result.temperature) ||

@@ -10,7 +10,7 @@ At a fixed energy =E= below a barrier, the optimal tunneling path minimizes the 
 
 : W = sum_j (sigma_j + sigma_{j+1}) |q_{j+1} - q_j| / 2,   sigma = sqrt(2 (V - E))
 
-Interior images move along the perpendicular gradient of =W=, springs keep them evenly spaced, and each end moves along the force until it sits on =V = E=. The half period of the periodic orbit on the inverted potential then sets the temperature =hbar / (k_B tau)= at which the path is an instanton, and the ring polymer built on it gives the harmonic quantum TST rate.
+Interior images move along the perpendicular gradient of =W=, springs keep them evenly spaced, and each end moves along the force until it sits on =V = E=. The half period of the periodic orbit on the inverted potential then sets the temperature =hbar / (2 k_B half_period)= at which the path is an instanton, and the ring polymer built on it gives the harmonic quantum TST rate.
 
 The module takes any =PointSurface=. Energies, lengths and masses are in the surface's own units, and =LinebConfig::hbar= and =LinebConfig::boltzmann= are given in the same units. Both default to one.
 
@@ -62,9 +62,7 @@ rgsaddle_status_t st = rgsaddle_lineb_solve(
     energy, max_steps, beads, surface, user, optimized, &out);
 #+end_src
 
-~rgsaddle_lineb_config_default~ writes the same paper defaults as =LinebConfig::new=. Positions are contiguous image, atom, xyz. ~molecular~ 0 expands each of the ~n_atoms~ masses onto the three Cartesian coordinates without rigid alignment (=Masses::coordinates=); ~molecular~ 1 uses quaternion alignment (=Masses::molecule=). ~beads~ 0 returns the path only and leaves ~log_rate_over_reactant~ as NaN; otherwise ~beads~ must be at least 2. An unconverged search returns ~RGSADDLE_STALLED~ after writing the last images. See =howto/c-abi= and =tests/c/lineb_abi.c=.
+~rgsaddle_lineb_config_default~ writes the same paper defaults as =LinebConfig::new=. Positions are contiguous image, atom, xyz. ~molecular~ 0 expands each of the ~n_atoms~ masses onto the three Cartesian coordinates without rigid alignment (=Masses::coordinates=); ~molecular~ 1 uses quaternion alignment (=Masses::molecule=). ~beads~ 0 returns the path only and leaves ~log_rate_over_reactant~ as NaN; otherwise ~beads~ must be at least 2. An unconverged search returns ~RGSADDLE_STALLED~ after writing the last images. Read ~rgsaddle_last_error()~ on the calling thread for the force residuals and their tolerances when the iteration budget is exhausted. See =howto/c-abi= and =tests/c/lineb_abi.c=.
 
-* Measured: H2 on Cu(110) through rgpot
-rgpot serves its Cu-H EAM over RPC as =CuH2=. A =PointSurface= around =rgpot_core::rpc::client::RpcClient= moved the two H atoms over the 216 Cu atoms of rgpot's =CppCore/rgpot/CuH2/tmp.con=, with the copper held at the fixture positions. From a 15-image MEP of associative desorption, with a barrier 0.469 eV above the reactant, a ladder of 9 energies 0.05 eV apart on 10 images, at the converted tolerance 6.44e-4 and otherwise default settings, covered 235 K to 63 K. The optimizer took 310 to 580 force calls per energy, mean 466.7 and sample standard deviation 98.0, the same in each of 6 serial runs. The quadrature and time table took 925.0 per energy on average, the dynamics 259.8, the seeds 977 for all 9, and the rate at 32 replicas 221 per energy. For the same system on its own empirical potential the paper reports that computing the reactive flux took on average ca. 900 energy and force evaluations.
-
-The [[https://github.com/OmniPotentRPC/rgsaddle-benchmarks][benchmark repository]] contains the two Cu substrates, the independent ring-polymer calculation, and the published figure comparisons. On the eOn substrate the climbing-band barrier is 0.52874 eV.
+* Comparing surfaces and rates
+For a surface with fixed substrate atoms, pass the coordinates and masses of the mobile atoms to the solver and reconstruct the full geometry in the surface callback. Use identical substrate coordinates, mass conventions and energy zeros when comparing barriers or rates. Record the image and bead counts, both force tolerances, and the temperature estimator with each result.
