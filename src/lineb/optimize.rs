@@ -229,7 +229,12 @@ pub struct LinebReport {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct LinebCalls {
-    /// Inside [`LinebSession::step`], over the whole session.
+    /// Evaluations preparing the seed at this energy.
+    pub seed: usize,
+    seed_in_optimizer: usize,
+    /// Measurement evaluations preparing or refining the turning-point path.
+    pub preparation: usize,
+    /// Session evaluations including seed clipping by [`LinebSession::from_seed`].
     pub optimizer: usize,
     /// In [`LinebSession::path`]: the action and period quadrature, the
     /// imaginary-time table, and the force assembly when no step has
@@ -240,7 +245,22 @@ pub struct LinebCalls {
 }
 
 impl LinebCalls {
-    /// Every evaluation.
+    /// Optimizer evaluations after seed preparation.
+    pub fn steps(&self) -> usize {
+        self.optimizer - self.seed_in_optimizer
+    }
+
+    /// Action quadrature and imaginary-time table evaluations after path preparation.
+    pub fn quadrature(&self) -> usize {
+        self.measure - self.preparation
+    }
+
+    /// All path evaluations, including external continuation seeds.
+    pub fn total_with_seed(&self) -> usize {
+        self.seed + self.steps() + self.measure + self.dynamics
+    }
+
+    /// Session and measurement evaluations, excluding external continuation seeds.
     pub fn total(&self) -> usize {
         self.optimizer + self.measure + self.dynamics
     }
@@ -314,6 +334,7 @@ pub struct LinebSession {
     /// Velocity for [`LinebConfig::projected_verlet`]. Unused otherwise.
     velocity: Array1<f64>,
     evaluations: AtomicUsize,
+    seed_evaluations: usize,
     iteration: usize,
 }
 
@@ -362,6 +383,7 @@ impl LinebSession {
                 weighted.assign(&session.masses.to_weighted(row)?);
             }
         }
+        session.seed_evaluations = session.evaluations.load(Ordering::Relaxed);
         Ok(session)
     }
 
@@ -425,6 +447,7 @@ impl LinebSession {
             held: None,
             velocity,
             evaluations: AtomicUsize::new(0),
+            seed_evaluations: 0,
             iteration: 0,
         })
     }
@@ -788,6 +811,7 @@ impl LinebSession {
             self.config.endpoint_restraint(),
             self.config.opt_tol,
         )?;
+        let preparation = measure_calls.load(Ordering::Relaxed);
         let periods: Periods = path::measure(
             &measured,
             &dynamics,
@@ -820,6 +844,9 @@ impl LinebSession {
                 self.config.boltzmann,
             )?,
             calls: LinebCalls {
+                seed: self.seed_evaluations,
+                seed_in_optimizer: self.seed_evaluations,
+                preparation,
                 optimizer: self.evaluations.load(Ordering::Relaxed),
                 measure: measure_calls.load(Ordering::Relaxed),
                 dynamics: dynamics_calls.load(Ordering::Relaxed),

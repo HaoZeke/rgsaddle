@@ -11,12 +11,13 @@
 #define DOF (3 * N_ATOMS)
 
 static rgsaddle_status_t surface(void *user, rgsaddle_surface_request_t *req) {
-  (void)user;
+
   if (req->version.major != RGSADDLE_ABI_MAJOR || req->n_atoms != N_ATOMS) {
     return RGSADDLE_SHAPE;
   }
   const int64_t rows =
       (req->flags & RGSADDLE_REQ_ONE_IMAGE) ? 1 : req->n_images;
+  if (user) *(int64_t *)user += rows;
   for (int64_t r = 0; r < rows; ++r) {
     const double *p = req->positions + r * DOF;
     double *g = req->gradients + r * DOF;
@@ -165,10 +166,20 @@ int main(void) {
   for (size_t i = 0; i < sizeof integrators / sizeof integrators[0]; ++i) {
     const uint32_t options = RGSADDLE_LINEB_LINEAR_SEED |
                              RGSADDLE_LINEB_ENDPOINT_CONVERGENCE | integrators[i];
-    const rgsaddle_status_t rc = rgsaddle_lineb_solve_options(
+    int64_t callback_rows = 0;
+    rgsaddle_lineb_counts_t counts = {0};
+    const rgsaddle_status_t rc = rgsaddle_lineb_solve_counted(
         &cfg, N_IMAGES, N_ATOMS, pos, masses, 0, 0.25, 200, 0,
-        surface, NULL, out_pos, &result, &kappa, options);
+        surface, &callback_rows, out_pos, &result, &kappa, options, &counts);
     if (rc != RGSADDLE_OK) return fail("linear seed between turning points", rc);
+    if (counts.seed <= 0 || counts.seed + counts.optimizer != result.optimizer_calls ||
+        counts.preparation + counts.quadrature != result.measure_calls ||
+        counts.dynamics != result.dynamics_calls || counts.rate != 0 ||
+        counts.seed + counts.optimizer + counts.preparation + counts.quadrature +
+            counts.dynamics + counts.rate != callback_rows) {
+      fprintf(stderr, "phase counts disagree with observed surface evaluations\n");
+      return 1;
+    }
     if (fabs(out_pos[0] + turning) > 1e-9 ||
         fabs(out_pos[(N_IMAGES - 1) * DOF] - turning) > 1e-9) {
       fprintf(stderr, "Eckart endpoints differ from analytic turning points\n");

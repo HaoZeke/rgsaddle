@@ -93,12 +93,17 @@ pub fn continue_from_mep<S: PointSurface>(
             "the MEP needs at least three images and one mass per coordinate".into(),
         ));
     }
-    let energies = image_energies(surface, mep)?;
+    let seed_calls = std::sync::atomic::AtomicUsize::new(0);
+    let seeding = super::Counted {
+        surface,
+        calls: &seed_calls,
+    };
+    let energies = image_energies(&seeding, mep)?;
     let saddle = highest(&energies)?;
     let mut paths = Vec::with_capacity(levels);
     let mut energy = energies[saddle] - delta;
     let mut seed = bracket(
-        surface,
+        &seeding,
         masses,
         mep,
         &energies,
@@ -116,10 +121,11 @@ pub fn continue_from_mep<S: PointSurface>(
                 report.opt_max, report.endpoint_max, report.perp_max
             )));
         }
-        let path = session.path(surface)?;
+        let mut path = session.path(surface)?;
+        path.calls.seed = seed_calls.swap(0, std::sync::atomic::Ordering::Relaxed);
         if level + 1 < levels {
             energy -= delta;
-            seed = extend_seed(surface, masses, &path, energy, images)?;
+            seed = extend_seed(&seeding, masses, &path, energy, images)?;
         }
         paths.push(path);
     }

@@ -266,6 +266,68 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve_options(
     endpoint_kappa: *const f64,
     options: u32,
 ) -> i32 {
+    unsafe {
+        rgsaddle_lineb_solve_counted(
+            cfg,
+            n_images,
+            n_atoms,
+            positions,
+            atom_masses,
+            molecular,
+            energy,
+            max_steps,
+            beads,
+            surface,
+            user,
+            optimized_positions,
+            out,
+            endpoint_kappa,
+            options,
+            std::ptr::null_mut(),
+        )
+    }
+}
+
+/// Disjoint potential surface evaluation counts for a successful solve.
+#[repr(C)]
+#[derive(Default)]
+pub struct RgsaddleLinebCounts {
+    pub seed: i64,
+    pub optimizer: i64,
+    pub preparation: i64,
+    pub quadrature: i64,
+    pub dynamics: i64,
+    pub rate: i64,
+}
+
+/// Solve with optional per-phase evaluation counts.
+///
+/// # Safety
+/// Follows [`rgsaddle_lineb_solve_options`]. A non-null counts pointer must
+/// refer to distinct writable storage. Counts describe a successful solve.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_lineb_solve_counted(
+    cfg: *const RgsaddleLinebConfig,
+    n_images: i64,
+    n_atoms: i64,
+    positions: *const f64,
+    atom_masses: *const f64,
+    molecular: i32,
+    energy: f64,
+    max_steps: i64,
+    beads: i64,
+    surface: Option<RgsaddleSurfaceFn>,
+    user: *mut c_void,
+    optimized_positions: *mut f64,
+    out: *mut RgsaddleLinebResult,
+    endpoint_kappa: *const f64,
+    options: u32,
+    counts: *mut RgsaddleLinebCounts,
+) -> i32 {
+    let counts = unsafe { counts.as_mut() };
+    let mut discarded = RgsaddleLinebCounts::default();
+    let counts = counts.unwrap_or(&mut discarded);
+    *counts = RgsaddleLinebCounts::default();
     clear_last_error();
     const LINEAR_SEED: u32 = 1;
     const ENDPOINT_CONVERGENCE: u32 = 2;
@@ -419,6 +481,11 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve_options(
     for (dst, src) in optimized.iter_mut().zip(path.cartesian.iter()) {
         *dst = *src;
     }
+    counts.seed = as_i64(path.calls.seed);
+    counts.optimizer = as_i64(path.calls.steps());
+    counts.preparation = as_i64(path.calls.preparation);
+    counts.quadrature = as_i64(path.calls.quadrature());
+    counts.dynamics = as_i64(path.calls.dynamics);
     out.action = path.action;
     out.half_period = path.half_period;
     out.half_period_dynamics = path.half_period_dynamics;
@@ -436,6 +503,7 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve_options(
         Ok(rate) => {
             out.log_rate_over_reactant = rate.log_rate_over_reactant;
             out.rate_calls = as_i64(rate.evaluations);
+            counts.rate = out.rate_calls;
             RGSADDLE_OK
         }
         Err(err) => fail(&err),

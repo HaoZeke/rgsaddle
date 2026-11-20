@@ -28,7 +28,7 @@ extern "C" {
 #endif
 
 #define RGSADDLE_ABI_MAJOR 1u
-#define RGSADDLE_ABI_MINOR 49u
+#define RGSADDLE_ABI_MINOR 50u
 
 /**
  * Band config flags bit 0. When set, each evaluation calls the surface
@@ -2026,6 +2026,23 @@ rgsaddle_status_t rgsaddle_lineb_solve_options(const rgsaddle_lineb_config_t *cf
                                        rgsaddle_surface_fn surface, void *user,
                                        double *optimized_positions,
                                        rgsaddle_lineb_result_t *out, const double *endpoint_kappa, uint32_t options);
+
+/** Disjoint configuration evaluations for one successful solve. */
+typedef struct {
+  int64_t seed, optimizer, preparation, quadrature, dynamics, rate;
+} rgsaddle_lineb_counts_t;
+
+/** Same inputs as solve_options, with optional detailed counters. ABI minor 50. */
+rgsaddle_status_t rgsaddle_lineb_solve_counted(const rgsaddle_lineb_config_t *cfg,
+                                       int64_t n_images, int64_t n_atoms,
+                                       const double *positions,
+                                       const double *atom_masses,
+                                       int32_t molecular, double energy,
+                                       int64_t max_steps, int64_t beads,
+                                       rgsaddle_surface_fn surface, void *user,
+                                       double *optimized_positions,
+                                       rgsaddle_lineb_result_t *out, const double *endpoint_kappa, uint32_t options,
+                                       rgsaddle_lineb_counts_t *counts);
 
 #ifdef __cplusplus
 }
