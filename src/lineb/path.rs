@@ -103,6 +103,9 @@ pub(crate) struct Periods {
 }
 
 struct Sample {
+    energy: f64,
+    gap: f64,
+    lambda: f64,
     sigma: f64,
     speed: f64,
     /// `∂V/∂λ = −f · T`. Positive when the path climbs into the barrier.
@@ -133,6 +136,9 @@ fn sample<S: PointSurface>(
     let gap = potential - energy;
     let sigma = if gap > 0.0 { (2.0 * gap).sqrt() } else { 0.0 };
     Ok(Sample {
+        energy,
+        gap,
+        lambda,
         sigma,
         speed,
         slope: -force.dot(&tangent),
@@ -161,9 +167,10 @@ fn end_rate(sample: &Sample, u: f64, from_start: bool) -> Result<f64, SaddleErro
         // `V > E` at the knot, so the `u = 0` sample of `2 u / σ` is zero.
         0.0
     } else {
-        return Err(SaddleError::Invalid(
-            "the tunneling momentum vanishes before the end of the path".into(),
-        ));
+        return Err(SaddleError::Invalid(format!(
+            "the tunneling momentum vanishes before the end of the path at E={}, λ={}, V−E={}, u={}, inward slope={}",
+            sample.energy, sample.lambda, sample.gap, u, rise
+        )));
     };
     if !rate.is_finite() {
         return Err(SaddleError::NonFinite("period integrand"));
