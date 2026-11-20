@@ -26,7 +26,7 @@ pub struct SoftModeDirectionPlan {
 /// Pick the soft-subspace rank from the largest adjacent relative spectral gap.
 ///
 /// For ascending eigenvalues `λ₀ ≤ λ₁ ≤ ...`, this returns
-/// `argmax_i (λᵢ₊₁-λᵢ) + 1`, clamped to `[1, n]`.
+/// `argmax_i (λᵢ₊₁-λᵢ) + 1`, which lies in `[1, n]`.
 ///
 /// If the largest and second-largest normalized gaps are tied at machine
 /// precision, there is no resolved split and the full space rank `n` is used.
@@ -55,7 +55,7 @@ pub fn spectral_gap_rank(eigenvalues: ArrayView1<'_, f64>) -> usize {
     if second.is_finite() && (best - second) <= ulp {
         return eigenvalues.len();
     }
-    (best_i + 1).clamp(1, eigenvalues.len())
+    best_i + 1
 }
 
 /// Soft-mode-subspace-first seed directions with full-space verification fallback.
