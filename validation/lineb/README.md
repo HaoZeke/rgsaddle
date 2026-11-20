@@ -42,3 +42,12 @@ pixel image on PDF page 8 places displacement 0 and 2 at x = 215.5 and
 the ordinate is the median of the pixels on the curve. The RMS difference
 between the calculated image energies and these ordinates is 0.00021,
 and the largest absolute difference is 0.00037 (about two vertical pixels).
+
+For Figure 2a, pass `left` or `right` to the example after `--`.
+The two paths connect the intermediate to its neighbouring minima at an
+inferred turning energy of −0.079. Both use ten images, a spring constant
+of 1 and an endpoint scale of 1. Registering the plotted left and right
+minima to the two calculated minima gives RMS image-centre differences
+of 0.49% and 0.22% of the panel width for the left and right paths.
+This comparison uses the panel coordinates because Figure 2 has no
+labelled coordinate axes.
