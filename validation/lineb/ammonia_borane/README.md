@@ -20,3 +20,29 @@ Compare the reactant-normalized HQTST rate in inverse seconds with
 `../figure4_hqtst.csv`. The harmonic crossover is reported as 330 K in the
 text and 333 K in the caption. Both can be compared with the saddle's
 imaginary frequency.
+
+### Open-source reconstruction
+
+The Python calculation uses PySCF's restricted B3LYP5 (VWN5 correlation),
+the def2-SV(P) basis, and the DFT/SV(P) geometrical counterpoise energy and
+gradient from simple-dftd3. PySCF includes the grid response in the
+electronic gradient. The molecular starting structures and the electronic
+structure implementation are independent reconstructions of the paper's
+ORCA calculation.
+
+With PySCF, basis-set-exchange, dftd3, ASE and Sella installed, run these
+commands from this directory:
+
+```sh
+python stationary.py geometries/reactant_staggered_c3v.xyz results/reactant
+python stationary.py --saddle geometries/ts_guess_eclipsed_stretch.xyz results/saddle
+python vibrations.py results/reactant
+python vibrations.py results/saddle
+```
+
+Each stationary point has an optimized geometry in `stationary.extxyz`.
+The finite-difference Hessian uses a 0.005 Å displacement. Each
+`vibrations.json` reports the frequencies after projection of rigid motion,
+the zero-point energy in eV, and the crossover temperature for a
+first-order saddle. The zero-point-corrected barrier is the difference
+between the electronic plus zero-point energies at the saddle and reactant.
