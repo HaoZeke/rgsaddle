@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use ndarray::{Array1, Array2, ArrayView1};
 use rgsaddle::{
     LinebConfig, LinebSession, LinebStatus, Masses, PointSurface, SaddleError, hqtst_rate,
-    hqtst_rate_interpolated_hessian,
+    hqtst_rate_from_image_hessians, hqtst_rate_interpolated_hessian,
 };
 
 struct Eckart;
@@ -249,6 +249,13 @@ fn constant_hessian_log_dets_agree() {
     // absolute.
     let entry_noise = f64::EPSILON.sqrt();
     let roundoff = entry_noise * direct.modes as f64;
+    let blocks = vec![Array2::from_elem((1, 1), -curvature); path.cartesian.nrows()];
+    let analytic = hqtst_rate_from_image_hessians(&Parabola, &path, beads, &blocks).unwrap();
+    assert_eq!(analytic.evaluations, beads);
+    assert_eq!(analytic.negative_modes, oracle.negative_modes);
+    assert!(
+        (analytic.log_rate_over_reactant - oracle.log_rate_over_reactant).abs() <= 0.5 * roundoff
+    );
     assert!(
         (direct.log_abs_det - oracle.log_abs_det).abs() <= roundoff,
         "matrix-free {} vs interpolated {}, bound {roundoff}",
