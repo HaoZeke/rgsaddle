@@ -71,7 +71,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         on_line(left + (right - left) * i as f64 / 9.0)[j]
     });
     let masses = Masses::coordinates(Array1::ones(2).view())?;
-    let mut solver = LinebSession::new(LinebConfig::new(1e-5, 1e-5), masses, images, energy)?;
+    let config = LinebConfig::new(1e-5, 1e-5);
+    let config = if start == intermediate || end == intermediate {
+        config.with_spring(1.0).with_endpoint_scale(1.0)
+    } else {
+        config
+    };
+    let mut solver = LinebSession::new(config, masses, images, energy)?;
     let report = solver.run(&ModifiedMullerBrown, 10000)?;
     if report.status != LinebStatus::Converged {
         return Err(format!(
