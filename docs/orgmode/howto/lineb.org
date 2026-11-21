@@ -245,6 +245,16 @@ in force units. Inspect the turning-point beads individually. A stable
 logarithmic prefactor and one unstable mode can coexist with a large
 turning-point residual.
 
+The rate uses adjacent beads to normalize translation around the
+periodic orbit. For mass-weighted coordinates =q=, the squared length
+in the prefactor is the sum of =|q[j] - q[j-1]|^2= over the full ring.
+The same differences define the direction removed from the fluctuation
+determinant. When comparing with Eq. (8) of Ásgeirsson et al., record
+the indexing convention. The printed expression uses the displacement
+from bead =j-1= to bead =j+1=. This spans two time intervals, so a
+centered estimate of displacement per interval includes a factor of
+one half before squaring.
+
 For an absolute thermal rate, subtract the logarithm of the reactant
 partition function from =log_rate_over_reactant= using the same energy
 zero, period and unit convention. Account for molecular rotation,
