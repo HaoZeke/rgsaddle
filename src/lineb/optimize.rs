@@ -98,6 +98,14 @@ pub struct LinebConfig {
     /// degrees on a curved band. The turning replica of the ring then keeps
     /// a force residual of `|∇V| sin θ` for that angle `θ`. When set, two
     /// more surface evaluations at the end images fix both tangents.
+    ///
+    /// This is a diagnostic of path resolution and not a correction. The
+    /// cubic then bends inside its first interval to reach the second
+    /// image, and the residual moves from the turning replica to the
+    /// replicas of that interval. On a ten-image ammonia borane band 1 eV
+    /// below the saddle the turning residual fell from 0.12 to 0.0001 of
+    /// `|∇V|` while the largest replica force rose from 0.20 to 0.53 eV/Å.
+    /// More images near the turning points lower both.
     pub gradient_end_tangents: bool,
 }
 
