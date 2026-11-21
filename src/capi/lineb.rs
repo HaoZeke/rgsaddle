@@ -454,6 +454,97 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve_counted_orbit(
     modes: *mut i64,
     orbit: *mut RgsaddleLinebOrbit,
 ) -> i32 {
+    unsafe {
+        rgsaddle_lineb_solve_counted_turning(
+            cfg,
+            n_images,
+            n_atoms,
+            positions,
+            atom_masses,
+            molecular,
+            energy,
+            max_steps,
+            beads,
+            surface,
+            user,
+            optimized_positions,
+            out,
+            endpoint_kappa,
+            options,
+            counts,
+            negative_modes,
+            modes,
+            orbit,
+            std::ptr::null_mut(),
+        )
+    }
+}
+
+/// Endpoint agreement of the active force-interpolated orbit.
+#[repr(C)]
+pub struct RgsaddleLinebTurning {
+    /// ABI version used to produce this result.
+    pub version: super::RgsaddleVersion,
+    /// Reserved flags, zero.
+    pub flags: u64,
+    /// Index of the launch image, or -1 without a measured return turn.
+    pub launch_image: i64,
+    /// Mass-weighted arc length of the path.
+    pub path_arc_length: f64,
+    /// Return position in the same arc coordinate.
+    pub return_arc: f64,
+    /// Largest absolute Cartesian difference from the opposite image.
+    pub max_cartesian_displacement: f64,
+    /// Measured return potential minus the target energy.
+    pub energy_residual: f64,
+    /// Measured return potential minus that of the opposite image.
+    pub endpoint_energy_difference: f64,
+}
+
+/// Solve with optional measurements of the force-interpolated return turn.
+///
+/// # Safety
+/// Follows [`rgsaddle_lineb_solve_counted_orbit`]. A non-null turning pointer
+/// must address one distinct writable result structure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_lineb_solve_counted_turning(
+    cfg: *const RgsaddleLinebConfig,
+    n_images: i64,
+    n_atoms: i64,
+    positions: *const f64,
+    atom_masses: *const f64,
+    molecular: i32,
+    energy: f64,
+    max_steps: i64,
+    beads: i64,
+    surface: Option<RgsaddleSurfaceFn>,
+    user: *mut c_void,
+    optimized_positions: *mut f64,
+    out: *mut RgsaddleLinebResult,
+    endpoint_kappa: *const f64,
+    options: u32,
+    counts: *mut RgsaddleLinebCounts,
+    negative_modes: *mut i64,
+    modes: *mut i64,
+    orbit: *mut RgsaddleLinebOrbit,
+    turning: *mut RgsaddleLinebTurning,
+) -> i32 {
+    let mut turning = unsafe { turning.as_mut() };
+    if let Some(t) = turning.as_deref_mut() {
+        *t = RgsaddleLinebTurning {
+            version: super::RgsaddleVersion {
+                major: super::RGSADDLE_ABI_MAJOR,
+                minor: super::RGSADDLE_ABI_MINOR,
+            },
+            flags: 0,
+            launch_image: -1,
+            path_arc_length: f64::NAN,
+            return_arc: f64::NAN,
+            max_cartesian_displacement: f64::NAN,
+            energy_residual: f64::NAN,
+            endpoint_energy_difference: f64::NAN,
+        };
+    }
     let mut orbit = unsafe { orbit.as_mut() };
     if let Some(o) = orbit.as_deref_mut() {
         o.max_abs_residual = f64::NAN;
@@ -640,6 +731,14 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve_counted_orbit(
     };
     for (dst, src) in optimized.iter_mut().zip(path.cartesian.iter()) {
         *dst = *src;
+    }
+    if let (Some(t), Some(measured)) = (turning, path.turning) {
+        t.launch_image = as_i64(measured.launch_image);
+        t.path_arc_length = measured.path_arc_length;
+        t.return_arc = measured.return_arc;
+        t.max_cartesian_displacement = measured.max_cartesian_displacement;
+        t.energy_residual = measured.energy_residual;
+        t.endpoint_energy_difference = measured.endpoint_energy_difference;
     }
     counts.seed = as_i64(path.calls.seed);
     counts.optimizer = as_i64(path.calls.steps());

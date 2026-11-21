@@ -458,3 +458,38 @@ fn interpolated_image_force_clock_recovers_harmonic_period_and_beads() {
         }
     }
 }
+
+#[test]
+fn asymmetric_image_force_reports_the_measured_short_turn_in_either_orientation() {
+    struct Asymmetric;
+    impl PointSurface for Asymmetric {
+        fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+            let q = x[0];
+            let energy = (1. - q * q) * (1. + 0.6 * q.powi(3));
+            Ok((
+                energy,
+                ndarray::array![-2. * q + 1.8 * q * q - 3. * q.powi(4)],
+            ))
+        }
+    }
+    for direction in [-1., 1.] {
+        let images = ndarray::array![[-1.], [-1. / 3.], [1. / 3.], [1.]] * direction;
+        let masses = Masses::coordinates(ndarray::array![1.].view()).unwrap();
+        let config = LinebConfig::new(1e-6, 1e-6).with_interpolated_force_clock(true);
+        let path = LinebSession::new(config, masses, images.clone(), 0.)
+            .unwrap()
+            .quadrature_path(&Asymmetric)
+            .unwrap();
+        let t = path.turning.unwrap();
+        assert_eq!(t.launch_image, if direction > 0. { 0 } else { 3 });
+        let ring = path.cartesian_replicas(24).unwrap();
+        let turn = ring.row(if t.launch_image == 0 { 12 } else { 0 });
+        let measured = Asymmetric.eval(turn).unwrap().0;
+        let missed = (1. - turn[0]).abs();
+        assert!(missed > 0.02 && measured > 0.05);
+        assert!((t.max_cartesian_displacement - missed).abs() < 1e-12);
+        assert!((t.energy_residual - measured).abs() < 1e-12);
+        assert!((t.endpoint_energy_difference - measured).abs() < 1e-12);
+        assert_eq!(path.calls.dynamics, images.nrows() + 1);
+    }
+}

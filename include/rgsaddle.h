@@ -2103,6 +2103,32 @@ rgsaddle_status_t rgsaddle_lineb_solve_counted_orbit(const rgsaddle_lineb_config
                                        rgsaddle_lineb_counts_t *counts, int64_t *negative_modes, int64_t *modes,
                                        rgsaddle_lineb_orbit_t *orbit);
 
+/** Return-turn agreement for the interpolated-force clock, in the caller's units.
+ * launch_image = -1 and the floating fields are NaN without a measured turn. */
+typedef struct {
+    rgsaddle_version_t version;
+    uint64_t flags;
+    int64_t launch_image;
+    double path_arc_length;
+    double return_arc;
+    double max_cartesian_displacement;
+    double energy_residual;
+    double endpoint_energy_difference;
+} rgsaddle_lineb_turning_t;
+
+/** Counted orbit solve with optional return-turn geometry and energy checks. */
+rgsaddle_status_t rgsaddle_lineb_solve_counted_turning(const rgsaddle_lineb_config_t *cfg,
+                                       int64_t n_images, int64_t n_atoms,
+                                       const double *positions,
+                                       const double *atom_masses,
+                                       int32_t molecular, double energy,
+                                       int64_t max_steps, int64_t beads,
+                                       rgsaddle_surface_fn surface, void *user,
+                                       double *optimized_positions,
+                                       rgsaddle_lineb_result_t *out, const double *endpoint_kappa, uint32_t options,
+                                       rgsaddle_lineb_counts_t *counts, int64_t *negative_modes, int64_t *modes,
+                                       rgsaddle_lineb_orbit_t *orbit, rgsaddle_lineb_turning_t *turning);
+
 #ifdef __cplusplus
 }
 #endif

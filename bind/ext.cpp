@@ -1732,6 +1732,7 @@ struct LinebOrbitPy {
 
 struct LinebResultPy {
   std::optional<LinebOrbitPy> orbit;
+  rgsaddle_lineb_turning_t turning{};
   std::vector<double> positions;
   std::int64_t n_images = 0;
   std::int64_t n_atoms = 0;
@@ -1818,9 +1819,9 @@ LinebResultPy lineb_solve_python(nb::callable fn, Matrix positions, Vector atom_
                              (endpoint_convergence ? RGSADDLE_LINEB_ENDPOINT_CONVERGENCE : 0u) |
                              (projected_verlet ? RGSADDLE_LINEB_PROJECTED_VERLET : 0u) |
                              (interpolated_force_clock ? RGSADDLE_LINEB_INTERPOLATED_FORCE_CLOCK : 0u);
-    status = rgsaddle_lineb_solve_counted_orbit(&cfg, n_images, n_atoms, positions.data(), atom_masses.data(),
+    status = rgsaddle_lineb_solve_counted_turning(&cfg, n_images, n_atoms, positions.data(), atom_masses.data(),
                                   molecular ? 1 : 0, energy, max_steps, beads, connect_python_surface,
-                                  &state, optimized.data(), &result, endpoint_kappa ? &*endpoint_kappa : nullptr, options, &counts, &negative_modes, &modes, out.orbit ? &descriptor : nullptr);
+                                  &state, optimized.data(), &result, endpoint_kappa ? &*endpoint_kappa : nullptr, options, &counts, &negative_modes, &modes, out.orbit ? &descriptor : nullptr, &out.turning);
   }
   if (ctx.has_error()) {
     ctx.rethrow_if_set();
@@ -2027,6 +2028,18 @@ NB_MODULE(_core, m) {
       .def_prop_ro("log_rate_over_reactant",
                    [](const LinebResultPy &report) { return report.log_rate_over_reactant; },
                    "ln(k Z_r), or NaN when beads is 0.")
+      .def_prop_ro("turning", [](const LinebResultPy &report) -> nb::object {
+          const auto &t = report.turning;
+          if (t.launch_image < 0) return nb::none();
+          nb::dict values;
+          values["launch_image"] = t.launch_image;
+          values["path_arc_length"] = t.path_arc_length;
+          values["return_arc"] = t.return_arc;
+          values["max_cartesian_displacement"] = t.max_cartesian_displacement;
+          values["energy_residual"] = t.energy_residual;
+          values["endpoint_energy_difference"] = t.endpoint_energy_difference;
+          return values;
+      }, "Measured return-turn agreement in the surface's units, or None.")
       .def_ro("negative_modes", &LinebResultPy::negative_modes,
               "Number of negative retained fluctuation eigenvalues, or None without a rate.")
       .def_ro("modes", &LinebResultPy::modes,
