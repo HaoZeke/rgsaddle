@@ -205,7 +205,9 @@ def test_interpolated_force_clock_uses_one_gradient_per_path_image() -> None:
         max_steps=500, beads=16, return_orbit=True, interpolated_force_clock=True,
     )
     assert result.surface_calls["total"] == evaluations
-    assert result.dynamics_calls == len(positions)
+    assert result.dynamics_calls == len(positions) + 1
+    assert result.turning is not None
+    assert result.turning["launch_image"] in (0, len(positions)-1)
     assert result.half_period == result.half_period_dynamics
     assert result.temperature == result.temperature_dynamics
     assert result.orbit is not None

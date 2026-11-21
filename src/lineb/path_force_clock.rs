@@ -1,6 +1,7 @@
 //! One-dimensional velocity Verlet on the cubic signed image force.
 
 use super::*;
+use crate::lineb::LinebTurning;
 
 /// Integrate the action on the same Simpson grid as the quadrature clock.
 /// The force-interpolated period needs no adaptive endpoint time integral.
@@ -49,7 +50,7 @@ pub(in crate::lineb) fn force_clock<S: PointSurface>(
     curve: &Curve,
     energy: f64,
     pairs: usize,
-) -> Result<(f64, TimeTable), SaddleError> {
+) -> Result<(f64, TimeTable, LinebTurning), SaddleError> {
     let mut arc = vec![0.];
     let mut lambda = vec![0.];
     let mut image_arc = vec![0.];
@@ -73,14 +74,15 @@ pub(in crate::lineb) fn force_clock<S: PointSurface>(
         image_arc.push(*arc.last().unwrap());
     }
     let inverse = Spline::new(&arc, &lambda);
-    let forces: Vec<_> = curve
+    let samples: Vec<_> = curve
         .knots
         .iter()
-        .map(|&x| {
-            let sample = sample(surface, masses, curve, energy, x)?;
-            Ok(sample.slope / sample.speed)
-        })
-        .collect::<Result<_, SaddleError>>()?;
+        .map(|&x| sample(surface, masses, curve, energy, x))
+        .collect::<Result<_, _>>()?;
+    let forces: Vec<_> = samples
+        .iter()
+        .map(|sample| sample.slope / sample.speed)
+        .collect();
     let last = forces.len() - 1;
     if !(forces[0] > 0. && forces[last] < 0.) {
         return Err(SaddleError::Invalid(
@@ -139,6 +141,23 @@ pub(in crate::lineb) fn force_clock<S: PointSurface>(
             velocity: vn * inverse.derivative(bounded),
         });
         if turn {
+            let endpoint = if from_right { 0 } else { last };
+            let return_q = curve.at(inverse.value(bounded));
+            let reference_q = curve.at(curve.knots[endpoint]);
+            let reference_x = masses.to_cartesian(reference_q.view())?;
+            let return_x = masses.to_cartesian(return_q.view())?;
+            let (potential, _) = eval_endpoint(surface, masses, return_q.view())?;
+            let turning = LinebTurning {
+                launch_image: if from_right { last } else { 0 },
+                path_arc_length: length,
+                return_arc: bounded,
+                max_cartesian_displacement: (&return_x - &reference_x)
+                    .iter()
+                    .map(|d| d.abs())
+                    .fold(0., f64::max),
+                energy_residual: potential - energy,
+                endpoint_energy_difference: (potential - energy) - samples[endpoint].gap,
+            };
             if from_right {
                 knots.reverse();
                 for knot in &mut knots {
@@ -152,6 +171,7 @@ pub(in crate::lineb) fn force_clock<S: PointSurface>(
                     knots,
                     linear: false,
                 },
+                turning,
             ));
         }
         s = sn;

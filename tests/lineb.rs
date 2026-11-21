@@ -447,7 +447,10 @@ fn interpolated_image_force_clock_recovers_harmonic_period_and_beads() {
         assert!(diff < error * 0.35 && diff < 1e-4, "{diff} {error}");
         error = diff;
         assert_eq!(path.half_period, path.half_period_dynamics);
-        assert_eq!(path.calls.dynamics, images.nrows());
+        assert_eq!(path.calls.dynamics, images.nrows() + 1);
+        let turning = path.turning.unwrap();
+        assert!(turning.max_cartesian_displacement < 1e-7);
+        assert!(turning.energy_residual.abs() < 1e-7);
         let beads = path.cartesian_replicas(17).unwrap();
         for (j, bead) in beads.column(0).iter().enumerate() {
             let angle = std::f64::consts::TAU * j as f64 / 17.;

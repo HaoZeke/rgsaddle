@@ -276,6 +276,24 @@ impl LinebCalls {
     }
 }
 
+/// Measured agreement between the force-interpolated return turn and the
+/// optimized turning image on the opposite end of the path.
+#[derive(Clone, Copy, Debug)]
+pub struct LinebTurning {
+    /// Index of the image from which the trajectory starts at rest.
+    pub launch_image: usize,
+    /// Mass-weighted arc length of the prepared coordinate spline.
+    pub path_arc_length: f64,
+    /// Physical return arc coordinate measured from the first image.
+    pub return_arc: f64,
+    /// Maximum absolute Cartesian coordinate difference from the opposite image.
+    pub max_cartesian_displacement: f64,
+    /// Measured potential at the return turn minus the requested tunneling energy.
+    pub energy_residual: f64,
+    /// Measured potential at the return turn minus that at the opposite image.
+    pub endpoint_energy_difference: f64,
+}
+
 /// A converged (or inspected) optimal tunneling path and both periods.
 #[derive(Clone, Debug)]
 pub struct LinebPath<D = f64> {
@@ -289,6 +307,8 @@ pub struct LinebPath<D = f64> {
     pub action: f64,
     /// Turning-to-turning time of the selected replica clock.
     pub half_period: f64,
+    /// Return-turn measurement when using the interpolated image force.
+    pub turning: Option<LinebTurning>,
     /// Half-period constrained dynamics along the same spline.
     pub half_period_dynamics: D,
     /// `ℏ / (k_B τ)` from [`Self::half_period`].
@@ -888,11 +908,11 @@ impl LinebSession {
         let preparation = measure_calls.load(Ordering::Relaxed);
         let curve = path::Curve::new(weighted.view())?;
         let pairs = self.config.quadrature_pairs;
-        let (action, half_period, time_table, active) = if self.config.interpolated_force_clock {
+        let (action, half_period, time_table, turning) = if self.config.interpolated_force_clock {
             let action = path::action_only(&measured, &self.masses, &curve, self.energy, pairs)?;
-            let (half, table) =
+            let (half, table, turning) =
                 path::force_clock(&dynamics, &self.masses, &curve, self.energy, pairs)?;
-            (action, half, table, Some(half))
+            (action, half, table, Some(turning))
         } else {
             let (action, half, mut table) =
                 path::quadrature(&measured, &self.masses, &curve, self.energy, pairs)?;
@@ -900,7 +920,7 @@ impl LinebSession {
             (action, half, table, None)
         };
         let (half_period_dynamics, temperature_dynamics) =
-            dynamics_clock(&dynamics, &curve, active)?;
+            dynamics_clock(&dynamics, &curve, turning.map(|_| half_period))?;
         Ok(LinebPath {
             cartesian: self.cartesian_images(&weighted)?,
             energy: self.energy,
@@ -908,6 +928,7 @@ impl LinebSession {
             action,
             half_period,
             half_period_dynamics,
+            turning,
             temperature: path::temperature(half_period, self.config.hbar, self.config.boltzmann)?,
             temperature_dynamics,
             calls: LinebCalls {
