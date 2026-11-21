@@ -196,6 +196,7 @@ The narrative for a session is the C and C++ how-to, not this list.
 - =rgsaddle_lineb_solve_counted=. Purpose: Same inputs as solve_options, with optional detailed counters. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_lineb_solve_counted_diagnostics=. Purpose: Counted solve with the number of negative and total retained fluctuation modes. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_lineb_solve_counted_orbit=. Purpose: Counted solve with optional bead observations. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_lineb_solve_counted_turning=. Purpose: Counted orbit solve with optional return-turn geometry and energy checks. Parameters: the declaration. Units: the caller's.
 
 * Types and callbacks
 
@@ -266,6 +267,7 @@ The narrative for a session is the C and C++ how-to, not this list.
 - =rgsaddle_lineb_result_t=. Purpose: Path, temperature and rate summary from rgsaddle_lineb_solve, ABI minor 47.
 - =rgsaddle_lineb_counts_t=. Purpose: Disjoint configuration evaluations for one successful solve.
 - =rgsaddle_lineb_orbit_t=. Purpose: Opt-in observations from the rate's own surface calls.
+- =rgsaddle_lineb_turning_t=. Purpose: Return-turn agreement for the interpolated-force clock, in the caller's units.
 - =rgsaddle_hyperplane_emit_fn=. Purpose: Callback typedef in include/rgsaddle.h.
 - =rgsaddle_sample_hyperplane_fn=. Purpose: Callback typedef in include/rgsaddle.h.
 - =rgsaddle_surface_fn=. Purpose: Callback typedef in include/rgsaddle.h.
