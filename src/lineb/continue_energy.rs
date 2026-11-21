@@ -248,11 +248,15 @@ pub(super) fn clip_seed<S: PointSurface>(
     if !right.is_finite() {
         return Err(SaddleError::NonFinite("product seed energy"));
     }
-    // A saved turning point can straddle E within the resolution of the PES.
+    // A prepared band lies inside the barrier; its ends relax on the turning surfaces.
+    if left >= energy && right >= energy {
+        return Ok(None);
+    }
+    // If a saved pair straddles E, both ends must lie within the PES resolution.
     let resolution = super::path::energy_roundoff(energy);
     if (left >= energy || right >= energy)
-        && energy - left <= resolution
-        && energy - right <= resolution
+        && (energy - left).abs() <= resolution
+        && (energy - right).abs() <= resolution
     {
         return Ok(None);
     }
