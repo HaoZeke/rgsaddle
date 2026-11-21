@@ -573,6 +573,35 @@ mod tests {
     }
 
     #[test]
+    fn prepared_bands_and_roundoff_straddles_have_distinct_energy_conditions() {
+        let masses = Masses::coordinates(array![1.0].view()).unwrap();
+        let build = |ends: [f64; 2]| {
+            let seed = array![[ends[0]], [3.0], [ends[1]]];
+            LinebSession::from_seed(
+                &Ramp,
+                LinebConfig::new(1e-4, 1e-4),
+                masses.clone(),
+                seed,
+                1.0,
+            )
+        };
+        for ends in [
+            [2.0, 2.5],
+            [1.0 - f64::EPSILON, 1.0 + f64::EPSILON],
+            [1.0 + f64::EPSILON, 1.0 - f64::EPSILON],
+        ] {
+            let seed = build(ends).unwrap().cartesian().unwrap();
+            assert_eq!([seed[[0, 0]], seed[[2, 0]]], ends);
+        }
+        for (ends, side) in [
+            ([1.0 - f64::EPSILON, 2.0], "product"),
+            ([2.0, 1.0 - f64::EPSILON], "reactant"),
+        ] {
+            assert!(matches!(build(ends), Err(SaddleError::Invalid(s)) if s.contains(side)));
+        }
+    }
+
+    #[test]
     fn saved_turning_points_can_straddle_the_target_by_roundoff() {
         let masses = Masses::coordinates(array![1.0].view()).unwrap();
         let seed = array![[1.0 - f64::EPSILON], [2.0], [1.0 + f64::EPSILON]];
