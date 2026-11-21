@@ -134,6 +134,15 @@ units, and the result reports the applied value. C callers can discover
 =rgsaddle_lineb_solve_counted_rate= at link time and read the same fields
 from =rgsaddle_lineb_rate_diagnostics_t=.
 
+To check the image-Hessian approximation, evaluate =hqtst_rate= and
+=hqtst_rate_interpolated_hessian= on the same =LinebPath= with the same
+surface and bead count. Subtract the direct result's =log_rate_over_reactant=
+from the interpolated result's value. Exponentiating this difference gives
+the ratio of the two fluxes because their common energy zero cancels. Check the
+mode counts for both results. Increasing the bead count samples the
+interpolant more densely. Increasing the number of path images supplies
+additional curvature measurements and also lets the optimized path change.
+
 For an electronic-structure potential, =hqtst_rate_interpolated_hessian_with_step(surface, path, beads, step)= uses the same Cartesian displacement for every atom. Halving the displacement tests the sensitivity of the fluctuation spectrum to gradient noise. The result records =image_hessian_displacement= in the surface's length units and =negative_modes= on the gauge-deflated ring. A first-order instanton has one unstable mode.
 
 With the =lineb-oracle= feature, =cartesian_image_hessian(surface, cartesian, step)= measures one Cartesian energy Hessian. It evaluates the positive and negative displacement along each coordinate in one ordered batch. The matrix contains the raw gradient differences before symmetrization or mass weighting.
