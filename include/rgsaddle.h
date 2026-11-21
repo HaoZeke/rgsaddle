@@ -1987,8 +1987,9 @@ rgsaddle_status_t rgsaddle_lineb_config_default(double opt_tol, double perp_tol,
  * quantum TST rate, ABI minor 47. Positions are contiguous image, atom,
  * xyz (n_images * n_atoms * 3). atom_masses holds n_atoms positive
  * masses: molecular 0 expands each mass to the three Cartesian
- * coordinates without rigid alignment; molecular 1 uses quaternion
- * molecule alignment. beads 0 returns the path only and writes NaN into
+ * coordinates without rigid alignment; molecular 1 aligns every image
+ * of the molecule to the first by a quaternion fit; molecular 2 aligns
+ * each image to its neighbour. beads 0 returns the path only and writes NaN into
  * log_rate_over_reactant; beads must be 0 or at least 2. An unconverged
  * path returns RGSADDLE_STALLED after writing the last images into
  * optimized_positions. Reuses the host surface callback through

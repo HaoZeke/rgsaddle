@@ -107,6 +107,9 @@ fn masses_from_c(atom_masses: &[f64], molecular: i32) -> Result<Masses, i32> {
             Masses::coordinates(expanded.view()).map_err(|err| fail(&err))
         }
         1 => Masses::molecule(atom_masses).map_err(|err| fail(&err)),
+        2 => Masses::molecule(atom_masses)
+            .map(|masses| masses.with_adjacent_alignment(true))
+            .map_err(|err| fail(&err)),
         _ => Err(RGSADDLE_INVALID_PARAMETER),
     }
 }

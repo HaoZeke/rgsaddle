@@ -11,6 +11,8 @@ pub struct Masses {
     /// `Some(atoms)` turns on quaternion alignment. The three coordinates
     /// of an atom share one atomic mass.
     pub(crate) atoms: Option<usize>,
+    /// Fit each image to its aligned neighbour instead of the first image.
+    pub(crate) adjacent: bool,
 }
 
 impl Masses {
@@ -33,6 +35,7 @@ impl Masses {
         Ok(Self {
             sqrt_mass,
             atoms: None,
+            adjacent: false,
         })
     }
 
@@ -59,7 +62,22 @@ impl Masses {
         Ok(Self {
             sqrt_mass,
             atoms: Some(atom_mass.len()),
+            adjacent: false,
         })
+    }
+
+    /// Choose the reference of the quaternion alignment for a molecule.
+    ///
+    /// By default every image is fitted to the first image. With
+    /// `adjacent` each image is fitted to its aligned neighbour, so every
+    /// chord has its minimum mass-weighted length. Ásgeirsson, Arnaldsson
+    /// and Jónsson, J. Chem. Phys. 148, 102334 (2018) minimize the
+    /// deviation of adjacent images in this way. The two choices agree
+    /// for short paths and differ once the band turns far from its first
+    /// image. The setting has no effect without atomic masses.
+    pub fn with_adjacent_alignment(mut self, adjacent: bool) -> Self {
+        self.adjacent = adjacent;
+        self
     }
 
     pub(crate) fn dof(&self) -> usize {

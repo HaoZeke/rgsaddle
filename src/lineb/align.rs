@@ -21,12 +21,15 @@ pub(crate) struct Placement {
     pub rotation: [[f64; 3]; 3],
 }
 
-/// Fit each image to its aligned predecessor, so every chord has its minimum
-/// mass-weighted length. Rows hold `3 * atoms` mass-weighted coordinates.
+/// Remove the rigid motion between images. Rows hold `3 * atoms`
+/// mass-weighted coordinates. Every image is fitted to image 0, or with
+/// `adjacent` to its aligned predecessor, so every chord has its minimum
+/// mass-weighted length.
 pub(crate) fn align_images(
     images: ArrayView2<f64>,
     sqrt_mass: ArrayView1<f64>,
     atoms: usize,
+    adjacent: bool,
 ) -> Result<(Array2<f64>, Vec<Placement>), SaddleError> {
     if atoms < 2 {
         return Err(SaddleError::Invalid(
@@ -49,10 +52,10 @@ pub(crate) fn align_images(
     let mut aligned = Array2::zeros((n, dof));
     let mut placements = Vec::with_capacity(n);
     for i in 0..n {
-        let reference = if i == 0 {
-            images.row(0)
-        } else {
+        let reference = if adjacent && i > 0 {
             aligned.row(i - 1)
+        } else {
+            images.row(0)
         };
         let (row, placement) = align_to_reference(images.row(i), reference, sqrt_mass, atoms)?;
         aligned.row_mut(i).assign(&row);
@@ -291,7 +294,7 @@ mod tests {
         // 90 degrees about z, then a translation of (4, -2, 7).
         let moved = array![4.0, -1.0, 7.0, 3.0, -2.0, 7.0, 4.0, -2.0, 8.0];
         let images = ndarray::stack(ndarray::Axis(0), &[reference.view(), moved.view()]).unwrap();
-        let (aligned, _) = align_images(images.view(), sqrt_mass.view(), 3).unwrap();
+        let (aligned, _) = align_images(images.view(), sqrt_mass.view(), 3, false).unwrap();
         let gap = &aligned.row(1) - &aligned.row(0);
         let scale = aligned.row(0).dot(&aligned.row(0)).sqrt();
         assert!(

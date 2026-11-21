@@ -103,7 +103,7 @@ pub(crate) fn assemble<S: PointSurface>(
     let (aligned, placements) = match masses.atoms {
         Some(atoms) => {
             let (aligned, placements) =
-                align::align_images(weighted, masses.sqrt_mass.view(), atoms)?;
+                align::align_images(weighted, masses.sqrt_mass.view(), atoms, masses.adjacent)?;
             (aligned, Some(placements))
         }
         None => (weighted.to_owned(), None),
@@ -345,7 +345,9 @@ mod tests {
                 Ok((0.5 * bond.dot(&bond), gradient))
             }
         }
-        let masses = Masses::molecule(&[12.0, 16.0, 1.0, 2.0]).unwrap();
+        let masses = Masses::molecule(&[12.0, 16.0, 1.0, 2.0])
+            .unwrap()
+            .with_adjacent_alignment(true);
         // Bond extension, bending and torsion make the best rotation depend on the pair.
         let mut images = Array2::zeros((5, 12));
         for (i, mut row) in images.rows_mut().into_iter().enumerate() {
