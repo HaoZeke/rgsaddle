@@ -333,7 +333,7 @@ Every public module exported by `src/lib.rs`, with its public types, free functi
 | `irc` | Types: `IrcConfig`, `IrcDirection`, `IrcKind`, `IrcReport`, `IrcSession` |
 | `kappa` | Types: `KappaDimerConfig`, `KappaDimerForce`. Functions: `kappa_dimer_force` |
 | `lammps` | Types: `LammpsHyperplaneSampler`, `LammpsSamplerConfig`, `LammpsSystem`, `LammpsThermodynamicReference`, `LammpsThermostatKind`, `LammpsThermostatRecord` |
-| `lineb` | Types: `Continuation`, `HqtstRate`, `LinebCalls`, `LinebConfig`, `LinebPath`, `LinebReport`, `LinebSession`, `LinebStatus`, `Masses`. Functions: `continue_from_mep`, `continue_from_mep_with_observer`, `hqtst_rate`, `hqtst_rate_interpolated_hessian` |
+| `lineb` | Types: `Continuation`, `HqtstRate`, `LinebCalls`, `LinebConfig`, `LinebPath`, `LinebReport`, `LinebSession`, `LinebStatus`, `Masses`. Functions: `continue_from_mep`, `continue_from_mep_with_observer`, `continue_from_path_with_observer`, `hqtst_rate`, `hqtst_rate_interpolated_hessian` |
 | `linalg` | Types: `NumericalHessian`. Functions: `hessian_vec_sign`, `lift_through`, `modified_gram_schmidt`, `numerical_hvp`, `numerical_hvp_on`, `numerical_hvp_proj`, `project_hvp`, `project_through`, `retract_hvp`, `symmetrize_vt_av`, `transport_hvp` |
 | `mic` | Types: `Cell`. Functions: `wrap_difference` |
 | `minmode` | Types: `ArtNConfig`, `FiniteDifference`, `KrylovBlock`, `MinModeConfig`, `MinModeKind`, `MinModeReport`, `MinModeSession`, `MinModeStatus`, `ModeEstimate`, `PointSurface`, `RaisedStep`. Functions: `halve_raised_energy`, `rotation_force_error`. Constants: `DEFAULT_ROTATION_ANGLE_TOL`, `MODE_RESET_ANGLE` |
@@ -3098,6 +3098,12 @@ let paths = continue_from_mep(&surface, mep.view(), &masses, &config, &ladder)?;
 ```
 
 The first energy is the highest MEP energy minus `delta`, seeded by the MEP segment between its two crossings of that energy. With `with_linear_seed(true)`, the first path follows the straight line joining the two crossings, as in the Cu(110) example in section II. Each lower energy is `delta` further down and starts from the previous path with both ends walked downhill to the new energy. The MEP has to fall below the lowest energy on both sides of the barrier. A level still running after `max_steps` (1000 by default) is an error. `path.calls.total_with_seed()` includes the seed for that energy. To measure backend work, use `continue_from_mep_with_observer` with the same arguments and a final closure `|level, path|` returning `Result<(), SaddleError>`. The closure runs after the path converges and before the next energy is seeded. Take a snapshot before the ladder and at each callback to include the work of preparing each seed in its level.
+
+A saved turning-to-turning band can supply another energy ladder. Pass its
+Cartesian images and tunneling energy to `continue_from_path_with_observer`.
+A first target equal to the saved energy refines the image resolution.
+A lower target walks both endpoints along the mass-weighted force before
+resampling the band. The new ladder counts these seed evaluations.
 
 ## The rate
 ```rust
