@@ -137,7 +137,32 @@ def connect(surface: Callable[..., tuple[numpy.typing.NDArray[numpy.float64], nu
     Double-ended connect. surface(x) returns (energy, gradient) for one image shaped (1, 3N).
     """
 
+class LinebOrbit:
+    @property
+    def positions(self) -> NDArray[numpy.float64]:
+        """Measured Cartesian positions over one imaginary-time period."""
+
+    @property
+    def gradients(self) -> NDArray[numpy.float64]:
+        """Cartesian energy gradients paired with the measured positions."""
+
+    @property
+    def max_abs_residual(self) -> float: ...
+
+    @property
+    def rms_residual(self) -> float: ...
+
+    @property
+    def max_bead(self) -> int: ...
+
+    @property
+    def max_coordinate(self) -> int: ...
+
 class LinebResult:
+    @property
+    def orbit(self) -> LinebOrbit | None:
+        """Bead observations when requested for a rate."""
+
     @property
     def positions(self) -> NDArray[numpy.float64]:
         """Optimized images shaped (n_images, 3 * n_atoms)."""
@@ -204,7 +229,7 @@ class LinebResult:
     def rate_calls(self) -> int:
         """Surface evaluations of the harmonic rate, or 0 when beads is 0."""
 
-def lineb_solve(surface: Callable[..., tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]], positions: numpy.typing.NDArray[numpy.float64], atom_masses: numpy.typing.NDArray[numpy.float64], energy: float, opt_tol: float, perp_tol: float, molecular: bool = False, max_steps: int = 1000, beads: int = 0, spring: float = 0.1, endpoint_scale: float = 0.2, time_step: float = 0.1, max_move: float = 0.2, turning_width: float = 0.001, hbar: float = 1.0, boltzmann: float = 1.0, quadrature_pairs: int = 4, endpoint_kappa: float | None = None, linear_seed: bool = False, endpoint_convergence: bool = False, projected_verlet: bool = False) -> LinebResult:
+def lineb_solve(surface: Callable[..., tuple[numpy.typing.NDArray[numpy.float64], numpy.typing.NDArray[numpy.float64]]], positions: numpy.typing.NDArray[numpy.float64], atom_masses: numpy.typing.NDArray[numpy.float64], energy: float, opt_tol: float, perp_tol: float, molecular: bool = False, max_steps: int = 1000, beads: int = 0, spring: float = 0.1, endpoint_scale: float = 0.2, time_step: float = 0.1, max_move: float = 0.2, turning_width: float = 0.001, hbar: float = 1.0, boltzmann: float = 1.0, quadrature_pairs: int = 4, endpoint_kappa: float | None = None, linear_seed: bool = False, endpoint_convergence: bool = False, projected_verlet: bool = False, return_orbit: bool = False) -> LinebResult:
     """
     Fixed-energy LI-NEB path and optional harmonic rate. positions is (n_images, 3N). atom_masses is one positive mass per atom; molecular=False expands them to coordinates, molecular=True aligns the free molecule. surface(x) is one image shaped (1, 3N). beads=0 skips the rate and leaves log_rate_over_reactant as NaN. A calculator exception propagates. An unconverged search raises with the C status.
     """
