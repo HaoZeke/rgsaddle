@@ -69,6 +69,51 @@ impl Spline {
         spline
     }
 
+    /// Cubic spline through `(x_i, y_i)` with first derivatives `start`
+    /// and `end` prescribed at the two ends.
+    pub(crate) fn clamped(x: &[f64], y: &[f64], start: f64, end: f64) -> Self {
+        assert!(x.len() >= 2 && x.len() == y.len());
+        let k = x.len();
+        let h = |i: usize| x[i + 1] - x[i];
+        let slope = |i: usize| (y[i + 1] - y[i]) / h(i);
+        let mut lower = vec![0.0; k];
+        let mut diagonal = vec![0.0; k];
+        let mut upper = vec![0.0; k];
+        let mut rhs = vec![0.0; k];
+        diagonal[0] = 2.0 * h(0);
+        upper[0] = h(0);
+        rhs[0] = 6.0 * (slope(0) - start);
+        for i in 1..k - 1 {
+            lower[i] = h(i - 1);
+            diagonal[i] = 2.0 * (h(i - 1) + h(i));
+            upper[i] = h(i);
+            rhs[i] = 6.0 * (slope(i) - slope(i - 1));
+        }
+        lower[k - 1] = h(k - 2);
+        diagonal[k - 1] = 2.0 * h(k - 2);
+        rhs[k - 1] = 6.0 * (end - slope(k - 2));
+        for i in 1..k {
+            let w = lower[i] / diagonal[i - 1];
+            diagonal[i] -= w * upper[i - 1];
+            rhs[i] -= w * rhs[i - 1];
+        }
+        let mut second = vec![0.0; k];
+        second[k - 1] = rhs[k - 1] / diagonal[k - 1];
+        for i in (0..k - 1).rev() {
+            second[i] = (rhs[i] - upper[i] * second[i + 1]) / diagonal[i];
+        }
+        let mut spline = Self {
+            x: x.to_vec(),
+            y: y.to_vec(),
+            second,
+            cumulative: vec![0.0; k],
+        };
+        for j in 0..k - 1 {
+            spline.cumulative[j + 1] = spline.cumulative[j] + spline.piece_primitive(j, x[j + 1]);
+        }
+        spline
+    }
+
     fn interval(&self, t: f64) -> usize {
         let last = self.x.len() - 2;
         match self.x.partition_point(|&xi| xi <= t) {
@@ -181,6 +226,23 @@ mod tests {
                 "{t}"
             );
         }
+    }
+
+    #[test]
+    fn clamped_ends_reproduce_a_cubic_and_its_slopes() {
+        let cubic = |t: f64| 1.0 - 2.0 * t + 0.5 * t * t + 0.25 * t * t * t;
+        let slope = |t: f64| -2.0 + t + 0.75 * t * t;
+        let x = [0.0, 0.4, 1.1, 1.5, 2.3];
+        let y: Vec<f64> = x.iter().map(|&t| cubic(t)).collect();
+        let spline = Spline::clamped(&x, &y, slope(0.0), slope(2.3));
+        for &t in &[0.0, 0.2, 0.9, 1.3, 2.0, 2.3] {
+            assert!((spline.value(t) - cubic(t)).abs() < 1e-12);
+            assert!((spline.derivative(t) - slope(t)).abs() < 1e-12);
+        }
+        // A different end slope bends only the spline, not its knots.
+        let bent = Spline::clamped(&x, &y, 0.0, slope(2.3));
+        assert!(bent.derivative(0.0).abs() < 1e-12);
+        assert!((bent.value(0.4) - y[1]).abs() < 1e-12);
     }
 
     #[test]

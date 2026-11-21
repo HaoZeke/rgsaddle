@@ -37,6 +37,19 @@ pub(crate) struct Curve {
 
 impl Curve {
     pub(crate) fn new(weighted: ArrayView2<f64>) -> Result<Self, SaddleError> {
+        Self::with_end_tangents(weighted, None)
+    }
+
+    /// The cubic through the images. With `tangents` the two ends leave
+    /// along the given unit directions. A particle released at rest at a
+    /// turning point moves along the gradient there, so the gradient
+    /// direction is the tangent of the orbit at each turn. The not-a-knot
+    /// end follows the images alone and can differ from it by several
+    /// degrees once the band curves between its first two images.
+    pub(crate) fn with_end_tangents(
+        weighted: ArrayView2<f64>,
+        tangents: Option<&(Vec<f64>, Vec<f64>)>,
+    ) -> Result<Self, SaddleError> {
         let n = weighted.nrows();
         let dof = weighted.ncols();
         if n < 3 {
@@ -60,10 +73,20 @@ impl Curve {
             }
             knots.push(knots[j - 1] + length);
         }
+        if let Some((start, end)) = tangents {
+            if start.len() != dof || end.len() != dof {
+                return Err(SaddleError::Shape(
+                    "an end tangent needs one component per coordinate".into(),
+                ));
+            }
+        }
         let mut coords = Vec::with_capacity(dof);
         for k in 0..dof {
             let values: Vec<f64> = (0..n).map(|j| weighted[(j, k)]).collect();
-            coords.push(Spline::new(&knots, &values));
+            coords.push(match tangents {
+                Some((start, end)) => Spline::clamped(&knots, &values, start[k], end[k]),
+                None => Spline::new(&knots, &values),
+            });
         }
         Ok(Self { knots, coords })
     }
@@ -106,6 +129,9 @@ pub(crate) struct TimeKnot {
 pub(crate) struct TimeTable {
     knots: Vec<TimeKnot>,
     pub(crate) linear: bool,
+    /// Unit tangents `∂q/∂λ` of the spline at its two turning points,
+    /// along the surface gradient there. `None` leaves the not-a-knot ends.
+    pub(crate) end_tangents: Option<(Vec<f64>, Vec<f64>)>,
 }
 
 struct Sample {
@@ -564,6 +590,7 @@ fn integrate<S: PointSurface>(
         TimeTable {
             knots: table,
             linear: false,
+            end_tangents: None,
         },
     ))
 }
@@ -982,7 +1009,7 @@ pub(crate) fn replicas(
             "a ring polymer needs at least two replicas".into(),
         ));
     }
-    let curve = Curve::new(weighted)?;
+    let curve = Curve::with_end_tangents(weighted, clock.end_tangents.as_ref())?;
     let table = &clock.knots;
     let half = table.last().map_or(0.0, |knot| knot.time);
     if half <= 0.0 || half.is_nan() {

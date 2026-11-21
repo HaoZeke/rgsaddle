@@ -207,7 +207,7 @@ struct Grid {
 /// the change from the library panel count to that converged grid,
 /// plus the converged grid's roundoff.
 fn fine_grid<S: PointSurface>(surface: &S, path: &LinebPath) -> Result<Grid, SaddleError> {
-    let curve = Curve::new(path.weighted.view())?;
+    let curve = Curve::with_end_tangents(path.weighted.view(), path.time_table.end_tangents.as_ref())?;
     let knots = curve.knots().to_vec();
     let level = Level {
         surface,

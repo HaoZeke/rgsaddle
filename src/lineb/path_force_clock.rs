@@ -170,6 +170,7 @@ pub(in crate::lineb) fn force_clock<S: PointSurface>(
                 TimeTable {
                     knots,
                     linear: false,
+                    end_tangents: None,
                 },
                 turning,
             ));

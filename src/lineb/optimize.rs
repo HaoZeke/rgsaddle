@@ -90,6 +90,15 @@ pub struct LinebConfig {
     /// [`rgmin::quickmin_project`] after the kick. Feasible-set retries,
     /// force caching, and surface-error returns match the default path.
     pub projected_verlet: bool,
+    /// End the orbit spline along the surface gradient at each turning point.
+    ///
+    /// Off by default, which keeps the not-a-knot ends through the images.
+    /// The optimizer constrains the chord between the first two images, and
+    /// the not-a-knot tangent can still differ from the gradient by several
+    /// degrees on a curved band. The turning replica of the ring then keeps
+    /// a force residual of `|∇V| sin θ` for that angle `θ`. When set, two
+    /// more surface evaluations at the end images fix both tangents.
+    pub gradient_end_tangents: bool,
 }
 
 with_setters!(LinebConfig {
@@ -108,6 +117,7 @@ with_setters!(LinebConfig {
     with_linear_replica_clock => linear_replica_clock: val bool,
     with_quadrature_pairs => quadrature_pairs: val usize,
     with_projected_verlet => projected_verlet: val bool,
+    with_gradient_end_tangents => gradient_end_tangents: val bool,
 });
 
 impl LinebConfig {
@@ -148,6 +158,7 @@ impl LinebConfig {
             linear_replica_clock: false,
             interpolated_force_clock: false,
             projected_verlet: false,
+            gradient_end_tangents: false,
         }
     }
 }
@@ -888,6 +899,36 @@ impl LinebSession {
         self.measured_path(surface, |_, _, _| Ok(((), ())))
     }
 
+    /// Unit mass-weighted gradient directions at the two end images,
+    /// oriented along increasing path parameter.
+    fn gradient_tangents<S: PointSurface>(
+        &self,
+        surface: &S,
+        weighted: &Array2<f64>,
+    ) -> Result<(Vec<f64>, Vec<f64>), SaddleError> {
+        let last = weighted.nrows() - 1;
+        let tangent = |end: usize, neighbour: usize| -> Result<Vec<f64>, SaddleError> {
+            let x = self.masses.to_cartesian(weighted.row(end))?;
+            let (_, gradient) = surface.eval(x.view())?;
+            let force = self.masses.weighted_force(gradient.view())?;
+            let norm = action::l2(force.view());
+            if !(norm.is_finite() && norm > 0.0) {
+                return Err(SaddleError::Invalid(
+                    "a turning point needs a finite nonzero gradient".into(),
+                ));
+            }
+            // The path parameter runs from image 0 to the last image.
+            let mut along = 0.0;
+            for k in 0..force.len() {
+                along += force[k] * (weighted[(neighbour, k)] - weighted[(end, k)]);
+            }
+            let toward_neighbour = if along >= 0.0 { 1.0 } else { -1.0 };
+            let sign = if end == 0 { toward_neighbour } else { -toward_neighbour };
+            Ok(force.iter().map(|f| sign * f / norm).collect())
+        };
+        Ok((tangent(0, 1)?, tangent(last, last - 1)?))
+    }
+
     fn measured_path<S: PointSurface, D>(
         &self,
         surface: &S,
@@ -909,7 +950,12 @@ impl LinebSession {
         };
         let (weighted, discrete_action) = self.prepared_images(&measured)?;
         let preparation = measure_calls.load(Ordering::Relaxed);
-        let curve = path::Curve::new(weighted.view())?;
+        let end_tangents = if self.config.gradient_end_tangents {
+            Some(self.gradient_tangents(&measured, &weighted)?)
+        } else {
+            None
+        };
+        let curve = path::Curve::with_end_tangents(weighted.view(), end_tangents.as_ref())?;
         let pairs = self.config.quadrature_pairs;
         let (action, half_period, time_table, turning) = if self.config.interpolated_force_clock {
             let action = path::action_only(&measured, &self.masses, &curve, self.energy, pairs)?;
@@ -922,6 +968,8 @@ impl LinebSession {
             table.linear = self.config.linear_replica_clock;
             (action, half, table, None)
         };
+        let mut time_table = time_table;
+        time_table.end_tangents = end_tangents;
         let (half_period_dynamics, temperature_dynamics) =
             dynamics_clock(&dynamics, &curve, turning.map(|_| half_period))?;
         Ok(LinebPath {
