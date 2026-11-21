@@ -101,7 +101,7 @@ pub fn hqtst_rate<S: PointSurface>(
 /// Equal-time Cartesian configurations and energy gradients sampled for the rate.
 #[derive(Clone, Debug)]
 pub struct LinebRateOrbit {
-    /// Rows cover one full period. The return leg repeats the measured outbound rows.
+    /// Rows cover one full period at the coordinates used by the rate evaluator.
     pub positions: Array2<f64>,
     /// Cartesian gradients in energy per length, in the same order as the positions.
     pub gradients: Array2<f64>,
@@ -241,8 +241,10 @@ fn hqtst_rate_observed<S: PointSurface>(
         replicas.period,
         spectrum,
         None,
-        calls.load(Ordering::Relaxed),
-        distinct,
+        RateWork {
+            curvature: calls.load(Ordering::Relaxed) - distinct,
+            beads: distinct,
+        },
     )
 }
 
@@ -386,13 +388,20 @@ fn interpolated_rate<S: PointSurface>(
         replicas.period,
         spectrum,
         step,
-        setup_evaluations + beads,
-        beads,
+        RateWork {
+            curvature: setup_evaluations,
+            beads,
+        },
     )?;
     let orbit = gradients
         .map(|rows| orbit_residual(path, rate.period, coordinates, rows))
         .transpose()?;
     Ok((rate, orbit))
+}
+
+struct RateWork {
+    curvature: usize,
+    beads: usize,
 }
 
 fn finish(
@@ -402,8 +411,7 @@ fn finish(
     period: f64,
     spectrum: FluctuationSpectrum,
     image_hessian_displacement: Option<f64>,
-    evaluations: usize,
-    bead_evaluations: usize,
+    work: RateWork,
 ) -> Result<HqtstRate, SaddleError> {
     let FluctuationSpectrum {
         log_abs_det,
@@ -428,9 +436,9 @@ fn finish(
         } else {
             log_rate.exp()
         },
-        evaluations,
-        bead_evaluations,
-        curvature_evaluations: evaluations - bead_evaluations,
+        evaluations: work.curvature + work.beads,
+        bead_evaluations: work.beads,
+        curvature_evaluations: work.curvature,
     })
 }
 

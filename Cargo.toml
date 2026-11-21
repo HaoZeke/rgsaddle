@@ -40,8 +40,7 @@ pafi-repro = ["dep:capnp", "dep:rgpot-core"]
 # would turn this feature on. The verify workflow overrides that command
 # and does not pass `--ignore-global-asm`.
 faer = ["dep:faer"]
-# Finite-difference Hessians that compare the matrix-free tunneling rate.
-# Off the default build. Tests and benches that call it request it.
+# Compatibility spelling for image-Hessian rate consumers.
 lineb-oracle = ["lineb-interpolated-hessian"]
 lineb-interpolated-hessian = []
 
