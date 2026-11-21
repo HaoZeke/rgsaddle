@@ -28,6 +28,17 @@ let path = session.path(&surface)?;
 
 For the paper’s convergence test, set =with_endpoint_convergence(true)=. The optimizer compares =opt_tol= with the larger endpoint force and =perp_tol= with the largest perpendicular action gradient among the interior images. The spring still redistributes interior images. The report gives the full-band, endpoint, and perpendicular maxima separately.
 
+To interpret an interior image's perpendicular action gradient in force
+units, use its two adjacent mass-weighted chord lengths, =d_prev= and
+=d_next=. Write =sigma= for the momentum used in the discrete action and
+=c = (d_prev + d_next) * (d sigma / dV) / 2=. This is the coefficient
+of the mass-weighted physical force in the image's action gradient.
+For a perpendicular drive component =g_perp[k]=, the equivalent Cartesian
+force imbalance is =sqrt(m[k]) * g_perp[k] / c=. Thus the same =perp_tol=
+can admit different force imbalances across images or atoms. This
+conversion applies to interior images. Check the physical residual on
+the equal-time orbit separately, including at both turns.
+
 The default endpoint restraint has magnitude =endpoint_scale |V − E| / |∇V|= in mass-weighted coordinates. To use a constant coefficient as in Eqs. (19) and (21), set =with_endpoint_kappa(kappa)= in Rust, pass =endpoint_kappa= to Python, or call ~rgsaddle_lineb_solve_with_kappa~ from C. Its force magnitude is =kappa |V − E|=. Express the coefficient and the spring constant in the units of the action and coordinates used by the solver.
 
 =Masses::coordinates= takes one mass per coordinate and leaves rigid motions alone. Use it for atoms in an external field, such as adsorbates over a fixed slab. =Masses::molecule= takes one mass per atom for a free molecule. It centers each image and fits it to the preceding aligned image by a mass-weighted quaternion rotation. Each chord has the minimum length over relative rigid motions, so reversing the band preserves its discrete action.
