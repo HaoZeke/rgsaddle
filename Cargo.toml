@@ -15,7 +15,7 @@ crate-type = ["lib", "cdylib", "staticlib"]
 
 [features]
 default = ["faer"]
-capi = []
+capi = ["lineb-interpolated-hessian"]
 par = ["rgmin/par"]
 highs = ["rgmin/highs"]
 ohtst = []
@@ -42,7 +42,8 @@ pafi-repro = ["dep:capnp", "dep:rgpot-core"]
 faer = ["dep:faer"]
 # Finite-difference Hessians that compare the matrix-free tunneling rate.
 # Off the default build. Tests and benches that call it request it.
-lineb-oracle = []
+lineb-oracle = ["lineb-interpolated-hessian"]
+lineb-interpolated-hessian = []
 
 [dependencies]
 dlpk = { version = "0.1.5", features = ["ndarray"] }

@@ -69,7 +69,7 @@ impl Curve {
         self.knots[self.knots.len() - 1]
     }
 
-    #[cfg(any(test, feature = "lineb-oracle"))]
+    #[cfg(any(test, feature = "lineb-interpolated-hessian"))]
     pub(crate) fn knots(&self) -> &[f64] {
         &self.knots
     }
@@ -869,7 +869,7 @@ fn acceleration<S: PointSurface>(
 /// parameter as its outbound twin).
 pub(crate) struct Replicas {
     pub weighted: Array2<f64>,
-    #[cfg(any(test, feature = "lineb-oracle"))]
+    #[cfg(any(test, feature = "lineb-interpolated-hessian"))]
     pub parameter: Vec<f64>,
     pub period: f64,
 }
@@ -897,19 +897,19 @@ pub(crate) fn replicas(
     }
     let period = 2.0 * half;
     let mut out = Array2::zeros((beads, weighted.ncols()));
-    #[cfg(any(test, feature = "lineb-oracle"))]
+    #[cfg(any(test, feature = "lineb-interpolated-hessian"))]
     let mut parameter = Vec::with_capacity(beads);
     for bead in 0..beads {
         let time = period * bead as f64 / beads as f64;
         let forward = if time <= half { time } else { period - time };
         let lambda = invert_time(table, forward, clock.linear)?;
         out.row_mut(bead).assign(&curve.at(lambda));
-        #[cfg(any(test, feature = "lineb-oracle"))]
+        #[cfg(any(test, feature = "lineb-interpolated-hessian"))]
         parameter.push(lambda);
     }
     Ok(Replicas {
         weighted: out,
-        #[cfg(any(test, feature = "lineb-oracle"))]
+        #[cfg(any(test, feature = "lineb-interpolated-hessian"))]
         parameter,
         period,
     })

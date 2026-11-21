@@ -169,10 +169,10 @@ pub use lineb::{
     LinebSession, LinebStatus, LinebTurning, Masses, continue_from_mep,
     continue_from_mep_with_observer, hqtst_rate, hqtst_rate_with_orbit,
 };
-#[cfg(any(test, feature = "lineb-oracle"))]
+#[cfg(any(test, feature = "lineb-interpolated-hessian"))]
 pub use lineb::{
     cartesian_image_hessian, hqtst_rate_from_image_hessians, hqtst_rate_interpolated_hessian,
-    hqtst_rate_interpolated_hessian_with_step,
+    hqtst_rate_interpolated_hessian_observed, hqtst_rate_interpolated_hessian_with_step,
 };
 pub use minmode::{
     ArtNConfig, FiniteDifference, MinModeConfig, MinModeKind, MinModeReport, MinModeSession,

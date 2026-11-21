@@ -31,7 +31,7 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-#[cfg(any(test, feature = "lineb-oracle"))]
+#[cfg(any(test, feature = "lineb-interpolated-hessian"))]
 use ndarray::ArrayView2;
 use ndarray::{Array1, Array2, ArrayView1, s};
 
@@ -40,15 +40,18 @@ use super::align::rigid_directions;
 use super::mass::Masses;
 use super::optimize::LinebPath;
 use super::path;
-#[cfg(any(test, feature = "lineb-oracle"))]
+#[cfg(any(test, feature = "lineb-interpolated-hessian"))]
 use super::path::Curve;
-#[cfg(all(any(test, feature = "lineb-oracle"), not(feature = "faer")))]
+#[cfg(all(
+    any(test, feature = "lineb-interpolated-hessian"),
+    not(feature = "faer")
+))]
 use crate::eigensolve::exact_eigh;
 use crate::error::SaddleError;
 use crate::linalg::numerical_hvp;
 use crate::minmode::PointSurface;
 use crate::sparse_hessian::lanczos_spectrum;
-#[cfg(any(test, feature = "lineb-oracle"))]
+#[cfg(any(test, feature = "lineb-interpolated-hessian"))]
 use crate::spline::Spline;
 
 /// Ring-polymer instanton rate at the temperature of a tunneling path.
@@ -77,6 +80,10 @@ pub struct HqtstRate {
     /// it overflows to infinity or underflows to zero; the log is finite
     /// whenever this is returned.
     pub rate_over_reactant: f64,
+    /// Surface geometries evaluated to form curvature blocks.
+    pub curvature_evaluations: usize,
+    /// Geometries evaluated for the replica energies and gradients.
+    pub bead_evaluations: usize,
     /// Surface evaluations used to build the factor.
     pub evaluations: usize,
 }
@@ -127,7 +134,18 @@ pub fn hqtst_rate_with_orbit<S: PointSurface>(
         positions.row_mut(j).assign(x);
         gradients.row_mut(j).assign(g);
     }
-    let spring = (beads as f64 / rate.period).powi(2);
+    let orbit = orbit_residual(path, rate.period, positions, gradients)?;
+    Ok((rate, orbit))
+}
+
+fn orbit_residual(
+    path: &LinebPath<impl Sized>,
+    period: f64,
+    positions: Array2<f64>,
+    gradients: Array2<f64>,
+) -> Result<LinebRateOrbit, SaddleError> {
+    let (beads, dof) = positions.dim();
+    let spring = (beads as f64 / period).powi(2);
     let mut rms_norm = 0.0_f64;
     let mut maximum = (0.0, 0, 0);
     for j in 0..beads {
@@ -148,17 +166,14 @@ pub fn hqtst_rate_with_orbit<S: PointSurface>(
         }
     }
     let rms_residual = rms_norm / (positions.len() as f64).sqrt();
-    Ok((
-        rate,
-        LinebRateOrbit {
-            positions,
-            gradients,
-            max_abs_residual: maximum.0,
-            rms_residual,
-            max_bead: maximum.1,
-            max_coordinate: maximum.2,
-        },
-    ))
+    Ok(LinebRateOrbit {
+        positions,
+        gradients,
+        max_abs_residual: maximum.0,
+        rms_residual,
+        max_bead: maximum.1,
+        max_coordinate: maximum.2,
+    })
 }
 
 fn hqtst_rate_observed<S: PointSurface>(
@@ -227,6 +242,7 @@ fn hqtst_rate_observed<S: PointSurface>(
         spectrum,
         None,
         calls.load(Ordering::Relaxed),
+        distinct,
     )
 }
 
@@ -234,7 +250,7 @@ fn hqtst_rate_observed<S: PointSurface>(
 /// interpolated onto the replicas, then the same rate. Oracle for
 /// [`hqtst_rate`]. Not built unless the `lineb-oracle` feature is on
 /// (tests and benches request it).
-#[cfg(any(test, feature = "lineb-oracle"))]
+#[cfg(any(test, feature = "lineb-interpolated-hessian"))]
 pub fn hqtst_rate_interpolated_hessian<S: PointSurface>(
     surface: &S,
     path: &LinebPath<impl Sized>,
@@ -247,13 +263,31 @@ pub fn hqtst_rate_interpolated_hessian<S: PointSurface>(
 /// Interpolate image Hessians obtained using a prescribed positive Cartesian
 /// displacement. The two gradients for each column are separated by twice
 /// this displacement, independent of the displaced atom's mass.
-#[cfg(any(test, feature = "lineb-oracle"))]
+#[cfg(any(test, feature = "lineb-interpolated-hessian"))]
 pub fn hqtst_rate_interpolated_hessian_with_step<S: PointSurface>(
     surface: &S,
     path: &LinebPath<impl Sized>,
     beads: usize,
     step: f64,
 ) -> Result<HqtstRate, SaddleError> {
+    Ok(hqtst_rate_interpolated_hessian_observed(surface, path, beads, Some(step), false)?.0)
+}
+
+/// Evaluate the image-interpolated rate. The optional orbit retains the actual
+/// gradients from the full ring energy batch, including the return leg.
+/// A supplied positive step is a central-difference Cartesian displacement.
+#[cfg(any(test, feature = "lineb-interpolated-hessian"))]
+pub fn hqtst_rate_interpolated_hessian_observed<S: PointSurface>(
+    surface: &S,
+    path: &LinebPath<impl Sized>,
+    beads: usize,
+    step: Option<f64>,
+    return_orbit: bool,
+) -> Result<(HqtstRate, Option<LinebRateOrbit>), SaddleError> {
+    let step = match step {
+        Some(step) => step,
+        None => coordinate_scale(path.weighted.iter().copied())?,
+    };
     if !step.is_finite() || step <= 0.0 {
         return Err(SaddleError::Invalid(
             "the image Hessian displacement must be finite and positive".into(),
@@ -272,6 +306,7 @@ pub fn hqtst_rate_interpolated_hessian_with_step<S: PointSurface>(
         &hessians,
         Some(step),
         calls.load(Ordering::Relaxed),
+        return_orbit,
     )
 }
 
@@ -279,7 +314,7 @@ pub fn hqtst_rate_interpolated_hessian_with_step<S: PointSurface>(
 /// LI-NEB images. The blocks use energy per squared input length. The rate's
 /// evaluation count includes replica energies and excludes creation of the
 /// supplied Hessians.
-#[cfg(any(test, feature = "lineb-oracle"))]
+#[cfg(any(test, feature = "lineb-interpolated-hessian"))]
 pub fn hqtst_rate_from_image_hessians<S: PointSurface>(
     surface: &S,
     path: &LinebPath<impl Sized>,
@@ -295,10 +330,10 @@ pub fn hqtst_rate_from_image_hessians<S: PointSurface>(
         .iter()
         .map(|h| weight_cartesian_hessian(h, &path.masses))
         .collect::<Result<Vec<_>, _>>()?;
-    interpolated_rate(surface, path, beads, &weighted, None, 0)
+    Ok(interpolated_rate(surface, path, beads, &weighted, None, 0, false)?.0)
 }
 
-#[cfg(any(test, feature = "lineb-oracle"))]
+#[cfg(any(test, feature = "lineb-interpolated-hessian"))]
 fn interpolated_rate<S: PointSurface>(
     surface: &S,
     path: &LinebPath<impl Sized>,
@@ -306,7 +341,8 @@ fn interpolated_rate<S: PointSurface>(
     hessians: &[Array2<f64>],
     step: Option<f64>,
     setup_evaluations: usize,
-) -> Result<HqtstRate, SaddleError> {
+    return_orbit: bool,
+) -> Result<(HqtstRate, Option<LinebRateOrbit>), SaddleError> {
     let replicas = path::replicas(path.weighted.view(), &path.time_table, beads)?;
     let kappa = spring_constant(replicas.period, path.hbar, beads)?;
     let curve = Curve::new(path.weighted.view())?;
@@ -330,7 +366,8 @@ fn interpolated_rate<S: PointSurface>(
         ));
     }
     let mut energies = Vec::with_capacity(beads);
-    for (energy, gradient) in observations {
+    let mut gradients = return_orbit.then(|| Array2::zeros(coordinates.dim()));
+    for (i, (energy, gradient)) in observations.into_iter().enumerate() {
         if gradient.len() != coordinates.ncols() {
             return Err(SaddleError::Shape(
                 "ring surface gradient length differs from the geometry".into(),
@@ -339,9 +376,12 @@ fn interpolated_rate<S: PointSurface>(
         if !energy.is_finite() || gradient.iter().any(|component| !component.is_finite()) {
             return Err(SaddleError::NonFinite("ring-polymer replica"));
         }
+        if let Some(rows) = gradients.as_mut() {
+            rows.row_mut(i).assign(&gradient);
+        }
         energies.push(energy);
     }
-    finish(
+    let rate = finish(
         path,
         &replicas.weighted,
         &energies,
@@ -349,7 +389,12 @@ fn interpolated_rate<S: PointSurface>(
         spectrum,
         step,
         setup_evaluations + beads,
-    )
+        beads,
+    )?;
+    let orbit = gradients
+        .map(|rows| orbit_residual(path, rate.period, coordinates, rows))
+        .transpose()?;
+    Ok((rate, orbit))
 }
 
 fn finish(
@@ -360,6 +405,7 @@ fn finish(
     spectrum: FluctuationSpectrum,
     image_hessian_displacement: Option<f64>,
     evaluations: usize,
+    bead_evaluations: usize,
 ) -> Result<HqtstRate, SaddleError> {
     let FluctuationSpectrum {
         log_abs_det,
@@ -385,6 +431,8 @@ fn finish(
             log_rate.exp()
         },
         evaluations,
+        bead_evaluations,
+        curvature_evaluations: evaluations - bead_evaluations,
     })
 }
 
@@ -522,7 +570,7 @@ fn difference_step(path: &LinebPath<impl Sized>) -> Result<f64, SaddleError> {
 
 /// `√ε` times the largest absolute coordinate, the finite-difference
 /// Hessian step of the oracle.
-#[cfg(any(test, feature = "lineb-oracle"))]
+#[cfg(any(test, feature = "lineb-interpolated-hessian"))]
 fn coordinate_scale(values: impl IntoIterator<Item = f64>) -> Result<f64, SaddleError> {
     let mut scale = 0.0_f64;
     for value in values {
@@ -657,7 +705,7 @@ fn deflated_log_abs_det(
     summarize_spectrum(values.iter())
 }
 
-#[cfg(any(test, feature = "lineb-oracle"))]
+#[cfg(any(test, feature = "lineb-interpolated-hessian"))]
 fn image_hessians<S: PointSurface>(
     surface: &S,
     masses: &Masses,
@@ -677,7 +725,7 @@ fn image_hessians<S: PointSurface>(
 /// Each column uses two gradients in an ordered batch, separated by twice
 /// `step` in the surface's length units. The returned matrix precedes mass
 /// weighting and symmetrization.
-#[cfg(any(test, feature = "lineb-oracle"))]
+#[cfg(any(test, feature = "lineb-interpolated-hessian"))]
 pub fn cartesian_image_hessian<S: PointSurface>(
     surface: &S,
     cartesian: ArrayView1<f64>,
@@ -712,7 +760,7 @@ pub fn cartesian_image_hessian<S: PointSurface>(
     Ok(hessian)
 }
 
-#[cfg(any(test, feature = "lineb-oracle"))]
+#[cfg(any(test, feature = "lineb-interpolated-hessian"))]
 fn weight_cartesian_hessian(
     hessian: &Array2<f64>,
     masses: &Masses,
@@ -737,7 +785,7 @@ fn weight_cartesian_hessian(
     Ok(weighted_hessian)
 }
 
-#[cfg(any(test, feature = "lineb-oracle"))]
+#[cfg(any(test, feature = "lineb-interpolated-hessian"))]
 fn interpolated_blocks(
     hessians: &[Array2<f64>],
     knots: &[f64],
@@ -766,7 +814,7 @@ fn interpolated_blocks(
         .collect())
 }
 
-#[cfg(any(test, feature = "lineb-oracle"))]
+#[cfg(any(test, feature = "lineb-interpolated-hessian"))]
 fn dense_ring(blocks: &[Array2<f64>], kappa: f64) -> Array2<f64> {
     let count = blocks.len();
     let dof = blocks[0].nrows();
@@ -784,7 +832,7 @@ fn dense_ring(blocks: &[Array2<f64>], kappa: f64) -> Array2<f64> {
     ring
 }
 
-#[cfg(any(test, feature = "lineb-oracle"))]
+#[cfg(any(test, feature = "lineb-interpolated-hessian"))]
 fn ring_spectrum(
     blocks: &[Array2<f64>],
     kappa: f64,
@@ -801,7 +849,7 @@ fn ring_spectrum(
 /// negative eigenvalue per gauge. Eliminate each bead except the last one;
 /// keeping that bead and the gauges in the border closes the periodic chain.
 /// A poorly conditioned block requests the full symmetric projection.
-#[cfg(any(test, feature = "lineb-oracle"))]
+#[cfg(any(test, feature = "lineb-interpolated-hessian"))]
 fn bordered_ring(
     blocks: &[Array2<f64>],
     kappa: f64,
@@ -902,7 +950,7 @@ fn bordered_ring(
 /// the orthogonal complement of the gauge modes. Each Householder similarity
 /// moves one gauge onto a coordinate axis. The trailing principal block is
 /// the Hessian on the retained space, including any unstable directions.
-#[cfg(any(test, feature = "lineb-oracle"))]
+#[cfg(any(test, feature = "lineb-interpolated-hessian"))]
 fn projected_log_abs_det(
     mut ring: Array2<f64>,
     mut gauges: Vec<Array1<f64>>,
