@@ -25,8 +25,8 @@ highs = ["rgmin/highs"]
 ohtst = []
 lammps = ["ohtst", "dep:capnp", "dep:libloading", "dep:rgpot-core"]
 readcon = ["dep:readcon-core"]
-# readcon-db 0.2 pins readcon-core = "=0.17.1", the same release as
-# below, so the corpus and the CON writer share one readcon-core.
+# The corpus and writer exchange ConFrame and FloatFormat across their API.
+# readcon-db 0.2.0 uses readcon-core 0.17.1 for both types.
 readcon-db = ["readcon", "dep:readcon-db"]
 chemfiles = ["readcon", "readcon-core/chemfiles"]
 # GMP and MPFR stay off the default build. `cargo test --features capi`
@@ -52,7 +52,7 @@ lineb-interpolated-hessian = []
 dlpk = { version = "0.1.5", features = ["ndarray"] }
 # ConFrameWriter::new is RoundTrip and canonical stays off.
 readcon-core = { version = "=0.17.1", optional = true }
-readcon-db = { version = "0.2", optional = true }
+readcon-db = { version = "=0.2.0", optional = true }
 # Free-end bands retract their terminal image through rgmin’s LevelSetConstraint.
 rgmin = { version = "=0.7.0", git = "https://github.com/HaoZeke/rgmin", rev = "f2527782713dcf4b4d5d91af9da1bba80c32bc0c" }
 eindir-core = { version = "0.6.0", features = ["capi"] }

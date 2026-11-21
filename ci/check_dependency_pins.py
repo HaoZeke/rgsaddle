@@ -158,6 +158,9 @@ def resolve_consumer() -> None:
     # Start from this crate's lockfile so the consumer sees the versions CI tests.
     shutil.copyfile(ROOT / "Cargo.lock", CONSUMER / "Cargo.lock")
     cargo(["metadata", "--format-version", "1"], CONSUMER)
+    # Downstream dependency resolution can select a different corpus patch.
+    # Its public frame types must still share the writer's readcon-core.
+    cargo(["update", "-p", "readcon-db"], CONSUMER)
 
 
 def main() -> int:
