@@ -1,4 +1,4 @@
-/* LI-NEB / instanton C ABI contract smoke (minor 46).
+/* LI-NEB / instanton C ABI contract smoke.
  * Built and run by tests/lineb_abi.rs against the cdylib. */
 #include "rgsaddle.h"
 #include "main_abi_contract.h"
@@ -212,6 +212,52 @@ int main(void) {
       result.rate_calls != 0 || orbit_positions[0] != 1.0) {
     return fail("path-only solve preserves caller's orbit buffers", path_without_orbit);
   }
+  enum { beads = 8 };
+  double positions[beads * DOF], gradients[beads * DOF];
+  int64_t plain_rows = 0, orbit_rows = 0;
+  rgsaddle_lineb_counts_t plain_counts = {0}, orbit_counts = {0};
+  rgsaddle_lineb_result_t plain_result = {0};
+  const rgsaddle_status_t plain = rgsaddle_lineb_solve_counted_diagnostics(
+      &cfg, N_IMAGES, N_ATOMS, pos, masses, 0, 0.25, 200, beads,
+      surface, &plain_rows, out_pos, &plain_result, &kappa, RGSADDLE_LINEB_LINEAR_SEED,
+      &plain_counts, NULL, NULL);
+  if (plain != RGSADDLE_OK) return fail("reference counted rate", plain);
+  orbit = (rgsaddle_lineb_orbit_t){
+      .capacity = beads * DOF, .positions = positions, .gradients = gradients};
+  const rgsaddle_status_t measured = rgsaddle_lineb_solve_counted_orbit(
+      &cfg, N_IMAGES, N_ATOMS, pos, masses, 0, 0.25, 200, beads,
+      surface, &orbit_rows, out_pos, &result, &kappa, RGSADDLE_LINEB_LINEAR_SEED,
+      &orbit_counts, &negative_modes, &modes, &orbit);
+  if (measured != RGSADDLE_OK) return fail("measured orbit", measured);
+  if (orbit_counts.rate <= 0 || plain_rows != orbit_rows ||
+      orbit_rows != orbit_counts.seed + orbit_counts.optimizer + orbit_counts.preparation +
+                    orbit_counts.quadrature + orbit_counts.dynamics + orbit_counts.rate ||
+      plain_counts.rate != orbit_counts.rate ||
+      plain_result.log_rate_over_reactant != result.log_rate_over_reactant ||
+      negative_modes < 0 || modes <= 0) {
+    return fail("orbit diagnostics changed rate or evaluation counts", RGSADDLE_SOLVER);
+  }
+  double max_residual = 0., sum_squares = 0.;
+  const double omega = beads / (2. * result.half_period);
+  for (int b = 0; b < beads; ++b) {
+    const double x = positions[b * DOF], s = 1. / cosh(x);
+    for (int d = 0; d < DOF; ++d) {
+      const int i = b * DOF + d;
+      const double gradient = d == 0 ? -2. * s * s * tanh(x) : 2. * positions[i];
+      if (!isfinite(gradients[i]) || fabs(gradient - gradients[i]) > 1e-12)
+        return fail("measured force at returned orbit coordinate", RGSADDLE_SOLVER);
+      const double residual = gradients[i] + masses[0] * omega * omega *
+          (2. * positions[i] - positions[((b + beads - 1) % beads) * DOF + d]
+                             - positions[((b + 1) % beads) * DOF + d]);
+      max_residual = fmax(max_residual, fabs(residual));
+      sum_squares += residual * residual;
+    }
+  }
+  if (!(fabs(orbit.max_abs_residual - max_residual) < 1e-11) ||
+      !(fabs(orbit.rms_residual - sqrt(sum_squares / (beads * DOF))) < 1e-11))
+    return fail("measured discrete orbit residual", RGSADDLE_SOLVER);
+  printf("orbit beads=%d rows=%lld rate_rows=%lld max_residual=%.8g\n",
+         beads, (long long)orbit_rows, (long long)orbit_counts.rate, max_residual);
   kappa = NAN;
   if (rgsaddle_lineb_solve_with_kappa(&cfg, N_IMAGES, N_ATOMS, pos, masses, 0, 0.25,
                                       200, 0, surface, NULL, out_pos, &result, &kappa)
