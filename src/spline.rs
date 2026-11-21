@@ -122,7 +122,6 @@ impl Spline {
     }
 
     /// `∫ S` from the first knot to `t`.
-    #[cfg(any(test, feature = "ohtst"))]
     pub(crate) fn primitive(&self, t: f64) -> f64 {
         let j = self.interval(t);
         self.cumulative[j] + self.piece_primitive(j, t)

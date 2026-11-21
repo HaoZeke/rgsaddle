@@ -79,6 +79,8 @@ pub struct LinebConfig {
     /// This permits comparison with sampled linear clocks. The default Hermite
     /// clock uses the physical velocities and stops at each turning point.
     pub linear_replica_clock: bool,
+    /// Propagate the signed inverted-potential force interpolated from the images.
+    pub interpolated_force_clock: bool,
     /// Simpson pairs on each chord when the period is integrated.
     pub quadrature_pairs: usize,
     /// Fixed-time-step projected velocity Verlet instead of [`Self::method`].
@@ -102,6 +104,7 @@ with_setters!(LinebConfig {
     with_hbar => hbar: val f64,
     with_boltzmann => boltzmann: val f64,
     with_method => method: val Method,
+    with_interpolated_force_clock => interpolated_force_clock: val bool,
     with_linear_replica_clock => linear_replica_clock: val bool,
     with_quadrature_pairs => quadrature_pairs: val usize,
     with_projected_verlet => projected_verlet: val bool,
@@ -143,6 +146,7 @@ impl LinebConfig {
             method: Method::fire(rgmin::FireKind::V2),
             quadrature_pairs: 4,
             linear_replica_clock: false,
+            interpolated_force_clock: false,
             projected_verlet: false,
         }
     }
@@ -833,14 +837,14 @@ impl LinebSession {
     /// Spline action, both half periods and both temperatures of the
     /// current images.
     pub fn path<S: PointSurface>(&self, surface: &S) -> Result<LinebPath, SaddleError> {
-        self.measured_path(surface, |counted, curve| {
-            let period = path::dynamics(
+        self.measured_path(surface, |counted, curve, active| {
+            let period = match active { Some(period) => period, None => path::dynamics(
                 counted,
                 &self.masses,
                 curve,
                 self.energy,
                 self.config.quadrature_pairs,
-            )?;
+            )?, };
             Ok((
                 period,
                 path::temperature(period, self.config.hbar, self.config.boltzmann)?,
@@ -855,7 +859,7 @@ impl LinebSession {
         &self,
         surface: &S,
     ) -> Result<LinebPath<()>, SaddleError> {
-        self.measured_path(surface, |_, _| Ok(((), ())))
+        self.measured_path(surface, |_, _, _| Ok(((), ())))
     }
 
     fn measured_path<S: PointSurface, D>(
@@ -864,6 +868,7 @@ impl LinebSession {
         dynamics_clock: impl FnOnce(
             &crate::lineb::Counted<'_, S>,
             &path::Curve,
+            Option<f64>,
         ) -> Result<(D, D), SaddleError>,
     ) -> Result<LinebPath<D>, SaddleError> {
         let measure_calls = AtomicUsize::new(0);
@@ -879,15 +884,17 @@ impl LinebSession {
         let (weighted, discrete_action) = self.prepared_images(&measured)?;
         let preparation = measure_calls.load(Ordering::Relaxed);
         let curve = path::Curve::new(weighted.view())?;
-        let (action, half_period, mut time_table) = path::quadrature(
-            &measured,
-            &self.masses,
-            &curve,
-            self.energy,
-            self.config.quadrature_pairs,
-        )?;
-        time_table.linear = self.config.linear_replica_clock;
-        let (half_period_dynamics, temperature_dynamics) = dynamics_clock(&dynamics, &curve)?;
+        let pairs = self.config.quadrature_pairs;
+        let (action, half_period, time_table, active) = if self.config.interpolated_force_clock {
+            let action = path::action_only(&measured, &self.masses, &curve, self.energy, pairs)?;
+            let (half, table) = path::force_clock(&dynamics, &self.masses, &curve, self.energy, pairs)?;
+            (action, half, table, Some(half))
+        } else {
+            let (action, half, mut table) = path::quadrature(&measured, &self.masses, &curve, self.energy, pairs)?;
+            table.linear = self.config.linear_replica_clock;
+            (action, half, table, None)
+        };
+        let (half_period_dynamics, temperature_dynamics) = dynamics_clock(&dynamics, &curve, active)?;
         Ok(LinebPath {
             cartesian: self.cartesian_images(&weighted)?,
             energy: self.energy,

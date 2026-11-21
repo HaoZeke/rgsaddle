@@ -17,6 +17,10 @@
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
 
 use super::action::l2;
+#[path = "path_force_clock.rs"]
+mod force_integrator;
+pub(super) use force_integrator::{action_only, force_clock};
+
 use super::mass::Masses;
 use crate::error::SaddleError;
 use crate::minmode::PointSurface;
