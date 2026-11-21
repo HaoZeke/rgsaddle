@@ -1,0 +1,13 @@
+The rgsaddle sources identify these incorporated components.
+
+src/spring.rs, src/tangent.rs and src/projection.rs
+    eOn band mechanics. See eOn-BSD-3-Clause.txt.
+
+include/rgbind/rgbind.hpp
+    rgpot nanobind policy. See rgpot-MIT.txt.
+
+src/nichols.rs
+    The Nichols displacement and Powell update follow i-PI's ipi/utils/mintools.py.
+    Copyright (C) 2013, Joshua More and Michele Ceriotti
+    Algorithms implemented by Michele Ceriotti and Benjamin Helfrecht, 2015.
+    This component uses the MIT option. See i-PI-MIT.txt.

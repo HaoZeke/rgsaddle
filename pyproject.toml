@@ -11,7 +11,7 @@ description = "ASE image surface and the rgsaddle status map."
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.10"
 license = "MIT"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "LICENSES/*.txt"]
 authors = [{ name = "Rohit Goswami", email = "rgoswami@ieee.org" }]
 keywords = ["neb", "saddle", "transition-state", "optimization"]
 classifiers = [
