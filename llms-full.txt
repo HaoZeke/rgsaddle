@@ -36,7 +36,7 @@ A host builds a band, steps until the projected force is under `force_tol`, and 
 ## 1. Depend on the published crate
 ```toml
 [dependencies]
-rgsaddle = "0.5.0"
+rgsaddle = "0.6.0"
 ndarray = "0.17"
 ```
 
@@ -227,8 +227,9 @@ Call `reset` after any model update. That is the documented boundary. A host tha
 > Exhaustive inventory of Rust modules, types, functions, configs, C ABI, and Python bindings
 
 ## Public Rust types
-The API documentation for every public item is on [docs.rs/rgsaddle](https://docs.rs/rgsaddle).
-`cargo doc --open` builds the same pages from a checkout.
+The hosted [Rust API reference](https://docs.rs/rgsaddle) includes the default solver, C ABI, OH-TST, and readcon interfaces.
+`cargo doc --no-deps --features capi,ohtst,readcon-db --open` builds these pages from a checkout.
+The `lammps` feature adds the LAMMPS adapter to a local documentation build.
 Runnable examples open `BandSession`, `AutoNeb`, `OcinebSession`, `MinModeSession`, `Index1Session`, `IndexKSession`, `SolidDimer`, `SolidNeb`, `Stencil` and the `ohtst` module, and, with `--features capi`, the C band, min-mode and stencil handles.
 `cargo test --doc` runs them.
 Every public configuration struct is non-exhaustive.

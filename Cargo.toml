@@ -11,6 +11,9 @@ authors = ["Rohit Goswami <rgoswami@ieee.org>"]
 keywords = ["neb", "saddle", "transition-state", "optimization"]
 categories = ["science"]
 
+[package.metadata.docs.rs]
+features = ["capi", "ohtst", "readcon-db"]
+
 [lib]
 crate-type = ["lib", "cdylib", "staticlib"]
 

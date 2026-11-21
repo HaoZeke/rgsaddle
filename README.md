@@ -104,7 +104,7 @@ climbing image 4 at (0.0000, -0.0001, 0.0000)
 - [Getting started](https://omnipotentrpc.github.io/rgsaddle/getting-started.html) builds a band and steps it from a host loop.
 - [The tutorial](https://omnipotentrpc.github.io/rgsaddle/tutorials/quickstart.html) follows the intrinsic reaction coordinate (IRC) down from a first-order saddle.
 - [How-to guides](https://omnipotentrpc.github.io/rgsaddle/howto.html) cover AutoNEB, the minimum-mode search, the C interface and Python.
-- [The API documentation](https://docs.rs/rgsaddle) on docs.rs lists every public item.
+- [The API documentation](https://docs.rs/rgsaddle) on docs.rs covers the default solver, C ABI, OH-TST, and readcon interfaces.
 
 ## Design notes
 

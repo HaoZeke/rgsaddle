@@ -1,7 +1,7 @@
 #+TITLE: OH-TST types
 #+OPTIONS: toc:nil num:nil author:nil
 
-Full API documentation for every item below is on [[https://docs.rs/rgsaddle][docs.rs/rgsaddle]], under =rgsaddle::ohtst=; =cargo doc --open= builds the same pages from a checkout. This page is the inventory: every public configuration and result type the module exports. =howto/oh-tst= is the dense narrative reference for how the pieces fit together, with every citation; =tutorials/oh-tst= walks through using them once, end to end; =explanation/pafi-ohtst= has the theory.
+Full API documentation for every item below is on [[https://docs.rs/rgsaddle][docs.rs/rgsaddle]], under =rgsaddle::ohtst=; =cargo doc --no-deps --features ohtst --open= builds the same pages from a checkout. This page is the inventory: every public configuration and result type the module exports. =howto/oh-tst= is the dense narrative reference for how the pieces fit together, with every citation; =tutorials/oh-tst= walks through using them once, end to end; =explanation/pafi-ohtst= has the theory.
 
 * Coordinates and the plane
 | Type | Role |

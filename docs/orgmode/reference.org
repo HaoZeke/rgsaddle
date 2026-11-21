@@ -2,8 +2,9 @@
 #+options: toc:nil num:nil
 
 * Public Rust types
-The API documentation for every public item is on [[https://docs.rs/rgsaddle][docs.rs/rgsaddle]].
-=cargo doc --open= builds the same pages from a checkout.
+The hosted [[https://docs.rs/rgsaddle][Rust API reference]] includes the default solver, C ABI, OH-TST, and readcon interfaces.
+=cargo doc --no-deps --features capi,ohtst,readcon-db --open= builds these pages from a checkout.
+The =lammps= feature adds the LAMMPS adapter to a local documentation build.
 Runnable examples open =BandSession=, =AutoNeb=, =OcinebSession=, =MinModeSession=, =Index1Session=, =IndexKSession=, =SolidDimer=, =SolidNeb=, =Stencil= and the =ohtst= module, and, with =--features capi=, the C band, min-mode and stencil handles.
 =cargo test --doc= runs them.
 Every public configuration struct is non-exhaustive.
