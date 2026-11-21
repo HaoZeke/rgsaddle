@@ -85,6 +85,12 @@ let paths = continue_from_mep(&surface, mep.view(), &masses, &config, &ladder)?;
 
 The first energy is the highest MEP energy minus =delta=, seeded by the MEP segment between its two crossings of that energy. With =with_linear_seed(true)=, the first path follows the straight line joining the two crossings, as in the Cu(110) example in section II. Each lower energy is =delta= further down and starts from the previous path with both ends walked downhill to the new energy. The MEP has to fall below the lowest energy on both sides of the barrier. A level still running after =max_steps= (1000 by default) is an error. =path.calls.total_with_seed()= includes the seed for that energy. To measure backend work, use =continue_from_mep_with_observer= with the same arguments and a final closure =|level, path|= returning =Result<(), SaddleError>=. The closure runs after the path converges and before the next energy is seeded. Take a snapshot before the ladder and at each callback to include the work of preparing each seed in its level.
 
+A saved turning-to-turning band can supply another energy ladder. Pass its
+Cartesian images and tunneling energy to =continue_from_path_with_observer=.
+A first target equal to the saved energy refines the image resolution.
+A lower target walks both endpoints along the mass-weighted force before
+resampling the band. The new ladder counts these seed evaluations.
+
 * The rate
 #+begin_src rust
 let rate = hqtst_rate(&surface, &path, beads)?;
