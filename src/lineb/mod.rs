@@ -15,7 +15,7 @@
 //! [`hqtst_rate`] rebuilds the ring polymer at `t_j = j τ / P` and
 //! evaluates the harmonic quantum TST factor from Hessian-vector
 //! products. The paper's finite-difference Hessian interpolation is
-//! built only with the `lineb-oracle` feature, for tests and benches.
+//! available through the `lineb-interpolated-hessian` and `capi` features.
 //!
 //! The minimizer is an [`rgmin`](https://github.com/OmniPotentRPC/rgmin)
 //! stepper. The potential is a [`PointSurface`], the same surface an

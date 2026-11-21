@@ -278,6 +278,27 @@ int main(void) {
       orbit_rows != orbit_counts.seed + orbit_counts.optimizer + orbit_counts.preparation +
                     orbit_counts.quadrature + orbit_counts.dynamics + orbit_counts.rate)
     return fail("turning energy, geometry and measured calls", RGSADDLE_SOLVER);
+  const double image_step = 0.005;
+  rgsaddle_lineb_rate_diagnostics_t details = {0};
+  for (int observed = 0; observed < 2; ++observed) {
+    int64_t total_rows = 0;
+    const rgsaddle_status_t image_rate = rgsaddle_lineb_solve_counted_rate(
+        &cfg, N_IMAGES, N_ATOMS, pos, masses, 0, 0.25, 200, beads,
+        surface, &total_rows, out_pos, &result, &kappa,
+        RGSADDLE_LINEB_LINEAR_SEED | RGSADDLE_LINEB_INTERPOLATED_HESSIAN,
+        &orbit_counts, &negative_modes, &modes, observed ? &orbit : NULL, NULL,
+        &image_step, &details);
+    if (image_rate != RGSADDLE_OK) return fail("interpolated image Hessians", image_rate);
+    if (details.curvature_evaluations != 2 * N_IMAGES * DOF ||
+        details.bead_evaluations != beads || details.image_hessian_step != image_step ||
+        result.rate_calls != details.curvature_evaluations + details.bead_evaluations ||
+        total_rows != orbit_counts.seed + orbit_counts.optimizer + orbit_counts.preparation +
+                      orbit_counts.quadrature + orbit_counts.dynamics + orbit_counts.rate)
+      return fail("per-phase interpolated Hessian accounting", RGSADDLE_SOLVER);
+    if (!observed) plain_result = result;
+    else if (result.log_rate_over_reactant != plain_result.log_rate_over_reactant)
+      return fail("observed interpolated rate differs", RGSADDLE_SOLVER);
+  }
   kappa = NAN;
   if (rgsaddle_lineb_solve_with_kappa(&cfg, N_IMAGES, N_ATOMS, pos, masses, 0, 0.25,
                                       200, 0, surface, NULL, out_pos, &result, &kappa)

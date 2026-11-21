@@ -197,6 +197,7 @@ The narrative for a session is the C and C++ how-to, not this list.
 - =rgsaddle_lineb_solve_counted_diagnostics=. Purpose: Counted solve with the number of negative and total retained fluctuation modes. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_lineb_solve_counted_orbit=. Purpose: Counted solve with optional bead observations. Parameters: the declaration. Units: the caller's.
 - =rgsaddle_lineb_solve_counted_turning=. Purpose: Counted orbit solve with optional return-turn geometry and energy checks. Parameters: the declaration. Units: the caller's.
+- =rgsaddle_lineb_solve_counted_rate=. Purpose: Counted solve with selectable image-Hessian interpolation. Parameters: the declaration. Units: the caller's.
 
 * Types and callbacks
 
@@ -268,6 +269,7 @@ The narrative for a session is the C and C++ how-to, not this list.
 - =rgsaddle_lineb_counts_t=. Purpose: Disjoint configuration evaluations for one successful solve.
 - =rgsaddle_lineb_orbit_t=. Purpose: Opt-in observations from the rate's own surface calls.
 - =rgsaddle_lineb_turning_t=. Purpose: Return-turn agreement for the interpolated-force clock, in the caller's units.
+- =rgsaddle_lineb_rate_diagnostics_t=. Purpose: Geometry counts within the rate, and the Cartesian finite-difference displacement used at the path images (NaN for direct or path-only solves).
 - =rgsaddle_hyperplane_emit_fn=. Purpose: Callback typedef in include/rgsaddle.h.
 - =rgsaddle_sample_hyperplane_fn=. Purpose: Callback typedef in include/rgsaddle.h.
 - =rgsaddle_surface_fn=. Purpose: Callback typedef in include/rgsaddle.h.
@@ -320,6 +322,7 @@ The narrative for a session is the C and C++ how-to, not this list.
 - =RGSADDLE_LINEB_ENDPOINT_CONVERGENCE=. Purpose: Macro constant in include/rgsaddle.h.
 - =RGSADDLE_LINEB_PROJECTED_VERLET=. Purpose: Macro constant in include/rgsaddle.h.
 - =RGSADDLE_LINEB_INTERPOLATED_FORCE_CLOCK=. Purpose: Imaginary-time velocity Verlet on the cubic signed image force.
+- =RGSADDLE_LINEB_INTERPOLATED_HESSIAN=. Purpose: Interpolate Cartesian image Hessians onto the equal-time replicas.
 - =RGSADDLE_HAS_LINEB_RATE_DIAGNOSTICS=. Purpose: Macro constant in include/rgsaddle.h.
 - =RGSADDLE_HAS_LINEB_ORBIT=. Purpose: Macro constant in include/rgsaddle.h.
 - =RGSADDLE_OK=. Purpose: Enumerator of =rgsaddle_status_t=.

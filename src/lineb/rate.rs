@@ -18,7 +18,7 @@
 //! spectrum on the complement of the gauge modes comes from the shared
 //! full-reorthogonalization Lanczos. Surface cost is linear in `P`.
 //!
-//! With the `lineb-oracle` feature, image Hessians are interpolated onto
+//! With the `lineb-interpolated-hessian` feature, image Hessians are interpolated onto
 //! the ring. A bordered block elimination computes the projected log
 //! absolute determinant and negative-mode count. An ill-conditioned
 //! bead pivot selects the dense orthogonal projection.
@@ -247,9 +247,7 @@ fn hqtst_rate_observed<S: PointSurface>(
 }
 
 /// The paper's finite-difference Hessians at the LI-NEB images, cubically
-/// interpolated onto the replicas, then the same rate. Oracle for
-/// [`hqtst_rate`]. Not built unless the `lineb-oracle` feature is on
-/// (tests and benches request it).
+/// interpolated onto the replicas, then the same harmonic rate.
 #[cfg(any(test, feature = "lineb-interpolated-hessian"))]
 pub fn hqtst_rate_interpolated_hessian<S: PointSurface>(
     surface: &S,

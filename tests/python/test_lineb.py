@@ -213,3 +213,33 @@ def test_interpolated_force_clock_uses_one_gradient_per_path_image() -> None:
     assert result.orbit is not None
     assert result.orbit.positions.shape == (16, 3)
     assert result.orbit.positions[0, 0] < 0 < result.orbit.positions[8, 0]
+
+
+
+@pytest.mark.parametrize("beads", [7, 8])
+def test_interpolated_hessian_orbit_reuses_each_measured_replica(beads):
+    positions, energy, tol = eckart_seed(5)
+    observed = []
+    def surface(x):
+        value, grad = eckart(x)
+        transverse = x[:, 1:]
+        grad[:, 1:] = 2 * transverse
+        observed.append((x.copy(), grad.copy()))
+        return value + (transverse**2).sum(), grad
+
+    args = (surface, positions, np.ones(1), energy, tol, tol)
+    kwargs = dict(max_steps=500, beads=beads, interpolated_hessian=True, image_hessian_step=0.005)
+    plain = lineb_solve(*args, **kwargs)
+    assert plain.surface_calls["total"] == len(observed)
+    observed.clear()
+    result = lineb_solve(*args, **kwargs, return_orbit=True)
+    assert result.surface_calls == plain.surface_calls
+    assert result.surface_calls["total"] == len(observed)
+    assert result.curvature_evaluations == 2*positions.size
+    assert result.bead_evaluations == beads
+    assert result.image_hessian_step == 0.005
+    assert result.rate_calls == 2*positions.size+beads
+    assert result.log_rate_over_reactant == plain.log_rate_over_reactant
+    assert result.orbit is not None
+    np.testing.assert_array_equal(result.orbit.positions,np.concatenate([row for row, _ in observed[-beads:]]))
+    np.testing.assert_array_equal(result.orbit.gradients,np.concatenate([g for _,g in observed[-beads:]]))

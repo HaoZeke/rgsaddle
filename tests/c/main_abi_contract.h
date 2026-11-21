@@ -10,6 +10,7 @@ _Static_assert(RGSADDLE_LINEB_LINEAR_SEED == (1u << 0), "lineb flag bit 0");
 _Static_assert(RGSADDLE_LINEB_ENDPOINT_CONVERGENCE == (1u << 1), "lineb flag bit 1");
 _Static_assert(RGSADDLE_LINEB_PROJECTED_VERLET == (1u << 2), "lineb flag bit 2");
 _Static_assert(RGSADDLE_LINEB_INTERPOLATED_FORCE_CLOCK == (1u << 3), "lineb flag bit 3");
+_Static_assert(RGSADDLE_LINEB_INTERPOLATED_HESSIAN == (1u << 4), "lineb flag bit 4");
 _Static_assert(RGSADDLE_BAND_NO_MIN_MODE == (1ull << 3), "band flag bit 3");
 _Static_assert(RGSADDLE_BAND_SPLINE_REPARAM == (1ull << 4), "band flag bit 4");
 _Static_assert(RGSADDLE_BAND_STRING == (1ull << 5), "band flag bit 5");
