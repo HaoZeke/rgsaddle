@@ -34,6 +34,8 @@ The default endpoint restraint has magnitude =endpoint_scale |V − E| / |∇V|=
 
 =time_step= is the initial FIRE step. From rest a step moves an image by about =time_step^2 |F|=. The default 0.1 converges the Müller-Brown continuation at every other default; a surface with a stiffer action needs a smaller step. =max_move= caps the step of one atom with molecular masses and the whole band step otherwise. An interior image may not fall below =E + w=, where =w= is =turning_width= times the height of the highest starting image above =E=; a step that would put one there is retried at a shorter length. Any other error from the surface ends the step and is returned.
 
+The optimizer uses a smooth momentum near a turning point. For an image with energy gap =d = V - E=, its momentum in mass-weighted coordinates is =sqrt(d + hypot(d, w))=. At the turning surface this gives =sqrt(w)=. Equation (12) of Ásgeirsson, Arnaldsson and Jónsson gives zero there. The default =turning_width= is 0.001 and the accepted range is strictly between zero and one. For a width sensitivity check, rerun the same starting band and energy with a smaller positive =turning_width= and compare the optimized coordinates, period and rate. The endpoint convergence option selects which force norms stop optimization. The momentum still uses the configured width.
+
 =LinebPath= holds the action, the half period from the quadrature of the action's energy derivative (=half_period=) and from constrained dynamics along the path (=half_period_dynamics=), both temperatures, and =calls=: the force calls of the optimizer, of the period quadrature and time table, and of the dynamics, counted apart.
 
 Set =with_interpolated_force_clock(true)= in Rust or
