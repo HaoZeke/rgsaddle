@@ -36,6 +36,32 @@ The default endpoint restraint has magnitude =endpoint_scale |V − E| / |∇V|=
 
 =LinebPath= holds the action, the half period from the quadrature of the action's energy derivative (=half_period=) and from constrained dynamics along the path (=half_period_dynamics=), both temperatures, and =calls=: the force calls of the optimizer, of the period quadrature and time table, and of the dynamics, counted apart.
 
+Set =with_interpolated_force_clock(true)= in Rust or
+=interpolated_force_clock=True= in Python to use the signed force in
+Eq. (27) of Ásgeirsson, Arnaldsson and Jónsson (2018). At each prepared
+image the solver projects the inverted potential gradient onto the
+mass-weighted unit tangent. It interpolates these forces with a cubic
+spline in arc length and integrates the resulting one-dimensional
+motion by velocity Verlet. The period, temperature, equally spaced
+replicas and rate all use this orbit. Both reported periods agree by
+construction when the independent dynamics fields are requested.
+
+The spline force can integrate to nonzero work between the two
+optimized turning images. The solver launches at rest from the end
+whose trajectory turns inside the measured interval, locates the first
+velocity reversal, and orders the replicas in increasing path coordinate
+on the outgoing half. The opposite turning replica can therefore be
+displaced from its nominal endpoint. Compare the endpoint positions in
+the returned orbit with the optimized images to measure that discrepancy.
+
+For path length =L=, maximum absolute image force =F= and
+=Q= quadrature pairs per chord, the integration step is
+=sqrt(L/F)/(64 Q)=. The cubic coordinate spline is parameterized by
+mass-weighted chord length. Its arc-length map uses =8 Q= Simpson
+panels per chord. The dynamics counter includes one energy-gradient
+request for each image. Verlet integration adds no potential requests.
+The measure counter includes the Simpson samples for the action.
+
 * An energy ladder from a minimum energy path
 #+begin_src rust
 let ladder = Continuation::new(delta, images, levels);
