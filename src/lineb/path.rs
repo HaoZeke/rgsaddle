@@ -36,6 +36,7 @@ pub(crate) struct Curve {
 }
 
 impl Curve {
+    #[cfg(test)]
     pub(crate) fn new(weighted: ArrayView2<f64>) -> Result<Self, SaddleError> {
         Self::with_end_tangents(weighted, None)
     }
