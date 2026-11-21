@@ -206,8 +206,11 @@ is
 
 Request =return_orbit=True= when calling =lineb_solve= with a positive
 =beads= value. The optional =LinebOrbit= returned as =result.orbit= contains =positions= and
-=gradients=, both shaped =(beads, 3 * n_atoms)=. The return leg repeats
-the exact coordinates and gradients of the outbound measurements.
+=gradients=, both shaped =(beads, 3 * n_atoms)=. Each returning bead has
+the exact coordinates of its outbound partner. With bead Hessians the
+solver reuses the outbound measurement. With interpolated image Hessians
+it requests the full ring in one batch, so an exact-coordinate cache
+can serve the repeated geometries.
 =orbit.max_abs_residual= and =orbit.rms_residual= are in energy per
 length. =orbit.max_bead= and =orbit.max_coordinate= are zero-based.
 A path-only solve returns =None=. The rate evaluation count is the

@@ -900,8 +900,10 @@ pub(crate) fn replicas(
     #[cfg(any(test, feature = "lineb-interpolated-hessian"))]
     let mut parameter = Vec::with_capacity(beads);
     for bead in 0..beads {
-        let time = period * bead as f64 / beads as f64;
-        let forward = if time <= half { time } else { period - time };
+        // Mirror the integer phase so both legs present identical geometry
+        // to a potential that caches energy and gradient by coordinate.
+        let outbound = bead.min(beads - bead);
+        let forward = period * outbound as f64 / beads as f64;
         let lambda = invert_time(table, forward, clock.linear)?;
         out.row_mut(bead).assign(&curve.at(lambda));
         #[cfg(any(test, feature = "lineb-interpolated-hessian"))]
@@ -976,6 +978,21 @@ mod tests {
     impl PointSurface for InvertedOscillator {
         fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
             Ok(((1. - x[0] * x[0]) * 0.5, array![-x[0]]))
+        }
+    }
+
+    #[test]
+    fn reflected_replicas_reuse_the_outbound_geometry() {
+        let images = array![[-1.], [0.], [1.]];
+        let masses = Masses::coordinates(array![1.].view()).unwrap();
+        let curve = Curve::new(images.view()).unwrap();
+        let (_, _, table) = quadrature(&InvertedOscillator, &masses, &curve, 0., 4).unwrap();
+        for count in [17, 240] {
+            let ring = replicas(images.view(), &table, count).unwrap();
+            for j in 1..count {
+                assert_eq!(ring.weighted.row(j), ring.weighted.row(count - j));
+                assert_eq!(ring.parameter[j], ring.parameter[count - j]);
+            }
         }
     }
 
