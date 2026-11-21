@@ -334,6 +334,69 @@ mod tests {
     }
 
     #[test]
+    fn molecular_action_and_drive_are_invariant_to_reversing_the_band() {
+        struct HarmonicBond;
+        impl PointSurface for HarmonicBond {
+            fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+                let bond = &x.slice(ndarray::s![3..6]) - &x.slice(ndarray::s![..3]);
+                let mut gradient = Array1::zeros(x.len());
+                gradient.slice_mut(ndarray::s![..3]).assign(&(-&bond));
+                gradient.slice_mut(ndarray::s![3..6]).assign(&bond);
+                Ok((0.5 * bond.dot(&bond), gradient))
+            }
+        }
+        let masses = Masses::molecule(&[12.0, 16.0, 1.0, 2.0]).unwrap();
+        // Bond extension, bending and torsion make the best rotation depend on the pair.
+        let mut images = Array2::zeros((5, 12));
+        for (i, mut row) in images.rows_mut().into_iter().enumerate() {
+            let t = i as f64 / 4.0;
+            let xyz = ndarray::array![
+                0.,
+                0.,
+                0.,
+                1. + t,
+                0.,
+                0.,
+                t,
+                1. + t * t,
+                0.,
+                1. - t,
+                t * t,
+                1. + t
+            ];
+            row.assign(&masses.to_weighted(xyz.view()).unwrap());
+        }
+        let evaluate = |band| {
+            assemble(
+                &HarmonicBond,
+                &masses,
+                band,
+                0.25,
+                1.0,
+                EndpointRestraint::Fixed(1.0),
+                0.01,
+            )
+            .unwrap()
+            .unwrap()
+        };
+        let forward = evaluate(images.view());
+        let reverse = evaluate(images.slice(ndarray::s![..;-1, ..]));
+        assert!(
+            (forward.action - reverse.action).abs() < 1e-12,
+            "forward {}, reverse {}",
+            forward.action,
+            reverse.action
+        );
+        for (a, b) in forward
+            .drive
+            .iter()
+            .zip(reverse.drive.slice(ndarray::s![..;-1, ..]).iter())
+        {
+            assert!((a - b).abs() < 1e-12, "forward {a}, reverse {b}");
+        }
+    }
+
+    #[test]
     fn fixed_endpoint_force_tracks_energy_error_at_both_ends() {
         let images = ndarray::array![[-1.0, 0.0], [0.0, 0.0], [1.5, 0.0]];
         let masses = Masses::coordinates(Array1::ones(2).view()).unwrap();
