@@ -21,14 +21,9 @@ pub(crate) struct Placement {
     pub rotation: [[f64; 3]; 3],
 }
 
-/// Align each image to its aligned predecessor, starting from image 0.
-/// Successive images along a path differ by small displacements, so the
-/// sequential fit removes the rigid motion between neighbours, as in
-/// Ásgeirsson, Arnaldsson and Jónsson, J. Chem. Phys. 148, 102334 (2018).
-/// A fit of every image to image 0 leaves a rotation between distant
-/// neighbours that enters the perpendicular force. `images` is
-/// mass-weighted, one row per image, length `3 * atoms`. The three
-/// coordinate masses of an atom are one atomic mass.
+/// Align every image to image 0. `images` is mass-weighted, one row per
+/// image, length `3 * atoms`. The three coordinate masses of an atom are
+/// one atomic mass.
 pub(crate) fn align_images(
     images: ArrayView2<f64>,
     sqrt_mass: ArrayView1<f64>,
@@ -52,7 +47,7 @@ pub(crate) fn align_images(
             "alignment needs at least one image".into(),
         ));
     }
-    let mut reference = images.row(0).to_owned();
+    let reference = images.row(0).to_owned();
     let mut aligned = Array2::zeros((n, dof));
     let mut placements = Vec::with_capacity(n);
     for i in 0..n {
@@ -60,7 +55,6 @@ pub(crate) fn align_images(
             align_to_reference(images.row(i), reference.view(), sqrt_mass, atoms)?;
         aligned.row_mut(i).assign(&row);
         placements.push(placement);
-        reference = row;
     }
     Ok((aligned, placements))
 }
