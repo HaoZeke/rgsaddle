@@ -49,9 +49,7 @@ dlpk = { version = "0.1.5", features = ["ndarray"] }
 # ConFrameWriter::new is RoundTrip and canonical stays off.
 readcon-core = { version = "=0.17.1", optional = true }
 readcon-db = { version = "0.2", optional = true }
-# Control::default leaves ftol_rel and noise_floor unset, the 0.5.1
-# behaviour the sessions rely on.
-# Crates.io 0.6.0 has no LevelSetConstraint, so the git pin supplies it.
+# Free-end bands retract their terminal image through rgmin’s LevelSetConstraint.
 rgmin = { version = "=0.7.0", git = "https://github.com/HaoZeke/rgmin", rev = "f2527782713dcf4b4d5d91af9da1bba80c32bc0c" }
 eindir-core = { version = "0.6.0", features = ["capi"] }
 ndarray = "0.17"
