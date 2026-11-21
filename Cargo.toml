@@ -4,6 +4,7 @@ version = "0.6.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
+exclude = ["/*.md", "!/README.md", "!/CHANGELOG.md"]
 description = "Band, minimum-mode, and index-1 Newton saddle mechanics."
 repository = "https://github.com/OmniPotentRPC/rgsaddle"
 authors = ["Rohit Goswami <rgoswami@ieee.org>"]

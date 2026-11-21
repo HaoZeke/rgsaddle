@@ -11,6 +11,7 @@ description = "ASE image surface and the rgsaddle status map."
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.10"
 license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Rohit Goswami", email = "rgoswami@ieee.org" }]
 keywords = ["neb", "saddle", "transition-state", "optimization"]
 classifiers = [
@@ -44,6 +45,8 @@ cmake.version = ">=3.15"
 # Free-threaded interpreters ignore that tag and emit cp314t or cp315t.
 wheel.py-api = "cp312"
 wheel.packages = ["python/rgsaddle"]
+sdist.exclude = ["/*.md"]
+sdist.include = ["README.md", "CHANGELOG.md"]
 
 [tool.cibuildwheel]
 build = "cp310-* cp311-* cp312-* cp314t-* cp315t-*"
