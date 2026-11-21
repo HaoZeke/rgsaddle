@@ -93,6 +93,105 @@ pub fn continue_from_mep_with_observer<S: PointSurface>(
     masses: &Masses,
     config: &LinebConfig,
     ladder: &Continuation,
+    observe: impl FnMut(usize, &LinebPath) -> Result<(), SaddleError>,
+) -> Result<Vec<LinebPath>, SaddleError> {
+    if mep.nrows() < 3 || mep.ncols() != masses.dof() {
+        return Err(SaddleError::Shape(
+            "the MEP needs at least three images and one mass per coordinate".into(),
+        ));
+    }
+    continue_with_seed(
+        surface,
+        masses,
+        config,
+        ladder,
+        |seeding| {
+            let energies = image_energies(seeding, mep)?;
+            let saddle = highest(&energies)?;
+            let energy = energies[saddle] - ladder.delta;
+            let seed = bracket(
+                seeding,
+                masses,
+                mep,
+                &energies,
+                saddle,
+                energy,
+                ladder.images,
+                ladder.linear_seed,
+            )?;
+            Ok((energy, seed))
+        },
+        observe,
+    )
+}
+
+/// Resume from the Cartesian turning-to-turning images of a converged path.
+/// At the same energy the images are resampled; at lower energy both ends are
+/// walked along the physical force. All seed evaluations belong to the new run.
+#[allow(clippy::too_many_arguments)]
+pub fn continue_from_path_with_observer<S: PointSurface>(
+    surface: &S,
+    cartesian: ArrayView2<f64>,
+    saved_energy: f64,
+    first_energy: f64,
+    masses: &Masses,
+    config: &LinebConfig,
+    ladder: &Continuation,
+    observe: impl FnMut(usize, &LinebPath) -> Result<(), SaddleError>,
+) -> Result<Vec<LinebPath>, SaddleError> {
+    if !saved_energy.is_finite() || !first_energy.is_finite() || first_energy > saved_energy {
+        return Err(SaddleError::Invalid(
+            "the restart energy must be at or below the saved energy".into(),
+        ));
+    }
+    if cartesian.nrows() < 3
+        || cartesian.ncols() != masses.dof()
+        || !cartesian.iter().all(|v| v.is_finite())
+    {
+        return Err(SaddleError::Invalid(
+            "the saved path needs finite Cartesian images with matching masses".into(),
+        ));
+    }
+    continue_with_seed(
+        surface,
+        masses,
+        config,
+        ladder,
+        |seeding| {
+            let mut weighted = cartesian.to_owned();
+            for (mut row, x) in weighted.rows_mut().into_iter().zip(cartesian.rows()) {
+                row.assign(&masses.to_weighted(x)?);
+            }
+            let seed = if first_energy < saved_energy {
+                extend_seed(
+                    seeding,
+                    masses,
+                    weighted.view(),
+                    first_energy,
+                    ladder.images,
+                )?
+            } else if ladder.images == cartesian.nrows() {
+                cartesian.to_owned()
+            } else {
+                let points = weighted
+                    .rows()
+                    .into_iter()
+                    .map(|r| r.to_owned())
+                    .collect::<Vec<_>>();
+                to_cartesian(masses, resample(&points, ladder.images)?.view())?
+            };
+            Ok((first_energy, seed))
+        },
+        observe,
+    )
+}
+
+fn continue_with_seed<S: PointSurface>(
+    surface: &S,
+    masses: &Masses,
+    config: &LinebConfig,
+    ladder: &Continuation,
+    make_seed: impl FnOnce(&super::Counted<'_, S>) -> Result<(f64, Array2<f64>), SaddleError>,
     mut observe: impl FnMut(usize, &LinebPath) -> Result<(), SaddleError>,
 ) -> Result<Vec<LinebPath>, SaddleError> {
     ladder.check()?;
@@ -101,32 +200,15 @@ pub fn continue_from_mep_with_observer<S: PointSurface>(
         images,
         levels,
         max_steps,
-        linear_seed,
+        ..
     } = ladder;
-    if mep.nrows() < 3 || mep.ncols() != masses.dof() {
-        return Err(SaddleError::Shape(
-            "the MEP needs at least three images and one mass per coordinate".into(),
-        ));
-    }
     let seed_calls = std::sync::atomic::AtomicUsize::new(0);
     let seeding = super::Counted {
         surface,
         calls: &seed_calls,
     };
-    let energies = image_energies(&seeding, mep)?;
-    let saddle = highest(&energies)?;
+    let (mut energy, mut seed) = make_seed(&seeding)?;
     let mut paths = Vec::with_capacity(levels);
-    let mut energy = energies[saddle] - delta;
-    let mut seed = bracket(
-        &seeding,
-        masses,
-        mep,
-        &energies,
-        saddle,
-        energy,
-        images,
-        linear_seed,
-    )?;
     for level in 0..levels {
         let mut session = LinebSession::new(config.clone(), masses.clone(), seed.clone(), energy)?;
         let report = session.run(surface, max_steps)?;
@@ -141,7 +223,7 @@ pub fn continue_from_mep_with_observer<S: PointSurface>(
         observe(level, &path)?;
         if level + 1 < levels {
             energy -= delta;
-            seed = extend_seed(&seeding, masses, &path, energy, images)?;
+            seed = extend_seed(&seeding, masses, path.weighted.view(), energy, images)?;
         }
         paths.push(path);
     }
@@ -387,29 +469,29 @@ fn strictly_above(
 fn extend_seed<S: PointSurface>(
     surface: &S,
     masses: &Masses,
-    path: &LinebPath,
+    weighted: ArrayView2<f64>,
     target: f64,
     images: usize,
 ) -> Result<Array2<f64>, SaddleError> {
-    let n = path.weighted.nrows();
+    let n = weighted.nrows();
     let left = walk_to_energy(
         surface,
         masses,
-        path.weighted.row(0).to_owned(),
-        path.weighted.row(1).to_owned(),
+        weighted.row(0).to_owned(),
+        weighted.row(1).to_owned(),
         target,
     )?;
     let right = walk_to_energy(
         surface,
         masses,
-        path.weighted.row(n - 1).to_owned(),
-        path.weighted.row(n - 2).to_owned(),
+        weighted.row(n - 1).to_owned(),
+        weighted.row(n - 2).to_owned(),
         target,
     )?;
     let mut polyline = Vec::with_capacity(n + 2);
     polyline.push(left);
     for index in 0..n {
-        polyline.push(path.weighted.row(index).to_owned());
+        polyline.push(weighted.row(index).to_owned());
     }
     polyline.push(right);
     resample(&polyline, images).and_then(|weighted| to_cartesian(masses, weighted.view()))

@@ -86,7 +86,10 @@ mod rate;
 #[cfg(test)]
 mod check;
 
-pub use continue_energy::{Continuation, continue_from_mep, continue_from_mep_with_observer};
+pub use continue_energy::{
+    Continuation, continue_from_mep, continue_from_mep_with_observer,
+    continue_from_path_with_observer,
+};
 pub use mass::Masses;
 pub use optimize::{
     LinebCalls, LinebConfig, LinebPath, LinebReport, LinebSession, LinebStatus, LinebTurning,
