@@ -167,7 +167,8 @@ pub use lammps::{
 pub use lineb::{
     Continuation, HqtstRate, LinebCalls, LinebConfig, LinebPath, LinebRateOrbit, LinebReport,
     LinebSession, LinebStatus, LinebTurning, Masses, continue_from_mep,
-    continue_from_mep_with_observer, hqtst_rate, hqtst_rate_with_orbit,
+    continue_from_mep_with_observer, continue_from_path_with_observer, hqtst_rate,
+    hqtst_rate_with_orbit,
 };
 #[cfg(any(test, feature = "lineb-interpolated-hessian"))]
 pub use lineb::{

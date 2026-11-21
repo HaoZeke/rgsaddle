@@ -493,3 +493,44 @@ fn asymmetric_image_force_reports_the_measured_short_turn_in_either_orientation(
         assert_eq!(path.calls.dynamics, images.nrows() + 1);
     }
 }
+
+#[test]
+fn continuation_from_turning_images_preserves_and_lowers_energy() {
+    let masses = Masses::coordinates(Array1::ones(1).view()).unwrap();
+    let images = ndarray::array![[-1.0], [-0.5], [0.0], [0.5], [1.0]];
+    let config = LinebConfig::new(1e-5, 1e-5).with_interpolated_force_clock(true);
+    let ladder = rgsaddle::Continuation::new(0.02, 9, 2);
+    let paths = rgsaddle::continue_from_path_with_observer(
+        &Parabola,
+        images.view(),
+        0.5,
+        0.5,
+        &masses,
+        &config,
+        &ladder,
+        |_, _| Ok(()),
+    )
+    .unwrap();
+    for (i, path) in paths.iter().enumerate() {
+        assert_eq!(path.cartesian.nrows(), 9);
+        assert!((path.energy - (0.5 - i as f64 * 0.02)).abs() < 1e-12);
+        assert!((path.half_period - std::f64::consts::PI).abs() < 1e-4);
+        assert!(path.turning.unwrap().energy_residual.abs() < 1e-7);
+    }
+    let resumed = rgsaddle::continue_from_path_with_observer(
+        &Parabola,
+        paths[0].cartesian.view(),
+        paths[0].energy,
+        paths[1].energy,
+        &masses,
+        &config,
+        &rgsaddle::Continuation::new(0.02, 9, 1),
+        |_, _| Ok(()),
+    )
+    .unwrap();
+    assert_eq!(resumed[0].cartesian, paths[1].cartesian);
+    assert_eq!(
+        resumed[0].calls.total_with_seed(),
+        paths[1].calls.total_with_seed()
+    );
+}
