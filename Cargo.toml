@@ -52,7 +52,7 @@ readcon-db = { version = "0.2", optional = true }
 # Control::default leaves ftol_rel and noise_floor unset, the 0.5.1
 # behaviour the sessions rely on.
 # Crates.io 0.6.0 has no LevelSetConstraint, so the git pin supplies it.
-rgmin = { version = "=0.6.0", git = "https://github.com/OmniPotentRPC/rgmin", rev = "f3d18706c2b1ab380fd75f62449fdab46d01f5e2" }
+rgmin = { version = "=0.7.0", git = "https://github.com/HaoZeke/rgmin", rev = "f2527782713dcf4b4d5d91af9da1bba80c32bc0c" }
 eindir-core = { version = "0.6.0", features = ["capi"] }
 ndarray = "0.17"
 faer = { version = "0.24.4", optional = true, default-features = false, features = ["std", "linalg"] }
