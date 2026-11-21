@@ -311,7 +311,8 @@ pub fn hqtst_rate_interpolated_hessian_observed<S: PointSurface>(
 }
 
 /// Interpolate independently measured Cartesian energy Hessians at the ordered
-/// LI-NEB images. The blocks use energy per squared input length. The rate's
+/// LI-NEB images. Each block uses the atom order and Cartesian axes of its
+/// corresponding row in `path.cartesian`, in energy per squared input length. The rate's
 /// evaluation count includes replica energies and excludes creation of the
 /// supplied Hessians.
 #[cfg(any(test, feature = "lineb-interpolated-hessian"))]

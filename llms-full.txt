@@ -3075,11 +3075,14 @@ the full spline length, the largest Cartesian component of the
 displacement from the opposite image, and two energy differences
 measured on the supplied surface. The first is relative to the target
 energy and the second is relative to the opposite prepared image. A
-short orbit with a significant energy residual does not reproduce the
-fixed-energy turning geometry. Report the displacement as a fraction of
-the full arc length and the energy residual relative to the barrier
-height above the target. At fixed `E`, repeat the path optimization with
-more images and compare both residuals and the half period. Increasing
+short orbit can turn away from its nominal endpoint. Report
+`max_cartesian_displacement` in the input length units. To measure the
+fraction of the mass-weighted path missed at the return, set
+`L ` path_arc_length= and `s ` return_arc=. The fraction is `(L - s) / L`
+for a launch at image zero and `s / L` for a launch at the last image.
+Compare the energy residual with the barrier height above the target.
+At fixed `E`, repeat the path optimization with more images and compare
+the return geometry, energy residual and half period. Increasing
 the number of replicas on a fixed path leaves the Verlet return turn
 and its energy unchanged.
 
@@ -3137,7 +3140,7 @@ For an electronic-structure potential, `hqtst_rate_interpolated_hessian_with_ste
 
 With the `lineb-oracle` feature, `cartesian_image_hessian(surface, cartesian, step)` measures one Cartesian energy Hessian. It evaluates the positive and negative displacement along each coordinate in one ordered batch. The matrix contains the raw gradient differences before symmetrization or mass weighting.
 
-`hqtst_rate_from_image_hessians(surface, path, beads, blocks)` takes one Cartesian energy Hessian per path image in path order. The library mass weights the blocks and interpolates them onto the ring. It issues `beads` additional geometry requests for the replica energies. Measure the cost of the supplied blocks at their provider. For finite differences the cost is `2 * dof * images + beads` geometry requests. A surface implementing `PointSurface::eval_batch` can evaluate the independent displacements for each image and the replica energies in parallel. Return the results in input row order.
+`hqtst_rate_from_image_hessians(surface, path, beads, blocks)` takes one Cartesian energy Hessian per path image in path order. Evaluate each block at the corresponding row of `path.cartesian`, using the same Cartesian axes and atom order. For a free molecule these rows contain the aligned geometries. If an external calculator rotates a molecule to its own axes, rotate the Hessian back to the axes of that row before supplying it. The library mass weights the blocks and interpolates them onto the ring. It issues `beads` additional geometry requests for the replica energies. Measure the cost of the supplied blocks at their provider. For finite differences the cost is `2 * dof * images + beads` geometry requests. A surface implementing `PointSurface::eval_batch` can evaluate the independent displacements for each image and the replica energies in parallel. Return the results in input row order.
 
 ## Python
 `LinebResult.surface_calls` gives integer configuration evaluations for `seed`, `optimization`, `path_preparation`, `quadrature`, `dynamics` and `rate`. Their sum is `total`. The rate entry is zero on a path-only run. In C, pass a `rgsaddle_lineb_counts_t` to `rgsaddle_lineb_solve_counted` (ABI minor 47). The combined `optimizer_calls` and `measure_calls` on the original result remain available.
