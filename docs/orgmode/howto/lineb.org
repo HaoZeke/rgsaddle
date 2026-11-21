@@ -61,7 +61,12 @@ displacement from the opposite image, and two energy differences
 measured on the supplied surface. The first is relative to the target
 energy and the second is relative to the opposite prepared image. A
 short orbit with a significant energy residual does not reproduce the
-fixed-energy turning geometry.
+fixed-energy turning geometry. Report the displacement as a fraction of
+the full arc length and the energy residual relative to the barrier
+height above the target. At fixed =E=, repeat the path optimization with
+more images and compare both residuals and the half period. Increasing
+the number of replicas on a fixed path leaves the Verlet return turn
+and its energy unchanged.
 
 For path length =L=, maximum absolute image force =F= and
 =Q= quadrature pairs per chord, the integration step is
