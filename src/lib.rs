@@ -166,8 +166,8 @@ pub use lammps::{
 };
 pub use lineb::{
     Continuation, HqtstRate, LinebCalls, LinebConfig, LinebPath, LinebRateOrbit, LinebReport,
-    LinebSession, LinebStatus, Masses, continue_from_mep, continue_from_mep_with_observer,
-    hqtst_rate, hqtst_rate_with_orbit,
+    LinebSession, LinebStatus, LinebTurning, Masses, continue_from_mep,
+    continue_from_mep_with_observer, hqtst_rate, hqtst_rate_with_orbit,
 };
 #[cfg(any(test, feature = "lineb-oracle"))]
 pub use lineb::{

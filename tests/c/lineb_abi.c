@@ -258,6 +258,26 @@ int main(void) {
     return fail("measured discrete orbit residual", RGSADDLE_SOLVER);
   printf("orbit beads=%d rows=%lld rate_rows=%lld max_residual=%.8g\n",
          beads, (long long)orbit_rows, (long long)orbit_counts.rate, max_residual);
+  rgsaddle_lineb_turning_t turning_check = {0};
+  orbit_rows = 0;
+  const rgsaddle_status_t clock_status = rgsaddle_lineb_solve_counted_turning(
+      &cfg, N_IMAGES, N_ATOMS, pos, masses, 0, 0.25, 200, beads,
+      surface, &orbit_rows, out_pos, &result, &kappa,
+      RGSADDLE_LINEB_LINEAR_SEED | RGSADDLE_LINEB_INTERPOLATED_FORCE_CLOCK,
+      &orbit_counts, NULL, NULL, &orbit, &turning_check);
+  if (clock_status != RGSADDLE_OK) return fail("interpolated image force", clock_status);
+  const int from_left = turning_check.launch_image == 0;
+  const double return_x = positions[(from_left ? beads/2 : 0) * DOF];
+  const double other_x = out_pos[(from_left ? N_IMAGES-1 : 0) * DOF];
+  const double return_s = 1. / cosh(return_x);
+  if ((!from_left && turning_check.launch_image != N_IMAGES-1) ||
+      !(fabs(turning_check.energy_residual - (return_s*return_s-0.25)) < 1e-12) ||
+      !(fabs(turning_check.max_cartesian_displacement - fabs(return_x-other_x)) < 1e-12) ||
+      !(result.half_period == result.half_period_dynamics) ||
+      orbit_counts.dynamics != N_IMAGES + 1 ||
+      orbit_rows != orbit_counts.seed + orbit_counts.optimizer + orbit_counts.preparation +
+                    orbit_counts.quadrature + orbit_counts.dynamics + orbit_counts.rate)
+    return fail("turning energy, geometry and measured calls", RGSADDLE_SOLVER);
   kappa = NAN;
   if (rgsaddle_lineb_solve_with_kappa(&cfg, N_IMAGES, N_ATOMS, pos, masses, 0, 0.25,
                                       200, 0, surface, NULL, out_pos, &result, &kappa)
