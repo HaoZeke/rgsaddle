@@ -58,6 +58,7 @@ jobs:
         run: |
           python3 ci/check_dependency_pins.py
           cargo check --manifest-path ci/consumer/Cargo.toml --target-dir target
+          cargo check --manifest-path ci/consumer/Cargo.toml --target-dir target --features readcon-db
 
   examples:
     runs-on: ubuntu-latest
