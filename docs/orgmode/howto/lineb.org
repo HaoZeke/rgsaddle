@@ -156,19 +156,19 @@ when the rate is unavailable.
 For the Cu example in the 2018 paper, pass =linear_seed=True= and =endpoint_convergence=True= to =lineb_solve= with a full MEP and the converted =spring= and =endpoint_kappa=. The first flag selects a straight path between the two energy crossings. The second applies the endpoint and perpendicular force tolerances separately. Pass =projected_verlet=True= (Rust =with_projected_verlet(true)=, C ~RGSADDLE_LINEB_PROJECTED_VERLET~) to select the projected Verlet band integrator.
 
 The following dimensionless Eckart barrier has turning points at
-=x = ±arccosh(2)= when =E = 0.25=. Only the first coordinate enters the
-potential. The callback returns an energy for each input row and the
+=x = ±arccosh(2)= when =E = 0.25=. The two transverse coordinates are
+independent unit-mass harmonic oscillators. The callback returns an energy for each input row and the
 Cartesian energy gradient with the same shape as the coordinates.
 
 #+begin_src python
 import numpy as np
 from rgsaddle import lineb_solve
 
-def barrier(x):
+def barrier(x, omega=1.0):
     energy = 1.0 / np.cosh(x[:, 0])**2
-    gradient = np.zeros_like(x)
+    gradient = omega**2 * x.copy()
     gradient[:, 0] = -2.0 * energy * np.tanh(x[:, 0])
-    return energy, gradient
+    return energy + 0.5 * omega**2 * (x[:, 1:]**2).sum(axis=1), gradient
 
 seed = np.zeros((9, 3))
 seed[:, 0] = np.linspace(-2.0, 2.0, len(seed))
@@ -181,6 +181,43 @@ np.testing.assert_allclose(
 )
 print(path.action, path.temperature)
 #+end_src
+
+The exact action is =pi / sqrt(2)= and the exact temperature is
+=1 / (2 pi sqrt(2))= in these units. The nine-image example gives
+2.221443 and 0.1125395 respectively.
+
+The same seed provides a check of the fluctuation factor. Doubling both
+transverse frequencies leaves the longitudinal path and period unchanged.
+Each oscillator contributes its finite-bead partition function to the
+flux. This makes the change in =log_rate_over_reactant= calculable
+without a reactant reference.
+
+#+begin_src python
+from functools import partial
+
+P = 32
+def flux(omega):
+    return lineb_solve(
+        partial(barrier, omega=omega), seed, np.ones(1), 0.25, 1e-5, 1e-5,
+        endpoint_kappa=0.2, linear_seed=True, endpoint_convergence=True,
+        beads=P, return_orbit=True, interpolated_hessian=True,
+        image_hessian_step=0.001,
+    )
+
+low, high = flux(1.0), flux(2.0)
+def log_partition(omega):
+    a = P * np.arcsinh(low.half_period * omega / P)
+    return -np.log(2 * np.sinh(a))
+
+shift = high.log_rate_over_reactant - low.log_rate_over_reactant
+np.testing.assert_allclose(shift, 2 * (log_partition(2) - log_partition(1)))
+print(low.negative_modes, low.modes, low.surface_calls["rate"], round(shift, 5))
+#+end_src
+
+This prints =1 95 86 -8.69356=. The 86 rate requests comprise two
+displacements for each of three coordinates at nine images, plus
+32 orbit observations. A cache can serve repeated geometries among
+these requests.
 
 * C ABI
 #+begin_src c
