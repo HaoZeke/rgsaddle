@@ -14,6 +14,9 @@
 //! read the temperature of an optimal tunneling path. The closed orbit
 //! has period `τ = 2` half periods and temperature `ℏ / (k_B τ)`.
 
+use std::collections::HashMap;
+use std::sync::Mutex;
+
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
 
 use super::action::l2;
@@ -394,15 +397,107 @@ pub(super) fn quadrature<S: PointSurface>(
             "the period quadrature needs at least one Simpson pair per chord".into(),
         ));
     }
+    // The quadrature nodes depend on the curve alone, apart from the
+    // refinement near each turn. A pass over a placeholder surface records
+    // the geometries it requests. They are measured as one batch, so a
+    // provider may evaluate them concurrently. The integration then reads
+    // those measurements and evaluates any other geometry on the surface.
+    let recorder = Recorder {
+        points: Mutex::new(Vec::new()),
+        energy,
+    };
+    let _ = integrate(
+        &Level {
+            surface: &recorder,
+            masses,
+            curve,
+            energy,
+        },
+        pairs,
+    );
+    let measured = Measured::new(surface, recorder.points.into_inner().unwrap_or_default())?;
     integrate(
         &Level {
-            surface,
+            surface: &measured,
             masses,
             curve,
             energy,
         },
         pairs,
     )
+}
+
+fn geometry_key(x: ArrayView1<f64>) -> Vec<u64> {
+    x.iter().map(|value| value.to_bits()).collect()
+}
+
+/// Records each distinct requested geometry and answers with a constant
+/// barrier above the tunneling energy.
+struct Recorder {
+    points: Mutex<Vec<Array1<f64>>>,
+    energy: f64,
+}
+
+impl PointSurface for Recorder {
+    fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+        let mut points = self
+            .points
+            .lock()
+            .map_err(|_| SaddleError::Invalid("quadrature recorder poisoned".into()))?;
+        if !points.iter().any(|seen| seen.view() == x) {
+            points.push(x.to_owned());
+        }
+        Ok((self.energy + 1.0, Array1::from_elem(x.len(), 1e-3)))
+    }
+}
+
+/// Batch measurements at recorded geometries, with the surface behind them.
+struct Measured<'a, S> {
+    surface: &'a S,
+    known: HashMap<Vec<u64>, (f64, Array1<f64>)>,
+}
+
+impl<'a, S: PointSurface> Measured<'a, S> {
+    fn new(surface: &'a S, points: Vec<Array1<f64>>) -> Result<Self, SaddleError> {
+        let mut known = HashMap::with_capacity(points.len());
+        if let Some(first) = points.first() {
+            let mut rows = Array2::zeros((points.len(), first.len()));
+            for (mut row, point) in rows.rows_mut().into_iter().zip(&points) {
+                row.assign(point);
+            }
+            let observations = surface.eval_batch(rows.view())?;
+            if observations.len() != points.len() {
+                return Err(SaddleError::Shape(
+                    "the surface must return one observation per quadrature geometry".into(),
+                ));
+            }
+            for (point, observation) in points.iter().zip(observations) {
+                known.insert(geometry_key(point.view()), observation);
+            }
+        }
+        Ok(Self { surface, known })
+    }
+}
+
+impl<S: PointSurface> PointSurface for Measured<'_, S> {
+    fn eval(&self, x: ArrayView1<f64>) -> Result<(f64, Array1<f64>), SaddleError> {
+        match self.known.get(&geometry_key(x)) {
+            Some(observation) => Ok(observation.clone()),
+            None => self.surface.eval(x),
+        }
+    }
+
+    fn eval_batch(&self, points: ArrayView2<f64>) -> Result<Vec<(f64, Array1<f64>)>, SaddleError> {
+        points.rows().into_iter().map(|row| self.eval(row)).collect()
+    }
+
+    fn hessian_vector(
+        &self,
+        x: ArrayView1<f64>,
+        v: ArrayView1<f64>,
+    ) -> Result<Option<Array1<f64>>, SaddleError> {
+        self.surface.hessian_vector(x, v)
+    }
 }
 
 /// Action, half period and the `(λ, t)` time table from one pass of
