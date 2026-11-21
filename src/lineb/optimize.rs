@@ -353,6 +353,9 @@ impl LinebSession {
     /// Prepare a single energy from a full reaction path or a turning-point seed.
     /// If both endpoints lie below the requested energy, trim the seed to the
     /// two crossings around its highest image and retain its image count.
+    /// Endpoints on or above the target retain an already prepared band.
+    /// When one endpoint is above and the other below, both must lie
+    /// within the energy roundoff tolerance to form a saved turning pair.
     /// A seed spanning just one side of the barrier is invalid.
     pub fn from_seed<S: PointSurface>(
         surface: &S,
