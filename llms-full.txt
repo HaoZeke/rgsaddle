@@ -3054,7 +3054,11 @@ Set `with_interpolated_force_clock(true)` in Rust or
 =interpolated_force_clock=True= in Python to use the signed force in
 Eq. (27) of Ásgeirsson, Arnaldsson and Jónsson (2018). At each prepared
 image the solver projects the inverted potential gradient onto the
-mass-weighted unit tangent. It interpolates these forces with a cubic
+normalized derivative of the mass-weighted cubic coordinate spline at
+that image. The band optimizer uses the higher-energy neighboring chord
+on monotonic energy segments, following Eqs. (15) and (16). These two
+tangent estimates can differ for a curved path at finite image spacing.
+The clock interpolates the projected forces with a cubic
 spline in arc length and integrates the resulting one-dimensional
 motion by velocity Verlet. The period, temperature, equally spaced
 replicas and rate all use this orbit. Both reported periods agree by
