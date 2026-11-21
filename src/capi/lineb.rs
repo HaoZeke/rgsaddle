@@ -477,7 +477,10 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve_counted_orbit(
     const LINEAR_SEED: u32 = 1;
     const ENDPOINT_CONVERGENCE: u32 = 2;
     const PROJECTED_VERLET: u32 = 4;
-    if options & !(LINEAR_SEED | ENDPOINT_CONVERGENCE | PROJECTED_VERLET) != 0 {
+    const INTERPOLATED_FORCE_CLOCK: u32 = 8;
+    if options & !(LINEAR_SEED | ENDPOINT_CONVERGENCE | PROJECTED_VERLET | INTERPOLATED_FORCE_CLOCK)
+        != 0
+    {
         set_last_error("unknown LI-NEB solver option");
         return RGSADDLE_INVALID_PARAMETER;
     }
@@ -586,7 +589,8 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve_counted_orbit(
     };
     let config = config
         .with_endpoint_convergence(endpoint_convergence)
-        .with_projected_verlet(projected_verlet);
+        .with_projected_verlet(projected_verlet)
+        .with_interpolated_force_clock(options & INTERPOLATED_FORCE_CLOCK != 0);
     let mut session = match LinebSession::from_seed_with_interpolation(
         &cs,
         config,

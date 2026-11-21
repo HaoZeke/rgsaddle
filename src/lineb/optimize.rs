@@ -287,7 +287,7 @@ pub struct LinebPath<D = f64> {
     pub discrete_action: f64,
     /// Spline action `∫ √(2(V−E)) ds`.
     pub action: f64,
-    /// `−∂W/∂E` along the spline, one way.
+    /// Turning-to-turning time of the selected replica clock.
     pub half_period: f64,
     /// Half-period constrained dynamics along the same spline.
     pub half_period_dynamics: D,
@@ -838,13 +838,16 @@ impl LinebSession {
     /// current images.
     pub fn path<S: PointSurface>(&self, surface: &S) -> Result<LinebPath, SaddleError> {
         self.measured_path(surface, |counted, curve, active| {
-            let period = match active { Some(period) => period, None => path::dynamics(
-                counted,
-                &self.masses,
-                curve,
-                self.energy,
-                self.config.quadrature_pairs,
-            )?, };
+            let period = match active {
+                Some(period) => period,
+                None => path::dynamics(
+                    counted,
+                    &self.masses,
+                    curve,
+                    self.energy,
+                    self.config.quadrature_pairs,
+                )?,
+            };
             Ok((
                 period,
                 path::temperature(period, self.config.hbar, self.config.boltzmann)?,
@@ -887,14 +890,17 @@ impl LinebSession {
         let pairs = self.config.quadrature_pairs;
         let (action, half_period, time_table, active) = if self.config.interpolated_force_clock {
             let action = path::action_only(&measured, &self.masses, &curve, self.energy, pairs)?;
-            let (half, table) = path::force_clock(&dynamics, &self.masses, &curve, self.energy, pairs)?;
+            let (half, table) =
+                path::force_clock(&dynamics, &self.masses, &curve, self.energy, pairs)?;
             (action, half, table, Some(half))
         } else {
-            let (action, half, mut table) = path::quadrature(&measured, &self.masses, &curve, self.energy, pairs)?;
+            let (action, half, mut table) =
+                path::quadrature(&measured, &self.masses, &curve, self.energy, pairs)?;
             table.linear = self.config.linear_replica_clock;
             (action, half, table, None)
         };
-        let (half_period_dynamics, temperature_dynamics) = dynamics_clock(&dynamics, &curve, active)?;
+        let (half_period_dynamics, temperature_dynamics) =
+            dynamics_clock(&dynamics, &curve, active)?;
         Ok(LinebPath {
             cartesian: self.cartesian_images(&weighted)?,
             energy: self.energy,

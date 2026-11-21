@@ -2019,6 +2019,8 @@ rgsaddle_status_t rgsaddle_lineb_solve_with_kappa(const rgsaddle_lineb_config_t 
 #define RGSADDLE_LINEB_LINEAR_SEED (1u << 0)
 #define RGSADDLE_LINEB_ENDPOINT_CONVERGENCE (1u << 1)
 #define RGSADDLE_LINEB_PROJECTED_VERLET (1u << 2)
+/* Imaginary-time velocity Verlet on the cubic signed image force. */
+#define RGSADDLE_LINEB_INTERPOLATED_FORCE_CLOCK (1u << 3)
 
 /** Optimize with a choice of initial path, convergence test, and
  * integrator. Combine RGSADDLE_LINEB_LINEAR_SEED,

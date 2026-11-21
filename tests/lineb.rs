@@ -426,3 +426,32 @@ fn an_energy_offset_moves_only_the_log_rate() {
         reference.log_abs_det
     );
 }
+
+#[test]
+fn interpolated_image_force_clock_recovers_harmonic_period_and_beads() {
+    let masses = Masses::coordinates(Array1::ones(1).view()).unwrap();
+    let images = ndarray::array![[-1.0], [-0.33], [0.21], [0.64], [1.0]];
+    let path_at = |pairs| {
+        let config = LinebConfig::new(1e-6, 1e-6)
+            .with_quadrature_pairs(pairs)
+            .with_interpolated_force_clock(true);
+        LinebSession::new(config, masses.clone(), images.clone(), 0.5)
+            .unwrap()
+            .path(&Parabola)
+            .unwrap()
+    };
+    let mut error = f64::INFINITY;
+    for pairs in [1, 2, 4] {
+        let path = path_at(pairs);
+        let diff = (path.half_period - std::f64::consts::PI).abs();
+        assert!(diff < error * 0.35 && diff < 1e-4, "{diff} {error}");
+        error = diff;
+        assert_eq!(path.half_period, path.half_period_dynamics);
+        assert_eq!(path.calls.dynamics, images.nrows());
+        let beads = path.cartesian_replicas(17).unwrap();
+        for (j, bead) in beads.column(0).iter().enumerate() {
+            let angle = std::f64::consts::TAU * j as f64 / 17.;
+            assert!((bead + angle.cos()).abs() < 2e-5);
+        }
+    }
+}
