@@ -2021,6 +2021,8 @@ rgsaddle_status_t rgsaddle_lineb_solve_with_kappa(const rgsaddle_lineb_config_t 
 #define RGSADDLE_LINEB_PROJECTED_VERLET (1u << 2)
 /* Imaginary-time velocity Verlet on the cubic signed image force. */
 #define RGSADDLE_LINEB_INTERPOLATED_FORCE_CLOCK (1u << 3)
+/* Interpolate Cartesian image Hessians onto the equal-time replicas. */
+#define RGSADDLE_LINEB_INTERPOLATED_HESSIAN (1u << 4)
 
 /** Optimize with a choice of initial path, convergence test, and
  * integrator. Combine RGSADDLE_LINEB_LINEAR_SEED,
@@ -2128,6 +2130,32 @@ rgsaddle_status_t rgsaddle_lineb_solve_counted_turning(const rgsaddle_lineb_conf
                                        rgsaddle_lineb_result_t *out, const double *endpoint_kappa, uint32_t options,
                                        rgsaddle_lineb_counts_t *counts, int64_t *negative_modes, int64_t *modes,
                                        rgsaddle_lineb_orbit_t *orbit, rgsaddle_lineb_turning_t *turning);
+
+/** Geometry counts within the rate, and the Cartesian finite-difference
+ * displacement used at the path images (NaN for direct or path-only solves). */
+typedef struct {
+    rgsaddle_version_t version;
+    uint64_t flags;
+    int64_t curvature_evaluations;
+    int64_t bead_evaluations;
+    double image_hessian_step;
+} rgsaddle_lineb_rate_diagnostics_t;
+
+/** Counted solve with selectable image-Hessian interpolation. A null step
+ * uses the native displacement. Optional diagnostic and orbit output buffers
+ * add no energy or gradient requests. */
+rgsaddle_status_t rgsaddle_lineb_solve_counted_rate(const rgsaddle_lineb_config_t *cfg,
+                                       int64_t n_images, int64_t n_atoms,
+                                       const double *positions,
+                                       const double *atom_masses,
+                                       int32_t molecular, double energy,
+                                       int64_t max_steps, int64_t beads,
+                                       rgsaddle_surface_fn surface, void *user,
+                                       double *optimized_positions,
+                                       rgsaddle_lineb_result_t *out, const double *endpoint_kappa, uint32_t options,
+                                       rgsaddle_lineb_counts_t *counts, int64_t *negative_modes, int64_t *modes,
+                                       rgsaddle_lineb_orbit_t *orbit, rgsaddle_lineb_turning_t *turning,
+                                       const double *image_hessian_step, rgsaddle_lineb_rate_diagnostics_t *rate_diagnostics);
 
 #ifdef __cplusplus
 }

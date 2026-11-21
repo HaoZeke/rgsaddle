@@ -10,6 +10,7 @@ use super::{
     CSurface, RGSADDLE_INVALID_PARAMETER, RGSADDLE_NULL_REPORT, RGSADDLE_NULL_SURFACE, RGSADDLE_OK,
     RGSADDLE_SHAPE, RGSADDLE_STALLED, RgsaddleSurfaceFn,
 };
+use crate::lineb::hqtst_rate_interpolated_hessian_observed;
 use crate::lineb::{
     LinebConfig, LinebSession, LinebStatus, Masses, hqtst_rate, hqtst_rate_with_orbit,
 };
@@ -529,6 +530,93 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve_counted_turning(
     orbit: *mut RgsaddleLinebOrbit,
     turning: *mut RgsaddleLinebTurning,
 ) -> i32 {
+    unsafe {
+        rgsaddle_lineb_solve_counted_rate(
+            cfg,
+            n_images,
+            n_atoms,
+            positions,
+            atom_masses,
+            molecular,
+            energy,
+            max_steps,
+            beads,
+            surface,
+            user,
+            optimized_positions,
+            out,
+            endpoint_kappa,
+            options,
+            counts,
+            negative_modes,
+            modes,
+            orbit,
+            turning,
+            std::ptr::null(),
+            std::ptr::null_mut(),
+        )
+    }
+}
+
+/// Surface work and applied displacement of the selected harmonic rate.
+#[repr(C)]
+pub struct RgsaddleLinebRateDiagnostics {
+    /// ABI version used to produce this result.
+    pub version: super::RgsaddleVersion,
+    /// Reserved flags, zero.
+    pub flags: u64,
+    /// Geometries evaluated to form Hessian blocks.
+    pub curvature_evaluations: i64,
+    /// Replica geometries queried for energies and gradients.
+    pub bead_evaluations: i64,
+    /// Actual Cartesian image-Hessian step, or NaN if no image Hessians were taken.
+    pub image_hessian_step: f64,
+}
+
+/// Solve with bead or interpolated image Hessians and optional rate diagnostics.
+///
+/// # Safety
+/// Follows [`rgsaddle_lineb_solve_counted_turning`]. Non-null step and diagnostics
+/// pointers must address one readable double and one distinct writable structure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rgsaddle_lineb_solve_counted_rate(
+    cfg: *const RgsaddleLinebConfig,
+    n_images: i64,
+    n_atoms: i64,
+    positions: *const f64,
+    atom_masses: *const f64,
+    molecular: i32,
+    energy: f64,
+    max_steps: i64,
+    beads: i64,
+    surface: Option<RgsaddleSurfaceFn>,
+    user: *mut c_void,
+    optimized_positions: *mut f64,
+    out: *mut RgsaddleLinebResult,
+    endpoint_kappa: *const f64,
+    options: u32,
+    counts: *mut RgsaddleLinebCounts,
+    negative_modes: *mut i64,
+    modes: *mut i64,
+    orbit: *mut RgsaddleLinebOrbit,
+    turning: *mut RgsaddleLinebTurning,
+    image_hessian_step: *const f64,
+    rate_diagnostics: *mut RgsaddleLinebRateDiagnostics,
+) -> i32 {
+    let mut rate_diagnostics = unsafe { rate_diagnostics.as_mut() };
+    let image_hessian_step = unsafe { image_hessian_step.as_ref() }.copied();
+    if let Some(d) = rate_diagnostics.as_deref_mut() {
+        *d = RgsaddleLinebRateDiagnostics {
+            version: super::RgsaddleVersion {
+                major: super::RGSADDLE_ABI_MAJOR,
+                minor: super::RGSADDLE_ABI_MINOR,
+            },
+            flags: 0,
+            curvature_evaluations: 0,
+            bead_evaluations: 0,
+            image_hessian_step: f64::NAN,
+        };
+    }
     let mut turning = unsafe { turning.as_mut() };
     if let Some(t) = turning.as_deref_mut() {
         *t = RgsaddleLinebTurning {
@@ -569,7 +657,20 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve_counted_turning(
     const ENDPOINT_CONVERGENCE: u32 = 2;
     const PROJECTED_VERLET: u32 = 4;
     const INTERPOLATED_FORCE_CLOCK: u32 = 8;
-    if options & !(LINEAR_SEED | ENDPOINT_CONVERGENCE | PROJECTED_VERLET | INTERPOLATED_FORCE_CLOCK)
+    const INTERPOLATED_HESSIAN: u32 = 16;
+    let interpolate = options & INTERPOLATED_HESSIAN != 0;
+    if image_hessian_step.is_some_and(|v| !interpolate || !v.is_finite() || v <= 0.) {
+        set_last_error(
+            "image Hessian step requires interpolated Hessians and a positive finite displacement",
+        );
+        return RGSADDLE_INVALID_PARAMETER;
+    }
+    if options
+        & !(LINEAR_SEED
+            | ENDPOINT_CONVERGENCE
+            | PROJECTED_VERLET
+            | INTERPOLATED_FORCE_CLOCK
+            | INTERPOLATED_HESSIAN)
         != 0
     {
         set_last_error("unknown LI-NEB solver option");
@@ -758,27 +859,43 @@ pub unsafe extern "C" fn rgsaddle_lineb_solve_counted_turning(
         out.rate_calls = 0;
         return RGSADDLE_OK;
     }
-    let rate = if let Some(o) = orbit {
-        hqtst_rate_with_orbit(&cs, &path, beads_usize).map(|(rate, observed)| {
-            for (dst, values) in [
-                (o.positions, &observed.positions),
-                (o.gradients, &observed.gradients),
-            ] {
-                if !dst.is_null() {
-                    unsafe { std::ptr::copy_nonoverlapping(values.as_ptr(), dst, values.len()) };
-                }
-            }
-            o.max_abs_residual = observed.max_abs_residual;
-            o.rms_residual = observed.rms_residual;
-            o.max_bead = as_i64(observed.max_bead);
-            o.max_coordinate = as_i64(observed.max_coordinate);
-            rate
-        })
+    let rate = if interpolate {
+        hqtst_rate_interpolated_hessian_observed(
+            &cs,
+            &path,
+            beads_usize,
+            image_hessian_step,
+            orbit.is_some(),
+        )
+    } else if orbit.is_some() {
+        hqtst_rate_with_orbit(&cs, &path, beads_usize)
+            .map(|(rate, observed)| (rate, Some(observed)))
     } else {
-        hqtst_rate(&cs, &path, beads_usize)
+        hqtst_rate(&cs, &path, beads_usize).map(|rate| (rate, None))
     };
     match rate {
-        Ok(rate) => {
+        Ok((rate, observed)) => {
+            if let (Some(o), Some(observed)) = (orbit, observed) {
+                for (dst, values) in [
+                    (o.positions, &observed.positions),
+                    (o.gradients, &observed.gradients),
+                ] {
+                    if !dst.is_null() {
+                        unsafe {
+                            std::ptr::copy_nonoverlapping(values.as_ptr(), dst, values.len())
+                        };
+                    }
+                }
+                o.max_abs_residual = observed.max_abs_residual;
+                o.rms_residual = observed.rms_residual;
+                o.max_bead = as_i64(observed.max_bead);
+                o.max_coordinate = as_i64(observed.max_coordinate);
+            }
+            if let Some(d) = rate_diagnostics {
+                d.curvature_evaluations = as_i64(rate.curvature_evaluations);
+                d.bead_evaluations = as_i64(rate.bead_evaluations);
+                d.image_hessian_step = rate.image_hessian_displacement.unwrap_or(f64::NAN);
+            }
             out.log_rate_over_reactant = rate.log_rate_over_reactant;
             out.rate_calls = as_i64(rate.evaluations);
             counts.rate = out.rate_calls;
