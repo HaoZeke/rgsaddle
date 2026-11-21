@@ -21,9 +21,8 @@ pub(crate) struct Placement {
     pub rotation: [[f64; 3]; 3],
 }
 
-/// Align every image to image 0. `images` is mass-weighted, one row per
-/// image, length `3 * atoms`. The three coordinate masses of an atom are
-/// one atomic mass.
+/// Fit each image to its aligned predecessor, so every chord has its minimum
+/// mass-weighted length. Rows hold `3 * atoms` mass-weighted coordinates.
 pub(crate) fn align_images(
     images: ArrayView2<f64>,
     sqrt_mass: ArrayView1<f64>,
@@ -47,12 +46,15 @@ pub(crate) fn align_images(
             "alignment needs at least one image".into(),
         ));
     }
-    let reference = images.row(0).to_owned();
     let mut aligned = Array2::zeros((n, dof));
     let mut placements = Vec::with_capacity(n);
     for i in 0..n {
-        let (row, placement) =
-            align_to_reference(images.row(i), reference.view(), sqrt_mass, atoms)?;
+        let reference = if i == 0 {
+            images.row(0)
+        } else {
+            aligned.row(i - 1)
+        };
+        let (row, placement) = align_to_reference(images.row(i), reference, sqrt_mass, atoms)?;
         aligned.row_mut(i).assign(&row);
         placements.push(placement);
     }

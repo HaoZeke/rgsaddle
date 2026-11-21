@@ -3045,7 +3045,7 @@ For the paper’s convergence test, set `with_endpoint_convergence(true)`. The o
 
 The default endpoint restraint has magnitude `endpoint_scale |V − E| / |∇V|` in mass-weighted coordinates. To use a constant coefficient as in Eqs. (19) and (21), set `with_endpoint_kappa(kappa)` in Rust, pass `endpoint_kappa` to Python, or call `rgsaddle_lineb_solve_with_kappa` from C. Its force magnitude is `kappa |V − E|`. Express the coefficient and the spring constant in the units of the action and coordinates used by the solver.
 
-`Masses::coordinates` takes one mass per coordinate and leaves rigid motions alone. Use it for atoms in an external field, such as adsorbates over a fixed slab. `Masses::molecule` takes one mass per atom and removes the rigid translation and rotation between images by quaternion alignment, for a free molecule.
+`Masses::coordinates` takes one mass per coordinate and leaves rigid motions alone. Use it for atoms in an external field, such as adsorbates over a fixed slab. `Masses::molecule` takes one mass per atom for a free molecule. It centers each image and fits it to the preceding aligned image by a mass-weighted quaternion rotation. Each chord has the minimum length over relative rigid motions, so reversing the band preserves its discrete action.
 
 `time_step` is the initial FIRE step. From rest a step moves an image by about `time_step^2 |F|`. The default 0.1 converges the Müller-Brown continuation at every other default; a surface with a stiffer action needs a smaller step. `max_move` caps the step of one atom with molecular masses and the whole band step otherwise. An interior image may not fall below `E + w`, where `w` is `turning_width` times the height of the highest starting image above `E`; a step that would put one there is retried at a shorter length. Any other error from the surface ends the step and is returned.
 
@@ -3221,8 +3221,11 @@ is
 
 Request =return_orbit=True= when calling `lineb_solve` with a positive
 `beads` value. The optional `LinebOrbit` returned as `result.orbit` contains `positions` and
-`gradients`, both shaped `(beads, 3 * n_atoms)`. The return leg repeats
-the exact coordinates and gradients of the outbound measurements.
+`gradients`, both shaped `(beads, 3 * n_atoms)`. Each returning bead has
+the exact coordinates of its outbound partner. With bead Hessians the
+solver reuses the outbound measurement. With interpolated image Hessians
+it requests the full ring in one batch, so an exact-coordinate cache
+can serve the repeated geometries.
 `orbit.max_abs_residual` and `orbit.rms_residual` are in energy per
 length. `orbit.max_bead` and `orbit.max_coordinate` are zero-based.
 A path-only solve returns `None`. The rate evaluation count is the
