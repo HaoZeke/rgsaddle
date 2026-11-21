@@ -140,7 +140,11 @@ subdirectory = false
 generation = false
 
 [package.metadata.capi.install.include]
-asset = [{ from = "include/rgsaddle.h", to = "" }, { from = "include/rgsaddle/session.hpp", to = "rgsaddle" }]
+asset = [
+    { from = "include/rgsaddle.h", to = "" },
+    { from = "include/rgsaddle/session.hpp", to = "rgsaddle" },
+    { from = "include/rgsaddle/stencil.hpp", to = "rgsaddle" },
+]
 
 [package.metadata.capi.pkg_config]
 name = "rgsaddle"
