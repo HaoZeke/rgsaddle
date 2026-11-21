@@ -186,3 +186,28 @@ def test_rate_orbit_uses_measured_coordinates_without_surface_calls(beads: int) 
     assert orbit.max_abs_residual == pytest.approx(np.abs(residual).max(), abs=1e-13)
     assert orbit.rms_residual == pytest.approx(np.sqrt(np.mean(residual**2)), abs=1e-13)
     assert abs(residual[orbit.max_bead, orbit.max_coordinate]) == pytest.approx(orbit.max_abs_residual)
+
+
+def test_interpolated_force_clock_uses_one_gradient_per_path_image() -> None:
+    positions, energy, tol = eckart_seed()
+    evaluations = 0
+
+    def surface(x):
+        nonlocal evaluations
+        evaluations += x.shape[0]
+        value, grad = eckart(x)
+        transverse = x.reshape(1, 3)[:, 1:]
+        grad[:, 1:] = 2 * transverse
+        return value + (transverse**2).sum(), grad
+
+    result = lineb_solve(
+        surface, positions, np.ones(1), energy, tol, tol,
+        max_steps=500, beads=16, return_orbit=True, interpolated_force_clock=True,
+    )
+    assert result.surface_calls["total"] == evaluations
+    assert result.dynamics_calls == len(positions)
+    assert result.half_period == result.half_period_dynamics
+    assert result.temperature == result.temperature_dynamics
+    assert result.orbit is not None
+    assert result.orbit.positions.shape == (16, 3)
+    assert result.orbit.positions[0, 0] < 0 < result.orbit.positions[8, 0]
